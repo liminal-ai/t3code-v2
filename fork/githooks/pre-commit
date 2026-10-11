@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-set -e
-fork/skills-mirror.sh --write
-git add .agents/skills
