@@ -36,6 +36,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import type * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -74,6 +75,7 @@ import {
   subagentThreadTitle,
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
+import * as CursorCloud from "./cloud.ts";
 export { cursorSdkModelSelection } from "./sdkModel.ts";
 
 export const CURSOR_DRIVER_KIND = CursorAgentSdk.CURSOR_PROVIDER;
@@ -174,6 +176,29 @@ export const CursorProviderCapabilitiesV2 = {
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
+/**
+ * Cursor Cloud runs on Cursor's VM, outside T3's runtime modes and the local
+ * checkout T3 checkpoints. Cursor answers a cloud steer with "send it as a
+ * follow-up", so a steer queues instead of restarting the run.
+ */
+export const CursorCloudProviderCapabilitiesV2 = {
+  ...CursorProviderCapabilitiesV2,
+  turns: {
+    ...CursorProviderCapabilitiesV2.turns,
+    supportsSteeringByInterruptRestart: false,
+  },
+  checkpointing: {
+    ...CursorProviderCapabilitiesV2.checkpointing,
+    appCanCheckpointFilesystem: false,
+  },
+  runtimePolicy: {
+    enforcement: "client-boundary",
+  },
+} satisfies OrchestrationV2ProviderCapabilities;
+
+/** How long a Stop waits for Cursor to report that a cancelled cloud run ended. */
+const CURSOR_CLOUD_CANCEL_CONFIRMATION_TIMEOUT = "30 seconds";
+
 export interface CursorRuntimeAgentPolicy {
   readonly autoReview: boolean;
   readonly sandboxEnabled: boolean;
@@ -223,6 +248,7 @@ function providerSession(input: {
   readonly providerInstanceId: ProviderInstanceId;
   readonly cwd: string | null;
   readonly model: string;
+  readonly capabilities: OrchestrationV2ProviderCapabilities;
   readonly now: DateTime.Utc;
 }): OrchestrationV2ProviderSession {
   return {
@@ -232,7 +258,7 @@ function providerSession(input: {
     status: "ready",
     cwd: input.cwd ?? process.cwd(),
     model: input.model,
-    capabilities: CursorProviderCapabilitiesV2,
+    capabilities: input.capabilities,
     createdAt: input.now,
     updatedAt: input.now,
     lastError: null,
@@ -302,13 +328,36 @@ const CURSOR_AGENT_SETTING_SOURCES = [
   "plugins",
 ] as const satisfies ReadonlyArray<SettingSource>;
 
+export interface CursorCloudAgentInput {
+  readonly checkout: CursorCloud.CursorCloudCheckout;
+  readonly autoCreatePR: boolean;
+  readonly openAsCursorGithubApp: boolean;
+}
+
 export function makeCursorAgentOptions(input: {
   readonly apiKey?: string;
   readonly modelSelection: ModelSelection;
   readonly runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy;
   readonly threadId: ThreadId;
   readonly mcpSession: McpProviderSession.McpProviderSessionConfig | undefined;
+  readonly cloud?: CursorCloudAgentInput;
 }): AgentOptions {
+  if (input.cloud !== undefined) {
+    // A cloud VM cannot reach T3's MCP server or this machine's Cursor settings,
+    // and Cursor rejects local sandbox and review options for cloud agents.
+    return {
+      model: cursorSdkModelSelection(input.modelSelection),
+      name: `T3 Code ${input.threadId}`,
+      mode: input.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
+      ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
+      cloud: {
+        repos: input.cloud.checkout.repository === null ? [] : [input.cloud.checkout.repository],
+        autoCreatePR: input.cloud.autoCreatePR,
+        openAsCursorGithubApp: input.cloud.openAsCursorGithubApp,
+        metadata: { t3ThreadId: input.threadId },
+      },
+    };
+  }
   const policy = cursorRuntimeAgentPolicy(input.runtimePolicy);
   const mcpServers = cursorMcpServers(input.mcpSession);
   return {
@@ -859,11 +908,16 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const adapterOptions = options;
   const apiKey = adapterOptions.environment.CURSOR_API_KEY?.trim() || undefined;
+  const cloud = adapterOptions.settings.runtime === "cloud";
+  const capabilities = cloud ? CursorCloudProviderCapabilitiesV2 : CursorProviderCapabilitiesV2;
+  const services = yield* Effect.context<ChildProcessSpawner.ChildProcessSpawner>();
+  const resolveCloudCheckout = (cwd: string | null) =>
+    CursorCloud.resolveCursorCloudCheckout(cwd).pipe(Effect.provideContext(services));
 
   return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CursorAgentSdk.CURSOR_PROVIDER,
-    getCapabilities: () => Effect.succeed(CursorProviderCapabilitiesV2),
+    getCapabilities: () => Effect.succeed(capabilities),
     planSelectionTransition: () => Effect.succeed(turnScopedSelectionTransition()),
     openSession: Effect.fn("CursorAdapterV2.openSession")(
       function* (input: ProviderAdapter.ProviderAdapterV2OpenSessionInput) {
@@ -874,6 +928,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
           providerInstanceId: adapterOptions.instanceId,
           cwd: input.runtimePolicy.cwd,
           model: input.modelSelection.model,
+          capabilities,
           now: createdAt,
         });
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
@@ -2086,6 +2141,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             yield* existing.session.close.pipe(Effect.ignore);
             yield* Ref.set(liveAgent, null);
           }
+          const checkout = cloud
+            ? yield* resolveCloudCheckout(openInput.runtimePolicy.cwd)
+            : undefined;
           const sdkSession = yield* runner.open({
             operation: openInput.operation,
             ...(openInput.agentId === undefined ? {} : { agentId: openInput.agentId }),
@@ -2094,7 +2152,16 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               modelSelection: openInput.modelSelection,
               runtimePolicy: openInput.runtimePolicy,
               threadId: openInput.threadId,
-              mcpSession: yield* mcpSessions.read(openInput.threadId),
+              mcpSession: cloud ? undefined : yield* mcpSessions.read(openInput.threadId),
+              ...(checkout === undefined
+                ? {}
+                : {
+                    cloud: {
+                      checkout,
+                      autoCreatePR: adapterOptions.settings.cloudAutoCreatePR,
+                      openAsCursorGithubApp: adapterOptions.settings.cloudOpenAsCursorGithubApp,
+                    },
+                  }),
             }),
             threadId: openInput.threadId,
             providerSessionId: input.providerSessionId,
@@ -2130,15 +2197,45 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 .map((skill) => skill.name),
             );
           }
+          const promptText = providerMessageTextWithAttachmentPaths({
+            text:
+              cursorSkillNames === undefined
+                ? rawText
+                : rewriteCursorSkillMentions(rawText, cursorSkillNames),
+            attachments: turnInput.message.attachments,
+            // Paths on this machine mean nothing on a cloud VM.
+            resolveAttachmentPath: cloud ? () => null : host.resolveAttachmentPath,
+          });
+          const cloudAttachments = cloud
+            ? yield* Effect.forEach(
+                turnInput.message.attachments.filter(
+                  (attachment) => !isProviderNativeImageAttachment(attachment),
+                ),
+                (attachment) =>
+                  Effect.gen(function* () {
+                    const attachmentPath = host.resolveAttachmentPath(attachment);
+                    const text =
+                      attachmentPath !== null &&
+                      CursorCloud.isInlineCursorCloudAttachment(attachment)
+                        ? yield* fileSystem
+                            .readFileString(attachmentPath)
+                            .pipe(Effect.orElseSucceed(() => undefined))
+                        : undefined;
+                    return CursorCloud.cursorCloudAttachmentText(attachment, text);
+                  }),
+                { concurrency: 1 },
+              )
+            : [];
+          const cloudNote =
+            cloud && turnInput.providerThread.firstRunOrdinal === null
+              ? CursorCloud.cursorCloudEnvironmentNote(
+                  yield* resolveCloudCheckout(turnInput.runtimePolicy.cwd),
+                )
+              : undefined;
           const userText = t3OrchestrationPromptForFirstRun({
-            prompt: providerMessageTextWithAttachmentPaths({
-              text:
-                cursorSkillNames === undefined
-                  ? rawText
-                  : rewriteCursorSkillMentions(rawText, cursorSkillNames),
-              attachments: turnInput.message.attachments,
-              resolveAttachmentPath: host.resolveAttachmentPath,
-            }),
+            prompt: [cloudNote, promptText, ...cloudAttachments]
+              .filter((part) => part !== undefined && part.length > 0)
+              .join("\n\n"),
             runOrdinal: turnInput.runOrdinal,
             hasT3Mcp: mcpServers !== undefined,
           });
@@ -2176,13 +2273,39 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               detail: "Cursor turn requires non-empty text or attachments.",
             });
           }
-          const text = `${userText}\n\n${buildRuntimeInstructions({ harness: "Cursor", model: turnInput.modelSelection.model })}`;
+          const text = `${userText}\n\n${buildRuntimeInstructions({ harness: cloud ? "Cursor Cloud" : "Cursor", model: turnInput.modelSelection.model })}`;
           return images.length === 0
             ? text
             : ({
                 text,
                 images,
               } satisfies SDKUserMessage);
+        });
+
+        const linkCloudPullRequests = Effect.fnUntraced(function* (
+          threadId: ThreadId,
+          result: RunResult,
+        ) {
+          const urls = CursorCloud.cursorCloudPullRequestUrls(result);
+          if (urls.length === 0) return;
+          const mcpSession = yield* mcpSessions.read(threadId);
+          if (mcpSession === undefined) {
+            yield* Effect.logWarning("orchestration-v2.cursor-cloud-pr-link-unavailable", {
+              providerSessionId: input.providerSessionId,
+              urls,
+            });
+            return;
+          }
+          yield* CursorCloud.linkCursorCloudPullRequests({ mcpSession, urls }).pipe(
+            Effect.timeout("15 seconds"),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("orchestration-v2.cursor-cloud-pr-link-failed", {
+                providerSessionId: input.providerSessionId,
+                urls,
+                cause,
+              }),
+            ),
+          );
         });
 
         const startTurn = Effect.fn("CursorAdapterV2.startTurn")(
@@ -2202,26 +2325,54 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               modelSelection: turnInput.modelSelection,
               runtimePolicy: turnInput.runtimePolicy,
             });
-            const mcpServers = cursorMcpServers(yield* mcpSessions.read(turnInput.threadId));
-            const message = yield* resolveUserMessage(turnInput, mcpServers);
+            const mcpServers = cloud
+              ? undefined
+              : cursorMcpServers(yield* mcpSessions.read(turnInput.threadId));
             const pendingUpdates: Array<InteractionUpdate> = [];
             let context: ActiveCursorTurn | null = null;
-            const sdkRun = yield* agent.session.send({
-              message,
-              options: {
-                model: cursorSdkModelSelection(turnInput.modelSelection),
-                mode: turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
-                ...(mcpServers === undefined ? {} : { mcpServers }),
-              },
-              onDelta: (update) => {
-                if (context === null) {
-                  return Effect.sync(() => {
-                    pendingUpdates.push(update);
+            // A cloud run keeps going on Cursor while T3 restarts. When T3
+            // continues the run it cut, follow that cloud run to its end instead
+            // of sending "continue" to an agent that never stopped.
+            const headRef = turnInput.providerThread.nativeConversationHeadRef;
+            const adoptedRunId =
+              cloud &&
+              turnInput.restartContinuationOfRunId !== undefined &&
+              headRef?.fingerprint === turnInput.restartContinuationOfRunId &&
+              headRef.nativeId !== null
+                ? headRef.nativeId
+                : undefined;
+            const sdkRun =
+              adoptedRunId !== undefined
+                ? yield* agent.session.attach(adoptedRunId)
+                : yield* agent.session.send({
+                    message: yield* resolveUserMessage(turnInput, mcpServers),
+                    options: {
+                      model: cursorSdkModelSelection(turnInput.modelSelection),
+                      mode: turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
+                      ...(mcpServers === undefined ? {} : { mcpServers }),
+                    },
+                    onDelta: (update) => {
+                      if (context === null) {
+                        return Effect.sync(() => {
+                          pendingUpdates.push(update);
+                        });
+                      }
+                      return handleInteractionUpdate(context, update);
+                    },
                   });
+            // The thread's head records which cloud run belongs to which T3 run,
+            // so a restart continuation can find the run to follow.
+            const providerThread: OrchestrationV2ProviderThread = cloud
+              ? {
+                  ...turnInput.providerThread,
+                  nativeConversationHeadRef: {
+                    driver: CursorAgentSdk.CURSOR_PROVIDER,
+                    nativeId: sdkRun.runId,
+                    strength: "strong",
+                    fingerprint: turnInput.runId,
+                  },
                 }
-                return handleInteractionUpdate(context, update);
-              },
-            });
+              : turnInput.providerThread;
             const startedAt = yield* DateTime.now;
             const completed = yield* Deferred.make<void, never>();
             const providerTurnId = idAllocator.derive.providerTurn({
@@ -2229,7 +2380,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               nativeTurnId: sdkRun.runId,
             });
             context = {
-              input: turnInput,
+              input: { ...turnInput, providerThread },
               run: sdkRun,
               providerTurnId,
               startedAt,
@@ -2263,7 +2414,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               type: "provider_thread.updated",
               driver: CursorAgentSdk.CURSOR_PROVIDER,
               providerThread: {
-                ...turnInput.providerThread,
+                ...providerThread,
                 providerSessionId: session.id,
                 status: "active",
                 updatedAt: startedAt,
@@ -2276,6 +2427,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
             yield* sdkRun.wait.pipe(
               Effect.flatMap((result) =>
                 Effect.gen(function* () {
+                  if (cloud) {
+                    yield* linkCloudPullRequests(turnInput.threadId, result);
+                  }
                   if (
                     context !== null &&
                     context.assistant.nextSegment === 0 &&
@@ -2463,8 +2617,12 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               }
               context.interrupted = true;
               yield* context.run.cancel;
+              // A cloud turn ends only when Cursor's stream reports the run's
+              // terminal status, which is the proof the VM stopped.
               const stopped = yield* Deferred.await(context.completed).pipe(
-                Effect.timeoutOption("10 seconds"),
+                Effect.timeoutOption(
+                  cloud ? CURSOR_CLOUD_CANCEL_CONFIRMATION_TIMEOUT : "10 seconds",
+                ),
               );
               if (Option.isSome(stopped)) {
                 return;
@@ -2474,7 +2632,16 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 providerThreadId: turnInput.providerThread.id,
                 providerTurnId: turnInput.providerTurnId,
               });
-              yield* finalizeTurn({ context, status: "interrupted" });
+              yield* cloud
+                ? finalizeTurn({
+                    context,
+                    status: "failed",
+                    failure: makeProviderFailure({
+                      class: "provider_error",
+                      message: `Cursor has not confirmed that cloud run ${context.run.runId} stopped. Check it at https://cursor.com/agents/${context.run.agentId}.`,
+                    }),
+                  })
+                : finalizeTurn({ context, status: "interrupted" });
             },
             (effect, turnInput) =>
               effect.pipe(
@@ -2605,6 +2772,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
 
 export type CursorAdapterV2DriverEnv =
   | CursorAgentSdk.CursorAgentSdkRunner
+  | ChildProcessSpawner.ChildProcessSpawner
   | FileSystem.FileSystem
   | Path.Path
   | IdAllocator.IdAllocatorV2
