@@ -34,7 +34,7 @@ When a role line is missing and it matters, ask whether the user wants to pick t
 
 ## Get set up
 
-1. Copy the skills from `liminal-ai/pstack-lim` (branch `lim`) into the repo's `.agents/skills`, with a `.claude/skills -> ../.agents/skills` symlink so Claude sees them.
+1. From `liminal-ai/pstack-lim` (branch `lim`), copy every skill in `pstack/skills` except `make-bot-ui` and `setup-pstack` into the repo's `.agents/skills`, and `pstack/agents` into `.agents/agents`. Add a `.claude/skills -> ../.agents/skills` symlink so Claude sees the skills.
 2. Set each role's model in the role file (the pstack roles section of `~/lim-v2/AGENTS.md`, mirrored in `~/lim-v2/CLAUDE.md`). Each entry is a T3 `delegate_task` target, checked against `orchestrator_capabilities`. The files load into new threads.
 3. Start a real task with `/poteto-mode`, a goal, and a check that can pass or fail.
 
@@ -84,7 +84,7 @@ The default answer is `/poteto-mode`, which runs most of the others when its ste
 | Turn their own working habits into a personal mode skill | [`/automate-me`](../automate-me/SKILL.md) |
 | Turn what a finished task taught into skill edits | [`/reflect`](../reflect/SKILL.md) |
 | Stop agents from repeating the same mistakes in this repo | [`/correct`](../correct/SKILL.md) |
-| Build a page whose buttons wake a Grok Bot over a webhook | [`/make-bot-ui`](../make-bot-ui/SKILL.md) |
+| Build a page whose buttons wake a Grok Bot over a webhook | `/make-bot-ui`, not available in this port |
 | Find their way around pstack | `/poteto-help` |
 
 If a skill directory next to this one is missing from the table, read its frontmatter and route by its description. The `principle-*` directories are covered under principles below.
@@ -111,12 +111,12 @@ Playbooks are step lists inside `/poteto-mode`, not skills, so they have no slas
 - "land the stack" runs Shipping.
 - "take over this branch" runs Session pickup.
 - "pause safely" runs Pause safely.
-- "full autopilot on this queue" runs Autopilot-full. "stack them, don't ship" runs Autopilot-stack.
+- "full autopilot on this queue" names Autopilot-full and "stack them, don't ship" names Autopilot-stack. Neither is available in this port, so `/poteto-mode` says so instead of running them.
 - "run the eval playbook" runs Eval.
 
 The Playbooks section of [`poteto-mode`](../poteto-mode/SKILL.md) lists every playbook and when it applies. [Guide page 6](../../docs/guide/06-verify-and-ship.md) covers opening, babysitting, and landing a PR.
 
-pstack has no planning skill. Cursor's Plan Mode works alongside it. For work that spans phases or stacked PRs, asking `/poteto-mode` for a plan runs the [Multi-phase plan playbook](../poteto-mode/playbooks/multi-phase-plan.md), which writes the plan and doesn't implement it. For a design question, the Prototype playbook or `/architect` settles it in code first.
+pstack has no planning skill. Cursor's Plan Mode works alongside it. For work that spans phases or stacked PRs, the [Multi-phase plan playbook](../poteto-mode/playbooks/multi-phase-plan.md) is not available in this port, so asking `/poteto-mode` for a plan gets that answer instead. In the full pstack it writes the plan and doesn't implement it. For a design question, the Prototype playbook or `/architect` settles it in code first.
 
 Principles are one-rule skills that `/poteto-mode` reads and cites in its replies. The user rarely invokes one. They steer with the names instead, as in "apply prove it works. show me the real output." Typing `/principle-<name>` still loads one on demand. [Guide page 8](../../docs/guide/08-principles.md) lists them.
 

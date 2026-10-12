@@ -41,7 +41,7 @@ Swap in the real paths, skills, and done checks. Informal wording works.
 
 - `/poteto-mode im going to bed. <goal> in a fresh worktree off <base>. done means <checks>. keep a decision log. don't ask me before committing. /loop until done. if you're truly stuck after a few hours, stop and write up why.`
 - `/show-me-your-work catch me up on what you did last night.` Read its Attention section first.
-- `/poteto-mode full autopilot on this queue. each item is independent.`
-- `/poteto-mode autopilot these changes but stack them, don't ship. i'll land the stack.`
+- `/poteto-mode full autopilot on this queue. each item is independent.` (Autopilot-full: not available in this port.)
+- `/poteto-mode autopilot these changes but stack them, don't ship. i'll land the stack.` (Autopilot-stack: not available in this port.)
 - `/reflect capture what we learned so the next run doesn't repeat it.` Approve only edits that change a future decision.
 - `/bro` restates the last reply in plain words.
