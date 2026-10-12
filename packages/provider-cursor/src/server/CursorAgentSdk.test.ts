@@ -14,6 +14,7 @@ const cursorSdkMock = vi.hoisted(() => {
   const runOperations: Array<string> = [];
   let agentCloseFailure: unknown;
   let staleRunActive = false;
+  let cloudAgentMissing = false;
   const runWait = vi.fn(async () => ({
     id: "run-cursor-agent-sdk-test",
     requestId: "request-cursor-agent-sdk-test",
@@ -72,12 +73,29 @@ const cursorSdkMock = vi.hoisted(() => {
     runOperations.push("agent.cancelRun");
     staleRunActive = false;
   });
+  const get = vi.fn(async (agentId: string) => {
+    if (cloudAgentMissing) {
+      throw Object.assign(new Error(`Agent ${agentId} not found`), {
+        status: 404,
+        code: "not_found",
+      });
+    }
+    return { agentId, name: "", summary: "", lastModified: 0, runtime: "cloud" };
+  });
+  const getRun = vi.fn(async (runId: string, options: Record<string, unknown>) => ({
+    id: runId,
+    agentId: String(options.agentId),
+    wait: runWait,
+    cancel: runCancel,
+  }));
 
   return {
     agentClose,
     cancelRun,
     closeExecutionOrder,
     create,
+    get,
+    getRun,
     listRuns,
     resume,
     runOperations,
@@ -90,6 +108,9 @@ const cursorSdkMock = vi.hoisted(() => {
     setStaleRunActive: (active: boolean) => {
       staleRunActive = active;
     },
+    setCloudAgentMissing: (missing: boolean) => {
+      cloudAgentMissing = missing;
+    },
   };
 });
 
@@ -99,6 +120,8 @@ vi.mock("./sdk.ts", () => ({
     resume: cursorSdkMock.resume,
     listRuns: cursorSdkMock.listRuns,
     cancelRun: cursorSdkMock.cancelRun,
+    get: cursorSdkMock.get,
+    getRun: cursorSdkMock.getRun,
     messages: {
       list: vi.fn(async () => []),
     },
@@ -302,6 +325,142 @@ describe("CursorAgentSdkRunner", () => {
       assert.equal(cursorSdkMock.create.mock.calls.length, 1);
       assert.equal(cursorSdkMock.send.mock.calls.length, 1);
       assert.equal(cursorSdkMock.runWait.mock.calls.length, 1);
+    }).pipe(Effect.provide(layerTest)),
+  );
+});
+
+describe("CursorAgentSdkRunner cloud", () => {
+  const cloudOptions = {
+    model: { id: "default" },
+    mode: "agent" as const,
+    apiKey: "cloud-key",
+    cloud: { repos: [{ url: "https://github.com/liminal-ai/t3code-v2", startingRef: "main" }] },
+  };
+  const openCloud = (operation: "create" | "resume", name: string) =>
+    Effect.gen(function* () {
+      const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
+      return yield* runner.open({
+        operation,
+        ...(operation === "resume" ? { agentId: "agent-cursor-agent-sdk-test" } : {}),
+        options: cloudOptions,
+        threadId: ThreadId.make(`thread-${name}`),
+        providerSessionId: ProviderSessionId.make(`provider-session-${name}`),
+      });
+    });
+  const resetMocks = () => {
+    cursorSdkMock.runOperations.length = 0;
+    for (const mock of [
+      cursorSdkMock.create,
+      cursorSdkMock.resume,
+      cursorSdkMock.get,
+      cursorSdkMock.getRun,
+      cursorSdkMock.listRuns,
+      cursorSdkMock.cancelRun,
+      cursorSdkMock.runCancel,
+    ]) {
+      mock.mockClear();
+    }
+    cursorSdkMock.setStaleRunActive(false);
+    cursorSdkMock.setCloudAgentMissing(false);
+  };
+
+  it.effect("asks Cursor to cancel a cloud run by id and leaves its stream open", () =>
+    Effect.gen(function* () {
+      resetMocks();
+      const session = yield* openCloud("create", "cloud-cancel");
+      const run = yield* session.send({ message: "work" });
+
+      yield* run.cancel;
+
+      assert.deepStrictEqual(cursorSdkMock.cancelRun.mock.calls, [
+        [
+          "run-cursor-agent-sdk-test",
+          { runtime: "cloud", agentId: "agent-cursor-agent-sdk-test", apiKey: "cloud-key" },
+        ],
+      ]);
+      assert.equal(cursorSdkMock.runCancel.mock.calls.length, 0);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("starts a cloud agent Cursor has no record of under its recorded id", () =>
+    Effect.gen(function* () {
+      resetMocks();
+      cursorSdkMock.setCloudAgentMissing(true);
+
+      yield* openCloud("resume", "cloud-first-turn");
+
+      assert.deepStrictEqual(cursorSdkMock.get.mock.calls, [
+        ["agent-cursor-agent-sdk-test", { apiKey: "cloud-key" }],
+      ]);
+      assert.deepStrictEqual(cursorSdkMock.create.mock.calls, [
+        [{ ...cloudOptions, agentId: "agent-cursor-agent-sdk-test" }],
+      ]);
+      assert.equal(cursorSdkMock.resume.mock.calls.length, 0);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("resumes a cloud agent Cursor knows", () =>
+    Effect.gen(function* () {
+      resetMocks();
+
+      yield* openCloud("resume", "cloud-resume");
+
+      assert.equal(cursorSdkMock.create.mock.calls.length, 0);
+      assert.deepStrictEqual(cursorSdkMock.resume.mock.calls, [
+        ["agent-cursor-agent-sdk-test", cloudOptions],
+      ]);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("never cancels the run of a busy cloud agent", () =>
+    Effect.gen(function* () {
+      resetMocks();
+      cursorSdkMock.setStaleRunActive(true);
+      const session = yield* openCloud("resume", "cloud-busy");
+
+      const error = yield* Effect.flip(session.send({ message: "continue" }));
+
+      assert.equal(error.method, "run.start");
+      assert.deepStrictEqual(cursorSdkMock.runOperations, ["run.start"]);
+      cursorSdkMock.setStaleRunActive(false);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("follows an existing cloud run without sending a message", () =>
+    Effect.gen(function* () {
+      resetMocks();
+      const session = yield* openCloud("resume", "cloud-attach");
+
+      const run = yield* session.attach("run-still-going");
+      const result = yield* run.wait;
+
+      assert.deepStrictEqual(cursorSdkMock.getRun.mock.calls, [
+        [
+          "run-still-going",
+          { runtime: "cloud", agentId: "agent-cursor-agent-sdk-test", apiKey: "cloud-key" },
+        ],
+      ]);
+      assert.equal(run.runId, "run-still-going");
+      assert.equal(result.status, "finished");
+      assert.deepStrictEqual(cursorSdkMock.runOperations, []);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
+  it.effect("refuses to attach to a local run", () =>
+    Effect.gen(function* () {
+      resetMocks();
+      const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
+      const session = yield* runner.open({
+        operation: "create",
+        options: { model: { id: "default" }, mode: "agent", local: { cwd: process.cwd() } },
+        threadId: ThreadId.make("thread-local-attach"),
+        providerSessionId: ProviderSessionId.make("provider-session-local-attach"),
+      });
+
+      const error = yield* Effect.flip(session.attach("run-local"));
+
+      assert.equal(error.method, "run.attach");
+      assert.equal(cursorSdkMock.getRun.mock.calls.length, 0);
     }).pipe(Effect.provide(layerTest)),
   );
 });

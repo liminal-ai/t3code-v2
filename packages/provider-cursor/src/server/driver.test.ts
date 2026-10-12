@@ -100,6 +100,7 @@ it.layer(layerTest)("CursorDriver", (it) => {
                 return {
                   agentId: "browser-auth-agent",
                   listMessages: Effect.succeed([]),
+                  attach: () => Effect.die("unused"),
                   send: () => Effect.die("This test only opens a session"),
                   close: Effect.sync(() => {
                     closed += 1;

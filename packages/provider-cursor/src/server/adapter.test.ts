@@ -72,6 +72,7 @@ describe("CursorAdapterV2", () => {
               Effect.succeed({
                 agentId: "native-cursor-lifecycle",
                 listMessages: Effect.succeed([]),
+                attach: () => Effect.die("unused"),
                 close: Effect.void,
                 send: (input) =>
                   Effect.gen(function* () {
@@ -232,6 +233,7 @@ describe("CursorAdapterV2", () => {
             Effect.succeed({
               agentId: "native-cursor-error",
               listMessages: Effect.succeed([]),
+              attach: () => Effect.die("unused"),
               close: Effect.void,
               send: (input) =>
                 Effect.sync(() => {
@@ -574,6 +576,7 @@ describe("CursorAdapterV2", () => {
             Effect.succeed({
               agentId: "native-cursor-search",
               listMessages: Effect.succeed([]),
+              attach: () => Effect.die("unused"),
               close: Effect.void,
               send: (input) =>
                 Effect.gen(function* () {
