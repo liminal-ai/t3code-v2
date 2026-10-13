@@ -77,17 +77,14 @@ export function cursorCloudEnvironmentNote(checkout: CursorCloudCheckout): strin
   if (checkout.repository === null) {
     lines.push("You are running on a Cursor Cloud VM with no repository checked out.");
   } else {
-    const ref = checkout.repository.startingRef ?? "its default branch";
+    const ref =
+      checkout.repository.startingRef ??
+      (checkout.branch === null
+        ? "its default branch"
+        : `its default branch, because ${checkout.branch} is not on origin`);
     lines.push(
       `You are running on a Cursor Cloud VM with a fresh clone of ${checkout.repository.url} at ${ref}.`,
     );
-    // The task was written against the launcher's branch, so work on the default
-    // branch would be built on the wrong code.
-    if (checkout.repository.startingRef === undefined && checkout.branch !== null) {
-      lines.push(
-        `The task is for ${checkout.branch}, which is not on origin. Do not start it: reply only that ${checkout.branch} must be pushed to origin first. When a later message says it is, fetch and check out ${checkout.branch} before you begin.`,
-      );
-    }
   }
   lines.push(
     "You cannot reach the machine that started you: its files, its T3 Code tools, and anything not pushed to GitHub are unavailable. Local paths in this message refer to that machine, not to your VM.",
