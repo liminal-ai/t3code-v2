@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 export const CURSOR_RUNTIMES = [
-  { value: "local", label: "This machine" },
+  { value: "local", label: "Local" },
   { value: "cloud", label: "Cursor Cloud" },
 ] as const satisfies ReadonlyArray<ProviderSettingsFormOption>;
 export const CursorRuntime = Schema.Literals(CURSOR_RUNTIMES.map((runtime) => runtime.value));
