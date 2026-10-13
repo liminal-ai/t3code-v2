@@ -29,7 +29,7 @@ Launch all reviewers in a single message as `delegate_task` children (`mode: "as
 | Subagent | Default `target` |
 |----------|---------------|
 | Reviewer A | `claudeAgent/claude-opus-5-5 effort=xhigh` |
-| Reviewer B | `cursor/grok-4.7 effort=xhigh fastMode=true` |
+| Reviewer B | `cursor/grok-4.7 reasoning_effort=xhigh fastMode=true` |
 
 Each reviewer gets a read-only role (its brief says no file writes and no external mutation), its findings as its final message, and `target` set to its configured entry, or its table default when there is no configured line. Omit `target` for an `auto` or `inherit-parent` entry, so that reviewer runs on the parent model.
 

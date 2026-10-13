@@ -23,7 +23,7 @@ Each reviewer and the synthesizer name a role line in the role file (`~/lim-v2/A
 | Lens | Role line | Default `target` | Prompt template |
 |---|---|---|---|
 | Judgment | `reflect judgment, divergent, synthesizer` | `claudeAgent/claude-opus-5-5 effort=xhigh` | `references/judgment-reviewer.md` |
-| Tooling | `reflect tooling` | `cursor/grok-4.7 effort=xhigh fastMode=true` | `references/tooling-reviewer.md` |
+| Tooling | `reflect tooling` | `cursor/grok-4.7 reasoning_effort=xhigh fastMode=true` | `references/tooling-reviewer.md` |
 | Divergent | `reflect judgment, divergent, synthesizer` | `claudeAgent/claude-opus-5-5 effort=xhigh` | `references/divergent-reviewer.md` |
 
 Pass each template verbatim, substituting the thread ID or digest where marked. Each reviewer's findings are its final message, which `task_status` returns.
