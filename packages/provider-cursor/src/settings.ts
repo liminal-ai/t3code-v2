@@ -44,7 +44,7 @@ export const CursorSettings = makeProviderSettingsSchema(
       Schema.annotateKey({
         title: "Runs on",
         description:
-          "Cursor Cloud runs each thread on a Cursor VM that clones the project's GitHub repository. It cannot see this machine's files or T3 tools.",
+          "Cursor Cloud runs each thread on a Cursor VM that clones the project's GitHub repository. It cannot see this machine's files or T3 tools. Turn on \"Continue threads after restarts\" so T3 follows a cloud run across a restart; otherwise the run finishes on Cursor unseen.",
         providerSettingsForm: {
           control: "select",
           options: CURSOR_RUNTIMES,
