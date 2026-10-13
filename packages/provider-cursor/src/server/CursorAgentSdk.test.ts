@@ -423,6 +423,36 @@ describe("CursorAgentSdkRunner cloud", () => {
     }).pipe(Effect.provide(layerTest)),
   );
 
+  it.effect("keeps a local agent on the local resume and cancel calls", () =>
+    Effect.gen(function* () {
+      resetMocks();
+      const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
+      const localOptions = {
+        model: { id: "default" },
+        mode: "agent" as const,
+        local: { cwd: process.cwd() },
+      };
+      const session = yield* runner.open({
+        operation: "resume",
+        agentId: "agent-cursor-agent-sdk-test",
+        options: localOptions,
+        threadId: ThreadId.make("thread-local-unchanged"),
+        providerSessionId: ProviderSessionId.make("provider-session-local-unchanged"),
+      });
+      const run = yield* session.send({ message: "work" });
+
+      yield* run.cancel;
+
+      assert.deepStrictEqual(cursorSdkMock.resume.mock.calls, [
+        ["agent-cursor-agent-sdk-test", localOptions],
+      ]);
+      assert.equal(cursorSdkMock.get.mock.calls.length, 0);
+      assert.equal(cursorSdkMock.create.mock.calls.length, 0);
+      assert.equal(cursorSdkMock.runCancel.mock.calls.length, 1);
+      assert.equal(cursorSdkMock.cancelRun.mock.calls.length, 0);
+    }).pipe(Effect.provide(layerTest)),
+  );
+
   it.effect("follows an existing cloud run without sending a message", () =>
     Effect.gen(function* () {
       resetMocks();
