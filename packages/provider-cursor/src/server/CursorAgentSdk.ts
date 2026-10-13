@@ -230,13 +230,9 @@ function isActiveRunConflict(cause: unknown): boolean {
   return cause instanceof Error && /already has active run/i.test(cause.message);
 }
 
-/** Cursor's API answers 404 `not_found` for a cloud agent it has no record of. */
+/** Cursor's API answers 404 for a cloud agent it has no record of. */
 function isCloudNotFound(cause: unknown): boolean {
-  return (
-    typeof cause === "object" &&
-    cause !== null &&
-    (Reflect.get(cause, "status") === 404 || Reflect.get(cause, "code") === "not_found")
-  );
+  return typeof cause === "object" && cause !== null && Reflect.get(cause, "status") === 404;
 }
 
 export function isCursorCancellationError(cause: unknown): boolean {
@@ -636,12 +632,6 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           } satisfies CursorAgentSdkRun;
         }),
         attach: Effect.fn("CursorAgentSdkSession.attach")(function* (runId) {
-          if (!cloud) {
-            return yield* new CursorAgentSdkRunnerError({
-              method: "run.attach",
-              cause: new Error("Only Cursor Cloud runs can be reattached."),
-            });
-          }
           yield* log({
             direction: "outgoing",
             stage: "decoded",

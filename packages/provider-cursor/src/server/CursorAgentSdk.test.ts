@@ -75,10 +75,7 @@ const cursorSdkMock = vi.hoisted(() => {
   });
   const get = vi.fn(async (agentId: string) => {
     if (cloudAgentMissing) {
-      throw Object.assign(new Error(`Agent ${agentId} not found`), {
-        status: 404,
-        code: "not_found",
-      });
+      throw Object.assign(new Error(`Agent ${agentId} not found`), { status: 404 });
     }
     return { agentId, name: "", summary: "", lastModified: 0, runtime: "cloud" };
   });
@@ -443,24 +440,6 @@ describe("CursorAgentSdkRunner cloud", () => {
       assert.equal(run.runId, "run-still-going");
       assert.equal(result.status, "finished");
       assert.deepStrictEqual(cursorSdkMock.runOperations, []);
-    }).pipe(Effect.provide(layerTest)),
-  );
-
-  it.effect("refuses to attach to a local run", () =>
-    Effect.gen(function* () {
-      resetMocks();
-      const runner = yield* CursorAgentSdk.CursorAgentSdkRunner;
-      const session = yield* runner.open({
-        operation: "create",
-        options: { model: { id: "default" }, mode: "agent", local: { cwd: process.cwd() } },
-        threadId: ThreadId.make("thread-local-attach"),
-        providerSessionId: ProviderSessionId.make("provider-session-local-attach"),
-      });
-
-      const error = yield* Effect.flip(session.attach("run-local"));
-
-      assert.equal(error.method, "run.attach");
-      assert.equal(cursorSdkMock.getRun.mock.calls.length, 0);
     }).pipe(Effect.provide(layerTest)),
   );
 });
