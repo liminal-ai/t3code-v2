@@ -128,6 +128,9 @@ const makeClaudeConfig = (overrides: Partial<ClaudeSettings>): ClaudeSettings =>
 const makeCursorConfig = (overrides: Partial<CursorSettings>): CursorSettings => ({
   enabled: false,
   customModels: [],
+  runtime: "local",
+  cloudAutoCreatePR: false,
+  cloudOpenAsCursorGithubApp: true,
   ...overrides,
 });
 

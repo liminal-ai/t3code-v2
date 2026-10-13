@@ -181,7 +181,7 @@ export const CursorProviderCapabilitiesV2 = {
  * checkout T3 checkpoints. Cursor answers a cloud steer with "send it as a
  * follow-up", so a steer queues instead of restarting the run.
  */
-export const CursorCloudProviderCapabilitiesV2 = {
+const CursorCloudProviderCapabilitiesV2 = {
   ...CursorProviderCapabilitiesV2,
   turns: {
     ...CursorProviderCapabilitiesV2.turns,
