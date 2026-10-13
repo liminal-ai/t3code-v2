@@ -81,6 +81,25 @@ describe("resolveCursorCloudCheckout", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("drops credentials from the origin URL", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* makeCheckout;
+      git(
+        cwd,
+        "remote",
+        "set-url",
+        "origin",
+        "https://user:pass@github.com/liminal-ai/t3code-v2.git",
+      );
+      const github = yield* resolveCursorCloudCheckout(cwd);
+      git(cwd, "remote", "set-url", "origin", "https://oauth2:pass@gitlab.example/team/repo.git");
+      const other = yield* resolveCursorCloudCheckout(cwd);
+
+      assert.strictEqual(github.repository?.url, "https://github.com/liminal-ai/t3code-v2");
+      assert.strictEqual(other.repository?.url, "https://gitlab.example/team/repo.git");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("gives an empty VM to a thread outside a repository", () =>
     Effect.gen(function* () {
       const checkout = yield* resolveCursorCloudCheckout(null);

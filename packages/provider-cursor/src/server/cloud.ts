@@ -45,7 +45,11 @@ export const resolveCursorCloudCheckout = Effect.fn("resolveCursorCloudCheckout"
   if (cwd === null) {
     return { repository: null, branch: null, unpushedCommits: 0, uncommittedChanges: false };
   }
-  const remote = yield* git(cwd, ["remote", "get-url", "origin"]);
+  // Credentials in the URL must not reach Cursor, the prompt, or the protocol log.
+  const remote = (yield* git(cwd, ["remote", "get-url", "origin"])).replace(
+    /^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i,
+    "$1",
+  );
   if (remote.length === 0) {
     return { repository: null, branch: null, unpushedCommits: 0, uncommittedChanges: false };
   }
