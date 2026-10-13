@@ -62,7 +62,7 @@ describe("resolveCursorCloudCheckout", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  it.effect("falls back to the default branch when origin lacks the thread's branch", () =>
+  it.effect("tells the cloud agent to wait for a push when origin lacks the thread's branch", () =>
     Effect.gen(function* () {
       const { cwd } = yield* makeCheckout;
 
@@ -74,9 +74,11 @@ describe("resolveCursorCloudCheckout", () => {
         unpushedCommits: 1,
         uncommittedChanges: false,
       });
+      const note = cursorCloudEnvironmentNote(checkout);
+      assert.include(note, "at its default branch.");
       assert.include(
-        cursorCloudEnvironmentNote(checkout),
-        "at its default branch, because feature is not on origin.",
+        note,
+        "The task is for feature, which is not on origin. Do not start it: reply only that feature must be pushed to origin first.",
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
@@ -114,6 +116,7 @@ describe("cursorCloudEnvironmentNote", () => {
       uncommittedChanges: false,
     });
     assert.notInclude(note, "launcher's checkout");
+    assert.notInclude(note, "Do not start it");
   });
 });
 
