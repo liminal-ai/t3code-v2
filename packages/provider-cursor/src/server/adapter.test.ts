@@ -873,6 +873,35 @@ describe("CursorAdapterV2", () => {
     }
   });
 
+  it("fits a delegated child's long thread id into Cursor's agent name limit", () => {
+    const threadId = ThreadId.make(
+      "thread:delegated-task:command%3Amcp%3A63584d9a-67b9-4862-ba87-7b9be48af5f6%3Adelegate-task%3Acursor-cloud-fix-round-3",
+    );
+    const options = makeCursorAgentOptions({
+      modelSelection: {
+        instanceId: ProviderInstanceId.make("cursor"),
+        model: "composer-2.5",
+      },
+      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
+      threadId,
+      mcpSession: undefined,
+      cloud: {
+        checkout: {
+          repository: null,
+          branch: null,
+          unpushedCommits: 0,
+          uncommittedChanges: false,
+        },
+        autoCreatePR: false,
+        openAsCursorGithubApp: true,
+      },
+    });
+    assert.strictEqual(options.name?.length, 100);
+    assert.isTrue(options.name?.startsWith("T3 Code …"));
+    assert.isTrue(options.name?.endsWith("delegate-task%3Acursor-cloud-fix-round-3"));
+    assert.deepStrictEqual(options.cloud?.metadata, { t3ThreadId: threadId });
+  });
+
   it("injects thread-scoped MCP credentials without logging them", () => {
     const threadId = ThreadId.make("thread-cursor-mcp");
     const mcpSession = {

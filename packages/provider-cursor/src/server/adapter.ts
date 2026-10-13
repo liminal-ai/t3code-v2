@@ -328,6 +328,20 @@ const CURSOR_AGENT_SETTING_SOURCES = [
   "plugins",
 ] as const satisfies ReadonlyArray<SettingSource>;
 
+/** Cursor rejects agent names over 100 characters. */
+const CURSOR_AGENT_NAME_MAX_LENGTH = 100;
+
+/**
+ * Names the agent in Cursor's dashboard. Delegated child thread ids outgrow
+ * Cursor's limit and share their head with siblings, so a long id keeps its tail.
+ */
+function cursorAgentName(threadId: ThreadId): string {
+  const name = `T3 Code ${threadId}`;
+  if (name.length <= CURSOR_AGENT_NAME_MAX_LENGTH) return name;
+  const prefix = "T3 Code …";
+  return prefix + threadId.slice(prefix.length - CURSOR_AGENT_NAME_MAX_LENGTH);
+}
+
 export interface CursorCloudAgentInput {
   readonly checkout: CursorCloud.CursorCloudCheckout;
   readonly autoCreatePR: boolean;
@@ -347,7 +361,7 @@ export function makeCursorAgentOptions(input: {
     // and Cursor rejects local sandbox and review options for cloud agents.
     return {
       model: cursorSdkModelSelection(input.modelSelection),
-      name: `T3 Code ${input.threadId}`,
+      name: cursorAgentName(input.threadId),
       mode: input.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
       ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
       cloud: {
@@ -362,7 +376,7 @@ export function makeCursorAgentOptions(input: {
   const mcpServers = cursorMcpServers(input.mcpSession);
   return {
     model: cursorSdkModelSelection(input.modelSelection),
-    name: `T3 Code ${input.threadId}`,
+    name: cursorAgentName(input.threadId),
     mode: input.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
     ...(input.apiKey === undefined ? {} : { apiKey: input.apiKey }),
     local: {
