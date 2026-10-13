@@ -32,7 +32,7 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
 import { CursorSettings } from "../settings.ts";
-import { makeCursorAdapterV2 } from "./adapter.ts";
+import { CursorProviderCapabilitiesV2, makeCursorAdapterV2 } from "./adapter.ts";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 
 const instanceId = ProviderInstanceId.make("cursor-cloud");
@@ -56,7 +56,10 @@ const finished = (runId: string, extra: Partial<RunResult> = {}): RunResult => (
   ...extra,
 });
 
-const setup = Effect.fn("setup")(function* (run: (runId: string, fake: FakeCloud) => FakeRun) {
+const setup = Effect.fn("setup")(function* (
+  run: (runId: string, fake: FakeCloud) => FakeRun,
+  runsOn: "local" | "cloud" = "cloud",
+) {
   const fileSystem = yield* FileSystem.FileSystem;
   const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-cloud-adapter-" });
   const fake: FakeCloud = { opened: [], sent: [], attached: [], cancelled: [] };
@@ -71,7 +74,7 @@ const setup = Effect.fn("setup")(function* (run: (runId: string, fake: FakeCloud
   };
   const adapter = yield* makeCursorAdapterV2({
     instanceId,
-    settings: yield* decodeCursorSettings({ runtime: "cloud" }),
+    settings: yield* decodeCursorSettings({ runtime: runsOn }),
     environment: { HOME: workspace },
   }).pipe(
     Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
@@ -175,37 +178,73 @@ const setup = Effect.fn("setup")(function* (run: (runId: string, fake: FakeCloud
 });
 
 /** Stands in for T3's MCP endpoint and records each JSON-RPC request. */
-const fakeMcpEndpoint = Effect.acquireRelease(
-  Effect.promise(async () => {
-    const requests: Array<{ readonly authorization: string | undefined; readonly body: any }> = [];
-    const server = NodeHttp.createServer((request, response) => {
-      let raw = "";
-      request.on("data", (chunk) => (raw += chunk));
-      request.on("end", () => {
-        const body = JSON.parse(raw);
-        requests.push({ authorization: request.headers.authorization, body });
-        if (body.id === undefined) {
-          response.writeHead(202).end();
-          return;
-        }
-        response.writeHead(200, { "content-type": "application/json" });
-        response.end(
-          JSON.stringify({
-            jsonrpc: "2.0",
-            id: body.id,
-            result:
-              body.method === "initialize" ? { protocolVersion: "2025-06-18" } : { content: [] },
-          }),
-        );
+const makeFakeMcpEndpoint = (status = 200) =>
+  Effect.acquireRelease(
+    Effect.promise(async () => {
+      const requests: Array<{ readonly authorization: string | undefined; readonly body: any }> =
+        [];
+      const server = NodeHttp.createServer((request, response) => {
+        let raw = "";
+        request.on("data", (chunk) => (raw += chunk));
+        request.on("end", () => {
+          const body = JSON.parse(raw);
+          requests.push({ authorization: request.headers.authorization, body });
+          if (status !== 200) {
+            response.writeHead(status).end();
+            return;
+          }
+          if (body.id === undefined) {
+            response.writeHead(202).end();
+            return;
+          }
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: body.id,
+              result:
+                body.method === "initialize" ? { protocolVersion: "2025-06-18" } : { content: [] },
+            }),
+          );
+        });
       });
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-    const address = server.address() as { readonly port: number };
-    return { server, requests, endpoint: `http://127.0.0.1:${address.port}/mcp` };
-  }),
-  ({ server }) =>
-    Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
-);
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address() as { readonly port: number };
+      return { server, requests, endpoint: `http://127.0.0.1:${address.port}/mcp` };
+    }),
+    ({ server }) =>
+      Effect.promise(() => new Promise<void>((resolve) => server.close(() => resolve()))),
+  );
+
+/** Gives the thread a T3 MCP session, as the server does for every provider thread. */
+const registerMcpSession = (endpoint: string) =>
+  McpProviderSessions.McpProviderSessions.pipe(
+    Effect.flatMap((mcpSessions) =>
+      mcpSessions.set({
+        environmentId: EnvironmentId.make("environment"),
+        threadId,
+        providerSessionId: "cursor-cloud-session",
+        providerInstanceId: instanceId,
+        endpoint,
+        authorizationHeader: "Bearer thread-credential",
+        browserToolsAvailable: true,
+      }),
+    ),
+  );
+
+const withPullRequest = (runId: string): RunResult =>
+  finished(runId, {
+    result: "Opened a pull request.",
+    git: {
+      branches: [
+        {
+          repoUrl: "https://github.com/liminal-ai/t3code-v2",
+          branch: "cursor/cloud-work",
+          prUrl: "https://github.com/liminal-ai/t3code-v2/pull/7",
+        },
+      ],
+    },
+  });
 
 const layer = Layer.mergeAll(
   NodeServices.layer,
@@ -219,17 +258,8 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
     Effect.gen(function* () {
       const host = yield* ProviderHost.ProviderHost;
       const fileSystem = yield* FileSystem.FileSystem;
-      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
-      const mcp = yield* fakeMcpEndpoint;
-      yield* mcpSessions.set({
-        environmentId: EnvironmentId.make("environment"),
-        threadId,
-        providerSessionId: "cursor-cloud-session",
-        providerInstanceId: instanceId,
-        endpoint: mcp.endpoint,
-        authorizationHeader: "Bearer thread-credential",
-        browserToolsAvailable: true,
-      });
+      const mcp = yield* makeFakeMcpEndpoint();
+      yield* registerMcpSession(mcp.endpoint);
       const pasted = {
         type: "file" as const,
         id: "pasted-brief",
@@ -247,20 +277,7 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       };
       yield* fileSystem.writeFileString(host.resolveAttachmentPath(pasted)!, "pasted brief");
       const { adapter, startTurn, eventsUntilTerminal, fake } = yield* setup((runId) => ({
-        wait: Effect.succeed(
-          finished(runId, {
-            result: "Opened a pull request.",
-            git: {
-              branches: [
-                {
-                  repoUrl: "https://github.com/liminal-ai/t3code-v2",
-                  branch: "cursor/cloud-work",
-                  prUrl: "https://github.com/liminal-ai/t3code-v2/pull/7",
-                },
-              ],
-            },
-          }),
-        ),
+        wait: Effect.succeed(withPullRequest(runId)),
         cancel: Effect.void,
       }));
 
@@ -319,6 +336,73 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
         ],
       );
       assert.equal(linked[0]?.authorization, "Bearer thread-credential");
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("completes the turn when linking its pull request fails", () =>
+    Effect.gen(function* () {
+      const mcp = yield* makeFakeMcpEndpoint(500);
+      yield* registerMcpSession(mcp.endpoint);
+      const { startTurn, eventsUntilTerminal } = yield* setup((runId) => ({
+        wait: Effect.succeed(withPullRequest(runId)),
+        cancel: Effect.void,
+      }));
+
+      yield* startTurn({ runId: "t3-run-link-fails" });
+      const events = yield* eventsUntilTerminal;
+
+      assert.isAbove(mcp.requests.length, 0);
+      const terminal = events.at(-1);
+      assert.equal(terminal?.type === "turn.terminal" ? terminal.status : undefined, "completed");
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect("keeps a local instance on this machine's tools, paths and checkpoints", () =>
+    Effect.gen(function* () {
+      const mcp = yield* makeFakeMcpEndpoint();
+      yield* registerMcpSession(mcp.endpoint);
+      const { adapter, providerThread, startTurn, eventsUntilTerminal, fake } = yield* setup(
+        (runId) => ({ wait: Effect.succeed(withPullRequest(runId)), cancel: Effect.void }),
+        "local",
+      );
+
+      yield* startTurn({
+        runId: "t3-run-local",
+        providerThread: {
+          ...providerThread,
+          firstRunOrdinal: 1,
+          nativeConversationHeadRef: {
+            driver: CursorAgentSdk.CURSOR_PROVIDER,
+            nativeId: "local-run-cut",
+            strength: "strong",
+            fingerprint: "t3-run-cut",
+          },
+        },
+        restartContinuationOfRunId: "t3-run-cut",
+      });
+      const events = yield* eventsUntilTerminal;
+
+      assert.deepStrictEqual(yield* adapter.getCapabilities(), CursorProviderCapabilitiesV2);
+      const opened = fake.opened[0]!;
+      assert.isUndefined(opened.cloud);
+      assert.isDefined(opened.local);
+      assert.isDefined(opened.mcpServers);
+      assert.deepStrictEqual(fake.attached, []);
+      const sent = fake.sent[0]!;
+      assert.isFalse(sent.message.startsWith("<cursor_cloud_environment>"));
+      assert.include(sent.message, "through the Cursor harness");
+      assert.isDefined((sent.options as { readonly mcpServers?: unknown }).mcpServers);
+      assert.deepStrictEqual(
+        mcp.requests.filter((request) => request.body.method === "tools/call"),
+        [],
+      );
+      const head = events.findLast((event) => event.type === "provider_thread.updated");
+      assert.equal(
+        head?.type === "provider_thread.updated"
+          ? head.providerThread.nativeConversationHeadRef?.nativeId
+          : undefined,
+        "local-run-cut",
+      );
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
@@ -423,12 +507,15 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
-  it.effect("fails a stopped turn when Cursor never confirms the cloud run ended", () =>
+  it.effect.each([
+    { runtime: "cloud", wait: "31 seconds", status: "failed" },
+    { runtime: "local", wait: "11 seconds", status: "interrupted" },
+  ] as const)("a stop Cursor never confirms on $runtime ends $status", (expected) =>
     Effect.gen(function* () {
-      const { runtime, providerThread, startTurn } = yield* setup(() => ({
-        wait: Effect.never,
-        cancel: Effect.void,
-      }));
+      const { runtime, providerThread, startTurn } = yield* setup(
+        () => ({ wait: Effect.never, cancel: Effect.void }),
+        expected.runtime,
+      );
 
       yield* startTurn({ runId: "t3-run-unconfirmed" });
       const running = yield* runtime.events.pipe(
@@ -443,7 +530,7 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       const interrupt = yield* Effect.forkChild(
         runtime.interruptTurn({ providerThread, providerTurnId: providerTurnId! }),
       );
-      yield* TestClock.adjust("31 seconds");
+      yield* TestClock.adjust(expected.wait);
       yield* Fiber.join(interrupt);
       const terminal = yield* runtime.events.pipe(
         Stream.filter((event) => event.type === "turn.terminal"),
@@ -452,11 +539,13 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
 
       assert.isTrue(terminal._tag === "Some" && terminal.value.type === "turn.terminal");
       if (terminal._tag === "Some" && terminal.value.type === "turn.terminal") {
-        assert.equal(terminal.value.status, "failed");
-        assert.include(
-          terminal.value.failure?.message ?? "",
-          "Cursor has not confirmed that cloud run cloud-run-1 stopped.",
-        );
+        assert.equal(terminal.value.status, expected.status);
+        if (terminal.value.status === "failed") {
+          assert.include(
+            terminal.value.failure?.message ?? "",
+            "Cursor has not confirmed that cloud run cloud-run-1 stopped.",
+          );
+        }
       }
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
