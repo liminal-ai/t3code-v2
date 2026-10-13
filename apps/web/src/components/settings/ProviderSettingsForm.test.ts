@@ -39,7 +39,11 @@ describe("ProviderSettingsForm helpers", () => {
     const cursor = providerClients.get(ProviderDriverKind.make("cursor"));
 
     expect(cursor).toBeDefined();
-    expect(deriveProviderSettingsFields(cursor!)).toEqual([]);
+    expect(deriveProviderSettingsFields(cursor!).map((field) => field.key)).toEqual([
+      "runtime",
+      "cloudAutoCreatePR",
+      "cloudOpenAsCursorGithubApp",
+    ]);
     expect(cursor?.environmentFields).toEqual([
       {
         name: "CURSOR_API_KEY",

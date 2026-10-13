@@ -2,6 +2,7 @@ import type {
   AgentMessage,
   AgentOptions,
   InteractionUpdate,
+  Run,
   RunResult,
   SDKUserMessage,
   SendOptions,
@@ -64,6 +65,12 @@ export interface CursorAgentSdkSession {
   readonly send: <Error>(
     input: CursorAgentSdkSendInput<Error>,
   ) => Effect.Effect<CursorAgentSdkRun, CursorAgentSdkRunnerError>;
+  /**
+   * Follows a cloud run this agent already started, such as one that kept
+   * running on Cursor while T3 restarted. The run's steps are not replayed;
+   * `wait` resolves when Cursor reports the run's terminal status.
+   */
+  readonly attach: (runId: string) => Effect.Effect<CursorAgentSdkRun, CursorAgentSdkRunnerError>;
   readonly listMessages: Effect.Effect<ReadonlyArray<AgentMessage>, CursorAgentSdkRunnerError>;
   readonly close: Effect.Effect<void, CursorAgentSdkRunnerError>;
 }
@@ -82,6 +89,11 @@ export interface CursorAgentSdkLoggedAgentOptions {
   readonly model?: AgentOptions["model"];
   readonly hasName?: boolean;
   readonly mode?: AgentOptions["mode"];
+  readonly cloud?: {
+    readonly repos?: ReadonlyArray<{ readonly url: string; readonly startingRef?: string }>;
+    readonly autoCreatePR?: boolean;
+    readonly openAsCursorGithubApp?: boolean;
+  };
   readonly local?: {
     readonly hasCwd?: boolean;
     readonly autoReview?: boolean;
@@ -173,6 +185,15 @@ export type CursorAgentSdkProtocolLogEvent =
       readonly direction: "outgoing";
       readonly stage: "decoded";
       readonly payload: {
+        readonly type: "run.attach";
+        readonly runId: string;
+        readonly agentId: string;
+      };
+    }
+  | {
+      readonly direction: "outgoing";
+      readonly stage: "decoded";
+      readonly payload: {
         readonly type: "agent.messages.list";
         readonly agentId: string;
       };
@@ -209,6 +230,11 @@ function isActiveRunConflict(cause: unknown): boolean {
   return cause instanceof Error && /already has active run/i.test(cause.message);
 }
 
+/** Cursor's API answers 404 for a cloud agent it has no record of. */
+function isCloudNotFound(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null && Reflect.get(cause, "status") === 404;
+}
+
 export function isCursorCancellationError(cause: unknown): boolean {
   let current = cause;
   const seen = new Set<object>();
@@ -229,6 +255,26 @@ export function loggedCursorAgentOptions(options: AgentOptions): CursorAgentSdkL
     ...(options.model === undefined ? {} : { model: options.model }),
     ...(options.name === undefined ? {} : { hasName: true }),
     ...(options.mode === undefined ? {} : { mode: options.mode }),
+    ...(options.cloud === undefined
+      ? {}
+      : {
+          cloud: {
+            ...(options.cloud.repos === undefined
+              ? {}
+              : {
+                  repos: options.cloud.repos.map((repo) => ({
+                    url: repo.url,
+                    ...(repo.startingRef === undefined ? {} : { startingRef: repo.startingRef }),
+                  })),
+                }),
+            ...(options.cloud.autoCreatePR === undefined
+              ? {}
+              : { autoCreatePR: options.cloud.autoCreatePR }),
+            ...(options.cloud.openAsCursorGithubApp === undefined
+              ? {}
+              : { openAsCursorGithubApp: options.cloud.openAsCursorGithubApp }),
+          },
+        }),
     ...(options.local === undefined
       ? {}
       : {
@@ -363,11 +409,26 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
         },
       });
 
+      const cloud = input.options.cloud !== undefined;
+      const apiKey = input.options.apiKey;
       const agent = yield* Effect.tryPromise({
-        try: () =>
-          input.operation === "create"
-            ? Agent.create(input.options)
-            : Agent.resume(input.agentId!, input.options),
+        try: async () => {
+          if (input.operation === "create") {
+            return Agent.create(input.options);
+          }
+          // Cursor creates a cloud agent with its first run. A thread whose first
+          // turn never started has no server-side agent yet, so it starts fresh
+          // under the id T3 already recorded.
+          if (cloud) {
+            try {
+              await Agent.get(input.agentId!, apiKey === undefined ? {} : { apiKey });
+            } catch (cause) {
+              if (!isCloudNotFound(cause)) throw cause;
+              return Agent.create({ ...input.options, agentId: input.agentId! });
+            }
+          }
+          return Agent.resume(input.agentId!, input.options);
+        },
         catch: (cause) => runnerError(cause, `agent.${input.operation}`),
       });
 
@@ -389,7 +450,68 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
         ...(cwd === undefined ? {} : { cwd }),
         ...(input.options.local?.store === undefined ? {} : { store: input.options.local.store }),
       };
-      let abandonedRunRecoveryAvailable = input.operation === "resume";
+      const cloudRunOptions = (agentId: string) => ({
+        runtime: "cloud" as const,
+        agentId,
+        ...(apiKey === undefined ? {} : { apiKey }),
+      });
+      // A wedged local run is cancelled so the next send can start. A busy cloud
+      // agent is still doing real work on Cursor, so its conflict surfaces instead.
+      let abandonedRunRecoveryAvailable = input.operation === "resume" && !cloud;
+
+      const waitForRun = (run: Run, settled: () => Promise<void> = async () => {}) =>
+        Effect.tryPromise({
+          try: async () => {
+            const result = await run.wait();
+            await settled();
+            return result;
+          },
+          catch: (cause) => runnerError(cause, "run.wait"),
+        }).pipe(
+          Effect.tap((result) =>
+            log({
+              direction: "incoming",
+              stage: "decoded",
+              payload: {
+                type: "run.completed",
+                result,
+              },
+            }),
+          ),
+        );
+
+      // Cancelling a cloud run through its handle closes the handle's stream and
+      // reports "cancelled" at once, even while the VM still runs. Asking Cursor
+      // to cancel by id keeps the stream open, so `wait` settles only when Cursor
+      // reports the run's real terminal status.
+      const cancelRun = (run: Run) =>
+        log({
+          direction: "outgoing",
+          stage: "decoded",
+          payload: {
+            type: "run.cancel",
+            runId: run.id,
+          },
+        }).pipe(
+          Effect.andThen(
+            Effect.tryPromise({
+              try: async () => {
+                if (cloud) {
+                  await Agent.cancelRun(run.id, cloudRunOptions(run.agentId));
+                  return;
+                }
+                try {
+                  await run.cancel();
+                } catch (cause) {
+                  if (!isCursorCancellationError(cause)) {
+                    throw cause;
+                  }
+                }
+              },
+              catch: (cause) => runnerError(cause, "run.cancel"),
+            }),
+          ),
+        );
 
       return {
         agentId: agent.agentId,
@@ -500,83 +622,65 @@ export const makeCursorAgentSdkRunner = Effect.fn("makeCursorAgentSdkRunner")(fu
           return {
             runId: run.id,
             agentId: run.agentId,
-            wait: Effect.tryPromise({
-              try: async () => {
-                const result = await run.wait();
-                await callbackChain;
-                if (callbackFailure !== undefined) {
-                  throw callbackFailure.cause;
-                }
-                return result;
-              },
-              catch: (cause) => runnerError(cause, "run.wait"),
-            }).pipe(
-              Effect.tap((result) =>
-                log({
-                  direction: "incoming",
-                  stage: "decoded",
-                  payload: {
-                    type: "run.completed",
-                    result,
-                  },
-                }),
-              ),
-            ),
-            cancel: log({
+            wait: waitForRun(run, async () => {
+              await callbackChain;
+              if (callbackFailure !== undefined) {
+                throw callbackFailure.cause;
+              }
+            }),
+            cancel: cancelRun(run),
+          } satisfies CursorAgentSdkRun;
+        }),
+        attach: Effect.fn("CursorAgentSdkSession.attach")(function* (runId) {
+          yield* log({
+            direction: "outgoing",
+            stage: "decoded",
+            payload: { type: "run.attach", runId, agentId: agent.agentId },
+          });
+          const run = yield* Effect.tryPromise({
+            try: () => Agent.getRun(runId, cloudRunOptions(agent.agentId)),
+            catch: (cause) => runnerError(cause, "run.attach"),
+          });
+          return {
+            runId: run.id,
+            agentId: run.agentId,
+            wait: waitForRun(run),
+            cancel: cancelRun(run),
+          } satisfies CursorAgentSdkRun;
+        }),
+        // Cloud transcripts live on Cursor; the local agent store has none.
+        listMessages: cloud
+          ? Effect.succeed([])
+          : log({
               direction: "outgoing",
               stage: "decoded",
               payload: {
-                type: "run.cancel",
-                runId: run.id,
+                type: "agent.messages.list",
+                agentId: agent.agentId,
               },
             }).pipe(
               Effect.andThen(
                 Effect.tryPromise({
-                  try: async () => {
-                    try {
-                      await run.cancel();
-                    } catch (cause) {
-                      if (!isCursorCancellationError(cause)) {
-                        throw cause;
-                      }
-                    }
+                  try: () =>
+                    Agent.messages.list(agent.agentId, {
+                      runtime: "local",
+                      ...(cwd === undefined ? {} : { cwd }),
+                    }),
+                  catch: (cause) => runnerError(cause, "agent.messages.list"),
+                }),
+              ),
+              Effect.tap((messages) =>
+                log({
+                  direction: "incoming",
+                  stage: "decoded",
+                  payload: {
+                    type: "agent.messages",
+                    agentId: agent.agentId,
+                    messages,
                   },
-                  catch: (cause) => runnerError(cause, "run.cancel"),
                 }),
               ),
             ),
-          } satisfies CursorAgentSdkRun;
-        }),
-        listMessages: log({
-          direction: "outgoing",
-          stage: "decoded",
-          payload: {
-            type: "agent.messages.list",
-            agentId: agent.agentId,
-          },
-        }).pipe(
-          Effect.andThen(
-            Effect.tryPromise({
-              try: () =>
-                Agent.messages.list(agent.agentId, {
-                  runtime: "local",
-                  ...(cwd === undefined ? {} : { cwd }),
-                }),
-              catch: (cause) => runnerError(cause, "agent.messages.list"),
-            }),
-          ),
-          Effect.tap((messages) =>
-            log({
-              direction: "incoming",
-              stage: "decoded",
-              payload: {
-                type: "agent.messages",
-                agentId: agent.agentId,
-                messages,
-              },
-            }),
-          ),
-        ),
         close: log({
           direction: "outgoing",
           stage: "decoded",
