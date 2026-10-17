@@ -291,7 +291,7 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
 
       const created = fake.opened[0]!;
       assert.isUndefined(created.local);
-      assert.isUndefined(created.mcpServers);
+      assert.isFalse(Object.hasOwn(created, "mcpServers"));
       assert.deepStrictEqual(created.cloud, {
         repos: [],
         autoCreatePR: false,
@@ -306,7 +306,8 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       assert.include(sent.message, '[Attached file "tool.bin" was not sent');
       assert.notInclude(sent.message, host.paths.attachmentsDir);
       assert.include(sent.message, "through the Cursor Cloud harness");
-      assert.isUndefined((sent.options as { readonly mcpServers?: unknown }).mcpServers);
+      assert.notInclude(sent.message, "<t3_code_orchestration_instructions>");
+      assert.isFalse(Object.hasOwn(sent.options as object, "mcpServers"));
 
       const heads = events.flatMap((event) =>
         event.type === "provider_thread.updated"
@@ -386,12 +387,20 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       const opened = fake.opened[0]!;
       assert.isUndefined(opened.cloud);
       assert.isDefined(opened.local);
-      assert.isDefined(opened.mcpServers);
+      assert.deepStrictEqual(opened.mcpServers, {
+        "t3-code": {
+          type: "http",
+          url: mcp.endpoint,
+          headers: { Authorization: "Bearer thread-credential" },
+        },
+      });
       assert.deepStrictEqual(fake.attached, []);
       const sent = fake.sent[0]!;
       assert.isFalse(sent.message.startsWith("<cursor_cloud_environment>"));
       assert.include(sent.message, "through the Cursor harness");
-      assert.isDefined((sent.options as { readonly mcpServers?: unknown }).mcpServers);
+      assert.include(sent.message, "<t3_code_orchestration_instructions>");
+      // A send-level mcpServers would replace the ambient servers the agent opened with.
+      assert.isFalse(Object.hasOwn(sent.options as object, "mcpServers"));
       assert.deepStrictEqual(
         mcp.requests.filter((request) => request.body.method === "tools/call"),
         [],
