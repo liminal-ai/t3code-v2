@@ -199,7 +199,7 @@ const fail = (code: ThreadWorkflowErrorCode, message: string) =>
   new ThreadWorkflowError({ code, message });
 
 /** sha256 of the request's canonical JSON (sorted keys), the identity a request id is bound to. */
-export const requestDigest = (request: ThreadWorkflowRequest): string =>
+const requestDigest = (request: ThreadWorkflowRequest): string =>
   NodeCrypto.createHash("sha256").update(canonicalJson(request)).digest("hex");
 
 const canonicalJson = (value: unknown): string => {
