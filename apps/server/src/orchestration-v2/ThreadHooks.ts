@@ -33,3 +33,10 @@ export class ThreadHooks extends Context.Reference<{
     lifecycleBlocker: () => Effect.succeed(null),
   }),
 }) {}
+
+/** The lifecycle commands a thread module may refuse, by the hook action each asks about. */
+export const lifecycleActionOf = {
+  "thread.settle": "settle",
+  "thread.archive": "archive",
+  "thread.delete": "delete",
+} as const;

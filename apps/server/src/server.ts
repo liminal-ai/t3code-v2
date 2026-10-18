@@ -9,7 +9,6 @@ import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReact
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as ThreadWorkflow from "./threadWorkflow/layer.ts";
-import * as ThreadWorkflowIdleReactor from "./threadWorkflow/ThreadWorkflowIdleReactor.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -177,7 +176,6 @@ import * as RunFinalizationService from "./orchestration-v2/RunFinalizationServi
 import * as EventStoreV2 from "./orchestration-v2/EventStore.ts";
 import * as ProjectionMaintenance from "./orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStoreV2 from "./orchestration-v2/ProjectionStore.ts";
-import * as ThreadCommandExecutor from "./orchestration-v2/ThreadCommandExecutor.ts";
 import { makePersistedServerRuntimeState } from "./serverRuntimeState.ts";
 import * as OrchestrationHttp from "./orchestration-v2/http.ts";
 import * as ProjectHttp from "./project/http.ts";
@@ -576,12 +574,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       yield* service.start();
     }),
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
-  Layer.effectDiscard(
-    Effect.gen(function* () {
-      const service = yield* ThreadWorkflowIdleReactor.ThreadWorkflowIdleReactor;
-      yield* service.start();
-    }),
-  ).pipe(Layer.provide(ThreadWorkflowIdleReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
+  ThreadWorkflow.layerIdleReactorStart,
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ReplayMarkers.layer,
@@ -596,16 +589,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerVcs),
   Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
   Layer.provideMerge(layerPersistence),
-  // Outside everything that builds a ThreadHooks consumer (orchestration, settlement, project
-  // deletion, provider sessions), so each of them sees the module's hooks instead of the inert
-  // default. The service rides along for the WebSocket and MCP handlers.
-  Layer.provideMerge(
-    ThreadWorkflow.layer.pipe(
-      Layer.provide(layerServerSettings),
-      Layer.provide(ProjectionStoreV2.layer),
-      Layer.provide(ThreadCommandExecutor.layer),
-    ),
-  ),
+  Layer.provideMerge(ThreadWorkflow.layerForServer(layerServerSettings)),
   Layer.provideMerge(
     Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),
   ),

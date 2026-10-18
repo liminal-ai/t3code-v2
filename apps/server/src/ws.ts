@@ -125,7 +125,6 @@ import * as ThreadMessageIntake from "./orchestration-v2/ThreadMessageIntake.ts"
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
-import * as ThreadWorkflowService from "./threadWorkflow/ThreadWorkflowService.ts";
 import * as ThreadWorkflowWs from "./threadWorkflow/ws.ts";
 import {
   archivedShellStreamItemFromThreadShell,
@@ -1200,7 +1199,6 @@ const layerWsRpc = (
       const providerSessionManager = yield* ProviderSessionManager.ProviderSessionManagerV2;
       const scheduledTasks = yield* ScheduledTasks.ScheduledTaskService;
       const secretRequests = yield* SecretRequests.SecretRequests;
-      const threadWorkflow = yield* ThreadWorkflowService.ThreadWorkflowService;
       const pullRequests = yield* PullRequestService.PullRequestService;
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
@@ -1790,7 +1788,7 @@ const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
-        ...ThreadWorkflowWs.handlers(threadWorkflow, currentSessionId),
+        ...(yield* ThreadWorkflowWs.handlers(currentSessionId)),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,

@@ -20,7 +20,6 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadWorkflow from "./layer.ts";
-import { ThreadWorkflowService } from "./ThreadWorkflowService.ts";
 import { handlers } from "./ws.ts";
 
 const threadId = ThreadId.make("thread-ws");
@@ -69,7 +68,7 @@ it("guards the pane's write with operate scope and its reads with read scope", (
 it.layer(layerTest)("thread workflow RPC handlers", (it) => {
   it.effect("applies as the user from the client session and streams the change", () =>
     Effect.gen(function* () {
-      const rpc = handlers(yield* ThreadWorkflowService, "client-session-7");
+      const rpc = yield* handlers("client-session-7");
       const seen = yield* Queue.unbounded<number>();
       yield* rpc[WS_METHODS.threadWorkflowSubscribe]({ threadId }).pipe(
         Stream.runForEach((state) => Queue.offer(seen, state.view.revision)),
