@@ -58,7 +58,7 @@ Sync to a published nightly tag, not to upstream `main`. A nightly is a build up
    Resolve each conflict so that upstream's new behavior and ours both survive. If upstream now does what one of our changes did, take upstream's version and delete ours.
 
 4. Verify three things. Upstream owns testing upstream, so do not re-test upstream features.
-   - Our code: the provider-cursor tests, with `vp test run packages/provider-cursor/src/server/`.
+   - Our code: the provider-cursor tests, with the commands in [Seams to re-check](#seams-to-re-check).
    - The seams: the tests in [Seams to re-check](#seams-to-re-check), and the content check that the merged tree is upstream plus our diff and nothing else. Compare `git diff $NEW <merge>` with `git diff $OLD main`. The only differences should be the conflict resolutions you made.
    - The deployment: build a release (see [Build a release](#build-a-release)) and run it as a throwaway T3, never against prod. See [Test live without touching prod](#test-live-without-touching-prod).
 5. Open the PR against `main`. Set "Last synced" in this file to the new tag in the same PR.
@@ -100,11 +100,11 @@ git log --oneline $OLD..$NEW -- $(git diff --diff-filter=M --name-only $OLD main
 git diff --diff-filter=A --name-only $OLD main | xargs -r git log --oneline $OLD..$NEW --   # upstream created a file we own
 ```
 
-Then run the tests that pin the seams:
+Then run the tests that pin the seams. Run the provider-cursor tests from the package directory. From the repository root, four `CursorSdk` tests fail because their subprocess cannot resolve `effect`.
 
 ```bash
-vp test run packages/provider-cursor/src/server/ \
-	apps/server/src/provider/ProviderInstanceRegistry.test.ts \
+(cd packages/provider-cursor && vp test run --config ../../vite.config.ts --dir . src/server/)
+vp test run apps/server/src/provider/ProviderInstanceRegistry.test.ts \
 	apps/web/src/components/settings/ProviderSettingsForm.test.ts
 ```
 
