@@ -414,6 +414,55 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
     ),
   );
 
+  it.effect("lists templates unverified and refuses a start while the disk permit is held", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const reached = yield* Deferred.make<void>();
+        const gate = yield* Deferred.make<void>();
+        const harness = yield* makeHarness({
+          fileSystem: (real) =>
+            FileSystem.FileSystem.of({
+              ...real,
+              open: (file, openOptions) =>
+                openOptions?.flag === "a"
+                  ? Deferred.succeed(reached, undefined).pipe(
+                      Effect.andThen(Deferred.await(gate)),
+                      Effect.andThen(real.open(file, openOptions)),
+                    )
+                  : real.open(file, openOptions),
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          const stalling = yield* service
+            .apply(user, threadId, start)
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* Deferred.await(reached);
+          yield* TestClock.adjust("10 seconds");
+          assert.strictEqual((yield* Fiber.join(stalling)).code, "store_unavailable");
+
+          const listing = yield* Effect.forkChild(service.templates);
+          const starting = yield* service
+            .apply(user, ThreadId.make("thread-2"), start)
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("5 seconds");
+          assert.deepStrictEqual(
+            (yield* Fiber.join(listing)).map((template) => template.freshness).toSorted(),
+            ["no-source", "source-missing", "source-missing"],
+          );
+          const refused = yield* Fiber.join(starting);
+          assert.strictEqual(refused.code, "store_unavailable");
+          assert.match(refused.message, /workflow templates did not answer/);
+
+          yield* Deferred.succeed(gate, undefined);
+          assert.lengthOf(yield* service.templates, 3);
+          assert.isNull((yield* service.view(ThreadId.make("thread-2"))).activeInstanceId);
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
   it.effect("fails a request instead of holding the lock when settings do not answer", () =>
     Effect.scoped(
       Effect.gen(function* () {

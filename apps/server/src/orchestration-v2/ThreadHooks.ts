@@ -65,8 +65,9 @@ export const HOOK_DEADLINE: Duration.Input = "2 seconds";
  * `Effect.timeout` interrupts the work and then waits for it to finish, and a filesystem call
  * inside `acquireRelease` finishes only when the OS answers, so a stalled disk would hold the
  * caller past any deadline. Here the work runs in its own detached fiber and the deadline stops
- * only the wait: `None` means the work is still running and its result will never be read.
- * Interrupting the caller interrupts the work without waiting for it.
+ * only the wait: `None` means the work did not finish in time. It is told to stop without being
+ * waited for, so an uninterruptible region inside it runs to its end unobserved, and its result
+ * is never read. Interrupting the caller does the same.
  */
 export const withinDeadline = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
@@ -74,9 +75,11 @@ export const withinDeadline = <A, E, R>(
 ): Effect.Effect<Option.Option<Exit.Exit<A, E>>, never, R> =>
   Effect.gen(function* () {
     const fiber = yield* Effect.forkDetach(effect);
+    const stop = Effect.asVoid(Effect.forkDetach(Fiber.interrupt(fiber)));
     return yield* Fiber.await(fiber).pipe(
       Effect.timeoutOption(deadline),
-      Effect.onInterrupt(() => Effect.asVoid(Effect.forkDetach(Fiber.interrupt(fiber)))),
+      Effect.tap((result) => (Option.isNone(result) ? stop : Effect.void)),
+      Effect.onInterrupt(() => stop),
     );
   });
 

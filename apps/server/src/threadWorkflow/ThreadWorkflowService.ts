@@ -67,9 +67,9 @@ const NO_TEMPLATES: ReadonlyMap<ThreadWorkflowTemplateId, ResolvedTemplate> = ne
 const templateList = [...builtInTemplates.values()];
 /**
  * What `apply` reads under the thread lock before it decides: the settings cache, one projection
- * row and a hash of each template's playbook file. Each answers in milliseconds, so five seconds
- * only passes when a disk or the database has stopped answering, and it caps how long a stalled
- * dependency holds the thread lock.
+ * row and a hash of each template's playbook file, which takes its turn for the module's disk
+ * permit. Each answers in milliseconds, so five seconds only passes when a disk or the database
+ * has stopped answering, and it caps how long a stalled dependency holds the thread lock.
  */
 const DEPENDENCY_DEADLINE = "5 seconds";
 
@@ -105,20 +105,29 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => false),
     );
 
-  const resolvedTemplates = Effect.forEach(templateList, (template) =>
-    freshness(template, playbookDir).pipe(
-      Effect.map((fresh): ResolvedTemplate => ({ template, freshness: fresh })),
-    ),
-  ).pipe(
-    Effect.map(
-      (resolved) =>
-        new Map<ThreadWorkflowTemplateId, ResolvedTemplate>(
-          resolved.map((entry) => [entry.template.id, entry]),
+  const resolveTemplates = store
+    .onDisk(
+      Effect.forEach(templateList, (template) =>
+        freshness(template, playbookDir).pipe(
+          Effect.map((fresh): ResolvedTemplate => ({ template, freshness: fresh })),
         ),
-    ),
-    Effect.provideService(FileSystem.FileSystem, fileSystem),
-    Effect.provideService(Path.Path, path),
-  );
+      ),
+    )
+    .pipe(
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
+
+  const byId = (resolved: ReadonlyArray<ResolvedTemplate>) =>
+    new Map<ThreadWorkflowTemplateId, ResolvedTemplate>(
+      resolved.map((entry) => [entry.template.id, entry]),
+    );
+
+  /** The list when the playbook files cannot be checked in time: nothing installed vouches for them. */
+  const unverified = templateList.map((template): ResolvedTemplate => ({
+    template,
+    freshness: template.source === null ? "no-source" : "source-missing",
+  }));
 
   const stateOf = (threadId: ThreadId) =>
     Effect.gen(function* () {
@@ -181,7 +190,7 @@ const make = Effect.gen(function* () {
               : true,
             templates:
               request._tag === "start"
-                ? yield* awaited("The workflow templates", resolvedTemplates)
+                ? byId(yield* awaited("The workflow templates", resolveTemplates))
                 : NO_TEMPLATES,
           });
           if (isThreadWorkflowError(decision)) return yield* decision;
@@ -216,18 +225,21 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const templates = resolvedTemplates.pipe(
+  const templates = awaited("The workflow templates", resolveTemplates).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning("thread workflow templates listed unverified", {
+        cause: error.message,
+      }).pipe(Effect.as(unverified)),
+    ),
     Effect.map((resolved) =>
-      [...resolved.values()].map(
-        ({ template, freshness: fresh }): ThreadWorkflowTemplateSummary => ({
-          id: template.id,
-          version: template.version,
-          title: template.title,
-          description: template.description,
-          stepCount: template.steps.length,
-          freshness: fresh,
-        }),
-      ),
+      resolved.map(({ template, freshness: fresh }): ThreadWorkflowTemplateSummary => ({
+        id: template.id,
+        version: template.version,
+        title: template.title,
+        description: template.description,
+        stepCount: template.steps.length,
+        freshness: fresh,
+      })),
     ),
   );
 

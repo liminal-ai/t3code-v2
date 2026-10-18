@@ -6,6 +6,10 @@
  * `append`, publish) must run inside `ThreadCommandExecutor.withLock(threadId)`, the lock every
  * orchestration dispatch for that thread holds. Two unserialized appends to one thread would both
  * claim the next seq. Server ownership guarantees one process writes the directory.
+ *
+ * Disk work, the load included, runs one operation at a time under `onDisk`. Node's worker pool is
+ * four threads shared with everything core does, and a filesystem call holds one until the OS
+ * answers, so a stalled disk under the module must cost core at most one of them.
  */
 import { ThreadWorkflowError, ThreadWorkflowRecord, type ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -19,6 +23,7 @@ import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import * as ServerConfig from "../config.ts";
 import { withinDeadline } from "../orchestration-v2/ThreadHooks.ts";
@@ -46,6 +51,12 @@ export class ThreadWorkflowStore extends Context.Service<
       threadId: ThreadId,
       record: ThreadWorkflowRecord,
     ) => Effect.Effect<ThreadWorkflowState, ThreadWorkflowError>;
+    /**
+     * Runs one disk operation under the module's single permit. The operation is uninterruptible:
+     * a stalled one keeps the permit until the OS answers, so a caller that stops waiting at its
+     * deadline never lets a second worker thread stall behind the first.
+     */
+    readonly onDisk: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
   }
 >()("t3/threadWorkflow/store/ThreadWorkflowStore") {}
 
@@ -151,6 +162,9 @@ const make = Effect.gen(function* () {
   const { stateDir } = yield* ServerConfig.ServerConfig;
   const rootDir = path.join(stateDir, "thread-workflows");
   const threadsDir = path.join(rootDir, "threads");
+  const permit = yield* Semaphore.make(1);
+  const onDisk = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    permit.withPermit(Effect.uninterruptible(effect));
 
   // Opened read-write: Windows refuses to flush a handle without write access.
   const syncFile = (file: string) =>
@@ -223,7 +237,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const loaded: Loaded = yield* withinDeadline(loadAll, LOAD_DEADLINE).pipe(
+  const loaded: Loaded = yield* withinDeadline(onDisk(loadAll), LOAD_DEADLINE).pipe(
     Effect.flatMap(
       Option.match({
         onNone: () => disabled({ timeout: LOAD_DEADLINE }),
@@ -321,7 +335,7 @@ const make = Effect.gen(function* () {
       // Uninterruptible so memory always learns the write's outcome; the deadline bounds the wait.
       // Only this fiber touches memory: a write that finishes after the deadline changes nothing.
       return yield* Effect.uninterruptible(
-        withinDeadline(write(threadId, record), WRITE_DEADLINE).pipe(
+        withinDeadline(onDisk(write(threadId, record)), WRITE_DEADLINE).pipe(
           Effect.flatMap(
             Option.match({
               onNone: () => corrupted({ timeout: WRITE_DEADLINE }),
@@ -340,6 +354,7 @@ const make = Effect.gen(function* () {
     state: (threadId) => Ref.get(states).pipe(Effect.map((map) => stateOf(map, threadId))),
     states: Ref.get(states).pipe(Effect.map((map) => [...map.values()])),
     append,
+    onDisk,
   });
 });
 
