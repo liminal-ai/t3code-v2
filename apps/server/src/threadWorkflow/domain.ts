@@ -137,6 +137,13 @@ export const printedCall = {
     call("thread_workflow_change", { action: "skip", stepId, reason: "<why>" }),
   reopen: (target: ThreadWorkflowTarget) =>
     call("thread_workflow_change", { action: "reopen", target, reason: "<why>" }),
+  /** The answer to the idle ping: the user said go on, and the record says who. */
+  commentContinue: (instanceId: ThreadWorkflowInstanceId) =>
+    call("thread_workflow_change", {
+      action: "comment",
+      target: instanceId,
+      comment: "Continue after the idle check. Answered by <who answered>.",
+    }),
   insert: (afterStepId: ThreadWorkflowStepId | undefined) =>
     call("thread_workflow_change", {
       action: "insert",
