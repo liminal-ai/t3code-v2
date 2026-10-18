@@ -911,6 +911,34 @@ effectIt.effect(
   },
 );
 
+effectIt.effect(
+  "sends the user's text unchanged and logs one warning when the turn note hook throws before returning its effect",
+  () => {
+    const warnings: Array<unknown> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message);
+    });
+    return Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        threadHooks: Layer.succeed(ThreadHooks, {
+          turnNote: () => {
+            throw new Error("the hook threw before returning its effect");
+          },
+          lifecycleBlocker: () => Effect.succeed(null),
+        }),
+      });
+
+      yield* harness.start;
+
+      expect(harness.prompts).toEqual(["Continue"]);
+      expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0])).toContain("thread turn note hook failed");
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  },
+);
+
 effectIt.effect("sends the user's text unchanged when the turn note hook hangs", () =>
   Effect.gen(function* () {
     const asked = yield* Deferred.make<void>();
