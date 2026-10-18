@@ -42,6 +42,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
+import { ThreadHooks } from "./ThreadHooks.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -177,6 +178,7 @@ function makeLocalCommandHarness(input: {
   readonly interruptRunBeforeOpenFailure?: boolean;
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
+  readonly turnNote?: string;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -363,6 +365,9 @@ function makeLocalCommandHarness(input: {
     };
   }
   const events: Array<OrchestrationV2DomainEvent> = [];
+  const turnNote = input.turnNote;
+  const prompts: Array<string> = [];
+  const noteRequests: Array<{ readonly runId: RunId; readonly compacting: boolean }> = [];
   const interruptRun = () => {
     projection = {
       ...projection,
@@ -421,7 +426,7 @@ function makeLocalCommandHarness(input: {
                   ),
                 ),
               )
-            : input.failReadsAfterRunning === true
+            : input.failReadsAfterRunning === true || input.turnNote !== undefined
               ? Effect.succeed({
                   driver: providerThread.driver,
                   providerSession: {
@@ -437,15 +442,23 @@ function makeLocalCommandHarness(input: {
                     lastError: null,
                   },
                   ensureThread: () => Effect.succeed(providerThread),
+                  startTurn: (turn: { readonly message: { readonly text: string } }) =>
+                    Effect.sync(() => {
+                      prompts.push(turn.message.text);
+                    }),
                 } as never)
               : Effect.die("A local command must not open a native session."),
   );
   const startRootRun = vi.fn<
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
-  >(() =>
+  >((started) =>
     input.failReadsAfterRunning === true
       ? Effect.void
-      : Effect.die("A local command must not start a native turn."),
+      : input.turnNote !== undefined
+        ? started.session
+            .startTurn({ message: { text: input.text, attachments: [] } } as never)
+            .pipe(Effect.asVoid, Effect.orDie)
+        : Effect.die("A local command must not start a native turn."),
   );
   const failReadIfRunning = Effect.suspend(() =>
     input.failReadsAfterRunning === true &&
@@ -554,6 +567,16 @@ function makeLocalCommandHarness(input: {
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
+        turnNote === undefined
+          ? Layer.empty
+          : Layer.succeed(ThreadHooks, {
+              turnNote: ({ runId: noteRunId, compacting }) =>
+                Effect.sync(() => {
+                  noteRequests.push({ runId: noteRunId, compacting });
+                  return compacting ? "" : turnNote;
+                }),
+              lifecycleBlocker: () => Effect.succeed(null),
+            }),
       ),
     ),
   );
@@ -570,6 +593,8 @@ function makeLocalCommandHarness(input: {
     startRootRun,
     tryHandlePromptCommand,
     events,
+    prompts,
+    noteRequests,
     oldInstanceId,
     newInstanceId,
     attemptId,
@@ -741,6 +766,46 @@ effectIt.effect("starts another provider in the same checkout while a turn is pe
     expect(second.projection().runs.at(-1)?.status).toBe("running");
     yield* Deferred.succeed(releaseTurn, undefined);
     yield* Fiber.join(pending);
+  }),
+);
+
+effectIt.effect("prefixes a root run's prompt with the thread's turn note", () =>
+  Effect.gen(function* () {
+    const note = "<thread-workflow>\nStep 4 of 9: Delegate the implementation.\n</thread-workflow>";
+    const harness = makeLocalCommandHarness({ text: "Continue", turnNote: note });
+
+    yield* harness.start;
+
+    expect(harness.prompts).toEqual([`${note}\n\nUser message:\nContinue`]);
+    expect(harness.noteRequests).toEqual([
+      { runId: harness.projection().runs.at(-1)!.id, compacting: false },
+    ]);
+  }),
+);
+
+effectIt.effect("sends the user's text unchanged when the turn note is empty", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({ text: "Continue", turnNote: "" });
+
+    yield* harness.start;
+
+    expect(harness.prompts).toEqual(["Continue"]);
+  }),
+);
+
+effectIt.effect("asks for the turn note as compacting on /compact and sends none", () =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "/compact",
+      previousMessages: ["Earlier work"],
+      turnNote: "<thread-workflow>Step 4</thread-workflow>",
+    });
+    harness.tryHandlePromptCommand.mockImplementation(() => Effect.succeed(false));
+
+    yield* harness.start;
+
+    expect(harness.noteRequests.map((request) => request.compacting)).toEqual([true]);
+    expect(harness.prompts).toEqual(["/compact"]);
   }),
 );
 

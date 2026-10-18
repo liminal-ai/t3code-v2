@@ -15,6 +15,8 @@ import { ProjectToolkit } from "./tools.ts";
 
 function projectFailure(error: Project.ProjectServiceError) {
   if (error._tag === "ProjectOperationError") return unavailable();
+  if (error._tag === "ProjectThreadsBlockedError")
+    return new OrchestratorMcpFailure({ code: "invalid_request", message: error.message });
   const message =
     error._tag === "ProjectNotFoundError"
       ? "The project was not found."

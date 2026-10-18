@@ -39,6 +39,7 @@ import * as TerminalManager from "../terminal/Manager.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { ThreadHooks } from "./ThreadHooks.ts";
 import * as ThreadSettlementService from "./ThreadSettlementService.ts";
 
 const NOW_MS = Date.parse("2026-06-10T12:00:00.000Z");
@@ -535,6 +536,7 @@ interface HarnessOptions {
   ) => Effect.Effect<void>;
   readonly onCloseIdle?: () => Effect.Effect<void>;
   readonly currentThreads?: ReadonlyArray<OrchestrationV2AppThread>;
+  readonly blockedThreadIds?: ReadonlyArray<ThreadId>;
 }
 
 const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options: HarnessOptions) {
@@ -671,6 +673,13 @@ const makeHarness = Effect.fn("makeThreadSettlementHarness")(function* (options:
     Layer.succeed(ServerSettings.ServerSettingsService, serverSettings),
     Layer.succeed(ServerActivation.ServerActivation, Deferred.await(activation)),
     Layer.succeed(Crypto.Crypto, testCrypto),
+    Layer.succeed(ThreadHooks, {
+      turnNote: () => Effect.succeed(""),
+      lifecycleBlocker: ({ threadId }) =>
+        Effect.succeed(
+          options.blockedThreadIds?.includes(threadId) ? "has an open workflow." : null,
+        ),
+    }),
     FileSystem.layerNoop({
       exists: (path) => Effect.succeed(options.existingWorktreePaths?.includes(path) ?? false),
     }),
@@ -778,6 +787,28 @@ describe("ThreadSettlementServiceV2 worker", () => {
           yield* startHarness(service, fixture.activation, fixture.snapshotReads);
           const commands = yield* Ref.get(fixture.commands);
           expect(commands.map((command) => command.threadId)).toEqual([thread.id]);
+        }).pipe(Effect.provide(fixture.layer));
+      }),
+    ),
+  );
+
+  it.effect("does not dispatch a settle the lifecycle hook would refuse", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(Date.parse(NOW));
+        const inactive = { latestRunCompletedAt: DateTime.makeUnsafe("2026-08-25T00:00:00.000Z") };
+        const blocked = makeThread("blocked-by-workflow", inactive);
+        const free = makeThread("free-to-settle", inactive);
+        const fixture = yield* makeHarness({
+          snapshot: makeSnapshot([blocked, free]),
+          settings: { ...DEFAULT_SERVER_SETTINGS, sidebarAutoSettleAfterDays: 2 },
+          blockedThreadIds: [blocked.id],
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadSettlementService.ThreadSettlementServiceV2;
+          yield* startHarness(service, fixture.activation, fixture.snapshotReads);
+          const commands = yield* Ref.get(fixture.commands);
+          expect(commands.map((command) => command.threadId)).toEqual([free.id]);
         }).pipe(Effect.provide(fixture.layer));
       }),
     ),
