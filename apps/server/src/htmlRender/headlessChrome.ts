@@ -275,6 +275,8 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
           "--hide-scrollbars",
           "--mute-audio",
           "--block-new-web-contents",
+          // A locked desktop keyring would otherwise stall every network request.
+          "--password-store=basic",
           `--proxy-server=socks5://127.0.0.1:${proxyPort}`,
           // Loopback would otherwise skip the proxy.
           "--proxy-bypass-list=<-loopback>",
