@@ -33,8 +33,6 @@ export function ThreadWorkflowChecklistLayout(props: ThreadWorkflowLayoutProps) 
     });
   return (
     <div className="flex flex-col gap-3">
-      {props.header}
-      {props.instanceForm}
       <ol className="flex flex-col">
         {instance.steps.map((step) => {
           const current = step.id === instance.currentStepId;

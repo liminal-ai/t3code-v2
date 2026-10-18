@@ -38,7 +38,11 @@ import { ThreadWorkflowStart } from "./ThreadWorkflowStart";
 import { ThreadWorkflowStrip } from "./ThreadWorkflowStrip";
 import { useThreadWorkflowActions } from "./useThreadWorkflowActions";
 
-/** What a layout gets. It arranges these and owns nothing else, so deleting one is one file. */
+/**
+ * What a layout gets. It arranges these and owns nothing else, so deleting one is one file. The
+ * header, with the instance's close, abandon and reopen calls, sits above the layout, so no layout
+ * can drop it.
+ */
 export interface ThreadWorkflowLayoutProps {
   readonly threadRef: ScopedThreadRef;
   readonly view: ThreadWorkflowSubscriptionView;
@@ -50,9 +54,6 @@ export interface ThreadWorkflowLayoutProps {
   readonly formStepId: ThreadWorkflowStepId | null;
   readonly onOpenForm: (intent: ThreadWorkflowFormIntent) => void;
   readonly renderForm: () => ReactNode;
-  readonly header: ReactNode;
-  /** The open form when it is about the instance rather than a step; null otherwise. */
-  readonly instanceForm: ReactNode;
   readonly instanceList: ReactNode;
   readonly renderActivity: (open: boolean, onOpenChange: (open: boolean) => void) => ReactNode;
 }
@@ -335,20 +336,6 @@ export function ThreadWorkflowPanel({
         formStepId: stripOwnsForm ? null : formStepId,
         onOpenForm: openForm,
         renderForm,
-        header: (
-          <>
-            <ThreadWorkflowHeader
-              view={currentView}
-              instance={instance}
-              disabled={disabled}
-              onView={setViewedInstanceId}
-              onOpenForm={openForm}
-              onStartNew={() => setStarting(true)}
-            />
-            {corruption}
-          </>
-        ),
-        instanceForm: form !== null && formStepId === null && !stripOwnsForm ? renderForm() : null,
         instanceList: (
           <ThreadWorkflowInstanceList
             view={currentView}
@@ -369,12 +356,25 @@ export function ThreadWorkflowPanel({
           />
         ),
       };
-      body =
-        layout === "checklist" ? (
-          <ThreadWorkflowChecklistLayout {...layoutProps} />
-        ) : (
-          <ThreadWorkflowFocusLayout {...layoutProps} />
-        );
+      body = (
+        <>
+          <ThreadWorkflowHeader
+            view={currentView}
+            instance={instance}
+            disabled={disabled}
+            onView={setViewedInstanceId}
+            onOpenForm={openForm}
+            onStartNew={() => setStarting(true)}
+          />
+          {corruption}
+          {form !== null && formStepId === null && !stripOwnsForm ? renderForm() : null}
+          {layout === "checklist" ? (
+            <ThreadWorkflowChecklistLayout {...layoutProps} />
+          ) : (
+            <ThreadWorkflowFocusLayout {...layoutProps} />
+          )}
+        </>
+      );
     }
   }
 

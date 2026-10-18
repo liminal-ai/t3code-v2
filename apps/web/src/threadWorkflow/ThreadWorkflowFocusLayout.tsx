@@ -44,46 +44,42 @@ export function ThreadWorkflowFocusLayout(props: ThreadWorkflowLayoutProps) {
     setSubtab("now");
     props.onOpenForm(intent);
   };
-  const header = (
-    <>
-      {props.header}
-      <div role="tablist" className="flex items-center gap-1 border-border border-b">
-        {(
-          [
-            ["now", "Now", null],
-            ["workflows", "Workflows", view.instances.length],
-            ["activity", "Activity", null],
-          ] as const
-        ).map(([id, label, count]) => (
-          <button
-            key={id}
-            type="button"
-            role="tab"
-            aria-selected={subtab === id}
-            onClick={() => setSubtab(id)}
-            className={cn(
-              "-mb-px flex cursor-pointer items-center gap-1.5 border-b-2 px-2 py-1.5 text-sm",
-              subtab === id
-                ? "border-foreground text-foreground"
-                : "border-transparent text-muted-foreground hover:text-foreground",
-            )}
-          >
-            {label}
-            {count === null ? null : (
-              <Badge variant="secondary" size="sm">
-                {count}
-              </Badge>
-            )}
-          </button>
-        ))}
-      </div>
-    </>
+  const tabs = (
+    <div role="tablist" className="flex items-center gap-1 border-border border-b">
+      {(
+        [
+          ["now", "Now", null],
+          ["workflows", "Workflows", view.instances.length],
+          ["activity", "Activity", null],
+        ] as const
+      ).map(([id, label, count]) => (
+        <button
+          key={id}
+          type="button"
+          role="tab"
+          aria-selected={subtab === id}
+          onClick={() => setSubtab(id)}
+          className={cn(
+            "-mb-px flex cursor-pointer items-center gap-1.5 border-b-2 px-2 py-1.5 text-sm",
+            subtab === id
+              ? "border-foreground text-foreground"
+              : "border-transparent text-muted-foreground hover:text-foreground",
+          )}
+        >
+          {label}
+          {count === null ? null : (
+            <Badge variant="secondary" size="sm">
+              {count}
+            </Badge>
+          )}
+        </button>
+      ))}
+    </div>
   );
   if (subtab === "workflows") {
     return (
       <div className="flex flex-col gap-3">
-        {header}
-        {props.instanceForm}
+        {tabs}
         {props.instanceList}
       </div>
     );
@@ -91,15 +87,14 @@ export function ThreadWorkflowFocusLayout(props: ThreadWorkflowLayoutProps) {
   if (subtab === "activity") {
     return (
       <div className="flex flex-col gap-3">
-        {header}
+        {tabs}
         {props.renderActivity(true, () => setSubtab("now"))}
       </div>
     );
   }
   return (
     <div className="flex flex-col gap-3">
-      {header}
-      {props.instanceForm}
+      {tabs}
       {selected === undefined ? null : (
         <section
           className={cn(

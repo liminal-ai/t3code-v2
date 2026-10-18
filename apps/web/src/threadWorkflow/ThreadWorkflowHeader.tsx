@@ -145,7 +145,64 @@ function SettleBlockedBar({
   );
 }
 
-/** Every instance on the thread. A closed one reopens only while no other instance is open. */
+/** A closed instance reopens only while no other instance is open. */
+function canReopen(
+  view: ThreadWorkflowSubscriptionView,
+  instance: ThreadWorkflowInstanceSummary,
+): boolean {
+  return instance.status._tag === "closed" && view.activeInstanceId === null;
+}
+
+function ReopenButton({
+  instance,
+  disabled,
+  onOpenForm,
+}: {
+  instance: ThreadWorkflowInstanceSummary;
+  disabled: boolean;
+  onOpenForm: (intent: ThreadWorkflowFormIntent) => void;
+}) {
+  return (
+    <Button
+      size="xs"
+      variant="outline"
+      disabled={disabled}
+      onClick={() => onOpenForm({ kind: "reopen", target: instance.id })}
+    >
+      <Undo2Icon />
+      Reopen…
+    </Button>
+  );
+}
+
+/** Visible while the viewed instance is closed and could be reopened: the way back to it. */
+function ClosedBar({
+  view,
+  instance,
+  disabled,
+  onOpenForm,
+}: {
+  view: ThreadWorkflowSubscriptionView;
+  instance: ThreadWorkflowInstanceSummary;
+  disabled: boolean;
+  onOpenForm: (intent: ThreadWorkflowFormIntent) => void;
+}) {
+  if (instance.status._tag !== "closed" || !canReopen(view, instance)) return null;
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-1.5 text-muted-foreground text-xs">
+      <span className="min-w-0 truncate">
+        <span className="font-medium text-foreground">Closed as {instance.status.outcome}</span>
+        {" · "}
+        <span className="italic">{instance.status.reason}</span>
+      </span>
+      <div className="ms-auto shrink-0">
+        <ReopenButton instance={instance} disabled={disabled} onOpenForm={onOpenForm} />
+      </div>
+    </div>
+  );
+}
+
+/** Every instance on the thread. */
 export function ThreadWorkflowInstanceList({
   view,
   viewedInstanceId,
@@ -207,16 +264,8 @@ export function ThreadWorkflowInstanceList({
                   View steps
                 </Button>
               )}
-              {instance.status._tag === "closed" && view.activeInstanceId === null ? (
-                <Button
-                  size="xs"
-                  variant="outline"
-                  disabled={disabled}
-                  onClick={() => onOpenForm({ kind: "reopen", target: instance.id })}
-                >
-                  <Undo2Icon />
-                  Reopen…
-                </Button>
+              {canReopen(view, instance) ? (
+                <ReopenButton instance={instance} disabled={disabled} onOpenForm={onOpenForm} />
               ) : null}
             </div>
           </div>
@@ -235,8 +284,8 @@ export function ThreadWorkflowInstanceList({
 }
 
 /**
- * The pane header both layouts share: title and status, the instance switcher, template
- * provenance, and the settle-blocked bar with its close and abandon calls.
+ * The pane header above either layout: title and status, the instance switcher, template
+ * provenance, and the instance's lifecycle calls (close and abandon while open, reopen once closed).
  */
 export function ThreadWorkflowHeader({
   view,
@@ -294,6 +343,7 @@ export function ThreadWorkflowHeader({
       </div>
       <TemplateLine instance={instance} />
       <SettleBlockedBar instance={instance} disabled={disabled} onOpenForm={onOpenForm} />
+      <ClosedBar view={view} instance={instance} disabled={disabled} onOpenForm={onOpenForm} />
     </header>
   );
 }
