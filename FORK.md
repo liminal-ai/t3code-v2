@@ -8,6 +8,7 @@ Last synced: upstream tag `v0.1.1-nightly.20261017.3238` (`70d60e03a7`), merged 
 
 Everything else is upstream. `git diff --stat v0.1.1-nightly.20261017.3238 main` lists every file that differs, and that list should match this section.
 
+- **The preview browser keyring fix** (in `apps/server/src/htmlRender/headlessChrome.ts`). The headless shell behind `html_preview` and `html_render` starts with `--password-store=basic`. On a Linux host with a locked desktop keyring, Chrome otherwise waits on it before every network request, so every capture times out after 20 seconds. The Browser panel already passes the flag through Playwright.
 - **Cursor Cloud** (PR #2, merged as `40b0206f85`). A Cursor provider instance with **Runs on** set to **Cursor Cloud** runs each thread on a Cursor VM that clones the project's GitHub repository. Prod has one such instance, `cursor-cloud`, configured in settings rather than code. The code is in `packages/provider-cursor/src/`. `server/cloud.ts` is ours. `server/adapter.ts`, `server/CursorAgentSdk.ts`, `server/skills.ts`, `server/driver.ts` and `settings.ts` are upstream files we changed. The fixes for PR #2's review threads (PR #6) added the cap on inline attachments and the skills rule. The user guide's Cursor Cloud section is in `docs/user/cursor.md`.
 - **The MCP placement test** (commit `fc6ad78149`, in `packages/provider-cursor/src/server/adapter.cloud.test.ts`). A local Cursor run gets T3's MCP server on `Agent.create` and `Agent.resume`, never on a send, because a send-level `mcpServers` replaces the servers the agent opened with. A cloud run never gets it, because the VM cannot reach this machine. Upstream #15875 moved the server off sends. This test is the one fact the 3238 merge was safe because of.
 - **This file.**
@@ -143,4 +144,6 @@ When upstream changes the original, check the copy by hand. No test compares the
 
 None are open. Worktree isolation for delegated tasks (pingdotgg/t3code#19102) was raised during the 3238 sync. It is merged upstream and shipped in 3238, so the fork owes nothing there. pstack-lim could use it in place of the `git worktree add` steps its skills ask helpers to run, which is a change for that repository.
 
-One gap could go upstream. The web client warns when the server is older than the client (`apps/web/src/versionSkew.ts`), but not when the client is older than the server, so a tab left open across a server update keeps an old client until it happens to reload. The fork covers it with the reload line in the cutover report.
+Two gaps could go upstream. The first is the preview browser keyring fix in "What the fork adds", a one-line change.
+
+The second is in the web client. It warns when the server is older than the client (`apps/web/src/versionSkew.ts`), but not when the client is older than the server, so a tab left open across a server update keeps an old client until it happens to reload. The fork covers it with the reload line in the cutover report.
