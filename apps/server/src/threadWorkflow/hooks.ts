@@ -48,47 +48,53 @@ export const layerThreadHooks = Layer.effect(
         Effect.flatMap((first) => (first ? Effect.logWarning(message, { threadId }) : Effect.void)),
       );
 
-    const orElse =
-      <A>(fallback: A, message: string, threadId: ThreadId) =>
-      <E>(self: Effect.Effect<A, E>): Effect.Effect<A> =>
-        Effect.suspend(() => self).pipe(
-          Effect.catchCause((cause) =>
-            Cause.hasInterrupts(cause)
-              ? Effect.interrupt
-              : Effect.logWarning(message, { threadId, cause }).pipe(Effect.as(fallback)),
-          ),
-        );
+    const guarded = <A, E>(
+      fallback: A,
+      message: string,
+      threadId: ThreadId,
+      compute: () => Effect.Effect<A, E>,
+    ): Effect.Effect<A> =>
+      Effect.suspend(compute).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.logWarning(message, { threadId, cause }).pipe(Effect.as(fallback)),
+        ),
+      );
 
     return {
       turnNote: ({ threadId, compacting }) =>
-        (compacting
-          ? Effect.succeed("")
-          : store.state(threadId).pipe(Effect.map((state) => turnNote(toSubscriptionView(state))))
-        ).pipe(orElse("", "thread workflow turn note failed; the turn goes without it", threadId)),
+        guarded("", "thread workflow turn note failed; the turn goes without it", threadId, () =>
+          compacting
+            ? Effect.succeed("")
+            : store
+                .state(threadId)
+                .pipe(Effect.map((state) => turnNote(toSubscriptionView(state)))),
+        ),
       lifecycleBlocker: ({ threadId, action }) =>
-        Effect.gen(function* () {
-          const state = yield* store.state(threadId);
-          if (state.corruption !== null) {
-            yield* warnOnce(
-              `corrupt:${threadId}`,
-              "thread workflow log is corrupt; it does not block the thread's lifecycle",
-              threadId,
-            );
-          }
-          const blocker = lifecycleBlocker(state, action);
-          if (blocker === null || !(yield* enforcementOff)) return blocker;
-          yield* warnOnce(
-            `bypassed:${threadId}`,
-            "thread workflow enforcement is off; an open workflow does not block the thread",
-            threadId,
-          );
-          return null;
-        }).pipe(
-          orElse<string | null>(
-            null,
-            "thread workflow lifecycle check failed; the thread is not blocked",
-            threadId,
-          ),
+        guarded<string | null, unknown>(
+          null,
+          "thread workflow lifecycle check failed; the thread is not blocked",
+          threadId,
+          () =>
+            Effect.gen(function* () {
+              const state = yield* store.state(threadId);
+              if (state.corruption !== null) {
+                yield* warnOnce(
+                  `corrupt:${threadId}`,
+                  "thread workflow log is corrupt; it does not block the thread's lifecycle",
+                  threadId,
+                );
+              }
+              const blocker = lifecycleBlocker(state, action);
+              if (blocker === null || !(yield* enforcementOff)) return blocker;
+              yield* warnOnce(
+                `bypassed:${threadId}`,
+                "thread workflow enforcement is off; an open workflow does not block the thread",
+                threadId,
+              );
+              return null;
+            }),
         ),
     };
   }),
