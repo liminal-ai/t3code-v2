@@ -130,6 +130,7 @@ function renderTabs(
       onAddTerminal={() => undefined}
       onAddPullRequest={() => undefined}
       onAddPullRequests={() => undefined}
+      onAddWorkflow={() => undefined}
       onAddDiff={() => undefined}
       onAddFiles={() => undefined}
       onAddDevice={() => undefined}
@@ -140,6 +141,7 @@ function renderTabs(
       pullRequestAvailable={false}
       pullRequestsAvailable={false}
       deviceAvailable={false}
+      workflowAvailable={false}
     >
       <div>content</div>
     </RightPanelTabs>,

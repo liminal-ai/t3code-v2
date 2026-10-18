@@ -431,6 +431,8 @@ import {
 } from "./chat/ThreadErrorBanner";
 import { QueuedRunsControl, type QueuedRunsControlHandle } from "./chat/QueuedRunsControl";
 import { useThreadLinkedPullRequest } from "./pullRequest/useThreadLinkedPullRequest";
+import { threadWorkflowVisibleAtom } from "../state/threadWorkflow";
+import { ThreadWorkflowAutoOpen } from "../threadWorkflow/ThreadWorkflowAutoOpen";
 import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
@@ -3727,6 +3729,14 @@ export default function ChatView(props: ChatViewProps) {
     useRightPanelStore.getState().open(activeThreadRef, "pull-requests");
   };
   const addPullRequestsSurfaceStable = useStableCallback(addPullRequestsSurface);
+  const workflowSurfaceAvailable = useAtomValue(
+    threadWorkflowVisibleAtom(isServerThread ? activeThreadRef : null),
+  );
+  const addWorkflowSurface = () => {
+    if (!activeThreadRef || !workflowSurfaceAvailable) return;
+    useRightPanelStore.getState().open(activeThreadRef, "workflow");
+  };
+  const addWorkflowSurfaceStable = useStableCallback(addWorkflowSurface);
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(
     activeThreadRef?.environmentId ?? null,
   );
@@ -7823,6 +7833,7 @@ export default function ChatView(props: ChatViewProps) {
         onOpenFile: openFileSurfaceStable,
         onPendingChange: handleFilePendingChangeStable,
       }}
+      workflow={{ pendingUserInputs, onAnswerInComposer: focusComposerStable }}
     />
   ) : null;
   const threadDetailsPanelProps: ThreadDetailsPanelProps = {
@@ -8627,6 +8638,9 @@ export default function ChatView(props: ChatViewProps) {
         ))}
       </div>
 
+      {isServerThread && activeThreadRef ? (
+        <ThreadWorkflowAutoOpen key={activeThreadKey ?? undefined} threadRef={activeThreadRef} />
+      ) : null}
       {rightPanelPresent && !shouldUsePlanSidebarSheet && activeThreadRef ? (
         <RightPanelTabs
           mode="inline"
@@ -8637,6 +8651,7 @@ export default function ChatView(props: ChatViewProps) {
           inlineSize={previewPanelInlineSize}
           surfaces={renderedRightPanelSurfaces}
           environmentId={activeThreadRef.environmentId}
+          threadRef={activeThreadRef}
           activeSurfaceId={renderedRightPanelSurface?.id ?? null}
           pendingSurfaceIds={pendingFileSurfaceIds}
           previewSessions={activePreviewState.sessions}
@@ -8662,6 +8677,7 @@ export default function ChatView(props: ChatViewProps) {
           onAddPullRequest={addPullRequestSurfaceStable}
           onAddPullRequests={addPullRequestsSurfaceStable}
           onAddDevice={addDeviceSurfaceStable}
+          onAddWorkflow={addWorkflowSurfaceStable}
           browserAvailable={canOperatePreview && browserAvailable}
           terminalAvailable={activeProject !== null && canOperateTerminal}
           diffAvailable={isServerThread && isGitRepo}
@@ -8669,6 +8685,7 @@ export default function ChatView(props: ChatViewProps) {
           pullRequestAvailable={pullRequestSurfaceAvailable}
           pullRequestsAvailable={pullRequestsSurfaceAvailable}
           deviceAvailable={activeThreadRef !== null}
+          workflowAvailable={workflowSurfaceAvailable}
         >
           {rightPanelContent}
         </RightPanelTabs>
@@ -8692,6 +8709,7 @@ export default function ChatView(props: ChatViewProps) {
             }
             surfaces={renderedRightPanelSurfaces}
             environmentId={activeThreadRef.environmentId}
+            threadRef={activeThreadRef}
             activeSurfaceId={renderedRightPanelSurface?.id ?? null}
             pendingSurfaceIds={pendingFileSurfaceIds}
             previewSessions={activePreviewState.sessions}
@@ -8717,6 +8735,7 @@ export default function ChatView(props: ChatViewProps) {
             onAddPullRequest={addPullRequestSurfaceStable}
             onAddPullRequests={addPullRequestsSurfaceStable}
             onAddDevice={addDeviceSurfaceStable}
+            onAddWorkflow={addWorkflowSurfaceStable}
             browserAvailable={canOperatePreview && browserAvailable}
             terminalAvailable={activeProject !== null && canOperateTerminal}
             diffAvailable={isServerThread && isGitRepo}
@@ -8724,6 +8743,7 @@ export default function ChatView(props: ChatViewProps) {
             pullRequestAvailable={pullRequestSurfaceAvailable}
             pullRequestsAvailable={pullRequestsSurfaceAvailable}
             deviceAvailable={activeThreadRef !== null}
+            workflowAvailable={workflowSurfaceAvailable}
           >
             {rightPanelContent}
           </RightPanelTabs>
