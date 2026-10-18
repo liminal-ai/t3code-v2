@@ -12,7 +12,7 @@ Workflows are off by default. Set `"threadWorkflowsEnabled": true` in the server
 
 Open the **Workflow** tab and pick a template: **Single task**, **Orchestrate**, or **Open-ended**, which starts from a goal and lets you or the agent add steps. You can also ask the agent to start one.
 
-Steps marked as waiting for you appear in a strip at the top of the tab, with any questions the agent is waiting on, and the tab title shows how many there are. A workflow that sees no activity for a day asks you, through the agent, whether to carry on or close it.
+Steps that wait for you, and questions the agent is waiting on, stay pinned at the top of the tab. A workflow that sees no activity for a day asks you, through the agent, whether to carry on or close it.
 
 ## Turn enforcement off
 
