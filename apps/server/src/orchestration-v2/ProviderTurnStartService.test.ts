@@ -29,6 +29,7 @@ import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 
 import { withWorkspaceLease } from "../workspace/workspaceLease.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
@@ -44,7 +45,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import { ThreadHooks } from "./ThreadHooks.ts";
+import { HOOK_DEADLINE, ThreadHooks } from "./ThreadHooks.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadWorkflow from "../threadWorkflow/layer.ts";
@@ -882,6 +883,54 @@ effectIt.effect(
       expect(JSON.stringify(warnings)).toContain("thread workflow turn note failed");
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   },
+);
+
+effectIt.effect(
+  "sends the user's text unchanged and logs one warning when the turn note hook itself dies",
+  () => {
+    const warnings: Array<unknown> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message);
+    });
+    return Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        threadHooks: Layer.succeed(ThreadHooks, {
+          turnNote: () => Effect.die(new Error("the hook broke outside its own containment")),
+          lifecycleBlocker: () => Effect.succeed(null),
+        }),
+      });
+
+      yield* harness.start;
+
+      expect(harness.prompts).toEqual(["Continue"]);
+      expect(harness.projection().runs.at(-1)?.status).toBe("running");
+      expect(warnings).toHaveLength(1);
+      expect(String(warnings[0])).toContain("thread turn note hook failed");
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  },
+);
+
+effectIt.effect("sends the user's text unchanged when the turn note hook hangs", () =>
+  Effect.gen(function* () {
+    const asked = yield* Deferred.make<void>();
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      threadHooks: Layer.succeed(ThreadHooks, {
+        turnNote: () => Deferred.succeed(asked, undefined).pipe(Effect.andThen(Effect.never)),
+        lifecycleBlocker: () => Effect.succeed(null),
+      }),
+    });
+
+    const starting = yield* Effect.forkChild(harness.start);
+    yield* Deferred.await(asked);
+    expect(harness.prompts).toEqual([]);
+    yield* TestClock.adjust(HOOK_DEADLINE);
+    yield* Fiber.join(starting);
+
+    expect(harness.prompts).toEqual(["Continue"]);
+    expect(harness.projection().runs.at(-1)?.status).toBe("running");
+  }),
 );
 
 effectIt.effect("asks for the turn note as compacting on /compact and sends none", () =>

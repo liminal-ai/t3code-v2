@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
@@ -212,6 +213,106 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
       assert.match(String(errors[0]), /thread workflow module disabled/);
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
+
+  it.effect(
+    "holds one disk operation at a time; the rest answer store_unavailable by their deadline",
+    () =>
+      Effect.gen(function* () {
+        const { baseDir } = yield* setup;
+        const inFlight = yield* Ref.make(0);
+        const peak = yield* Ref.make(0);
+        const reached = yield* Deferred.make<void>();
+        const stalled = yield* Deferred.make<void>();
+        const stalledFile = threadLogFileName(ThreadId.make("stalled"));
+        const [record] = twoRecords.records;
+        assert.isDefined(record);
+        const counted = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Ref.updateAndGet(inFlight, (count) => count + 1).pipe(
+            Effect.tap((count) => Ref.update(peak, (highest) => Math.max(highest, count))),
+            Effect.andThen(effect),
+            Effect.ensuring(Ref.update(inFlight, (count) => count - 1)),
+          );
+        yield* withStore(
+          baseDir,
+          (store) =>
+            Effect.gen(function* () {
+              const stalling = yield* store
+                .append(ThreadId.make("stalled"), record)
+                .pipe(Effect.flip, Effect.forkChild);
+              yield* Deferred.await(reached);
+              const waiting = yield* Effect.forEach(
+                ["a", "b", "c"],
+                (id) => store.append(ThreadId.make(id), record).pipe(Effect.flip),
+                { concurrency: "unbounded" },
+              ).pipe(Effect.forkChild);
+              yield* TestClock.adjust("10 seconds");
+              assert.deepStrictEqual(
+                (yield* Fiber.join(waiting)).map((error) => error.code),
+                ["store_unavailable", "store_unavailable", "store_unavailable"],
+              );
+              assert.strictEqual((yield* Fiber.join(stalling)).code, "store_unavailable");
+              assert.strictEqual(yield* Ref.get(peak), 1);
+
+              yield* Deferred.succeed(stalled, undefined);
+              const next = yield* store.append(ThreadId.make("next"), record);
+              assert.strictEqual(next.lastSeq, 1);
+              assert.strictEqual(yield* Ref.get(peak), 1);
+            }),
+          (real) =>
+            FileSystem.FileSystem.of({
+              ...real,
+              exists: (file) => counted(real.exists(file)),
+              makeDirectory: (directory, options) =>
+                counted(real.makeDirectory(directory, options)),
+              readDirectory: (directory, options) =>
+                counted(real.readDirectory(directory, options)),
+              readFile: (file) => counted(real.readFile(file)),
+              open: (file, options) =>
+                counted(
+                  file.endsWith(stalledFile) && options?.flag === "a"
+                    ? Deferred.succeed(reached, undefined).pipe(
+                        Effect.andThen(Deferred.await(stalled)),
+                        Effect.andThen(real.open(file, options)),
+                      )
+                    : real.open(file, options),
+                ),
+            }),
+        );
+      }),
+  );
+
+  it.effect("loads under the same permit as later disk work", () =>
+    Effect.gen(function* () {
+      const { baseDir, lines, seed } = yield* setup;
+      yield* seed(lines(twoRecords.records));
+      const reached = yield* Deferred.make<void>();
+      const stalled = yield* Deferred.make<void>();
+      const building = yield* withStore(
+        baseDir,
+        (store) =>
+          Effect.gen(function* () {
+            const afterLoad = yield* store.onDisk(Effect.succeed("ran")).pipe(Effect.forkChild);
+            yield* Effect.yieldNow;
+            assert.isUndefined(afterLoad.pollUnsafe());
+            yield* Deferred.succeed(stalled, undefined);
+            assert.strictEqual(yield* Fiber.join(afterLoad), "ran");
+            return store.unavailable;
+          }),
+        (real) =>
+          FileSystem.FileSystem.of({
+            ...real,
+            readDirectory: (directory, options) =>
+              Deferred.succeed(reached, undefined).pipe(
+                Effect.andThen(Deferred.await(stalled)),
+                Effect.andThen(real.readDirectory(directory, options)),
+              ),
+          }),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(reached);
+      yield* TestClock.adjust("15 seconds");
+      assert.match((yield* Fiber.join(building)) ?? "", /could not be loaded/);
+    }),
+  );
 
   it.effect("replays a receipt across a reload", () =>
     Effect.gen(function* () {

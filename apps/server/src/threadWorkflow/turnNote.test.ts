@@ -10,6 +10,43 @@ import { turnNote } from "./turnNote.ts";
 const decodeTemplate = Schema.decodeSync(ThreadWorkflowTemplate);
 const note = (state: Parameters<typeof toView>[0]) => turnNote(toSubscriptionView(state));
 
+/** Every printed call in a note, parsed the way an agent would copy it. */
+const printedCalls = (text: string) =>
+  text.split("\n").flatMap((line) => {
+    const match = /(thread_workflow_[a-z]+) (\{.*\})$/.exec(line);
+    return match === null
+      ? []
+      : [{ tool: match[1], params: JSON.parse(match[2] ?? "") as Record<string, unknown> }];
+  });
+
+/** The verifier's probe: a start with the longest title, then a first step with every field at its limit. */
+const probeState = (proofHint: string) =>
+  given(
+    [
+      user,
+      {
+        _tag: "start",
+        templateId: "checklist",
+        title: "T".repeat(THREAD_WORKFLOW_LIMITS.instanceTitle),
+      },
+    ],
+    [
+      user,
+      {
+        _tag: "insert",
+        afterStepId: null,
+        step: {
+          title: "S".repeat(THREAD_WORKFLOW_LIMITS.stepTitle),
+          instructions: "I".repeat(THREAD_WORKFLOW_LIMITS.instructions),
+          proofLevel: "recommended",
+          proofHint,
+          waitsForUser: true,
+        },
+        reason: "probe",
+      },
+    ],
+  ).state;
+
 describe("turnNote", () => {
   it("is empty when no workflow is open", () => {
     expect(note(given().state)).toBe("");
@@ -116,6 +153,39 @@ describe("turnNote", () => {
     const text = turnNote(view);
     expect(text).toContain("waits for the user");
     expect(text.length).toBeLessThan(THREAD_WORKFLOW_LIMITS.turnNote);
+  });
+
+  it("cuts the instructions, never a printed call, when the escaped proof hint pushes it over the cap", () => {
+    const hint = "\u0001".repeat(THREAD_WORKFLOW_LIMITS.proofHint);
+    const text = note(probeState(hint));
+    expect(text.length).toBeLessThanOrEqual(THREAD_WORKFLOW_LIMITS.turnNote);
+    expect(text).toContain("step 1 of 4: " + "S".repeat(THREAD_WORKFLOW_LIMITS.stepTitle));
+    expect(text).toContain("waits for the user");
+    expect(text).toContain("I".repeat(150));
+    expect(text).toContain("… (cut to fit; thread_workflow_get has the whole step)");
+    expect(text).not.toContain("I".repeat(THREAD_WORKFLOW_LIMITS.instructions));
+    expect(printedCalls(text)).toEqual([
+      {
+        tool: "thread_workflow_tick",
+        params: {
+          stepId: "w1.4",
+          comment: "<what you did and how you know it worked>",
+          proof: `<${hint}>`,
+        },
+      },
+      {
+        tool: "thread_workflow_change",
+        params: { action: "skip", stepId: "w1.4", reason: "<why>" },
+      },
+      { tool: "thread_workflow_get", params: {} },
+    ]);
+  });
+
+  it("keeps the whole instructions when the escaped note fits", () => {
+    const text = note(probeState('"'.repeat(THREAD_WORKFLOW_LIMITS.proofHint)));
+    expect(text.length).toBeLessThanOrEqual(THREAD_WORKFLOW_LIMITS.turnNote);
+    expect(text).toContain("I".repeat(THREAD_WORKFLOW_LIMITS.instructions));
+    expect(text).not.toContain("cut to fit");
   });
 
   it("stays under the cap for every step of every built-in template", () => {

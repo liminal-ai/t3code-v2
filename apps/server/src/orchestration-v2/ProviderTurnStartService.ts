@@ -51,7 +51,7 @@ import {
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
 } from "./RestartBackgroundNote.ts";
-import { ThreadHooks } from "./ThreadHooks.ts";
+import { failOpen, HOOK_DEADLINE, ThreadHooks } from "./ThreadHooks.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -955,12 +955,23 @@ export const layer: Layer.Layer<
         restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
-      const workflowNote = yield* threadHooks.turnNote({
-        threadId: projection.thread.id,
-        runId: run.id,
-        compacting:
-          message.attachments.length === 0 && message.text.trim().toLowerCase() === "/compact",
-      });
+      // The run is already committed as running and the outbox retry skips a running run, so a
+      // defect or stall escaping the hook here would strand it. Core bounds the hook itself, over
+      // whatever containment the module brings.
+      const workflowNote = yield* failOpen(
+        threadHooks.turnNote({
+          threadId: projection.thread.id,
+          runId: run.id,
+          compacting:
+            message.attachments.length === 0 && message.text.trim().toLowerCase() === "/compact",
+        }),
+        {
+          deadline: HOOK_DEADLINE,
+          fallback: "",
+          message: "thread turn note hook failed; the turn goes without it",
+          annotations: { threadId: projection.thread.id, runId: run.id },
+        },
+      );
       const notes = [restartNote, workflowNote].filter((part) => part !== "").join("\n\n");
       const tokenCap = yield* handoffTokenCapConfig.pipe(
         Effect.orElseSucceed(() => DEFAULT_HANDOFF_TOKEN_CAP),

@@ -12,9 +12,10 @@ import { ThreadWorkflowStore } from "./store.ts";
 import { turnNote } from "./turnNote.ts";
 
 /**
- * Core's view of the module. Both hooks read the store's memory and never take the thread lock,
- * which their callers already hold. The flag plays no part here: an open instance keeps blocking
- * lifecycle actions and keeps reaching the agent after the flag turns off.
+ * Core's view of the module. Both hooks read the store's memory and never take the thread lock:
+ * the orchestrator's guard holds it already, and the turn note runs without it and may lag a write
+ * by a moment. The flag plays no part here: an open instance keeps blocking lifecycle actions and
+ * keeps reaching the agent after the flag turns off.
  *
  * The module must never stop a turn or trap a thread, so any fault in either hook (a defect
  * included) and any stall past `HOOK_DEADLINE` fall back to no note and no blocker, with a warning.

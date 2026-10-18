@@ -52,7 +52,9 @@ export const ThreadWorkflowDigest = Schema.String.check(Schema.isPattern(/^[0-9a
 const Reason = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
 const Comment = TrimmedNonEmptyString.check(Schema.isMaxLength(4_000));
 const Proof = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
-// The title, instructions and hint caps keep the full turn note under 2,000 characters.
+// The title, instructions and hint caps keep the full turn note under 2,000 characters; a hint
+// that JSON-escapes in the printed tick call can cost up to six characters each, and the note
+// cuts the instructions to absorb that.
 const InstanceTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 const StepTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 const Instructions = TrimmedNonEmptyString.check(Schema.isMaxLength(640));
