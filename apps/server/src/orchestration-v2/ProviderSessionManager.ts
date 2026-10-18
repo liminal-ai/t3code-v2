@@ -52,6 +52,7 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
+import { ThreadHooks } from "./ThreadHooks.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -329,6 +330,21 @@ export const layerWithOptions = (
       const providerEventIngestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
       const agentScope = yield* AgentScope;
+      const threadHooks = yield* ThreadHooks;
+      // The thread workflow tools: the flag opens them for every thread, and a thread that
+      // already holds an instance keeps them after the flag turns off, so it can close it.
+      const threadWorkflowToolsAvailable = Effect.fn(
+        "ProviderSessionManagerV2.threadWorkflowToolsAvailable",
+      )(function* (threadId: ThreadId) {
+        const enabled = Option.isSome(serverSettings)
+          ? yield* serverSettings.value.getSettings.pipe(
+              Effect.map((settings) => settings.threadWorkflowsEnabled),
+              Effect.orElseSucceed(() => false),
+            )
+          : false;
+        if (enabled) return true;
+        return (yield* threadHooks.lifecycleBlocker({ threadId, action: "settle" })) !== null;
+      });
       const agentAccessSettings = Effect.fn("ProviderSessionManagerV2.agentAccessSettings")(
         function* (threadId: ThreadId) {
           if (Option.isNone(serverSettings)) return { browser: true, device: false };
@@ -451,11 +467,13 @@ export const layerWithOptions = (
                 // same token or the process's tool calls fail auth.
                 const { browser: browserToolsAvailable, device: deviceToolsAvailable } =
                   yield* agentAccessSettings(threadId);
+                const workflowToolsAvailable = yield* threadWorkflowToolsAvailable(threadId);
                 const capabilities = new Set<
                   import("../mcp/McpInvocationContext.ts").McpCapability
                 >(["orchestration", "worktree", "pull-requests"]);
                 if (browserToolsAvailable) capabilities.add("preview");
                 if (deviceToolsAvailable) capabilities.add("device");
+                if (workflowToolsAvailable) capabilities.add("thread-workflow");
                 const existing = yield* mcpSessions.read(threadId);
                 if (existing !== undefined) {
                   // Reserve before the async resolve so a release cannot
@@ -478,7 +496,8 @@ export const layerWithOptions = (
                     resolved.thread.threadId === threadId &&
                     resolved.thread.providerInstanceId === providerInstanceId &&
                     resolved.capabilities.has("preview") === browserToolsAvailable &&
-                    resolved.capabilities.has("device") === deviceToolsAvailable
+                    resolved.capabilities.has("device") === deviceToolsAvailable &&
+                    resolved.capabilities.has("thread-workflow") === workflowToolsAvailable
                   ) {
                     return { mcpCredentialId: existing.providerSessionId, issued: false };
                   }
