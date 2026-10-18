@@ -5,9 +5,11 @@ import {
   type ThreadWorkflowInstanceSummary,
   type ThreadWorkflowStepId,
   type ThreadWorkflowStepSummary,
+  type ThreadWorkflowSubscriptionState,
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
-import { Atom } from "effect/reactivity";
+import * as Option from "effect/Option";
+import { AsyncResult, Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
 import {
@@ -20,15 +22,19 @@ import type { ThreadPendingUserInput } from "./threadRequests.ts";
 export function createThreadWorkflowEnvironmentAtoms<R, E>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
 ) {
+  const state = createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:thread-workflow:state",
+    tag: WS_METHODS.threadWorkflowSubscribe,
+  });
   return {
-    state: createEnvironmentRpcSubscriptionAtomFamily(runtime, {
-      label: "environment-data:thread-workflow:state",
-      tag: WS_METHODS.threadWorkflowSubscribe,
-    }),
+    state,
+    // The full history is only in `get`, so an open history refetches on each thread write.
     instance: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:thread-workflow:instance",
       tag: WS_METHODS.threadWorkflowGet,
       staleTimeMs: 0,
+      refreshTrigger: ({ environmentId, input }) =>
+        threadWorkflowRevisionAtom(state({ environmentId, input: { threadId: input.threadId } })),
     }),
     templates: createEnvironmentRpcQueryAtomFamily(runtime, {
       label: "environment-data:thread-workflow:templates",
@@ -40,6 +46,13 @@ export function createThreadWorkflowEnvironmentAtoms<R, E>(
       tag: WS_METHODS.threadWorkflowApply,
     }),
   };
+}
+
+/** The subscription's revision, or null before its first snapshot. Unchanged revisions signal nothing. */
+export function threadWorkflowRevisionAtom(
+  state: Atom.Atom<AsyncResult.AsyncResult<ThreadWorkflowSubscriptionState, unknown>>,
+): Atom.Atom<number | null> {
+  return Atom.make((get) => Option.getOrNull(AsyncResult.value(get(state)))?.view.revision ?? null);
 }
 
 export function activeThreadWorkflowInstance(

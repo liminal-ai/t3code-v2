@@ -5,8 +5,10 @@ import {
   type ThreadWorkflowInstanceSummary,
   type ThreadWorkflowStamp,
   type ThreadWorkflowStepSummary,
+  type ThreadWorkflowSubscriptionState,
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPendingUserInput } from "./threadRequests.ts";
@@ -14,6 +16,7 @@ import {
   countOpenThreadWorkflowAsks,
   deriveThreadWorkflowAsks,
   threadWorkflowProgress,
+  threadWorkflowRevisionAtom,
   threadWorkflowStepNumbers,
 } from "./threadWorkflow.ts";
 
@@ -163,5 +166,33 @@ describe("step numbering and progress", () => {
         step("w1.4", "open", { inserted: true }),
       ]),
     ).toEqual({ live: 3, resolved: 2, skipped: 1, inserted: 2, removed: 1 });
+  });
+});
+
+describe("threadWorkflowRevisionAtom", () => {
+  const snapshot = (revision: number) =>
+    AsyncResult.success({
+      enabled: true,
+      visible: true,
+      unavailable: null,
+      view: { ...view("w1", [instance("w1", [step("w1.1", "open")])]), revision },
+    } as ThreadWorkflowSubscriptionState);
+
+  it("signals the open history to refetch when a write moves the revision, and only then", () => {
+    const registry = AtomRegistry.make();
+    const state = Atom.make<AsyncResult.AsyncResult<ThreadWorkflowSubscriptionState>>(
+      AsyncResult.initial(),
+    );
+    const signals: Array<number | null> = [];
+    registry.subscribe(threadWorkflowRevisionAtom(state), (revision) => signals.push(revision), {
+      immediate: true,
+    });
+
+    registry.set(state, snapshot(3));
+    registry.set(state, snapshot(3));
+    registry.set(state, snapshot(4));
+
+    expect(signals).toEqual([null, 3, 4]);
+    registry.dispose();
   });
 });
