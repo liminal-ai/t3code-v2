@@ -1183,6 +1183,8 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   reviewGuideInstructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
+  /** The fork's thread workflow module. Off means no new instances; open ones keep working. */
+  threadWorkflowsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
 
   pullRequestMergeMethod: Schema.NullOr(PullRequestMergeMethod).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -1443,6 +1445,7 @@ export const ServerSettingsPatch = Schema.Struct({
   reviewGuidesEnabled: Schema.optionalKey(Schema.Boolean),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
+  threadWorkflowsEnabled: Schema.optionalKey(Schema.Boolean),
   pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
   observability: Schema.optionalKey(
     Schema.Struct({

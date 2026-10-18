@@ -429,3 +429,33 @@ export const ThreadWorkflowSubscriptionView = Schema.Struct({
   instances: Schema.Array(ThreadWorkflowInstanceSummary),
 });
 export type ThreadWorkflowSubscriptionView = typeof ThreadWorkflowSubscriptionView.Type;
+
+/** What `threadWorkflow.subscribe` streams. `visible`: the flag is on, or an instance is open or corrupt. */
+export const ThreadWorkflowSubscriptionState = Schema.Struct({
+  enabled: Schema.Boolean,
+  visible: Schema.Boolean,
+  view: ThreadWorkflowSubscriptionView,
+});
+export type ThreadWorkflowSubscriptionState = typeof ThreadWorkflowSubscriptionState.Type;
+
+export const ThreadWorkflowApplyResult = Schema.Struct({
+  changed: Schema.Boolean,
+  /** The request id already had a record, so nothing was written and this is its first result. */
+  replayed: Schema.Boolean,
+  view: ThreadWorkflowSubscriptionView,
+});
+export type ThreadWorkflowApplyResult = typeof ThreadWorkflowApplyResult.Type;
+
+export const ThreadWorkflowSubscribeInput = Schema.Struct({ threadId: ThreadId });
+export const ThreadWorkflowGetInput = Schema.Struct({
+  threadId: ThreadId,
+  instanceId: ThreadWorkflowInstanceId,
+});
+/** The pane's write: it always binds a request id and the revision it rendered. */
+export const ThreadWorkflowApplyInput = Schema.Struct({
+  threadId: ThreadId,
+  request: ThreadWorkflowRequest,
+  requestId: ThreadWorkflowRequestId,
+  expectedRevision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+});
+export type ThreadWorkflowApplyInput = typeof ThreadWorkflowApplyInput.Type;
