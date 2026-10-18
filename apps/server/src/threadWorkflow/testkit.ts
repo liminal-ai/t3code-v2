@@ -26,7 +26,7 @@ export const agent: ThreadWorkflowActor = { _tag: "agent", threadId };
 
 export const request = Schema.decodeUnknownSync(ThreadWorkflowRequest);
 
-export const checklist = Schema.decodeSync(ThreadWorkflowTemplate)({
+const checklist = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "checklist",
   version: 1,
   title: "Checklist",

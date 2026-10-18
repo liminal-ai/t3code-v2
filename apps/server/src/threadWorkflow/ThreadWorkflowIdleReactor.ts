@@ -64,7 +64,7 @@ export const idleCommandId = (input: {
 }) =>
   `server:thread-workflow-idle:${input.threadId}:${input.instanceId}:${input.quietSinceMs}:${input.quietDays}`;
 
-export const idleMessage = (input: {
+const idleMessage = (input: {
   readonly threadId: ThreadId;
   readonly instance: ThreadWorkflowInstanceSummary;
   readonly quietDays: number;
