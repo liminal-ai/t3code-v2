@@ -50,6 +50,7 @@ import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as GitVcsDriver from "../vcs/GitVcsDriver.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { HOOK_DEADLINE } from "./ThreadHooks.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as CommandOutputHub from "./CommandOutputHub.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -1937,6 +1938,92 @@ it.effect(
             }).pipe(Layer.orDie),
           }),
         ),
+      );
+    }),
+);
+
+/**
+ * Settings whose first read (agent access) answers and whose second read (the thread workflow
+ * capability) runs `second` instead, the order `prepareMcpSession` reads them in.
+ */
+const layerSettingsFailingSecondRead = (second: Effect.Effect<never>) =>
+  Layer.effect(
+    ServerSettings.ServerSettingsService,
+    Effect.gen(function* () {
+      const delegate = yield* ServerSettings.ServerSettingsService;
+      const reads = yield* Ref.make(0);
+      return ServerSettings.ServerSettingsService.of({
+        ...delegate,
+        getSettings: Ref.updateAndGet(reads, (count) => count + 1).pipe(
+          Effect.flatMap((count) => (count === 1 ? delegate.getSettings : second)),
+        ),
+      });
+    }),
+  ).pipe(Layer.provide(ServerSettings.layerTest({ threadWorkflowsEnabled: true })));
+
+const openWithoutWorkflowTools = (second: Effect.Effect<never>, beforeJoin: Effect.Effect<void>) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(emptyState);
+    const mcpConfigs = yield* Ref.make<
+      ReadonlyArray<McpProviderSession.McpProviderSessionConfig | undefined>
+    >([]);
+    const effect = Effect.gen(function* () {
+      const eventSink = yield* EventSink.EventSinkV2;
+      const idAllocator = yield* IdAllocator.IdAllocatorV2;
+      const manager = yield* ProviderSessionManager.ProviderSessionManagerV2;
+      const registry = yield* McpSessionRegistry.McpSessionRegistry;
+      const now = yield* DateTime.now;
+      const threadId = ThreadId.make("thread-provider-session-manager-workflow-capability");
+      const providerSessionId = yield* idAllocator.allocate.providerSession({
+        providerInstanceId: modelSelection.instanceId,
+        threadId,
+      });
+      yield* eventSink.write({
+        events: [yield* makeThreadCreatedEvent({ idAllocator, threadId, now })],
+      });
+      const opening = yield* manager
+        .open({ threadId, providerSessionId, modelSelection, runtimePolicy })
+        .pipe(Effect.forkChild);
+      yield* beforeJoin;
+      yield* Fiber.join(opening);
+
+      const captured = (yield* Ref.get(mcpConfigs))[0];
+      assert.isDefined(captured);
+      const token = captured?.authorizationHeader.replace(/^Bearer\s+/, "");
+      const resolved = yield* registry.resolve(token!);
+      assert.isDefined(resolved);
+      assert.isFalse(resolved?.capabilities.has("thread-workflow"));
+      yield* manager.close(providerSessionId);
+    });
+    yield* effect.pipe(
+      Effect.provide(
+        layerTest({
+          state,
+          idleTimeoutMs: 1_000,
+          mcpConfigs,
+          serverSettingsLayer: layerSettingsFailingSecondRead(second),
+        }),
+      ),
+    );
+  });
+
+it.effect(
+  "ProviderSessionManagerV2 opens the session when the workflow capability check dies",
+  () =>
+    openWithoutWorkflowTools(
+      Effect.die(new Error("workflow capability settings defect")),
+      Effect.void,
+    ),
+);
+
+it.effect(
+  "ProviderSessionManagerV2 opens the session once a stalled capability check times out",
+  () =>
+    Effect.gen(function* () {
+      const reached = yield* Deferred.make<void>();
+      yield* openWithoutWorkflowTools(
+        Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never)),
+        Deferred.await(reached).pipe(Effect.andThen(TestClock.adjust(HOOK_DEADLINE))),
       );
     }),
 );

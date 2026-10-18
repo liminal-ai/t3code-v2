@@ -52,7 +52,7 @@ import * as ProviderEventIngestor from "./ProviderEventIngestor.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { ThreadHooks } from "./ThreadHooks.ts";
+import { failOpen, HOOK_DEADLINE, ThreadHooks } from "./ThreadHooks.ts";
 
 const DEFAULT_IDLE_TIMEOUT_MS = 30 * 60 * 1000;
 const DEFAULT_MAX_IDLE_PIN_MS = 4 * 60 * 60 * 1000;
@@ -333,18 +333,26 @@ export const layerWithOptions = (
       const threadHooks = yield* ThreadHooks;
       // The thread workflow tools: the flag opens them for every thread, and a thread that
       // already holds an instance keeps them after the flag turns off, so it can close it.
+      // The module must never stop a session opening, so a failing or stalled check withholds
+      // the tools instead.
       const threadWorkflowToolsAvailable = Effect.fn(
         "ProviderSessionManagerV2.threadWorkflowToolsAvailable",
-      )(function* (threadId: ThreadId) {
-        const enabled = Option.isSome(serverSettings)
-          ? yield* serverSettings.value.getSettings.pipe(
-              Effect.map((settings) => settings.threadWorkflowsEnabled),
-              Effect.orElseSucceed(() => false),
-            )
-          : false;
-        if (enabled) return true;
-        return (yield* threadHooks.lifecycleBlocker({ threadId, action: "settle" })) !== null;
-      });
+      )(
+        function* (threadId: ThreadId) {
+          const enabled = Option.isSome(serverSettings)
+            ? (yield* serverSettings.value.getSettings).threadWorkflowsEnabled
+            : false;
+          if (enabled) return true;
+          return (yield* threadHooks.lifecycleBlocker({ threadId, action: "settle" })) !== null;
+        },
+        (check, threadId) =>
+          failOpen(check, {
+            deadline: HOOK_DEADLINE,
+            fallback: false,
+            message: "thread workflow tools withheld: the capability check failed",
+            annotations: { threadId },
+          }),
+      );
       const agentAccessSettings = Effect.fn("ProviderSessionManagerV2.agentAccessSettings")(
         function* (threadId: ThreadId) {
           if (Option.isNone(serverSettings)) return { browser: true, device: false };
