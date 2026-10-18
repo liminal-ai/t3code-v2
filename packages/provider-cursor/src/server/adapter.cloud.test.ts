@@ -62,6 +62,7 @@ const setup = Effect.fn("setup")(function* (
 ) {
   const fileSystem = yield* FileSystem.FileSystem;
   const workspace = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-cloud-adapter-" });
+  const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-cloud-home-" });
   const fake: FakeCloud = { opened: [], sent: [], attached: [], cancelled: [] };
   const toRun = (runId: string): CursorAgentSdk.CursorAgentSdkRun => {
     const made = run(runId, fake);
@@ -75,7 +76,7 @@ const setup = Effect.fn("setup")(function* (
   const adapter = yield* makeCursorAdapterV2({
     instanceId,
     settings: yield* decodeCursorSettings({ runtime: runsOn }),
-    environment: { HOME: workspace },
+    environment: { HOME: home },
   }).pipe(
     Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
       assertComplete: Effect.void,
@@ -174,7 +175,16 @@ const setup = Effect.fn("setup")(function* (
     Stream.takeUntil((event) => event.type === "turn.terminal"),
     Stream.runCollect,
   );
-  return { adapter, runtime, providerThread, startTurn, eventsUntilTerminal, fake };
+  return {
+    adapter,
+    runtime,
+    providerThread,
+    startTurn,
+    eventsUntilTerminal,
+    fake,
+    workspace,
+    home,
+  };
 });
 
 /** Stands in for T3's MCP endpoint and records each JSON-RPC request. */
@@ -376,6 +386,36 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       );
       assert.include(sent, '[Attached file "third.txt" follows inline.]\nsmall third file');
     }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect.each(["local", "cloud"] as const)(
+    "invokes only the skills a %s agent can load",
+    (runsOn) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const { startTurn, eventsUntilTerminal, fake, workspace, home } = yield* setup(
+          (runId) => ({ wait: Effect.succeed(finished(runId)), cancel: Effect.void }),
+          runsOn,
+        );
+        for (const [root, name] of [
+          [workspace, "repo-skill"],
+          [home, "home-skill"],
+        ] as const) {
+          const directory = `${root}/.cursor/skills/${name}`;
+          yield* fileSystem.makeDirectory(directory, { recursive: true });
+          yield* fileSystem.writeFileString(`${directory}/SKILL.md`, "---\n---\n");
+        }
+
+        yield* startTurn({ runId: "t3-run-skills", text: "Use $repo-skill and $home-skill" });
+        yield* eventsUntilTerminal;
+
+        assert.include(
+          fake.sent[0]!.message,
+          runsOn === "cloud"
+            ? "Use /repo-skill and $home-skill\n"
+            : "Use /repo-skill and /home-skill\n",
+        );
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.effect("completes the turn when linking its pull request fails", () =>

@@ -14,6 +14,7 @@ import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 import { parse as parseYamlDocument } from "yaml";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import type { CursorSettings } from "../settings.ts";
 
 const FRONTMATTER_PATTERN = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
 const SKILL_MENTION_PATTERN =
@@ -212,6 +213,7 @@ const discoverSkillsInRoot = Effect.fn("discoverCursorSkillsInRoot")(function* (
 const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  runtime: CursorSettings["runtime"] = "local",
 ) {
   const path = yield* Path.Path;
   const userHome =
@@ -224,7 +226,11 @@ const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
     { directory: path.join(base, ".codex", "skills"), scope },
     { directory: path.join(base, ".claude", "skills"), scope },
   ];
-  const roots = [...(cwd ? rootsBelow(cwd, "project") : []), ...rootsBelow(userHome, "user")];
+  const roots = [
+    ...(cwd ? rootsBelow(cwd, "project") : []),
+    // A cloud VM has only the cloned repository, never this machine's home.
+    ...(runtime === "cloud" ? [] : rootsBelow(userHome, "user")),
+  ];
 
   const skillsByName = new Map<string, ServerProviderSkill>();
   const budget: CursorSkillScanBudget = {
@@ -253,15 +259,17 @@ const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
 export const discoverCursorSkills = Effect.fn("discoverCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  runtime: CursorSettings["runtime"] = "local",
 ) {
-  return (yield* inspectCursorSkills(cwd, environment)).skills;
+  return (yield* inspectCursorSkills(cwd, environment, runtime)).skills;
 });
 
 export const probeCursorSkills = Effect.fn("probeCursorSkills")(function* (
   cwd?: string,
   environment: NodeJS.ProcessEnv = process.env,
+  runtime: CursorSettings["runtime"] = "local",
 ) {
-  const inspection = yield* inspectCursorSkills(cwd, environment);
+  const inspection = yield* inspectCursorSkills(cwd, environment, runtime);
   if (inspection.failureReason) {
     return yield* new CursorSkillsProbeError({
       reason: inspection.failureReason,
