@@ -65,8 +65,13 @@ The module's own writes take that same lock through `ThreadCommandExecutor`, whi
 `start` and a `thread.settle` on one thread serialize and the loser refuses. A workflow write must
 never dispatch an orchestration command while it holds the lock. Turning `threadWorkflowsEnabled`
 off means "no new instances": `start`, reopening a closed instance, and the idle ping stop, while
-the guard, the turn note, and the close paths keep working for any open or corrupt instance, so the
-flag is never a way around an open workflow.
+the guard, the turn note, and the close paths keep working for any open instance, so the flag is
+never a way around an open workflow. The operator's way around it is
+`threadWorkflowEnforcementDisabled` in settings or `T3CODE_THREAD_WORKFLOW_ENFORCEMENT=off`.
+
+Only a valid open instance blocks. A corrupt log, a threads directory that cannot be read at
+startup, or a fault inside a hook gives no blocker and no note, because the module must never stop
+a turn, trap a thread, or keep the server from starting.
 
 ## Durable intent and side effects
 
