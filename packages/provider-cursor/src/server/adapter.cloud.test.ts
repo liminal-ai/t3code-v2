@@ -340,6 +340,44 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
+  it.effect("inlines text attachments only while the prompt fits the input limit", () =>
+    Effect.gen(function* () {
+      const host = yield* ProviderHost.ProviderHost;
+      const fileSystem = yield* FileSystem.FileSystem;
+      const textFile = (name: string, content: string) => {
+        const attachment = {
+          type: "file" as const,
+          id: name.replace(".", "-"),
+          name,
+          mimeType: "text/plain",
+          sizeBytes: content.length,
+        };
+        return fileSystem
+          .writeFileString(host.resolveAttachmentPath(attachment)!, content)
+          .pipe(Effect.as(attachment));
+      };
+      const first = yield* textFile("first.txt", "a".repeat(70_000));
+      const second = yield* textFile("second.txt", "b".repeat(70_000));
+      const third = yield* textFile("third.txt", "small third file");
+      const { startTurn, eventsUntilTerminal, fake } = yield* setup((runId) => ({
+        wait: Effect.succeed(finished(runId)),
+        cancel: Effect.void,
+      }));
+
+      yield* startTurn({ runId: "t3-run-budget", attachments: [first, second, third] });
+      yield* eventsUntilTerminal;
+
+      const sent = fake.sent[0]!.message;
+      assert.include(sent, `[Attached file "first.txt" follows inline.]\n${"a".repeat(70_000)}`);
+      assert.notInclude(sent, "b".repeat(1_000));
+      assert.include(
+        sent,
+        '[Attached file "second.txt" was not sent: the message was over the 120,000-character limit for inline attachments.]',
+      );
+      assert.include(sent, '[Attached file "third.txt" follows inline.]\nsmall third file');
+    }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
   it.effect("completes the turn when linking its pull request fails", () =>
     Effect.gen(function* () {
       const mcp = yield* makeFakeMcpEndpoint(500);

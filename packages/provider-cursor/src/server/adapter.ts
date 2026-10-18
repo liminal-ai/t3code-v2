@@ -2243,7 +2243,7 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                             .readFileString(attachmentPath)
                             .pipe(Effect.orElseSucceed(() => undefined))
                         : undefined;
-                    return CursorCloud.cursorCloudAttachmentText(attachment, text);
+                    return { attachment, text };
                   }),
                 { concurrency: 1 },
               )
@@ -2255,9 +2255,13 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                 )
               : undefined;
           const userText = t3OrchestrationPromptForFirstRun({
-            prompt: [cloudNote, promptText, ...cloudAttachments]
-              .filter((part) => part !== undefined && part.length > 0)
-              .join("\n\n"),
+            prompt: cloud
+              ? CursorCloud.cursorCloudPrompt({
+                  note: cloudNote,
+                  text: promptText,
+                  attachments: cloudAttachments,
+                })
+              : promptText,
             runOrdinal: turnInput.runOrdinal,
             hasT3Mcp: mcpServers !== undefined,
           });
