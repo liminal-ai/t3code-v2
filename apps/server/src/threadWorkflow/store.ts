@@ -8,8 +8,8 @@
  * claim the next seq. Server ownership guarantees one process writes the directory.
  *
  * Disk work, the load included, runs one operation at a time under `onDisk`. Node's worker pool is
- * four threads shared with everything core does, and a filesystem call holds one until the OS
- * answers, so a stalled disk under the module must cost core at most one of them.
+ * four threads by default, shared with everything core does, and a filesystem call holds one until
+ * the OS answers, so a stalled disk under the module must cost core at most one of them.
  */
 import { ThreadWorkflowError, ThreadWorkflowRecord, type ThreadId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";

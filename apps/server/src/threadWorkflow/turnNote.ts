@@ -9,7 +9,7 @@ import { printedCall, progress } from "./domain.ts";
 
 const LIFECYCLE_RULE =
   "This thread cannot settle, archive or be deleted while the workflow is open.";
-const CUT_MARK = "… (cut to fit; thread_workflow_get has the whole step)";
+const CUT_SUFFIX = " … (cut to fit; thread_workflow_get has the whole step)";
 
 const proofLine = (step: ThreadWorkflowStepSummary) =>
   step.proofLevel === "none"
@@ -58,11 +58,11 @@ const note = (lines: ReadonlyArray<string | null>) =>
     .filter((line) => line !== null)
     .join("\n");
 
-/** The first `keep` code units, never half a surrogate pair, then the cut mark. */
+/** The first `keep` code units, never half a surrogate pair, then the cut suffix. */
 const cut = (text: string, keep: number) => {
   const head = text.slice(0, Math.max(keep, 0));
   const kept = /[\uD800-\uDBFF]$/.test(head) ? head.slice(0, -1) : head;
-  return [kept.trimEnd(), CUT_MARK].filter((part) => part !== "").join(" ");
+  return `${kept.trimEnd()}${CUT_SUFFIX}`.trimStart();
 };
 
 /**
@@ -87,6 +87,6 @@ export const turnNote = (view: ThreadWorkflowSubscriptionView): string => {
   const full = note(stepLines(instance, step, step.instructions));
   const over = full.length - THREAD_WORKFLOW_LIMITS.turnNote;
   if (over <= 0) return full;
-  const keep = step.instructions.length - over - CUT_MARK.length - " ".length;
+  const keep = step.instructions.length - over - CUT_SUFFIX.length;
   return note(stepLines(instance, step, cut(step.instructions, keep)));
 };
