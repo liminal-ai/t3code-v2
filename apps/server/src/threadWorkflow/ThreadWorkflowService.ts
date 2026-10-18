@@ -21,6 +21,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
@@ -29,6 +30,7 @@ import * as NodeOS from "node:os";
 
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import { withinDeadline } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import { decide, recordFor, toSubscriptionView, toView, type ResolvedTemplate } from "./domain.ts";
 import { ThreadWorkflowStore } from "./store.ts";
@@ -63,6 +65,13 @@ export class ThreadWorkflowService extends Context.Service<
 
 const NO_TEMPLATES: ReadonlyMap<ThreadWorkflowTemplateId, ResolvedTemplate> = new Map();
 const templateList = [...builtInTemplates.values()];
+/**
+ * What `apply` reads under the thread lock before it decides: the settings cache, one projection
+ * row and a hash of each template's playbook file. Each answers in milliseconds, so five seconds
+ * only passes when a disk or the database has stopped answering, and it caps how long a stalled
+ * dependency holds the thread lock.
+ */
+const DEPENDENCY_DEADLINE = "5 seconds";
 
 /** Only these consult the thread's lifecycle, so only they pay for the projection read. */
 const needsThreadState = (request: ThreadWorkflowRequest) =>
@@ -123,6 +132,26 @@ const make = Effect.gen(function* () {
       } satisfies ThreadWorkflowSubscriptionState;
     });
 
+  /** A dependency that does not answer in time fails the request instead of holding the lock. */
+  const awaited = <A, E>(
+    what: string,
+    effect: Effect.Effect<A, E>,
+  ): Effect.Effect<A, E | ThreadWorkflowError> =>
+    withinDeadline(effect, DEPENDENCY_DEADLINE).pipe(
+      Effect.flatMap(
+        Option.match({
+          onNone: () =>
+            Effect.fail(
+              new ThreadWorkflowError({
+                code: "store_unavailable",
+                message: `${what} did not answer within ${DEPENDENCY_DEADLINE}, so this workflow request was not applied. Try again.`,
+              }),
+            ),
+          onSome: (exit): Effect.Effect<A, E | ThreadWorkflowError> => exit,
+        }),
+      ),
+    );
+
   const whenAvailable = <A, R>(
     effect: Effect.Effect<A, ThreadWorkflowError, R>,
   ): Effect.Effect<A, ThreadWorkflowError, R> =>
@@ -146,9 +175,14 @@ const make = Effect.gen(function* () {
           const decision = decide(state, actor, request, {
             requestId: options.requestId ?? null,
             expectedRevision: options.expectedRevision ?? null,
-            enabled: yield* enabled,
-            threadActive: needsThreadState(request) ? yield* threadActive(threadId) : true,
-            templates: request._tag === "start" ? yield* resolvedTemplates : NO_TEMPLATES,
+            enabled: yield* awaited("Server settings", enabled),
+            threadActive: needsThreadState(request)
+              ? yield* awaited("The thread's state", threadActive(threadId))
+              : true,
+            templates:
+              request._tag === "start"
+                ? yield* awaited("The workflow templates", resolvedTemplates)
+                : NO_TEMPLATES,
           });
           if (isThreadWorkflowError(decision)) return yield* decision;
           const record = recordFor(state, actor, request, decision, {

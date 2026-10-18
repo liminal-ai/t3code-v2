@@ -20,6 +20,7 @@ import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
@@ -47,9 +48,14 @@ const active: ThreadLifecycle = {
   settledOverride: null,
 };
 
-/** The module over a fresh state dir, with the thread's lifecycle under the test's control. */
+/** Flipped on, every settings read signals `reached` and then never answers. */
+interface SettingsStall {
+  readonly on: Ref.Ref<boolean>;
+  readonly reached: Deferred.Deferred<void>;
+}
+
 /** The test settings layer never emits changes; the subscription test needs the flag flip to arrive. */
-const settingsWithChanges = (enabled: boolean) =>
+const settingsWithChanges = (enabled: boolean, stall?: SettingsStall) =>
   Layer.effect(
     ServerSettings.ServerSettingsService,
     Effect.gen(function* () {
@@ -58,10 +64,16 @@ const settingsWithChanges = (enabled: boolean) =>
         threadWorkflowsEnabled: enabled,
       });
       const changes = yield* PubSub.unbounded<ServerSettingsShape>();
+      const stalled =
+        stall === undefined
+          ? Effect.succeed(false)
+          : Ref.get(stall.on).pipe(
+              Effect.tap((on) => (on ? Deferred.succeed(stall.reached, undefined) : Effect.void)),
+            );
       return ServerSettings.ServerSettingsService.of({
         start: Effect.void,
         ready: Effect.void,
-        getSettings: Ref.get(current),
+        getSettings: Effect.flatMap(stalled, (on) => (on ? Effect.never : Ref.get(current))),
         updateSettings: (patch) =>
           Ref.updateAndGet(current, (settings) => applyServerSettingsPatch(settings, patch)).pipe(
             Effect.tap((settings) => PubSub.publish(changes, settings)),
@@ -76,23 +88,30 @@ const settingsWithChanges = (enabled: boolean) =>
     }),
   );
 
-const makeHarness = (options: { readonly enabled?: boolean; readonly seedLog?: string } = {}) =>
+/** The module over a fresh state dir, with the thread's lifecycle under the test's control. */
+const makeHarness = (
+  options: {
+    readonly enabled?: boolean;
+    readonly seedLog?: string;
+    readonly stall?: SettingsStall;
+    /** The module's view of the disk, over the real one. */
+    readonly fileSystem?: (real: FileSystem.FileSystem) => FileSystem.FileSystem;
+  } = {},
+) =>
   Effect.gen(function* () {
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-thread-workflow-" });
     const threadsDir = path.join(baseDir, "userdata", "thread-workflows", "threads");
+    const logFile = path.join(threadsDir, threadLogFileName(threadId));
     if (options.seedLog !== undefined) {
       yield* fileSystem.makeDirectory(threadsDir, { recursive: true });
-      yield* fileSystem.writeFileString(
-        path.join(threadsDir, threadLogFileName(threadId)),
-        options.seedLog,
-      );
+      yield* fileSystem.writeFileString(logFile, options.seedLog);
     }
     const lifecycle = yield* Ref.make<ThreadLifecycle>(active);
     const layer = ThreadWorkflow.layer.pipe(
       Layer.provideMerge(ThreadCommandExecutor.layer),
-      Layer.provideMerge(settingsWithChanges(options.enabled ?? true)),
+      Layer.provideMerge(settingsWithChanges(options.enabled ?? true, options.stall)),
       Layer.provide(
         Layer.mock(ProjectionStore.ProjectionStoreV2)({
           getThread: () =>
@@ -100,10 +119,24 @@ const makeHarness = (options: { readonly enabled?: boolean; readonly seedLog?: s
         }),
       ),
       Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
+      Layer.provide(
+        Layer.effect(
+          FileSystem.FileSystem,
+          Effect.map(FileSystem.FileSystem, options.fileSystem ?? ((real) => real)),
+        ),
+      ),
       Layer.provide(NodeServices.layer),
     );
-    return { baseDir, threadsDir, lifecycle, layer };
+    return { baseDir, threadsDir, logFile, lifecycle, layer };
   });
+
+const makeStall = Effect.gen(function* () {
+  const stall: SettingsStall = {
+    on: yield* Ref.make(false),
+    reached: yield* Deferred.make<void>(),
+  };
+  return stall;
+});
 
 const duplicateStart = given(started).records.flatMap((record) => [record, { ...record, seq: 2 }]);
 
@@ -315,6 +348,93 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
             "single-task",
           ]);
           assert.isTrue(templates.every((template) => template.stepCount > 0));
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.effect("answers store_unavailable and frees the lock when the append does not finish", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const reached = yield* Deferred.make<void>();
+        const gate = yield* Deferred.make<void>();
+        const landed = yield* Deferred.make<void>();
+        const harness = yield* makeHarness({
+          fileSystem: (real) =>
+            FileSystem.FileSystem.of({
+              ...real,
+              // The real open acquires its handle uninterruptibly; this one does the same and waits.
+              open: (file, openOptions) =>
+                openOptions?.flag === "a"
+                  ? Effect.acquireRelease(
+                      Deferred.succeed(reached, undefined).pipe(
+                        Effect.andThen(Deferred.await(gate)),
+                      ),
+                      () => Effect.void,
+                    ).pipe(
+                      Effect.andThen(real.open(file, openOptions)),
+                      Effect.tap(() =>
+                        Effect.addFinalizer(() => Deferred.succeed(landed, undefined)),
+                      ),
+                    )
+                  : real.open(file, openOptions),
+            }),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          const hooks = yield* ThreadHooks;
+          const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+          const fileSystem = yield* FileSystem.FileSystem;
+
+          const starting = yield* service
+            .apply(user, threadId, start)
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* Deferred.await(reached);
+          yield* TestClock.adjust("10 seconds");
+          assert.strictEqual((yield* Fiber.join(starting)).code, "store_unavailable");
+          assert.strictEqual(
+            yield* executor.withLock(threadId, Effect.succeed("a lifecycle command ran")),
+            "a lifecycle command ran",
+          );
+          assert.strictEqual(
+            (yield* service.state(threadId)).view.corruption,
+            "a write did not complete",
+          );
+          assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action: "settle" }));
+
+          yield* Deferred.succeed(gate, undefined);
+          yield* Deferred.await(landed);
+          const onDisk = yield* fileSystem.readFileString(harness.logFile);
+          assert.lengthOf(onDisk.split("\n"), 2);
+          const inMemory = (yield* service.state(threadId)).view;
+          assert.strictEqual(inMemory.corruption, "a write did not complete");
+          assert.deepStrictEqual(inMemory.instances, []);
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.effect("fails a request instead of holding the lock when settings do not answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const stall = yield* makeStall;
+        const harness = yield* makeHarness({ stall });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          const executor = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+          yield* service.apply(user, threadId, start);
+
+          yield* Ref.set(stall.on, true);
+          const commenting = yield* service
+            .apply(user, threadId, { _tag: "comment", target: "w1" as never, comment: "hi" })
+            .pipe(Effect.flip, Effect.forkChild);
+          yield* Deferred.await(stall.reached);
+          yield* TestClock.adjust("5 seconds");
+          const refused = yield* Fiber.join(commenting);
+          assert.strictEqual(refused.code, "store_unavailable");
+          assert.match(refused.message, /Server settings did not answer/);
+          assert.strictEqual(yield* executor.withLock(threadId, Effect.succeed("free")), "free");
+          assert.strictEqual((yield* service.view(threadId)).activeInstanceId, "w1");
         }).pipe(Effect.provide(harness.layer));
       }),
     ),

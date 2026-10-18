@@ -1,10 +1,14 @@
 import { ThreadId, type ThreadWorkflowRecord } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
+import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import { decide, lifecycleBlocker, toView, type ThreadWorkflowState } from "./domain.ts";
@@ -19,12 +23,18 @@ import { agent, apply, contextWith, given, request, started, threadId, user } fr
 const withStore = <A, E>(
   baseDir: string,
   body: (store: ThreadWorkflowStore["Service"]) => Effect.Effect<A, E>,
+  fileSystem: (real: FileSystem.FileSystem) => FileSystem.FileSystem = (real) => real,
 ) =>
   Effect.gen(function* () {
     return yield* body(yield* ThreadWorkflowStore);
   }).pipe(
     Effect.provide(
-      storeLayer.pipe(Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir)))),
+      storeLayer.pipe(
+        Layer.provide(
+          Layer.effect(FileSystem.FileSystem, Effect.map(FileSystem.FileSystem, fileSystem)),
+        ),
+        Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
+      ),
     ),
   );
 
@@ -170,6 +180,38 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
       assert.isNull(reloaded.corruption);
     }),
   );
+
+  it.effect("turns itself off when the directory read does not answer by the load deadline", () => {
+    const errors: Array<unknown> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Error") errors.push(message);
+    });
+    return Effect.gen(function* () {
+      const { baseDir, lines, seed } = yield* setup;
+      yield* seed(lines(twoRecords.records));
+      const reached = yield* Deferred.make<void>();
+      const stalled = yield* Deferred.make<void>();
+      const building = yield* withStore(
+        baseDir,
+        (store) => Effect.succeed(store.unavailable),
+        (real) =>
+          FileSystem.FileSystem.of({
+            ...real,
+            readDirectory: () =>
+              Deferred.succeed(reached, undefined).pipe(
+                Effect.andThen(Deferred.await(stalled)),
+                Effect.andThen(Effect.die("the directory read never answers")),
+              ),
+          }),
+      ).pipe(Effect.forkChild);
+      yield* Deferred.await(reached);
+      yield* TestClock.adjust("15 seconds");
+      const unavailable = yield* Fiber.join(building);
+      assert.match(unavailable ?? "", /could not be loaded/);
+      assert.lengthOf(errors, 1);
+      assert.match(String(errors[0]), /thread workflow module disabled/);
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
 
   it.effect("replays a receipt across a reload", () =>
     Effect.gen(function* () {

@@ -14,12 +14,14 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
+import { withinDeadline } from "../orchestration-v2/ThreadHooks.ts";
 import { admits, emptyState, evolve, markCorrupt, type ThreadWorkflowState } from "./domain.ts";
 
 export class ThreadWorkflowStore extends Context.Service<
@@ -27,8 +29,8 @@ export class ThreadWorkflowStore extends Context.Service<
   {
     /**
      * Why the module is off, or null. Set at build when the threads directory exists but cannot be
-     * read or folded; the server still starts. Every thread then reads as empty and nothing is
-     * written until a restart.
+     * read or folded, or does not answer by the load deadline; the server still starts. Every
+     * thread then reads as empty and nothing is written until a restart.
      */
     readonly unavailable: string | null;
     /** The thread's folded state from memory; an empty state for a thread with no log. */
@@ -48,7 +50,17 @@ export class ThreadWorkflowStore extends Context.Service<
 >()("t3/threadWorkflow/store/ThreadWorkflowStore") {}
 
 const LOG_SUFFIX = ".jsonl";
-const WRITE_TIMEOUT = "10 seconds";
+/**
+ * One append is a few hundred bytes plus two fsyncs, under a second on the slowest disk a server
+ * runs from, so ten seconds only passes when the disk has stopped answering. It is also the longest
+ * the thread lock, and so every command on that thread, waits for the module.
+ */
+const WRITE_DEADLINE = "10 seconds";
+/**
+ * The load reads every thread's log once, a few kilobytes each, so even thousands of threads on a
+ * cold disk finish in seconds. Server startup never waits on the module longer than this.
+ */
+const LOAD_DEADLINE = "15 seconds";
 const NEWLINE = 0x0a;
 
 const isSafeByte = (byte: number) =>
@@ -185,7 +197,7 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const loaded = yield* Effect.gen(function* () {
+  const loadAll = Effect.gen(function* () {
     if (!(yield* fileSystem.exists(threadsDir))) return new Map<ThreadId, ThreadWorkflowState>();
     const states = new Map<ThreadId, ThreadWorkflowState>();
     for (const fileName of yield* fileSystem.readDirectory(threadsDir)) {
@@ -194,20 +206,34 @@ const make = Effect.gen(function* () {
       states.set(threadId, yield* loadThread(threadId, path.join(threadsDir, fileName)));
     }
     return states;
-  }).pipe(
-    Effect.map((states) => ({ states, unavailable: null })),
-    Effect.catchCause((cause) =>
-      Cause.hasInterrupts(cause)
-        ? Effect.interrupt
-        : Effect.logError("thread workflow module disabled: its logs could not be loaded", {
-            directory: threadsDir,
-            cause,
-          }).pipe(
-            Effect.as({
-              states: new Map<ThreadId, ThreadWorkflowState>(),
-              unavailable: `The thread workflow logs in ${threadsDir} could not be loaded when the server started, so thread workflows are unavailable until it restarts.`,
-            }),
-          ),
+  });
+
+  interface Loaded {
+    readonly states: ReadonlyMap<ThreadId, ThreadWorkflowState>;
+    readonly unavailable: string | null;
+  }
+  const disabled = (why: Record<string, unknown>): Effect.Effect<Loaded> =>
+    Effect.logError("thread workflow module disabled: its logs could not be loaded", {
+      directory: threadsDir,
+      ...why,
+    }).pipe(
+      Effect.as({
+        states: new Map<ThreadId, ThreadWorkflowState>(),
+        unavailable: `The thread workflow logs in ${threadsDir} could not be loaded when the server started, so thread workflows are unavailable until it restarts.`,
+      }),
+    );
+
+  const loaded: Loaded = yield* withinDeadline(loadAll, LOAD_DEADLINE).pipe(
+    Effect.flatMap(
+      Option.match({
+        onNone: () => disabled({ timeout: LOAD_DEADLINE }),
+        onSome: Exit.match({
+          onSuccess: (states): Effect.Effect<Loaded> =>
+            Effect.succeed({ states, unavailable: null }),
+          onFailure: (cause) =>
+            Cause.hasInterrupts(cause) ? Effect.interrupt : disabled({ cause }),
+        }),
+      }),
     ),
   );
 
@@ -270,33 +296,41 @@ const make = Effect.gen(function* () {
       if (problem !== null) {
         return yield* Effect.die(new Error(`thread workflow record ${record.seq} ${problem}`));
       }
-      return yield* Effect.uninterruptibleMask((restore) =>
-        restore(write(threadId, record).pipe(Effect.timeout(WRITE_TIMEOUT))).pipe(
-          Effect.matchCauseEffect({
-            onSuccess: () =>
-              Ref.modify(states, (map) => {
-                const next = evolve(stateOf(map, threadId), record);
-                return [next, new Map(map).set(threadId, next)];
-              }),
-            onFailure: (cause) =>
-              Effect.logWarning("thread workflow write failed", { threadId, cause }).pipe(
-                Effect.andThen(
-                  Ref.update(states, (map) =>
-                    new Map(map).set(
-                      threadId,
-                      markCorrupt(stateOf(map, threadId), "a write did not complete"),
-                    ),
-                  ),
-                ),
-                Effect.andThen(
-                  Effect.fail(
-                    unavailable(
-                      "The workflow write did not complete, so this thread's workflow is read-only until the server restarts.",
-                    ),
-                  ),
-                ),
+      const folded = Ref.modify(states, (map) => {
+        const next = evolve(stateOf(map, threadId), record);
+        return [next, new Map(map).set(threadId, next)];
+      });
+      const corrupted = (why: Record<string, unknown>) =>
+        Effect.logWarning("thread workflow write did not complete", { threadId, ...why }).pipe(
+          Effect.andThen(
+            Ref.update(states, (map) =>
+              new Map(map).set(
+                threadId,
+                markCorrupt(stateOf(map, threadId), "a write did not complete"),
               ),
-          }),
+            ),
+          ),
+          Effect.andThen(
+            Effect.fail(
+              unavailable(
+                "The workflow write did not complete, so this thread's workflow is read-only until the server restarts.",
+              ),
+            ),
+          ),
+        );
+      // Uninterruptible so memory always learns the write's outcome; the deadline bounds the wait.
+      // Only this fiber touches memory: a write that finishes after the deadline changes nothing.
+      return yield* Effect.uninterruptible(
+        withinDeadline(write(threadId, record), WRITE_DEADLINE).pipe(
+          Effect.flatMap(
+            Option.match({
+              onNone: () => corrupted({ timeout: WRITE_DEADLINE }),
+              onSome: Exit.match({
+                onSuccess: () => folded,
+                onFailure: (cause) => corrupted({ cause }),
+              }),
+            }),
+          ),
         ),
       );
     });
