@@ -52,6 +52,7 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import { projectedRowEncodedBytes } from "./threadHistoryPaging.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { ThreadHooks } from "./ThreadHooks.ts";
 import { DispatchModeLimit, exceededDispatchModeLimit } from "./DispatchModeLimit.ts";
 import { projectTurnItemForDetail } from "./WireProjection.ts";
 import * as LegacyV1ThreadImporter from "./legacy/LegacyV1ThreadImporter.ts";
@@ -510,6 +511,7 @@ const make = Effect.gen(function* () {
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
   const orchestrator = yield* Orchestrator.OrchestratorV2;
   const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+  const threadHooks = yield* ThreadHooks;
   const layerScope = yield* Effect.scope;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
@@ -942,6 +944,18 @@ const make = Effect.gen(function* () {
   const settleThread: ThreadManagementServiceShape["settleThread"] = Effect.fn(
     "orchestrationV2.threadManagement.settleThread",
   )(function* (input) {
+    // A deferred settle would be refused after the turn, where the agent never sees it.
+    const blocker = yield* threadHooks.lifecycleBlocker({
+      threadId: input.threadId,
+      action: "settle",
+    });
+    if (blocker !== null) {
+      return yield* new Orchestrator.OrchestratorDispatchError({
+        commandId: input.commandId,
+        commandType: "thread.settle",
+        cause: `Thread ${input.threadId} ${blocker}`,
+      });
+    }
     const shell = input.byOwnAgent ? yield* orchestrator.getThreadShell(input.threadId) : null;
     if (shell != null && shell.activeRunId !== null) {
       yield* settleAfterRun({

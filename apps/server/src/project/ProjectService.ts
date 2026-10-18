@@ -30,6 +30,7 @@ import {
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { planThreadDeletion } from "../orchestration-v2/ThreadDeletion.ts";
+import { ThreadHooks } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ProjectEnrichmentService from "./ProjectEnrichmentService.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
@@ -83,6 +84,15 @@ export class ProjectNotEmptyError extends Schema.TaggedError<ProjectNotEmptyErro
   }
 }
 
+export class ProjectThreadsBlockedError extends Schema.TaggedError<ProjectThreadsBlockedError>()(
+  "ProjectThreadsBlockedError",
+  { projectId: ProjectId, blockers: Schema.Array(Schema.String) },
+) {
+  override get message(): string {
+    return `Project ${this.projectId} cannot be deleted. ${this.blockers.join(" ")}`;
+  }
+}
+
 export class ProjectOperationError extends Schema.TaggedError<ProjectOperationError>()(
   "ProjectOperationError",
   {
@@ -108,6 +118,7 @@ export type ProjectServiceError =
   | ProjectNotFoundError
   | ProjectConflictError
   | ProjectNotEmptyError
+  | ProjectThreadsBlockedError
   | ProjectOperationError;
 
 export class ProjectService extends Context.Service<
@@ -149,6 +160,7 @@ export const make = Effect.gen(function* () {
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const legacyImporter = yield* LegacyV1ThreadImporter.LegacyV1ThreadImporter;
   const threadCommands = yield* ThreadCommandExecutor.ThreadCommandExecutor;
+  const threadHooks = yield* ThreadHooks;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectLocks = yield* KeyedLock.make<ProjectId>();
   const workspaceLocks = yield* KeyedLock.make<string>();
@@ -441,6 +453,20 @@ export const make = Effect.gen(function* () {
     }
   });
 
+  const refuseBlockedThreads = Effect.fn("ProjectService.refuseBlockedThreads")(function* (
+    projectId: ProjectId,
+    threadIds: ReadonlyArray<ThreadId>,
+  ) {
+    const blockers: Array<string> = [];
+    for (const threadId of threadIds) {
+      const blocker = yield* threadHooks.lifecycleBlocker({ threadId, action: "delete" });
+      if (blocker !== null) blockers.push(`Thread ${threadId} ${blocker}`);
+    }
+    if (blockers.length > 0) {
+      return yield* new ProjectThreadsBlockedError({ projectId, blockers });
+    }
+  });
+
   const deleteChildThreads = Effect.fn("ProjectService.deleteChildThreads")(function* (
     input: ProjectDeleteInput,
   ) {
@@ -458,16 +484,27 @@ export const make = Effect.gen(function* () {
     if (projectThreads.length > 0 && input.force !== true) {
       return yield* new ProjectNotEmptyError({ projectId });
     }
+    yield* refuseBlockedThreads(
+      projectId,
+      projectThreads.map((thread) => thread.id),
+    );
     // Delete children durably before the project so a failed cascade can be retried.
+    // A thread blocked after the preflight stops the cascade there, and a retry resumes.
     yield* Effect.forEach(
       projectThreads,
       (thread) =>
         threadCommands
-          .withLock(thread.id, deleteChildThread(input, thread.id))
+          .withLock(
+            thread.id,
+            refuseBlockedThreads(projectId, [thread.id]).pipe(
+              Effect.andThen(deleteChildThread(input, thread.id)),
+            ),
+          )
           .pipe(
-            Effect.mapError(
-              (cause) =>
-                new ProjectOperationError({ operation: "delete-thread", projectId, cause }),
+            Effect.mapError((cause) =>
+              Schema.is(ProjectThreadsBlockedError)(cause)
+                ? cause
+                : new ProjectOperationError({ operation: "delete-thread", projectId, cause }),
             ),
           ),
       { concurrency: 1, discard: true },

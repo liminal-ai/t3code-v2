@@ -75,6 +75,7 @@ import { shellStreamItemFromThreadShell } from "./ShellStream.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ThreadManagementService from "./ThreadManagementService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
+import { ThreadHooks } from "./ThreadHooks.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const layerPlatformTest = Layer.merge(
@@ -433,6 +434,178 @@ it.layer(layerProjectDeletionTest)("project deletion during thread commands", (i
           }),
         ),
       );
+    }),
+  );
+});
+
+const lifecycleBlockers = new Map<ThreadId, () => string | null>();
+const layerThreadHooksTest = layerProjectDeletionTest.pipe(
+  Layer.provide(
+    Layer.succeed(ThreadHooks, {
+      turnNote: () => Effect.succeed(""),
+      lifecycleBlocker: ({ threadId }) =>
+        Effect.sync(() => lifecycleBlockers.get(threadId)?.() ?? null),
+    }),
+  ),
+);
+const openWorkflow = "has an open workflow.";
+
+it.layer(layerThreadHooksTest)("thread lifecycle blockers", (it) => {
+  const createThread = (threadId: ThreadId, projectId: ProjectId) =>
+    Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
+      orchestrator.dispatch({
+        type: "thread.create",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}-create`),
+        threadId,
+        projectId,
+        title: "Blocked lifecycle",
+        modelSelection,
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+      }),
+    );
+
+  it.effect("refuses settle, archive and delete while the hook blocks, and allows them after", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("hooks-lifecycle-thread");
+      yield* createThread(threadId, ProjectId.make("hooks-lifecycle-project"));
+      lifecycleBlockers.set(threadId, () => openWorkflow);
+
+      for (const type of ["thread.settle", "thread.archive", "thread.delete"] as const) {
+        const error = yield* orchestrator
+          .dispatch({ type, commandId: CommandId.make(`${threadId}-${type}-blocked`), threadId })
+          .pipe(Effect.flip);
+        assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
+        assert.equal(error.cause, `Thread ${threadId} ${openWorkflow}`);
+      }
+      const blocked = (yield* orchestrator.getThreadProjection(threadId)).thread;
+      assert.isNull(blocked.settledOverride);
+      assert.isNull(blocked.archivedAt);
+      assert.isNull(blocked.deletedAt);
+
+      lifecycleBlockers.delete(threadId);
+      yield* orchestrator.dispatch({
+        type: "thread.settle",
+        commandId: CommandId.make(`${threadId}-settle`),
+        threadId,
+      });
+      yield* orchestrator.dispatch({
+        type: "thread.delete",
+        commandId: CommandId.make(`${threadId}-delete`),
+        threadId,
+      });
+      const released = (yield* orchestrator.getThreadProjection(threadId)).thread;
+      assert.equal(released.settledOverride, "settled");
+      assert.isNotNull(released.deletedAt);
+    }),
+  );
+
+  it.effect("refuses an agent settling its own thread mid-turn instead of deferring it", () =>
+    Effect.gen(function* () {
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadManagement = yield* ThreadManagementService.ThreadManagementService;
+      const projectId = ProjectId.make("hooks-agent-settle-project");
+      const threadId = ThreadId.make("hooks-agent-settle-thread");
+      yield* (yield* ProjectService.ProjectService).create({
+        commandId: CommandId.make(`${projectId}-create`),
+        projectId,
+        title: "Agent settle",
+        workspaceRoot: "/work/hooks-agent-settle",
+      });
+      yield* createThread(threadId, projectId);
+      yield* orchestrator.dispatch({
+        type: "message.dispatch",
+        createdBy: "user",
+        creationSource: "web",
+        commandId: CommandId.make(`${threadId}-message`),
+        threadId,
+        messageId: MessageId.make(`${threadId}-message`),
+        text: "Fix it and then settle this thread.",
+        attachments: [],
+        modelSelection,
+        dispatchMode: { type: "start_immediately" },
+      });
+      lifecycleBlockers.set(threadId, () => openWorkflow);
+
+      const error = yield* threadManagement
+        .settleThread({
+          threadId,
+          commandId: CommandId.make(`${threadId}-settle`),
+          byOwnAgent: true,
+        })
+        .pipe(Effect.flip);
+      assert.instanceOf(error, Orchestrator.OrchestratorDispatchError);
+      assert.equal(error.cause, `Thread ${threadId} ${openWorkflow}`);
+    }),
+  );
+
+  it.effect("refuses a forced project deletion as a whole, naming every blocked thread", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("hooks-project-delete");
+      yield* projects.create({
+        commandId: CommandId.make(`${projectId}-create`),
+        projectId,
+        title: "Blocked project",
+        workspaceRoot: "/work/hooks-project-delete",
+      });
+      const threadIds = ["a", "b", "c"].map((suffix) => ThreadId.make(`${projectId}-${suffix}`));
+      yield* Effect.forEach(threadIds, (threadId) => createThread(threadId, projectId));
+      const blockedIds = [threadIds[0]!, threadIds[2]!];
+      for (const threadId of blockedIds) lifecycleBlockers.set(threadId, () => openWorkflow);
+
+      const error = yield* projects
+        .delete({ commandId: CommandId.make(`${projectId}-delete`), projectId, force: true })
+        .pipe(Effect.flip);
+      assert.instanceOf(error, ProjectService.ProjectThreadsBlockedError);
+      assert.deepEqual(
+        [...error.blockers].toSorted(),
+        blockedIds.map((threadId) => `Thread ${threadId} ${openWorkflow}`).toSorted(),
+      );
+      for (const threadId of threadIds) {
+        assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.deletedAt);
+      }
+      assert.isNull(Option.getOrThrow(yield* projects.getById(projectId)).deletedAt);
+    }),
+  );
+
+  it.effect("stops a cascade at a thread blocked after the preflight, and a retry finishes", () =>
+    Effect.gen(function* () {
+      const projects = yield* ProjectService.ProjectService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("hooks-project-delete-race");
+      yield* projects.create({
+        commandId: CommandId.make(`${projectId}-create`),
+        projectId,
+        title: "Raced project",
+        workspaceRoot: "/work/hooks-project-delete-race",
+      });
+      const threadId = ThreadId.make(`${projectId}-thread`);
+      yield* createThread(threadId, projectId);
+      let checks = 0;
+      lifecycleBlockers.set(threadId, () => (++checks === 1 ? null : openWorkflow));
+
+      const error = yield* projects
+        .delete({ commandId: CommandId.make(`${projectId}-delete`), projectId, force: true })
+        .pipe(Effect.flip);
+      assert.instanceOf(error, ProjectService.ProjectThreadsBlockedError);
+      assert.deepEqual(error.blockers, [`Thread ${threadId} ${openWorkflow}`]);
+      assert.isNull((yield* orchestrator.getThreadProjection(threadId)).thread.deletedAt);
+
+      lifecycleBlockers.delete(threadId);
+      const deleted = yield* projects.delete({
+        commandId: CommandId.make(`${projectId}-delete-retry`),
+        projectId,
+        force: true,
+      });
+      assert.isNotNull(deleted.deletedAt);
+      assert.isNotNull((yield* orchestrator.getThreadProjection(threadId)).thread.deletedAt);
     }),
   );
 });
