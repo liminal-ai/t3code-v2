@@ -35,31 +35,32 @@ Sync to a published nightly tag, not to upstream `main`. A nightly is a build up
 
 1. Fetch and pick the tag:
 
-	```bash
-	git fetch upstream --tags
-	git tag -l 'v*-nightly.*' --sort=-creatordate | head -5
-	```
+   ```bash
+   git fetch upstream --tags
+   git tag -l 'v*-nightly.*' --sort=-creatordate | head -5
+   ```
 
 2. List what upstream changed in the files we changed. Read each of those commits before you merge.
 
-	```bash
-	OLD=v0.1.1-nightly.20261017.3238   # the "Last synced" tag above
-	NEW=<new tag>
-	git log --oneline $OLD..$NEW -- $(git diff --name-only $OLD main)
-	```
+   ```bash
+   OLD=v0.1.1-nightly.20261017.3238   # the "Last synced" tag above
+   NEW=<new tag>
+   git log --oneline $OLD..$NEW -- $(git diff --name-only $OLD main)
+   ```
 
 3. Merge on a branch:
 
-	```bash
-	git switch -c sync/upstream-nightly-<n> main
-	git merge --no-ff $NEW
-	```
+   ```bash
+   git switch -c sync/upstream-nightly-<n> main
+   git merge --no-ff $NEW
+   ```
 
-	Resolve each conflict so that upstream's new behavior and ours both survive. If upstream now does what one of our changes did, take upstream's version and delete ours.
+   Resolve each conflict so that upstream's new behavior and ours both survive. If upstream now does what one of our changes did, take upstream's version and delete ours.
+
 4. Verify three things. Upstream owns testing upstream, so do not re-test upstream features.
-	- Our code: the provider-cursor tests, with `vp test run packages/provider-cursor/src/server/`.
-	- The seams: the tests in [Seams to re-check](#seams-to-re-check), and the content check that the merged tree is upstream plus our diff and nothing else. Compare `git diff $NEW <merge>` with `git diff $OLD main`. The only differences should be the conflict resolutions you made.
-	- The deployment: build a release (see [Build a release](#build-a-release)) and run it as a throwaway T3, never against prod. See [Test live without touching prod](#test-live-without-touching-prod).
+   - Our code: the provider-cursor tests, with `vp test run packages/provider-cursor/src/server/`.
+   - The seams: the tests in [Seams to re-check](#seams-to-re-check), and the content check that the merged tree is upstream plus our diff and nothing else. Compare `git diff $NEW <merge>` with `git diff $OLD main`. The only differences should be the conflict resolutions you made.
+   - The deployment: build a release (see [Build a release](#build-a-release)) and run it as a throwaway T3, never against prod. See [Test live without touching prod](#test-live-without-touching-prod).
 5. Open the PR against `main`. Set "Last synced" in this file to the new tag in the same PR.
 6. Have a reviewer from the other model family verify it, then merge with `--merge`. If the merge commit carries a test that the next commit fixes, that is fine. `main`'s first-parent history stays green because the PR lands as a merge commit.
 7. Stop. The cutover is a separate step that Lee runs or approves.
@@ -111,18 +112,18 @@ vp test run packages/provider-cursor/src/server/ \
 
 Each row is something upstream could change without a merge conflict. The tests named in the last column fail when it does.
 
-| We depend on | Where | If upstream changes it | Test that catches it |
-|---|---|---|---|
-| T3's MCP server goes on `Agent.create` and `Agent.resume`, never on a send. A send-level `mcpServers` replaces the servers the agent opened with. | `adapter.ts` `makeCursorAgentOptions` and the send options in `startTurn` | Local threads lose T3 tools, or a cloud VM gets an endpoint it cannot reach. | `adapter.cloud.test.ts` "keeps a local instance on this machine's tools, paths and checkpoints" and "runs a turn on a cloud VM without local tools, paths or checkpoints" |
-| The first-prompt wrapper `<t3_code_orchestration_instructions>` appears only when `runOrdinal === 1 && hasT3Mcp`. Cloud passes `hasT3Mcp: false`. | `packages/provider-core/src/server/orchestrationInstructions.ts` `t3OrchestrationPromptForFirstRun` | A cloud VM is told to call T3 tools it cannot reach. | the same two tests |
-| `providerThread.firstRunOrdinal` stays `null` until the first turn finalizes. The cloud environment note goes out only then. | `adapter.ts` `resolveUserMessage` | The note never goes out, or it repeats every turn. | "runs a turn on a cloud VM..." |
-| `nativeConversationHeadRef` is unused by upstream's Cursor adapter. We store the cloud run id there to follow a run across a T3 restart. | `adapter.ts` attach-or-send block in `startTurn` | A restart sends "continue" into a cloud run that never stopped, or attaches to the wrong run. | "after a T3 restart: follows the cloud run T3 cut" |
-| `ensureThread` opens with `create` and the first turn opens with `resume`. Only `resume` recreates a cloud agent Cursor has no record of. | `adapter.ts` `openAgent` callers, `CursorAgentSdk.ts` `open` | A cloud thread whose first turn never started fails instead of recreating its agent. | `CursorAgentSdk.test.ts` "starts a cloud agent Cursor has no record of under its recorded id" |
-| `@cursor/sdk` reports a missing cloud agent as `status === 404`, and `Agent.getRun` and `Agent.cancelRun` accept `{ runtime: "cloud", agentId, apiKey }`. | `CursorAgentSdk.ts` `isCloudNotFound`, `attach`, `cancelRun` | Resume, attach, or cancel misses the cloud run. Cloud cancel must stay on `Agent.cancelRun`, because `run.cancel()` reports cancelled while the VM keeps running. | `CursorAgentSdk.test.ts` describe "CursorAgentSdkRunner cloud" |
-| `providerMessageTextWithAttachmentPaths` writes nothing for an attachment whose path resolves to `null`. Cloud resolves every path to `null` and writes its own note. | `packages/provider-core/src/server/attachmentPrompt.ts` | Cloud prompts get two notes per attachment, and a local path can reach the VM. | "runs a turn on a cloud VM..." |
-| `buildRuntimeInstructions` says `through the ${harness} harness`, and cloud passes `"Cursor Cloud"`. | `packages/provider-core/src/server/runtimeInstructions.ts` | The cloud agent no longer knows it runs on Cursor Cloud. | "runs a turn on a cloud VM..." |
-| Skill discovery takes a `runtime` argument. On `"cloud"`, `inspectCursorSkills` skips the home-directory skill roots, because a VM has only the cloned repository. | `skills.ts` `inspectCursorSkills`, called from `driver.ts` `snapshotForCwd` and `adapter.ts` `resolveUserMessage` | A new upstream skill root or caller that skips the argument offers cloud threads skills the VM cannot load. | `driver.test.ts` "advertises the skills a cloud instance's agent can load" and `adapter.cloud.test.ts` "invokes only the skills a cloud agent can load" |
-| Settings decode keeps `runtime`, `cloudAutoCreatePR` and `cloudOpenAsCursorGithubApp`. `runtime` defaults to `"local"` and the adapter reads it once at construction. | `settings.ts` | A settings rewrite that drops unknown keys silently turns `cursor-cloud` into a local instance. | `ProviderSettingsForm.test.ts` "uses a dedicated environment field instead of legacy Cursor CLI settings" |
+| We depend on                                                                                                                                                          | Where                                                                                                             | If upstream changes it                                                                                                                                            | Test that catches it                                                                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| T3's MCP server goes on `Agent.create` and `Agent.resume`, never on a send. A send-level `mcpServers` replaces the servers the agent opened with.                     | `adapter.ts` `makeCursorAgentOptions` and the send options in `startTurn`                                         | Local threads lose T3 tools, or a cloud VM gets an endpoint it cannot reach.                                                                                      | `adapter.cloud.test.ts` "keeps a local instance on this machine's tools, paths and checkpoints" and "runs a turn on a cloud VM without local tools, paths or checkpoints" |
+| The first-prompt wrapper `<t3_code_orchestration_instructions>` appears only when `runOrdinal === 1 && hasT3Mcp`. Cloud passes `hasT3Mcp: false`.                     | `packages/provider-core/src/server/orchestrationInstructions.ts` `t3OrchestrationPromptForFirstRun`               | A cloud VM is told to call T3 tools it cannot reach.                                                                                                              | the same two tests                                                                                                                                                        |
+| `providerThread.firstRunOrdinal` stays `null` until the first turn finalizes. The cloud environment note goes out only then.                                          | `adapter.ts` `resolveUserMessage`                                                                                 | The note never goes out, or it repeats every turn.                                                                                                                | "runs a turn on a cloud VM..."                                                                                                                                            |
+| `nativeConversationHeadRef` is unused by upstream's Cursor adapter. We store the cloud run id there to follow a run across a T3 restart.                              | `adapter.ts` attach-or-send block in `startTurn`                                                                  | A restart sends "continue" into a cloud run that never stopped, or attaches to the wrong run.                                                                     | "after a T3 restart: follows the cloud run T3 cut"                                                                                                                        |
+| `ensureThread` opens with `create` and the first turn opens with `resume`. Only `resume` recreates a cloud agent Cursor has no record of.                             | `adapter.ts` `openAgent` callers, `CursorAgentSdk.ts` `open`                                                      | A cloud thread whose first turn never started fails instead of recreating its agent.                                                                              | `CursorAgentSdk.test.ts` "starts a cloud agent Cursor has no record of under its recorded id"                                                                             |
+| `@cursor/sdk` reports a missing cloud agent as `status === 404`, and `Agent.getRun` and `Agent.cancelRun` accept `{ runtime: "cloud", agentId, apiKey }`.             | `CursorAgentSdk.ts` `isCloudNotFound`, `attach`, `cancelRun`                                                      | Resume, attach, or cancel misses the cloud run. Cloud cancel must stay on `Agent.cancelRun`, because `run.cancel()` reports cancelled while the VM keeps running. | `CursorAgentSdk.test.ts` describe "CursorAgentSdkRunner cloud"                                                                                                            |
+| `providerMessageTextWithAttachmentPaths` writes nothing for an attachment whose path resolves to `null`. Cloud resolves every path to `null` and writes its own note. | `packages/provider-core/src/server/attachmentPrompt.ts`                                                           | Cloud prompts get two notes per attachment, and a local path can reach the VM.                                                                                    | "runs a turn on a cloud VM..."                                                                                                                                            |
+| `buildRuntimeInstructions` says `through the ${harness} harness`, and cloud passes `"Cursor Cloud"`.                                                                  | `packages/provider-core/src/server/runtimeInstructions.ts`                                                        | The cloud agent no longer knows it runs on Cursor Cloud.                                                                                                          | "runs a turn on a cloud VM..."                                                                                                                                            |
+| Skill discovery takes a `runtime` argument. On `"cloud"`, `inspectCursorSkills` skips the home-directory skill roots, because a VM has only the cloned repository.    | `skills.ts` `inspectCursorSkills`, called from `driver.ts` `snapshotForCwd` and `adapter.ts` `resolveUserMessage` | A new upstream skill root or caller that skips the argument offers cloud threads skills the VM cannot load.                                                       | `driver.test.ts` "advertises the skills a cloud instance's agent can load" and `adapter.cloud.test.ts` "invokes only the skills a cloud agent can load"                   |
+| Settings decode keeps `runtime`, `cloudAutoCreatePR` and `cloudOpenAsCursorGithubApp`. `runtime` defaults to `"local"` and the adapter reads it once at construction. | `settings.ts`                                                                                                     | A settings rewrite that drops unknown keys silently turns `cursor-cloud` into a local instance.                                                                   | `ProviderSettingsForm.test.ts` "uses a dedicated environment field instead of legacy Cursor CLI settings"                                                                 |
 
 The testkit and test files we touched (`CursorAdapterV2.testkit.ts`, `ProviderInstanceRegistry.test.ts`, `driver.test.ts`, `adapter.test.ts`) only gained an `attach` stub or the three settings fields. A new upstream fake session or `CursorSettings` literal needs the same additions.
 
@@ -130,13 +131,13 @@ The testkit and test files we touched (`CursorAdapterV2.testkit.ts`, `ProviderIn
 
 When upstream changes the original, check the copy by hand. No test compares them.
 
-| Our copy | Upstream original | What must still match |
-|---|---|---|
-| `cloud.ts` `linkCursorCloudPullRequests`, a small MCP HTTP client | `apps/server/src/mcp/AcpMcpStdioBridge.ts` `callAcpMcpTool` | Protocol version `2025-06-18`, the `mcp-session-id` and `mcp-protocol-version` headers, and the `initialize`, `notifications/initialized`, `tools/call` sequence |
-| The `link_pull_request` call with `{ url }` | `apps/server/src/mcp/toolkits/pullRequests/tools.ts` `LinkPullRequestTool` | The tool name and its `url` argument. If either changes, every cloud PR link fails and the turn still completes. |
-| `cloud.ts` `cursorCloudPrompt`, which inlines text attachments within `PROVIDER_SEND_TURN_MAX_INPUT_CHARS` | `providerMessageTextWithAttachmentPaths` in `packages/provider-core/src/server/attachmentPrompt.ts` | The `[Attached ... "name"` note prefix and the rule that the whole prompt stays within the input limit, earlier attachments first |
-| `cloud.ts` `resolveCursorCloudCheckout`, which shells out to git for the remote, branch, unpushed count, and dirty state | `apps/server/src/vcs/GitVcsDriverCore.ts` | How "on origin" and "commits ahead" are decided. Our copy also strips credentials from the remote URL first, which upstream's `parseGitHubRepositoryNameWithOwnerFromRemoteUrl` does not do. |
-| `adapter.ts` `cursorAgentName` | upstream's `` `T3 Code ${threadId}` `` agent name | The `T3 Code ` prefix and Cursor's 100-character name limit |
+| Our copy                                                                                                                 | Upstream original                                                                                   | What must still match                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cloud.ts` `linkCursorCloudPullRequests`, a small MCP HTTP client                                                        | `apps/server/src/mcp/AcpMcpStdioBridge.ts` `callAcpMcpTool`                                         | Protocol version `2025-06-18`, the `mcp-session-id` and `mcp-protocol-version` headers, and the `initialize`, `notifications/initialized`, `tools/call` sequence                             |
+| The `link_pull_request` call with `{ url }`                                                                              | `apps/server/src/mcp/toolkits/pullRequests/tools.ts` `LinkPullRequestTool`                          | The tool name and its `url` argument. If either changes, every cloud PR link fails and the turn still completes.                                                                             |
+| `cloud.ts` `cursorCloudPrompt`, which inlines text attachments within `PROVIDER_SEND_TURN_MAX_INPUT_CHARS`               | `providerMessageTextWithAttachmentPaths` in `packages/provider-core/src/server/attachmentPrompt.ts` | The `[Attached ... "name"` note prefix and the rule that the whole prompt stays within the input limit, earlier attachments first                                                            |
+| `cloud.ts` `resolveCursorCloudCheckout`, which shells out to git for the remote, branch, unpushed count, and dirty state | `apps/server/src/vcs/GitVcsDriverCore.ts`                                                           | How "on origin" and "commits ahead" are decided. Our copy also strips credentials from the remote URL first, which upstream's `parseGitHubRepositoryNameWithOwnerFromRemoteUrl` does not do. |
+| `adapter.ts` `cursorAgentName`                                                                                           | upstream's `` `T3 Code ${threadId}` `` agent name                                                   | The `T3 Code ` prefix and Cursor's 100-character name limit                                                                                                                                  |
 
 ## Fixes owed upstream
 
