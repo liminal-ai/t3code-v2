@@ -21,4 +21,4 @@ Turning `threadWorkflowsEnabled` off stops new workflows, but an open workflow k
 ## Limits
 
 - The Workflow tab is on web and desktop. Mobile has no tab yet.
-- Agents on Cursor Cloud cannot tick steps. Tick them yourself in the tab.
+- Agents on Cursor Cloud have no workflow tools: they cannot start, tick or close a workflow. Use the tab for those threads.
