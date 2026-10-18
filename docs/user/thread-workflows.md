@@ -16,7 +16,7 @@ Steps that wait for you, and questions the agent is waiting on, stay pinned at t
 
 ## Turn enforcement off
 
-Turning `threadWorkflowsEnabled` off stops new workflows, but an open workflow keeps blocking. To stop every workflow blocking settle, archive and delete, set `"threadWorkflowEnforcementDisabled": true` in `settings.json`, or start the server with `T3CODE_THREAD_WORKFLOW_ENFORCEMENT=off`. The setting takes effect at once. The environment variable takes effect when the server restarts.
+Turning `threadWorkflowsEnabled` off stops new workflows and the daily question, but an open workflow keeps blocking. To stop every workflow blocking settle, archive and delete, set `"threadWorkflowEnforcementDisabled": true` in `settings.json`, or start the server with `T3CODE_THREAD_WORKFLOW_ENFORCEMENT=off`. The setting takes effect at once. The environment variable takes effect when the server restarts.
 
 ## Limits
 
