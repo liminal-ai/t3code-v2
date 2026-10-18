@@ -275,8 +275,8 @@ export function ThreadWorkflowPanel({
         <TriangleAlertIcon />
         <AlertTitle>The workflow log is unreadable</AlertTitle>
         <AlertDescription>
-          {currentView.corruption} The workflow is read-only until you recover it, and the thread
-          stays blocked from settling.
+          {currentView.corruption} The workflow is read-only, and it does not block the thread.
+          Recover sets this log aside and starts a fresh one.
         </AlertDescription>
         {form?.kind === "recover" ? null : (
           <AlertAction>
