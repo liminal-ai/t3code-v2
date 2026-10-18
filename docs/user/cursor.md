@@ -46,14 +46,15 @@ thread works on its own clone:
   it is missing.
 - The agent cannot reach this machine's files or T3 Code's tools. Only skills in the repository are
   offered, and the agent can load them only once they are pushed.
-- Images are sent. Text files and pasted text travel inline, up to 100 KB each and 120,000
-  characters for the whole message. Other files are not sent, and the agent is told so.
+- Images are sent. Text files and pasted text travel inline, up to 100 KB each, while the message
+  stays within 120,000 characters. A file that does not fit is left out, with a note when there is
+  room for one. Other files are not sent, and the agent is told so.
 - T3 Code does not checkpoint cloud runs, so their changes have no diff or restore in T3 Code. Review
   them on the branch or pull request the agent pushes.
 - Runtime modes do not limit a cloud agent. A message sent during a run waits for the run to end
   instead of restarting it.
-- Stop asks Cursor to cancel the run. If Cursor does not confirm within 30 seconds, the turn fails
-  with a link to check the run on cursor.com.
+- Stop asks Cursor to cancel the run. If Cursor accepts the request but has not confirmed that the
+  run stopped 30 seconds later, the turn fails with a link to check the run on cursor.com.
 - Pull requests that a cloud run opens or updates are linked to the thread.
 
 Keep **Settings > General > Continue threads after restarts** on. After T3 Code restarts, it then

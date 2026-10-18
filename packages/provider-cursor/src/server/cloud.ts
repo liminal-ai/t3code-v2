@@ -139,24 +139,29 @@ export function cursorCloudPrompt(input: {
     readonly text: string | undefined;
   }>;
 }): string {
+  // The environment note always goes, like the runtime instructions appended
+  // later. Only attachments compete for the input limit.
   let prompt = [input.note, input.text]
     .filter((part) => part !== undefined && part.length > 0)
     .join("\n\n");
-  const append = (part: string) => {
-    prompt = prompt.length === 0 ? part : `${prompt}\n\n${part}`;
+  const appendFirstThatFits = (...parts: ReadonlyArray<string>) => {
+    const part = parts.find(
+      (candidate) =>
+        (prompt.length === 0 ? 0 : prompt.length + 2) + candidate.length <=
+        PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+    );
+    if (part !== undefined) prompt = prompt.length === 0 ? part : `${prompt}\n\n${part}`;
   };
   for (const { attachment, text } of input.attachments) {
     if (text === undefined) {
-      append(
+      appendFirstThatFits(
         `[Attached ${attachment.type} "${attachment.name}" was not sent: a Cursor Cloud VM cannot read files on the machine that started it. Only text files up to 100 KB travel inline.]`,
       );
       continue;
     }
-    const inline = `[Attached file "${attachment.name}" follows inline.]\n${text}`;
-    append(
-      prompt.length + 2 + inline.length <= PROVIDER_SEND_TURN_MAX_INPUT_CHARS
-        ? inline
-        : `[Attached file "${attachment.name}" was not sent: the message was over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")}-character limit for inline attachments.]`,
+    appendFirstThatFits(
+      `[Attached file "${attachment.name}" follows inline.]\n${text}`,
+      `[Attached file "${attachment.name}" was not sent: the message was over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")}-character limit for inline attachments.]`,
     );
   }
   return prompt;
