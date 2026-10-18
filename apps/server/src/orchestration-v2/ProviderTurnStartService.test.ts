@@ -871,6 +871,8 @@ effectIt.effect(
               state: () => Effect.die(new Error("the store broke")),
             }),
           ),
+          Layer.provide(ServerSettings.layerTest()),
+          Layer.orDie,
         ),
       });
 

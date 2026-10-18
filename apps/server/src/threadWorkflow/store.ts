@@ -191,18 +191,18 @@ const make = Effect.gen(function* () {
     return states;
   }).pipe(
     Effect.map((states) => ({ states, unavailable: null })),
-    Effect.catchCauseIf(
-      (cause) => !Cause.hasInterrupts(cause),
-      (cause) =>
-        Effect.logError("thread workflow module disabled: its logs could not be loaded", {
-          directory: threadsDir,
-          cause,
-        }).pipe(
-          Effect.as({
-            states: new Map<ThreadId, ThreadWorkflowState>(),
-            unavailable: `The thread workflow logs in ${threadsDir} could not be loaded when the server started, so thread workflows are unavailable until it restarts.`,
-          }),
-        ),
+    Effect.catchCause((cause) =>
+      Cause.hasInterrupts(cause)
+        ? Effect.interrupt
+        : Effect.logError("thread workflow module disabled: its logs could not be loaded", {
+            directory: threadsDir,
+            cause,
+          }).pipe(
+            Effect.as({
+              states: new Map<ThreadId, ThreadWorkflowState>(),
+              unavailable: `The thread workflow logs in ${threadsDir} could not be loaded when the server started, so thread workflows are unavailable until it restarts.`,
+            }),
+          ),
     ),
   );
 

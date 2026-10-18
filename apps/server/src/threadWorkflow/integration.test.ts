@@ -20,6 +20,7 @@ import {
   type ModelSelection,
   type ThreadWorkflowActor,
 } from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -103,6 +104,8 @@ interface ModuleSetup {
   readonly seed?: (
     threadsDir: string,
   ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path>;
+  /** The process environment the module reads at build. */
+  readonly env?: Record<string, string>;
 }
 
 const makeLayerTest = (setup: ModuleSetup = {}) => {
@@ -130,6 +133,7 @@ const makeLayerTest = (setup: ModuleSetup = {}) => {
   const layerRuntime = RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService));
   const layerModule = ThreadWorkflow.layer.pipe(
     Layer.provide(layerSeed),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: setup.env ?? {} }))),
     Layer.provide(layerSettings),
     Layer.provide(ProjectionStore.layer),
     Layer.provide(ThreadCommandExecutor.layer),
@@ -559,3 +563,55 @@ it.layer(
     }),
   );
 });
+
+/** Settle, archive and delete, each on its own thread with an open workflow, as the user would. */
+const leaveActiveWork = (name: string) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(T0);
+    const threads = yield* ThreadManagementService.ThreadManagementService;
+    const projectId = ProjectId.make(`${name}-project`);
+    yield* createProject(projectId);
+    return yield* Effect.forEach(
+      ["thread.settle", "thread.archive", "thread.delete"] as const,
+      (type) =>
+        Effect.gen(function* () {
+          const threadId = ThreadId.make(`${name}-${type}`);
+          yield* createThread(threadId, projectId);
+          yield* startWorkflow(threadId);
+          return yield* threads
+            .dispatch({ type, commandId: id(`${threadId}-${type}`), threadId })
+            .pipe(Effect.exit);
+        }),
+    );
+  });
+
+it.layer(makeLayerTest())("thread workflow enforcement bypass by setting", (it) => {
+  it.effect("refuses with the setting off and allows every way out once it is on", () =>
+    Effect.gen(function* () {
+      for (const exit of yield* leaveActiveWork("workflow-bypass-off")) {
+        assert.isTrue(Exit.isFailure(exit));
+        assert.match(String(exit), /open workflow/);
+      }
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({ threadWorkflowEnforcementDisabled: true });
+      for (const exit of yield* leaveActiveWork("workflow-bypass-on")) {
+        assert.isTrue(Exit.isSuccess(exit));
+      }
+    }),
+  );
+});
+
+it.layer(makeLayerTest({ env: { T3CODE_THREAD_WORKFLOW_ENFORCEMENT: "off" } }))(
+  "thread workflow enforcement bypass by environment",
+  (it) => {
+    it.effect("allows every way out with the setting still off", () =>
+      Effect.gen(function* () {
+        const settings = yield* ServerSettings.ServerSettingsService;
+        assert.isFalse((yield* settings.getSettings).threadWorkflowEnforcementDisabled);
+        for (const exit of yield* leaveActiveWork("workflow-bypass-env")) {
+          assert.isTrue(Exit.isSuccess(exit));
+        }
+      }),
+    );
+  },
+);
