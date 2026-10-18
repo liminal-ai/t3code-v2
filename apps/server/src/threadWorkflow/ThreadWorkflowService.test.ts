@@ -11,10 +11,10 @@ import {
 import { applyServerSettingsPatch } from "@t3tools/shared/serverSettings";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
@@ -317,8 +317,12 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
     ),
   );
 
-  it.effect("refuses to build when the threads directory exists but cannot be read", () =>
-    Effect.scoped(
+  it.effect("turns itself off when the threads directory exists but cannot be read", () => {
+    const errors: Array<unknown> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Error") errors.push(message);
+    });
+    return Effect.scoped(
       Effect.gen(function* () {
         const fileSystem = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
@@ -328,18 +332,38 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
         const rootDir = path.join(baseDir, "userdata", "thread-workflows");
         yield* fileSystem.makeDirectory(rootDir, { recursive: true });
         yield* fileSystem.writeFileString(path.join(rootDir, "threads"), "a file, not a directory");
-        const built = yield* Layer.build(
-          ThreadWorkflow.layer.pipe(
-            Layer.provide(ThreadCommandExecutor.layer),
-            Layer.provide(ServerSettings.layerTest()),
-            Layer.provide(Layer.mock(ProjectionStore.ProjectionStoreV2)({})),
-            Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
-            Layer.provide(NodeServices.layer),
+        const layer = ThreadWorkflow.layer.pipe(
+          Layer.provide(ThreadCommandExecutor.layer),
+          Layer.provide(ServerSettings.layerTest({ threadWorkflowsEnabled: true })),
+          Layer.provide(
+            Layer.mock(ProjectionStore.ProjectionStoreV2)({
+              getThread: () => Effect.succeed(active as OrchestrationV2AppThread),
+            }),
           ),
-        ).pipe(Effect.exit);
-        assert.isTrue(Exit.isFailure(built));
-        assert.match(String(built), /ThreadWorkflowStoreLoadError/);
+          Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
+          Layer.provide(NodeServices.layer),
+        );
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          const hooks = yield* ThreadHooks;
+          assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action: "settle" }));
+          assert.strictEqual(
+            yield* hooks.turnNote({ threadId, runId: "run-1" as never, compacting: false }),
+            "",
+          );
+          for (const refused of [
+            yield* service.apply(user, threadId, start).pipe(Effect.flip),
+            yield* service.view(threadId).pipe(Effect.flip),
+          ]) {
+            assert.strictEqual(refused.code, "store_unavailable");
+          }
+          const pane = yield* service.state(threadId);
+          assert.match(pane.unavailable ?? "", /could not be loaded/);
+          assert.deepStrictEqual(pane.view.instances, []);
+        }).pipe(Effect.provide(layer));
+        assert.lengthOf(errors, 1);
+        assert.match(String(errors[0]), /thread workflow module disabled/);
       }),
-    ),
-  );
+    ).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  });
 });

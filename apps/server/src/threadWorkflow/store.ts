@@ -8,6 +8,7 @@
  * claim the next seq. Server ownership guarantees one process writes the directory.
  */
 import { ThreadWorkflowError, ThreadWorkflowRecord, type ThreadId } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -21,21 +22,15 @@ import * as Schema from "effect/Schema";
 import * as ServerConfig from "../config.ts";
 import { emptyState, evolve, fold, markCorrupt, type ThreadWorkflowState } from "./domain.ts";
 
-export class ThreadWorkflowStoreLoadError extends Schema.TaggedError<ThreadWorkflowStoreLoadError>()(
-  "ThreadWorkflowStoreLoadError",
-  {
-    directory: Schema.String,
-    cause: Schema.Defect(),
-  },
-) {
-  override get message(): string {
-    return `Failed to read the thread workflow logs in ${this.directory}.`;
-  }
-}
-
 export class ThreadWorkflowStore extends Context.Service<
   ThreadWorkflowStore,
   {
+    /**
+     * Why the module is off, or null. Set at build when the threads directory exists but cannot be
+     * read or folded; the server still starts. Every thread then reads as empty and nothing is
+     * written until a restart.
+     */
+    readonly unavailable: string | null;
     /** The thread's folded state from memory; an empty state for a thread with no log. */
     readonly state: (threadId: ThreadId) => Effect.Effect<ThreadWorkflowState>;
     /** Every thread that has a log, for sweeps such as the inactivity ping. */
@@ -195,13 +190,23 @@ const make = Effect.gen(function* () {
     }
     return states;
   }).pipe(
-    Effect.catchTags({
-      PlatformError: (cause) =>
-        Effect.fail(new ThreadWorkflowStoreLoadError({ directory: threadsDir, cause })),
-    }),
+    Effect.map((states) => ({ states, unavailable: null })),
+    Effect.catchCauseIf(
+      (cause) => !Cause.hasInterrupts(cause),
+      (cause) =>
+        Effect.logError("thread workflow module disabled: its logs could not be loaded", {
+          directory: threadsDir,
+          cause,
+        }).pipe(
+          Effect.as({
+            states: new Map<ThreadId, ThreadWorkflowState>(),
+            unavailable: `The thread workflow logs in ${threadsDir} could not be loaded when the server started, so thread workflows are unavailable until it restarts.`,
+          }),
+        ),
+    ),
   );
 
-  const states = yield* Ref.make<ReadonlyMap<ThreadId, ThreadWorkflowState>>(loaded);
+  const states = yield* Ref.make<ReadonlyMap<ThreadId, ThreadWorkflowState>>(loaded.states);
   const directoriesReady = yield* Ref.make(false);
 
   const ensureDirectories = Effect.gen(function* () {
@@ -242,6 +247,7 @@ const make = Effect.gen(function* () {
 
   const append = (threadId: ThreadId, record: ThreadWorkflowRecord) =>
     Effect.gen(function* () {
+      if (loaded.unavailable !== null) return yield* unavailable(loaded.unavailable);
       const current = stateOf(yield* Ref.get(states), threadId);
       const recovering = record.kind === "change" && record.event._tag === "recovered";
       if (current.corruption !== null && !recovering) {
@@ -287,6 +293,7 @@ const make = Effect.gen(function* () {
     });
 
   return ThreadWorkflowStore.of({
+    unavailable: loaded.unavailable,
     state: (threadId) => Ref.get(states).pipe(Effect.map((map) => stateOf(map, threadId))),
     states: Ref.get(states).pipe(Effect.map((map) => [...map.values()])),
     append,

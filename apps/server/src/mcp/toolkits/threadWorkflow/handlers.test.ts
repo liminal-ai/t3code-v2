@@ -9,6 +9,7 @@ import {
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../../../config.ts";
@@ -57,11 +58,17 @@ const activeThread = {
   settledOverride: null,
 } as OrchestrationV2AppThread;
 
-const layerFor = (enabled: boolean) =>
+const layerFor = (enabled: boolean, options: { readonly unreadableStore?: boolean } = {}) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-workflow-mcp-" });
+      if (options.unreadableStore === true) {
+        const rootDir = path.join(baseDir, "userdata", "thread-workflows");
+        yield* fileSystem.makeDirectory(rootDir, { recursive: true });
+        yield* fileSystem.writeFileString(path.join(rootDir, "threads"), "a file, not a directory");
+      }
       return McpHttpServer.layerThreadWorkflowToolkit.pipe(
         Layer.provideMerge(McpServer.McpServer.layer),
         Layer.provideMerge(
@@ -275,3 +282,21 @@ it.layer(layerFor(false))("thread workflow MCP tools with the flag off", (it) =>
     }),
   );
 });
+
+it.layer(layerFor(true, { unreadableStore: true }))(
+  "thread workflow MCP tools, store unreadable",
+  (it) => {
+    it.effect("answers store_unavailable instead of failing the server", () =>
+      Effect.gen(function* () {
+        for (const [name, args] of [
+          ["thread_workflow_get", {}],
+          ["thread_workflow_start", { templateId: "open-ended" }],
+        ] as const) {
+          const refused = failure(yield* call(name, args));
+          assert.strictEqual(refused?.code, "store_unavailable");
+          assert.match(refused?.message ?? "", /could not be loaded/);
+        }
+      }),
+    );
+  },
+);

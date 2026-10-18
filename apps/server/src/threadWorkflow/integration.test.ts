@@ -525,3 +525,37 @@ it.layer(
     }),
   );
 });
+
+it.layer(
+  makeLayerTest({
+    seed: (threadsDir) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.makeDirectory(path.dirname(threadsDir), { recursive: true });
+        yield* fileSystem.writeFileString(threadsDir, "a file, not a directory");
+      }),
+  }),
+)("thread workflow module with an unreadable threads directory", (it) => {
+  it.effect("builds, stays out of the way, and answers store_unavailable", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(T0);
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const projectId = ProjectId.make("workflow-unreadable-project");
+      const threadId = ThreadId.make("workflow-unreadable-thread");
+      yield* createProject(projectId);
+      yield* createThread(threadId, projectId);
+
+      const refused = yield* startWorkflow(threadId).pipe(Effect.flip);
+      assert.strictEqual(refused.code, "store_unavailable");
+      yield* threads.dispatch({
+        type: "thread.settle",
+        commandId: id(`${threadId}-settle`),
+        threadId,
+      });
+      const settled = (yield* orchestrator.getThreadProjection(threadId)).thread;
+      assert.strictEqual(settled.settledOverride, "settled");
+    }),
+  );
+});

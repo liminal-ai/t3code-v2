@@ -434,6 +434,8 @@ export type ThreadWorkflowSubscriptionView = typeof ThreadWorkflowSubscriptionVi
 export const ThreadWorkflowSubscriptionState = Schema.Struct({
   enabled: Schema.Boolean,
   visible: Schema.Boolean,
+  /** Set when the server could not load any workflow logs at startup; the view is then empty. */
+  unavailable: Schema.NullOr(Schema.String),
   view: ThreadWorkflowSubscriptionView,
 });
 export type ThreadWorkflowSubscriptionState = typeof ThreadWorkflowSubscriptionState.Type;

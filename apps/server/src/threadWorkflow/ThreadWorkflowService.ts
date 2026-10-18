@@ -51,7 +51,7 @@ export class ThreadWorkflowService extends Context.Service<
       options?: ThreadWorkflowApplyOptions,
     ) => Effect.Effect<ThreadWorkflowApplyResult, ThreadWorkflowError>;
     /** Every instance with full history, from memory. */
-    readonly view: (threadId: ThreadId) => Effect.Effect<ThreadWorkflowView>;
+    readonly view: (threadId: ThreadId) => Effect.Effect<ThreadWorkflowView, ThreadWorkflowError>;
     /** The history-free view with the flag and whether the pane should show the tab. */
     readonly state: (threadId: ThreadId) => Effect.Effect<ThreadWorkflowSubscriptionState>;
     /** `state` now, then again after every durable change to the thread or to the flag. */
@@ -118,9 +118,19 @@ const make = Effect.gen(function* () {
       return {
         enabled: flag,
         visible: flag || view.corruption !== null || view.activeInstanceId !== null,
+        unavailable: store.unavailable,
         view,
       } satisfies ThreadWorkflowSubscriptionState;
     });
+
+  const whenAvailable = <A, R>(
+    effect: Effect.Effect<A, ThreadWorkflowError, R>,
+  ): Effect.Effect<A, ThreadWorkflowError, R> =>
+    store.unavailable === null
+      ? effect
+      : Effect.fail(
+          new ThreadWorkflowError({ code: "store_unavailable", message: store.unavailable }),
+        );
 
   const apply: ThreadWorkflowService["Service"]["apply"] = (
     actor,
@@ -128,8 +138,8 @@ const make = Effect.gen(function* () {
     request,
     options = {},
   ) =>
-    executor
-      .withLock(
+    whenAvailable(
+      executor.withLock(
         threadId,
         Effect.gen(function* () {
           const state = yield* store.state(threadId);
@@ -153,8 +163,8 @@ const make = Effect.gen(function* () {
             view: toSubscriptionView(next),
           };
         }),
-      )
-      .pipe(Effect.withSpan("threadWorkflow.apply", { attributes: { threadId } }));
+      ),
+    ).pipe(Effect.withSpan("threadWorkflow.apply", { attributes: { threadId } }));
 
   const subscribe: ThreadWorkflowService["Service"]["subscribe"] = (threadId) =>
     Stream.unwrap(
@@ -189,7 +199,7 @@ const make = Effect.gen(function* () {
 
   return ThreadWorkflowService.of({
     apply,
-    view: (threadId) => store.state(threadId).pipe(Effect.map(toView)),
+    view: (threadId) => whenAvailable(store.state(threadId).pipe(Effect.map(toView))),
     state: stateOf,
     subscribe,
     templates,

@@ -58,7 +58,7 @@ export const layerThreadHooks = Layer.effect(
           }
           return lifecycleBlocker(state, action);
         }).pipe(
-          orElse(
+          orElse<string | null>(
             null,
             "thread workflow lifecycle check failed; the thread is not blocked",
             threadId,

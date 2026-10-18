@@ -867,6 +867,7 @@ effectIt.effect(
         threadHooks: layerThreadHooks.pipe(
           Layer.provide(
             Layer.mock(ThreadWorkflowStore)({
+              unavailable: null,
               state: () => Effect.die(new Error("the store broke")),
             }),
           ),
