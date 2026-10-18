@@ -9,6 +9,7 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/thread-requests";
 import { lazy, Suspense } from "react";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
 import type { ShortcutMatchContext } from "../../keybindings";
@@ -31,6 +32,11 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
+const ThreadWorkflowPanel = lazy(() =>
+  import("../../threadWorkflow/ThreadWorkflowPanel").then((module) => ({
+    default: module.ThreadWorkflowPanel,
+  })),
+);
 
 export type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -46,6 +52,12 @@ export interface RightPanelPullRequestProps {
   readonly branchPullRequest: ThreadLinkedPullRequest | null | undefined;
   /** Back to the pull request list; absent when there is no list to go back to. */
   readonly onBack: (() => void) | undefined;
+}
+
+export interface RightPanelWorkflowProps {
+  /** The thread's pending question-tool requests, the same list the composer answers. */
+  readonly pendingUserInputs: ReadonlyArray<ThreadPendingUserInput>;
+  readonly onAnswerInComposer: () => void;
 }
 
 export interface RightPanelFileProps {
@@ -77,6 +89,7 @@ export function RightPanelSurfaceContent(props: {
   readonly terminal: RightPanelTerminalProps;
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
+  readonly workflow: RightPanelWorkflowProps;
 }) {
   const { surface, threadRef, visible } = props;
   if (surface === null) return null;
@@ -162,6 +175,17 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
+    case "workflow":
+      return (
+        <Suspense fallback={null}>
+          <ThreadWorkflowPanel
+            key={scopedThreadKey(threadRef)}
+            threadRef={threadRef}
+            pendingUserInputs={props.workflow.pendingUserInputs}
+            onAnswerInComposer={props.workflow.onAnswerInComposer}
+          />
+        </Suspense>
+      );
     case "device":
       return (
         <Suspense fallback={null}>

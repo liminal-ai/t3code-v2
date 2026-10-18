@@ -12,6 +12,7 @@ import type {
   ProjectId,
   PullRequestState,
   ResolvedKeybindingsConfig,
+  ScopedThreadRef,
 } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
 import {
@@ -33,6 +34,7 @@ import {
   FileDiff,
   Files,
   Globe2,
+  ListChecks,
   Plus,
   TerminalSquare,
 } from "lucide-react";
@@ -78,6 +80,7 @@ import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { faviconUrlForOrigin } from "~/lib/favicon";
 import { useTheme } from "~/hooks/useTheme";
 import { useDeviceState } from "~/state/device";
+import { ThreadWorkflowTabCount } from "~/threadWorkflow/ThreadWorkflowTabCount";
 import type { PreviewPanelInlineSize } from "~/hooks/usePreviewPanelInlineSize";
 import {
   newestPullRequestSummary,
@@ -107,6 +110,8 @@ interface RightPanelTabsProps {
   layoutControls?: ReactNode;
   surfaces: readonly RightPanelSurface[];
   environmentId: EnvironmentId | null;
+  /** The thread beside the panel; absent on the pull requests page, which has no Workflow tab. */
+  threadRef?: ScopedThreadRef | null;
   activeSurfaceId: string | null;
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
@@ -139,6 +144,7 @@ interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  onAddWorkflow: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -146,6 +152,7 @@ interface RightPanelTabsProps {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   deviceAvailable: boolean;
+  workflowAvailable: boolean;
   pullRequestStatusSeeds?: Readonly<Record<string, PullRequestTabStatusSeed>>;
   children: ReactNode;
 }
@@ -174,6 +181,7 @@ const SURFACE_DISABLED_REASONS = {
   pullRequest: "This thread's branch has no pull request yet.",
   pullRequests: "No linked pull requests are available for this thread.",
   device: "Devices are only available from a thread.",
+  workflow: "Thread workflows are turned off on this environment's server.",
 } as const;
 
 const LAUNCHER_SHORTCUT_BLOCKING_LAYERS = [
@@ -195,6 +203,7 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequest: "No pull request on this branch yet.",
   pullRequests: "No linked pull requests available.",
   device: "Available from a thread.",
+  workflow: "Turned off on this server.",
 } as const;
 
 type TabContextMenuAction =
@@ -316,6 +325,7 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
+  onAddWorkflow: () => void;
   browserAvailable: boolean;
   terminalAvailable: boolean;
   diffAvailable: boolean;
@@ -323,6 +333,7 @@ function RightPanelEmptyState(props: {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   deviceAvailable: boolean;
+  workflowAvailable: boolean;
 }) {
   const [highlight, setHighlight] = useState(-1);
 
@@ -383,6 +394,14 @@ function RightPanelEmptyState(props: {
       available: props.deviceAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.device,
       onClick: props.onAddDevice,
+    },
+    {
+      label: "Workflow",
+      icon: ListChecks,
+      shortcut: "W",
+      available: props.workflowAvailable,
+      disabledReason: SURFACE_UNAVAILABLE_HINTS.workflow,
+      onClick: props.onAddWorkflow,
     },
   ] as const;
 
@@ -575,6 +594,8 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
+    case "workflow":
+      return "Workflow";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "preview": {
@@ -658,6 +679,8 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
+    case "workflow":
+      return <ListChecks className="size-3 shrink-0" />;
     case "device":
       return surface.target?.platform === "ios" ? (
         <AppleIcon className="size-3 shrink-0" />
@@ -940,6 +963,14 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.deviceAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.device,
       onClick: props.onAddDevice,
+    },
+    {
+      label: "Workflow",
+      icon: ListChecks,
+      shortcut: "W",
+      available: props.workflowAvailable,
+      disabledReason: SURFACE_DISABLED_REASONS.workflow,
+      onClick: props.onAddWorkflow,
     },
   ] as const;
 
@@ -1241,6 +1272,9 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                               onClick={() => props.onActivate(surface)}
                             >
                               <span className="truncate">{title}</span>
+                              {surface.kind === "workflow" ? (
+                                <ThreadWorkflowTabCount threadRef={props.threadRef ?? null} />
+                              ) : null}
                             </button>
                           }
                         />
@@ -1404,6 +1438,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
+            onAddWorkflow={props.onAddWorkflow}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
             diffAvailable={props.diffAvailable}
@@ -1411,6 +1446,7 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             pullRequestAvailable={props.pullRequestAvailable}
             pullRequestsAvailable={props.pullRequestsAvailable}
             deviceAvailable={props.deviceAvailable}
+            workflowAvailable={props.workflowAvailable}
           />
         ) : (
           props.children

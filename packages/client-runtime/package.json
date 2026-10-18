@@ -303,6 +303,10 @@
       "types": "./src/state/threadRequests.ts",
       "default": "./src/state/threadRequests.ts"
     },
+    "./state/thread-workflow": {
+      "types": "./src/state/threadWorkflow.ts",
+      "default": "./src/state/threadWorkflow.ts"
+    },
     "./state/thread-workflows": {
       "types": "./src/state/threadWorkflows.ts",
       "default": "./src/state/threadWorkflows.ts"
