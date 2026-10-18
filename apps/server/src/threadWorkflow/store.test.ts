@@ -147,6 +147,30 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
     }),
   );
 
+  it.effect("marks a log corrupt when a line is not a legal next record, and recovers it", () =>
+    Effect.gen(function* () {
+      const { baseDir, lines, seed } = yield* setup;
+      const [first] = twoRecords.records;
+      assert.isDefined(first);
+      yield* seed(lines([first, { ...first, seq: 2 } as ThreadWorkflowRecord]));
+      yield* withStore(baseDir, (store) =>
+        Effect.gen(function* () {
+          const state = yield* store.state(threadId);
+          assert.strictEqual(state.corruption, "line 2 of its log starts w1, which already exists");
+          assert.lengthOf(toView(state).instances, 1);
+          assert.isNull(lifecycleBlocker(state, "settle"));
+          const recovered = apply(state, user, { _tag: "recover", reason: "duplicate start" });
+          assert.isNotNull(recovered.record);
+          const fresh = yield* store.append(threadId, recovered.record as ThreadWorkflowRecord);
+          assert.isNull(fresh.corruption);
+          assert.lengthOf(toView(fresh).instances, 0);
+        }),
+      );
+      const reloaded = yield* withStore(baseDir, (store) => store.state(threadId));
+      assert.isNull(reloaded.corruption);
+    }),
+  );
+
   it.effect("replays a receipt across a reload", () =>
     Effect.gen(function* () {
       const { baseDir } = yield* setup;

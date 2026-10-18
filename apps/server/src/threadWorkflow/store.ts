@@ -20,7 +20,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import * as ServerConfig from "../config.ts";
-import { emptyState, evolve, fold, markCorrupt, type ThreadWorkflowState } from "./domain.ts";
+import { admits, emptyState, evolve, markCorrupt, type ThreadWorkflowState } from "./domain.ts";
 
 export class ThreadWorkflowStore extends Context.Service<
   ThreadWorkflowStore,
@@ -101,14 +101,17 @@ const highestInstanceNumber = (text: string) => {
   return highest;
 };
 
-/** Folds the complete lines. The first line that is not a known record marks the thread corrupt. */
+/**
+ * Folds the complete lines. The first line that is not a known record, or not a legal next record
+ * for the state folded so far, marks the thread corrupt with the state before it.
+ */
 const parseLog = (threadId: ThreadId, text: string): ThreadWorkflowState => {
-  const records: Array<ThreadWorkflowRecord> = [];
+  let state = emptyState(threadId);
   const lines = text.split("\n").slice(0, -1);
   for (const [index, line] of lines.entries()) {
     const corrupt = (problem: string) =>
       markCorrupt(
-        fold(threadId, records),
+        state,
         `line ${index + 1} of its log ${problem}`,
         highestInstanceNumber(text) + 1,
       );
@@ -122,10 +125,12 @@ const parseLog = (threadId: ThreadId, text: string): ThreadWorkflowState => {
     }
     const decoded = decodeRecord(json.value);
     if (Exit.isFailure(decoded)) return corrupt("is not a record this build understands");
-    if (decoded.value.seq !== records.length + 1) return corrupt("is out of sequence");
-    records.push(decoded.value);
+    if (decoded.value.seq !== state.lastSeq + 1) return corrupt("is out of sequence");
+    const problem = admits(state, decoded.value);
+    if (problem !== null) return corrupt(problem);
+    state = evolve(state, decoded.value);
   }
-  return fold(threadId, records);
+  return state;
 };
 
 const make = Effect.gen(function* () {
@@ -260,6 +265,10 @@ const make = Effect.gen(function* () {
         return yield* Effect.die(
           new Error(`thread workflow record seq ${record.seq}, expected ${expectedSeq}`),
         );
+      }
+      const problem = admits(current, record);
+      if (problem !== null) {
+        return yield* Effect.die(new Error(`thread workflow record ${record.seq} ${problem}`));
       }
       return yield* Effect.uninterruptibleMask((restore) =>
         restore(write(threadId, record).pipe(Effect.timeout(WRITE_TIMEOUT))).pipe(

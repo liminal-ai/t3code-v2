@@ -8,6 +8,9 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
 import {
+  admits,
+  emptyState,
+  evolve,
   fold,
   lifecycleBlocker,
   markCorrupt,
@@ -17,6 +20,8 @@ import {
   type ThreadWorkflowState,
 } from "./domain.ts";
 import { agent, apply, given, started, threadId, user } from "./testkit.ts";
+
+const decodeRecord = Schema.decodeUnknownSync(ThreadWorkflowRecord);
 
 type Actor = typeof user | typeof agent;
 type Setup = ReadonlyArray<readonly [Actor, unknown, Partial<DecideContext>?]>;
@@ -686,5 +691,80 @@ describe("lifecycleBlocker", () => {
     for (const action of ["settle", "archive", "delete"] as const) {
       expect(lifecycleBlocker(corrupt, action)).toBeNull();
     }
+  });
+});
+
+describe("admits", () => {
+  const legal = given(
+    started,
+    [agent, tick("w1.1")],
+    [agent, skip("w1.2")],
+    [agent, insert({ afterStepId: "w1.2" })],
+    [agent, tick("w1.4"), { requestId: "noop" }],
+    [user, { _tag: "comment", target: "w1", comment: "nearly there" }],
+    [user, skip("w1.3")],
+    [agent, close("w1", "finished")],
+    [user, start],
+    [user, close("w2", "abandoned")],
+    [user, reopen("w1")],
+  );
+  const startRecord = legal.records[0] as ThreadWorkflowChangeRecord;
+  const startEvent = startRecord.event as Extract<
+    ThreadWorkflowChangeRecord["event"],
+    { readonly _tag: "started" }
+  >;
+  const open = given(started).state;
+  /** The start record's envelope around another event, decoded so the ids carry their brands. */
+  const at = (seq: number, event: unknown, requestId: string | null = null) =>
+    decodeRecord({ ...startRecord, seq, requestId, event });
+
+  it("admits every record decide wrote, in order", () => {
+    let state = emptyState(threadId);
+    for (const record of legal.records) {
+      expect(admits(state, record)).toBeNull();
+      state = evolve(state, record);
+    }
+  });
+
+  it("refuses a second start with an existing instance id", () => {
+    expect(admits(open, at(2, startEvent))).toBe("starts w1, which already exists");
+  });
+
+  it("refuses a start while another instance is open", () => {
+    const second = {
+      ...startEvent,
+      instanceId: "w2",
+      steps: startEvent.steps.map((step) => ({ ...step, id: step.id.replace("w1.", "w2.") })),
+    };
+    expect(admits(open, at(2, second))).toBe("starts w2 while w1 is open");
+  });
+
+  it("refuses changes to steps and instances that do not exist", () => {
+    expect(admits(open, at(2, { _tag: "ticked", stepId: "w1.9", comment: "x", proof: null }))).toBe(
+      "changes w1.9, which does not exist",
+    );
+    const closeW3 = { _tag: "closed", instanceId: "w3", outcome: "abandoned", reason: "x" };
+    expect(admits(open, at(2, closeW3))).toBe("closes w3, which does not exist");
+  });
+
+  it("refuses transitions decide never writes", () => {
+    const finish = { _tag: "closed", instanceId: "w1", outcome: "finished", reason: "x" };
+    const closed = given(started, [user, close("w1", "abandoned")]).state;
+    expect(admits(closed, at(3, finish))).toBe("closes w1, which is already closed");
+    expect(admits(open, at(2, finish))).toBe("finishes w1 with w1.1, w1.2, w1.3 open");
+    const ticked = given(started, [agent, tick("w1.1")]).state;
+    expect(admits(ticked, at(3, { _tag: "skipped", stepId: "w1.1", reason: "x" }))).toBe(
+      "moves w1.1 from done to skipped",
+    );
+    const secondOpen = given(started, [user, close("w1", "abandoned")], [user, start]).state;
+    expect(admits(secondOpen, at(4, { _tag: "reopened", target: "w1", reason: "x" }))).toBe(
+      "reopens w1 while w2 is open",
+    );
+  });
+
+  it("refuses a request id the log already answered", () => {
+    const { state } = given(started, [agent, tick("w1.1"), { requestId: "r1" }]);
+    const skipped = { _tag: "skipped", stepId: "w1.2", reason: "x" };
+    expect(admits(state, at(3, skipped, "r1"))).toBe('reuses request id "r1"');
   });
 });

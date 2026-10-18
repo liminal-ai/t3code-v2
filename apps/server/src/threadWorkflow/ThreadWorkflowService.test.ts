@@ -28,6 +28,7 @@ import { ThreadHooks } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadWorkflow from "./layer.ts";
 import { threadLogFileName } from "./store.ts";
+import { given, started } from "./testkit.ts";
 import { ThreadWorkflowService } from "./ThreadWorkflowService.ts";
 
 const threadId = ThreadId.make("thread-service-test");
@@ -103,6 +104,8 @@ const makeHarness = (options: { readonly enabled?: boolean; readonly seedLog?: s
     );
     return { baseDir, threadsDir, lifecycle, layer };
   });
+
+const duplicateStart = given(started).records.flatMap((record) => [record, { ...record, seq: 2 }]);
 
 it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
   it.effect("starts under the shared thread lock and refuses once the thread settled", () =>
@@ -312,6 +315,36 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
             "single-task",
           ]);
           assert.isTrue(templates.every((template) => template.stepCount > 0));
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.effect("loads a log with a repeated start as corrupt, blocks nothing, and recovers it", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({
+          seedLog: duplicateStart.map((record) => `${JSON.stringify(record)}\n`).join(""),
+        });
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          const hooks = yield* ThreadHooks;
+          const pane = yield* service.state(threadId);
+          assert.strictEqual(
+            pane.view.corruption,
+            "line 2 of its log starts w1, which already exists",
+          );
+          assert.isTrue(pane.visible);
+          for (const action of ["settle", "archive", "delete"] as const) {
+            assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action }));
+          }
+          const recovered = yield* service.apply(user, threadId, {
+            _tag: "recover",
+            reason: "the log repeated a start",
+          });
+          assert.isNull(recovered.view.corruption);
+          const next = yield* service.apply(user, threadId, start);
+          assert.strictEqual(next.view.activeInstanceId, "w2");
         }).pipe(Effect.provide(harness.layer));
       }),
     ),

@@ -757,6 +757,110 @@ export const evolve = (
   };
 };
 
+/**
+ * Why `record` is not a legal next record for `state`, or null. The aggregate invariants `decide`
+ * keeps, checked on a record instead of a request, so a log that was hand-edited, merged or written
+ * by a build with a different policy folds as corrupt instead of as a state `decide` would never
+ * have produced. Worded to follow "line N of its log".
+ */
+export const admits = (state: ThreadWorkflowState, record: ThreadWorkflowRecord): string | null => {
+  if (record.requestId !== null && state.receipts.has(record.requestId)) {
+    return `reuses request id "${record.requestId}"`;
+  }
+  if (record.kind === "receipt") return null;
+  const { event } = record;
+  const open = openInstance(state);
+  switch (event._tag) {
+    case "recovered":
+      // A recovery starts a fresh log or replaces a corrupt one, never a readable one's middle.
+      return state.lastSeq === 0 || state.corruption !== null ? null : "recovers mid-log";
+    case "started": {
+      if (findInstance(state, event.instanceId) !== undefined) {
+        return `starts ${event.instanceId}, which already exists`;
+      }
+      if (open !== undefined) {
+        return `starts ${event.instanceId} while ${open.instance.id} is open`;
+      }
+      const stepIds = new Set(event.steps.map((step) => step.id));
+      if (
+        stepIds.size !== event.steps.length ||
+        event.steps.some((step) => instanceIdOfStep(step.id) !== event.instanceId)
+      ) {
+        return `starts ${event.instanceId} with step ids that are not its own or repeat`;
+      }
+      return null;
+    }
+    case "ticked":
+    case "skipped":
+    case "removed": {
+      const found = findStep(state, event.stepId);
+      if (found === undefined) return `changes ${event.stepId}, which does not exist`;
+      if (found.entry.instance.status._tag === "closed") {
+        return `changes ${event.stepId} on closed ${found.entry.instance.id}`;
+      }
+      const from = found.step.state._tag;
+      const legal =
+        event._tag === "ticked"
+          ? from === "open" || from === "skipped"
+          : event._tag === "skipped"
+            ? from === "open"
+            : from !== "done" && from !== "removed";
+      return legal ? null : `moves ${event.stepId} from ${from} to ${event._tag}`;
+    }
+    case "inserted": {
+      const entry = findInstance(state, event.instanceId);
+      if (entry === undefined) return `inserts into ${event.instanceId}, which does not exist`;
+      if (entry.instance.status._tag === "closed") {
+        return `inserts into ${event.instanceId}, which is closed`;
+      }
+      const { steps } = entry.instance;
+      if (
+        instanceIdOfStep(event.step.id) !== event.instanceId ||
+        steps.some((step) => step.id === event.step.id)
+      ) {
+        return `inserts ${event.step.id}, an id ${event.instanceId} cannot take`;
+      }
+      if (event.afterStepId !== null && !steps.some((step) => step.id === event.afterStepId)) {
+        return `inserts after ${event.afterStepId}, which does not exist`;
+      }
+      return null;
+    }
+    case "commented": {
+      const exists = isStepId(event.target)
+        ? findStep(state, event.target) !== undefined
+        : findInstance(state, event.target) !== undefined;
+      return exists ? null : `comments on ${event.target}, which does not exist`;
+    }
+    case "reopened": {
+      if (isStepId(event.target)) {
+        const found = findStep(state, event.target);
+        if (found === undefined) return `reopens ${event.target}, which does not exist`;
+        if (found.entry.instance.status._tag === "closed") {
+          return `reopens ${event.target} on closed ${found.entry.instance.id}`;
+        }
+        return found.step.state._tag === "open" ? `reopens ${event.target}, which is open` : null;
+      }
+      const entry = findInstance(state, event.target);
+      if (entry === undefined) return `reopens ${event.target}, which does not exist`;
+      if (entry.instance.status._tag === "open") return `reopens ${event.target}, which is open`;
+      return open === undefined
+        ? null
+        : `reopens ${event.target} while ${open.instance.id} is open`;
+    }
+    case "closed": {
+      const entry = findInstance(state, event.instanceId);
+      if (entry === undefined) return `closes ${event.instanceId}, which does not exist`;
+      if (entry.instance.status._tag === "closed") {
+        return `closes ${event.instanceId}, which is already closed`;
+      }
+      const openSteps = entry.instance.steps.filter((step) => step.state._tag === "open");
+      return event.outcome === "finished" && openSteps.length > 0
+        ? `finishes ${event.instanceId} with ${openSteps.map((step) => step.id).join(", ")} open`
+        : null;
+    }
+  }
+};
+
 const withReceipt = (
   receipts: ReadonlyMap<string, Receipt>,
   requestId: string,
