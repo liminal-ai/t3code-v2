@@ -957,14 +957,16 @@ export const layer: Layer.Layer<
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
       // The run is already committed as running and the outbox retry skips a running run, so a
       // defect or stall escaping the hook here would strand it. Core bounds the hook itself, over
-      // whatever containment the module brings.
+      // whatever containment the module brings, including a throw before it returns its effect.
       const workflowNote = yield* failOpen(
-        threadHooks.turnNote({
-          threadId: projection.thread.id,
-          runId: run.id,
-          compacting:
-            message.attachments.length === 0 && message.text.trim().toLowerCase() === "/compact",
-        }),
+        Effect.suspend(() =>
+          threadHooks.turnNote({
+            threadId: projection.thread.id,
+            runId: run.id,
+            compacting:
+              message.attachments.length === 0 && message.text.trim().toLowerCase() === "/compact",
+          }),
+        ),
         {
           deadline: HOOK_DEADLINE,
           fallback: "",
