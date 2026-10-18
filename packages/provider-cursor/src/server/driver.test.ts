@@ -3,8 +3,10 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { ProviderInstanceId, ProviderSessionId, ThreadId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { vi } from "vite-plus/test";
 import * as HttpClient from "effect/http/HttpClient";
@@ -155,6 +157,43 @@ it.layer(layerTest)("CursorDriver", (it) => {
         ).toBe("Failure");
         expect(openedKeys).toEqual(["instance-browser-key"]);
         expect(closed).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["local", "cloud"] as const)(
+    "advertises the skills a %s instance's agent can load",
+    (runtime) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-driver-home-" });
+        const workspace = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "cursor-driver-workspace-",
+        });
+        for (const [root, name] of [
+          [workspace, "repo-skill"],
+          [home, "home-skill"],
+        ] as const) {
+          const directory = path.join(root, ".cursor", "skills", name);
+          yield* fileSystem.makeDirectory(directory, { recursive: true });
+          yield* fileSystem.writeFileString(path.join(directory, "SKILL.md"), "---\n---\n");
+        }
+        const instance = yield* CursorDriver.create({
+          instanceId: ProviderInstanceId.make(`cursor-${runtime}-skills`),
+          displayName: "Cursor skills",
+          enabled: true,
+          environment: [
+            { name: "HOME", value: home, sensitive: false },
+            { name: "CURSOR_API_KEY", value: "skills-key", sensitive: true },
+          ],
+          config: { ...CursorDriver.defaultConfig(), runtime },
+        });
+
+        const snapshot = yield* instance.snapshotForCwd!(workspace);
+
+        expect(snapshot.skills?.map((skill) => skill.name)).toEqual(
+          runtime === "cloud" ? ["repo-skill"] : ["home-skill", "repo-skill"],
+        );
       }).pipe(Effect.scoped),
   );
 
