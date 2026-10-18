@@ -46,6 +46,7 @@ vi.mock("~/components/ui/menu", () => ({
 }));
 vi.mock("~/components/ui/scroll-area", () => ({ ScrollArea: "div" }));
 
+import { ThreadWorkflowHeader } from "./ThreadWorkflowHeader";
 import { ThreadWorkflowPanel } from "./ThreadWorkflowPanel";
 import { THREAD_WORKFLOW_LAYOUTS, useThreadWorkflowLayoutStore } from "./threadWorkflowLayoutStore";
 
@@ -147,6 +148,51 @@ describe("thread workflow pane", () => {
         target: abandoned.id,
         reason: "back on track",
       } satisfies ThreadWorkflowRequest);
+    },
+  );
+
+  it.each(THREAD_WORKFLOW_LAYOUTS.map((layout) => layout.id))(
+    "drops a pending abandon when the user views another workflow in the %s layout",
+    async (layout) => {
+      useThreadWorkflowLayoutStore.setState({ layout });
+      const active = {
+        ...abandoned,
+        id: ThreadWorkflowInstanceId.make("w2"),
+        title: "Open-ended",
+        status: { _tag: "open" },
+        currentStepId: ThreadWorkflowStepId.make("w2.1"),
+        steps: abandoned.steps.map((step) => ({ ...step, id: ThreadWorkflowStepId.make("w2.1") })),
+      } as ThreadWorkflowInstanceSummary;
+      state.workflow = {
+        ...(state.workflow as ThreadWorkflowSubscriptionState),
+        view: {
+          ...(state.workflow as ThreadWorkflowSubscriptionState).view,
+          activeInstanceId: active.id,
+          instances: [abandoned, active],
+        },
+      } as ThreadWorkflowSubscriptionState;
+      await act(() => {
+        renderer = create(
+          <ThreadWorkflowPanel
+            threadRef={threadRef}
+            pendingUserInputs={[]}
+            onAnswerInComposer={() => {}}
+          />,
+        );
+      });
+      const root = renderer!.root;
+
+      const abandon = root
+        .findAllByType("button")
+        .find((button) => textOf(button).includes("Abandon…"));
+      expect(abandon).toBeDefined();
+      await act(() => abandon!.props.onClick());
+      expect(root.findAll((node) => node.type === "form")).toHaveLength(1);
+
+      await act(() => root.findByType(ThreadWorkflowHeader).props.onView(abandoned.id));
+
+      expect(root.findAll((node) => node.type === "form")).toHaveLength(0);
+      expect(state.submit).not.toHaveBeenCalled();
     },
   );
 });

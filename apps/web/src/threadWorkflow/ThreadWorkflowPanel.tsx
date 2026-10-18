@@ -213,6 +213,11 @@ export function ThreadWorkflowPanel({
     actions.dismissFailure();
     setForm(intent);
   };
+  // A pending form targets the instance it was opened on, so it must not outlive the switch.
+  const viewInstance = (instanceId: ThreadWorkflowInstanceId) => {
+    setForm(null);
+    setViewedInstanceId(instanceId);
+  };
   const renderForm = () => {
     if (form === null) return null;
     const { title, hint } = formTitle(form, instance);
@@ -316,7 +321,7 @@ export function ThreadWorkflowPanel({
               viewedInstanceId={null}
               disabled={disabled}
               onView={(instanceId) => {
-                setViewedInstanceId(instanceId);
+                viewInstance(instanceId);
                 setStarting(false);
               }}
               onOpenForm={openForm}
@@ -341,7 +346,7 @@ export function ThreadWorkflowPanel({
             view={currentView}
             viewedInstanceId={instance.id}
             disabled={disabled}
-            onView={setViewedInstanceId}
+            onView={viewInstance}
             onOpenForm={openForm}
             onStartNew={() => setStarting(true)}
           />
@@ -362,7 +367,7 @@ export function ThreadWorkflowPanel({
             view={currentView}
             instance={instance}
             disabled={disabled}
-            onView={setViewedInstanceId}
+            onView={viewInstance}
             onOpenForm={openForm}
             onStartNew={() => setStarting(true)}
           />
