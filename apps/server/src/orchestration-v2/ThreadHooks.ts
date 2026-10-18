@@ -11,10 +11,16 @@ import * as Option from "effect/Option";
  * What core asks of an optional thread module (the fork's workflow module).
  * The default is inert, so a build without the module behaves as before.
  *
- * Both methods run on paths that hold the thread's dispatch lock, so they read
- * memory only (never disk) and never take that lock themselves; the lock is not
- * reentrant. Neither may fail or stall: a module fault must not stop a turn or
- * wedge a lifecycle command. `failOpen` is that promise as a combinator.
+ * Both methods read memory only (never disk) and never take the thread's
+ * dispatch lock, which is not reentrant. The orchestrator asks `lifecycleBlocker`
+ * under that lock, where its answer is authoritative; the settle sweep, the
+ * agent's early self-settle check and the project-delete preflight ask without
+ * it, as a prefilter the guard repeats. `turnNote` runs from the
+ * `provider-turn.start` outbox handler without the lock, so it may show a step
+ * that changed a moment ago, which is acceptable: the next turn shows the
+ * current one. Neither may fail or stall: a module fault must not stop a turn
+ * or wedge a lifecycle command. `failOpen` is that promise as a combinator, and
+ * core applies it at each call site over whatever containment the module brings.
  */
 export class ThreadHooks extends Context.Reference<{
   /** Prepended to the first provider turn of a root run, or "". */
