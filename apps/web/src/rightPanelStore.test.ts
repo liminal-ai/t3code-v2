@@ -337,6 +337,41 @@ describe("rightPanelStore", () => {
     expect(store.getUserActionRevision(refA)).toBe(revision);
   });
 
+  it("opens the workflow tab once, restores it from storage, and remembers it when closed", () => {
+    const store = useRightPanelStore.getState();
+    store.open(refA, "workflow");
+    store.open(refA, "diff");
+    store.open(refA, "workflow");
+    const state = selectThreadRightPanelState(useRightPanelStore.getState().byThreadKey, refA);
+    expect(state.surfaces.map((surface) => surface.id)).toEqual(["workflow", "diff"]);
+    expect(state.activeSurfaceId).toBe("workflow");
+
+    const persisted = JSON.parse(
+      JSON.stringify({ byThreadKey: useRightPanelStore.getState().byThreadKey }),
+    );
+    useRightPanelStore.setState(migratePersistedRightPanelState(persisted));
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      "workflow",
+    );
+
+    useRightPanelStore.getState().closeSurface(refA, "workflow");
+    expect(
+      useClosedViewStore
+        .getState()
+        .entries.map((entry) => entry.kind === "panel-tab" && entry.surface.kind),
+    ).toEqual(["workflow"]);
+  });
+
+  it("opens the workflow tab automatically without counting as a user choice", () => {
+    const store = useRightPanelStore.getState();
+    const revision = store.getUserActionRevision(refA);
+    expect(store.openProactive(refA, { id: "workflow", kind: "workflow" }, revision)).toBe(true);
+    expect(selectActiveRightPanel(useRightPanelStore.getState().byThreadKey, refA)).toBe(
+      "workflow",
+    );
+    expect(useRightPanelStore.getState().getUserActionRevision(refA)).toBe(revision);
+  });
+
   it("restores a saved maximized panel during migration", () => {
     const migrated = migratePersistedRightPanelState({
       byThreadKey: {
