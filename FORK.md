@@ -79,8 +79,8 @@ The script never switches prod. It ends by printing the `t3-v2-cutover` command 
 
 Lee runs or approves every cutover.
 
-1. Run `~/lim-v2/bin/t3-v2-cutover <release-name> <sha256-of-t3>`. The restart ends every T3 thread on prod, including the one that starts it. So run it from a terminal, or from a T3 thread as a detached `systemd-run --user` job that retries while runs are active. `~/lim-v2/notes/t3-v2-cutover/waiter-3238.sh` is the one used for 3238.
-2. The script refuses while any v2 run is active. It backs up `statev2.sqlite` into `prod/data/backups/`, switches `prod/current`, restarts `t3code-v2-prod`, and checks that the new binary answers 200 on 13987. If the check fails, it switches back once.
+1. Run `~/lim-v2/bin/t3-v2-cutover <release-name> <sha256-of-t3>`. The restart ends every T3 thread on prod, including the one that starts it. So run it from a terminal, or from a T3 thread as a detached `systemd-run --user` job.
+2. The script never waits for prod to go idle, because it may never be idle. It lists the runs the restart interrupts, which T3 resumes after the update, and goes ahead. It backs up `statev2.sqlite` into `prod/data/backups/`, switches `prod/current`, restarts `t3code-v2-prod`, and checks that the new binary answers 200 on 13987. If the check fails, it switches back once.
 3. After the switch, whether the check passed or failed, it starts `t3-v2-triage`, a headless Claude Code agent outside T3. The agent writes `report.md` in `~/lim-v2/notes/t3-v2-cutover/<time>-<release>/`.
 4. Read the report. Reload every open T3 browser tab. A tab keeps the web client it loaded before the restart, and an old client can reject values the new server sends. The report ends with that reminder.
 5. Keep the backup. A release can rewrite data on first start. 3238 compacted 54,269 events, so its backup is the only uncompacted copy.
