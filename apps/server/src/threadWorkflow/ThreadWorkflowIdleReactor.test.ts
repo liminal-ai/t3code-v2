@@ -133,7 +133,12 @@ it.layer(NodeServices.layer)("ThreadWorkflowIdleReactor", (it) => {
           yield* scanAt(T0 + 26 * HOUR);
           const commands = yield* Ref.get(harness.dispatched);
           assert.lengthOf(commands, 2);
-          const expectedId = idleCommandId(threadId, "w1", 1);
+          const expectedId = idleCommandId({
+            threadId,
+            instanceId: "w1",
+            quietSinceMs: T0,
+            quietDays: 1,
+          });
           for (const command of commands) {
             assert.strictEqual(command.type, "message.dispatch");
             assert.strictEqual(command.commandId, expectedId);
@@ -162,37 +167,9 @@ it.layer(NodeServices.layer)("ThreadWorkflowIdleReactor", (it) => {
           yield* scanAt(T0 + 49 * HOUR);
           const ids = (yield* Ref.get(harness.dispatched)).map((command) => command.commandId);
           assert.deepStrictEqual(ids.slice(2), [
-            idleCommandId(threadId, "w1", 1),
-            idleCommandId(threadId, "w1", 2),
+            idleCommandId({ threadId, instanceId: "w1", quietSinceMs: T0, quietDays: 1 }),
+            idleCommandId({ threadId, instanceId: "w1", quietSinceMs: T0, quietDays: 2 }),
           ]);
-        }).pipe(Effect.provide(harness.layer()));
-      }),
-    ),
-  );
-
-  it.effect("measures the quiet period from the later of the last record and the last run", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const harness = yield* makeHarness;
-        yield* TestClock.setTime(T0);
-        yield* Effect.gen(function* () {
-          yield* startInstance;
-          yield* Ref.set(harness.shell, shellOf({ latestRunStartedAt: at(T0 + 20 * HOUR) }));
-          yield* scanAt(T0 + 30 * HOUR);
-          assert.lengthOf(yield* Ref.get(harness.dispatched), 0);
-          yield* scanAt(T0 + 45 * HOUR);
-          const [command] = yield* Ref.get(harness.dispatched);
-          assert.strictEqual(command?.commandId, idleCommandId(threadId, "w1", 1));
-          const service = yield* ThreadWorkflowService.ThreadWorkflowService;
-          yield* service.apply(user, threadId, {
-            _tag: "comment",
-            target: "w1" as never,
-            comment: "continue, answered by the user",
-          });
-          yield* scanAt(T0 + 60 * HOUR);
-          assert.lengthOf(yield* Ref.get(harness.dispatched), 1);
-          yield* scanAt(T0 + 70 * HOUR);
-          assert.lengthOf(yield* Ref.get(harness.dispatched), 2);
         }).pipe(Effect.provide(harness.layer()));
       }),
     ),

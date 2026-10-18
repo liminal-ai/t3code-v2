@@ -12,7 +12,7 @@ import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import {
   CommandId,
-  MessageId,
+  EventId,
   ProjectId,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -35,6 +35,7 @@ import * as ServerConfig from "../config.ts";
 import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
@@ -200,6 +201,81 @@ const dispatchError = (error: unknown) => {
   return (error as Orchestrator.OrchestratorDispatchError).cause as string;
 };
 
+const scanAt = (ms: number) =>
+  TestClock.setTime(ms).pipe(
+    Effect.andThen(
+      Effect.flatMap(IdleReactor.ThreadWorkflowIdleReactor, (reactor) => reactor.scan),
+    ),
+  );
+
+const idlePings = (threadId: ThreadId) =>
+  Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
+    orchestrator.getThreadProjection(threadId),
+  ).pipe(
+    Effect.map(({ messages }) =>
+      messages.filter((message) => message.notification?.source.kind === "system"),
+    ),
+  );
+
+/** One ping for the first quiet day, unmoved by a rescan or a reactor rebuilt from scratch. */
+const firstQuietDay = (name: string) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(T0);
+    const projectId = ProjectId.make(`${name}-project`);
+    const threadId = ThreadId.make(`${name}-thread`);
+    yield* createProject(projectId);
+    yield* createThread(threadId, projectId);
+    yield* startWorkflow(threadId);
+
+    yield* scanAt(T0 + 23 * HOUR);
+    assert.lengthOf(yield* idlePings(threadId), 0);
+    yield* scanAt(T0 + 25 * HOUR);
+    yield* scanAt(T0 + 26 * HOUR);
+    yield* scanAt(T0 + 27 * HOUR).pipe(Effect.provide(Layer.fresh(IdleReactor.layer)));
+    const pings = yield* idlePings(threadId);
+    assert.lengthOf(pings, 1);
+    assert.strictEqual(
+      pings[0]?.id,
+      IdleReactor.idleCommandId({ threadId, instanceId: "w1", quietSinceMs: T0, quietDays: 1 }),
+    );
+    assert.match(
+      pings[0]?.text ?? "",
+      /thread_workflow_close \{"instanceId":"w1","outcome":"abandoned"/,
+    );
+    return threadId;
+  });
+
+/** The test adapter cannot open a session, so the ping's run ends as the provider would report it. */
+const finishLatestRun = (
+  threadId: ThreadId,
+  end: { readonly status: "completed" | "failed"; readonly startedAtMs: number | null },
+) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const sink = yield* EventSink.EventSinkV2;
+    const { runs } = yield* orchestrator.getThreadProjection(threadId);
+    const run = runs.at(-1)!;
+    assert.strictEqual(run.status, "starting");
+    const now = yield* DateTime.now;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make(`event:${run.id}:${end.status}`),
+          type: "run.updated",
+          threadId,
+          runId: run.id,
+          occurredAt: now,
+          payload: {
+            ...run,
+            status: end.status,
+            startedAt: end.startedAtMs === null ? null : DateTime.makeUnsafe(end.startedAtMs),
+            completedAt: now,
+          },
+        },
+      ],
+    });
+  });
+
 it.layer(layerTest)("thread workflow module on the orchestration graph", (it) => {
   it.effect("refuses every way out of active work while an instance is open", () =>
     Effect.gen(function* () {
@@ -320,44 +396,56 @@ it.layer(layerTest)("thread workflow module on the orchestration graph", (it) =>
     }),
   );
 
-  it.effect("sends one idle ping through the orchestrator for a quiet day", () =>
+  it.effect("pings once for a quiet day, again after a continue comment starts a new one", () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(T0);
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
-      const reactor = yield* IdleReactor.ThreadWorkflowIdleReactor;
-      const projectId = ProjectId.make("workflow-idle-project");
-      const threadId = ThreadId.make("workflow-idle-thread");
-      yield* createProject(projectId);
-      yield* createThread(threadId, projectId);
-      yield* startWorkflow(threadId);
-
-      yield* TestClock.setTime(T0 + 23 * HOUR);
-      yield* reactor.scan;
-      assert.lengthOf((yield* orchestrator.getThreadProjection(threadId)).messages, 0);
-
-      yield* TestClock.setTime(T0 + 25 * HOUR);
-      yield* reactor.scan;
-      yield* reactor.scan;
-      const commandId = IdleReactor.idleCommandId(threadId, "w1", 1);
-      // A restarted server rebuilds the same id; the command receipt answers instead of a new message.
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(commandId),
-        threadId,
-        messageId: MessageId.make(commandId),
-        text: "replayed",
-        attachments: [],
-        dispatchMode: { type: "queue_after_active" },
-        createdBy: "agent",
-        creationSource: "server",
+      const threadId = yield* firstQuietDay("workflow-idle-comment");
+      yield* finishLatestRun(threadId, { status: "failed", startedAtMs: null });
+      yield* TestClock.setTime(T0 + 30 * HOUR);
+      const service = yield* ThreadWorkflowService;
+      yield* service.apply(user, threadId, {
+        _tag: "comment",
+        target: "w1" as never,
+        comment: "continue, answered by the user",
       });
-      const { messages } = yield* orchestrator.getThreadProjection(threadId);
-      assert.lengthOf(messages, 1);
-      assert.strictEqual(messages[0]?.id, commandId);
-      assert.deepStrictEqual(messages[0]?.notification?.source, { kind: "system" });
-      assert.match(
-        messages[0]?.text ?? "",
-        /thread_workflow_close \{"instanceId":"w1","outcome":"abandoned"/,
+
+      yield* scanAt(T0 + 50 * HOUR);
+      assert.lengthOf(yield* idlePings(threadId), 1);
+      yield* scanAt(T0 + 55 * HOUR);
+      const pings = yield* idlePings(threadId);
+      assert.deepStrictEqual(
+        pings.map((message) => message.id),
+        [
+          IdleReactor.idleCommandId({ threadId, instanceId: "w1", quietSinceMs: T0, quietDays: 1 }),
+          IdleReactor.idleCommandId({
+            threadId,
+            instanceId: "w1",
+            quietSinceMs: T0 + 30 * HOUR,
+            quietDays: 1,
+          }),
+        ],
+      );
+      assert.match(pings[1]?.text ?? "", /no workflow activity for 1 day,/);
+    }),
+  );
+
+  it.effect("pings again a quiet day after the ping's own run started", () =>
+    Effect.gen(function* () {
+      const threadId = yield* firstQuietDay("workflow-idle-run");
+      yield* finishLatestRun(threadId, { status: "completed", startedAtMs: T0 + 25 * HOUR });
+
+      yield* scanAt(T0 + 48 * HOUR);
+      assert.lengthOf(yield* idlePings(threadId), 1);
+      yield* scanAt(T0 + 50 * HOUR);
+      const pings = yield* idlePings(threadId);
+      assert.lengthOf(pings, 2);
+      assert.strictEqual(
+        pings[1]?.id,
+        IdleReactor.idleCommandId({
+          threadId,
+          instanceId: "w1",
+          quietSinceMs: T0 + 25 * HOUR,
+          quietDays: 1,
+        }),
       );
     }),
   );

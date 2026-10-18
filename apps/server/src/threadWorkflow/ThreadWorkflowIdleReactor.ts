@@ -1,8 +1,9 @@
 /**
  * Asks the agent, once per quiet day, whether an idle workflow should go on. A period is quiet
  * when nothing was recorded on the workflow and no run started on the thread for a day. The
- * command id carries the quiet period's index, so a rescan or a restart replays the receipt and
- * sends nothing new. A `continue` answer is recorded as a comment, which starts a fresh period.
+ * command id carries when the quiet stretch began and how many days it has run, so a rescan or a
+ * restart replays the receipt and sends nothing new, while a `continue` comment or a run (the
+ * ping's own included) starts a fresh stretch with fresh ids.
  */
 import {
   CommandId,
@@ -55,8 +56,13 @@ const openInstance = (state: ThreadWorkflowState): QuietInstance | null => {
 const millis = (value: DateTime.Utc | null | undefined) =>
   value == null ? null : DateTime.toEpochMillis(value);
 
-export const idleCommandId = (threadId: ThreadId, instanceId: string, quietPeriodIndex: number) =>
-  `server:thread-workflow-idle:${threadId}:${instanceId}:${quietPeriodIndex}`;
+export const idleCommandId = (input: {
+  readonly threadId: ThreadId;
+  readonly instanceId: string;
+  readonly quietSinceMs: number;
+  readonly quietDays: number;
+}) =>
+  `server:thread-workflow-idle:${input.threadId}:${input.instanceId}:${input.quietSinceMs}:${input.quietDays}`;
 
 export const idleMessage = (input: {
   readonly threadId: ThreadId;
@@ -123,18 +129,23 @@ const make = Effect.gen(function* () {
         return;
       }
       const quietSince = Math.max(fresh.lastRecordAt, runStartedAt);
-      const quietPeriodIndex = Math.floor((nowMs - quietSince) / QUIET_PERIOD_MS);
-      const id = idleCommandId(threadId, fresh.instance.id, quietPeriodIndex);
+      const quietDays = Math.floor((nowMs - quietSince) / QUIET_PERIOD_MS);
+      const id = idleCommandId({
+        threadId,
+        instanceId: fresh.instance.id,
+        quietSinceMs: quietSince,
+        quietDays,
+      });
       yield* orchestrator.dispatch({
         type: "message.dispatch",
         commandId: CommandId.make(id),
         threadId,
         messageId: MessageId.make(id),
-        text: idleMessage({ threadId, instance: fresh.instance, quietDays: quietPeriodIndex }),
+        text: idleMessage({ threadId, instance: fresh.instance, quietDays }),
         notification: {
           source: { kind: "system" },
           outcome: "updated",
-          summary: `Workflow "${fresh.instance.title}" has been idle for ${quietPeriodIndex} ${quietPeriodIndex === 1 ? "day" : "days"}`,
+          summary: `Workflow "${fresh.instance.title}" has been idle for ${quietDays} ${quietDays === 1 ? "day" : "days"}`,
         },
         attachments: [],
         dispatchMode: { type: "queue_after_active" },
