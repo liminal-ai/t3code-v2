@@ -31,6 +31,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import type * as PlatformError from "effect/PlatformError";
+import * as Ref from "effect/Ref";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -44,6 +45,7 @@ import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
+import { HOOK_DEADLINE } from "../orchestration-v2/ThreadHooks.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProjectEnrichmentService from "../project/ProjectEnrichmentService.ts";
@@ -99,6 +101,12 @@ const layerProviderInstances = Layer.succeed(ProviderInstanceRegistry.ProviderIn
   subscribeChanges: Effect.never,
 });
 
+/** Flipped on, every settings read the module makes signals `reached` and then never answers. */
+interface SettingsStall {
+  readonly on: Ref.Ref<boolean>;
+  readonly reached: Deferred.Deferred<void>;
+}
+
 interface ModuleSetup {
   /** Written into the threads directory before the module folds it at layer build. */
   readonly seed?: (
@@ -106,7 +114,29 @@ interface ModuleSetup {
   ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path>;
   /** The process environment the module reads at build. */
   readonly env?: Record<string, string>;
+  /** Stalls the module's settings reads only; core keeps answering. */
+  readonly stall?: SettingsStall;
 }
+
+const layerStallingSettings = <E, R>(
+  stall: SettingsStall,
+  layerSettings: Layer.Layer<ServerSettings.ServerSettingsService, E, R>,
+) =>
+  Layer.effect(
+    ServerSettings.ServerSettingsService,
+    Effect.map(ServerSettings.ServerSettingsService, (settings) =>
+      ServerSettings.ServerSettingsService.of({
+        ...settings,
+        getSettings: Ref.get(stall.on).pipe(
+          Effect.flatMap((on) =>
+            on
+              ? Deferred.succeed(stall.reached, undefined).pipe(Effect.andThen(Effect.never))
+              : settings.getSettings,
+          ),
+        ),
+      }),
+    ),
+  ).pipe(Layer.provide(layerSettings));
 
 const makeLayerTest = (setup: ModuleSetup = {}) => {
   const layerServerConfig = ServerConfig.layerTest(process.cwd(), {
@@ -134,7 +164,9 @@ const makeLayerTest = (setup: ModuleSetup = {}) => {
   const layerModule = ThreadWorkflow.layer.pipe(
     Layer.provide(layerSeed),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: setup.env ?? {} }))),
-    Layer.provide(layerSettings),
+    Layer.provide(
+      setup.stall === undefined ? layerSettings : layerStallingSettings(setup.stall, layerSettings),
+    ),
     Layer.provide(ProjectionStore.layer),
     Layer.provide(ThreadCommandExecutor.layer),
   );
@@ -611,6 +643,45 @@ it.layer(makeLayerTest({ env: { T3CODE_THREAD_WORKFLOW_ENFORCEMENT: "off" } }))(
         for (const exit of yield* leaveActiveWork("workflow-bypass-env")) {
           assert.isTrue(Exit.isSuccess(exit));
         }
+      }),
+    );
+  },
+);
+
+const settingsStall: SettingsStall = { on: Ref.makeUnsafe(false), reached: Deferred.makeUnsafe() };
+
+it.layer(makeLayerTest({ stall: settingsStall }))(
+  "thread workflow module whose settings reads stall",
+  (it) => {
+    it.effect("lets a settle through once the hook deadline passes", () =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(T0);
+        const threads = yield* ThreadManagementService.ThreadManagementService;
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projectId = ProjectId.make("workflow-stall-project");
+        const threadId = ThreadId.make("workflow-stall-thread");
+        yield* createProject(projectId);
+        yield* createThread(threadId, projectId);
+        yield* startWorkflow(threadId);
+
+        yield* Ref.set(settingsStall.on, true);
+        const answered = yield* Ref.make(false);
+        const settling = yield* threads
+          .dispatch({ type: "thread.settle", commandId: id(`${threadId}-settle`), threadId })
+          .pipe(
+            Effect.exit,
+            Effect.tap(() => Ref.set(answered, true)),
+            Effect.forkChild,
+          );
+        yield* Deferred.await(settingsStall.reached);
+        assert.isFalse(yield* Ref.get(answered));
+        yield* TestClock.adjust(HOOK_DEADLINE);
+        const settled = yield* Fiber.join(settling);
+        assert.isTrue(Exit.isSuccess(settled), String(settled));
+        assert.strictEqual(
+          (yield* orchestrator.getThreadProjection(threadId)).thread.settledOverride,
+          "settled",
+        );
       }),
     );
   },
