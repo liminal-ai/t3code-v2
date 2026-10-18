@@ -18,6 +18,7 @@ import {
   OrchestrationV2DomainEvent,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -43,6 +44,11 @@ import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 import { ThreadHooks } from "./ThreadHooks.ts";
+import * as ServerConfig from "../config.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as ThreadWorkflow from "../threadWorkflow/layer.ts";
+import { ThreadWorkflowService } from "../threadWorkflow/ThreadWorkflowService.ts";
+import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 
 const isDomainEvent = Schema.is(OrchestrationV2DomainEvent);
 
@@ -179,6 +185,8 @@ function makeLocalCommandHarness(input: {
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
   readonly turnNote?: string;
+  /** A real `ThreadHooks` implementation, in place of the fixed `turnNote`. */
+  readonly threadHooks?: Layer.Layer<never>;
 }) {
   const now = DateTime.makeUnsafe("2026-09-04T12:00:00Z");
   const threadId = ThreadId.make("thread-native-account-command");
@@ -366,6 +374,19 @@ function makeLocalCommandHarness(input: {
   }
   const events: Array<OrchestrationV2DomainEvent> = [];
   const turnNote = input.turnNote;
+  const notesTurn = input.turnNote !== undefined || input.threadHooks !== undefined;
+  const layerThreadHooks: Layer.Layer<never> =
+    input.threadHooks ??
+    (turnNote === undefined
+      ? Layer.empty
+      : Layer.succeed(ThreadHooks, {
+          turnNote: ({ runId: noteRunId, compacting }) =>
+            Effect.sync(() => {
+              noteRequests.push({ runId: noteRunId, compacting });
+              return compacting ? "" : turnNote;
+            }),
+          lifecycleBlocker: () => Effect.succeed(null),
+        }));
   const prompts: Array<string> = [];
   const noteRequests: Array<{ readonly runId: RunId; readonly compacting: boolean }> = [];
   const interruptRun = () => {
@@ -426,7 +447,7 @@ function makeLocalCommandHarness(input: {
                   ),
                 ),
               )
-            : input.failReadsAfterRunning === true || input.turnNote !== undefined
+            : input.failReadsAfterRunning === true || notesTurn
               ? Effect.succeed({
                   driver: providerThread.driver,
                   providerSession: {
@@ -454,7 +475,7 @@ function makeLocalCommandHarness(input: {
   >((started) =>
     input.failReadsAfterRunning === true
       ? Effect.void
-      : input.turnNote !== undefined
+      : notesTurn
         ? started.session
             .startTurn({ message: { text: input.text, attachments: [] } } as never)
             .pipe(Effect.asVoid, Effect.orDie)
@@ -567,16 +588,7 @@ function makeLocalCommandHarness(input: {
         Layer.mock(RuntimePolicy.RuntimePolicyV2)({
           resolve: resolveRuntimePolicy,
         }),
-        turnNote === undefined
-          ? Layer.empty
-          : Layer.succeed(ThreadHooks, {
-              turnNote: ({ runId: noteRunId, compacting }) =>
-                Effect.sync(() => {
-                  noteRequests.push({ runId: noteRunId, compacting });
-                  return compacting ? "" : turnNote;
-                }),
-              lifecycleBlocker: () => Effect.succeed(null),
-            }),
+        layerThreadHooks,
       ),
     ),
   );
@@ -791,6 +803,52 @@ effectIt.effect("sends the user's text unchanged when the turn note is empty", (
 
     expect(harness.prompts).toEqual(["Continue"]);
   }),
+);
+
+effectIt.effect("prefixes the prompt with the module's note for the thread's open workflow", () =>
+  Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-turn-note-" });
+    const module = yield* Layer.build(
+      ThreadWorkflow.layer.pipe(
+        Layer.provide(ThreadCommandExecutor.layer),
+        Layer.provide(ServerSettings.layerTest({ threadWorkflowsEnabled: true })),
+        Layer.provide(
+          Layer.mock(ProjectionStore.ProjectionStoreV2)({
+            getThread: () =>
+              Effect.succeed({
+                deletedAt: null,
+                archivedAt: null,
+                settledAt: null,
+                settledOverride: null,
+              } as never),
+          }),
+        ),
+        Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
+        Layer.provide(NodeServices.layer),
+      ),
+    );
+    const service = Context.get(module, ThreadWorkflowService);
+    yield* service.apply({ _tag: "user" }, ThreadId.make("thread-native-account-command"), {
+      _tag: "start",
+      templateId: "single-task" as never,
+    });
+    const harness = makeLocalCommandHarness({
+      text: "Continue",
+      threadHooks: Layer.succeed(ThreadHooks, Context.get(module, ThreadHooks)),
+    });
+
+    yield* harness.start;
+
+    expect(harness.prompts).toHaveLength(1);
+    expect(harness.prompts[0]).toMatch(
+      /^<thread-workflow>\nWorkflow "Single task" \(w1, template single-task\), step 1 of \d+: Ground the affected subsystem\n/,
+    );
+    expect(harness.prompts[0]).toContain('thread_workflow_tick {"stepId":"w1.1"');
+    expect(harness.prompts[0]?.endsWith("</thread-workflow>\n\nUser message:\nContinue")).toBe(
+      true,
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 effectIt.effect("asks for the turn note as compacting on /compact and sends none", () =>
