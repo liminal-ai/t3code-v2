@@ -10,9 +10,8 @@ TypeScript package. It does not use Cursor's ACP transport for V2 execution.
   `CURSOR_API_KEY`.
 - A model accepted by the Cursor SDK. `auto` is sent to the SDK as its `default` model selection.
 
-The adapter currently uses the SDK's local-agent runtime so runs operate in the selected T3 Code
-workspace. Cursor cloud agents need repository and cloud-environment configuration that T3 Code does
-not expose yet.
+By default Cursor runs on this machine in the thread's workspace. A Cursor instance can instead run
+its threads on Cursor Cloud. See [Cursor Cloud](#cursor-cloud).
 
 ## Sign in
 
@@ -28,14 +27,48 @@ Use **Change account** or **Sign out** in the same settings section. Both stop t
 instance's running threads and keep their history. Sign-out forgets the saved credential; to revoke
 the generated key before it expires, remove it from your Cursor dashboard's API keys.
 
+## Cursor Cloud
+
+A Cursor Cloud thread runs on a Cursor VM instead of this machine, and keeps running there while T3
+Code is closed. To use it, add a Cursor instance in **Settings > Providers** and set **Runs on** to
+**Cursor Cloud**. Keep a separate instance on **Local** for threads that should run here. Two
+switches apply only to cloud instances:
+
+- **Open a pull request when a cloud run finishes** is off by default.
+- **Open pull requests as the Cursor GitHub app** is on by default. Turn it off to open them as the
+  signed-in Cursor user.
+
+The project's `origin` must be a GitHub repository that your Cursor account can access. A cloud
+thread works on its own clone:
+
+- The VM clones the thread's branch if that branch is on GitHub, and the repository's default branch
+  otherwise. Commits you have not pushed and uncommitted edits never reach it. The agent is told what
+  it is missing.
+- The agent cannot reach this machine's files or T3 Code's tools. Only skills in the repository are
+  offered, and the agent can load them only once they are pushed.
+- Images are sent. Text files and pasted text travel inline, up to 100 KB each, while the message
+  stays within 120,000 characters. A file that does not fit is left out, with a note when there is
+  room for one. Other files are not sent, and the agent is told so.
+- T3 Code does not checkpoint cloud runs, so their changes have no diff or restore in T3 Code. Review
+  them on the branch or pull request the agent pushes.
+- Runtime modes do not limit a cloud agent. A message sent during a run waits for the run to end
+  instead of restarting it.
+- Stop asks Cursor to cancel the run. If Cursor accepts the request but has not confirmed that the
+  run stopped 30 seconds later, the turn fails with a link to check the run on cursor.com.
+- Pull requests that a cloud run opens or updates are linked to the thread.
+
+Keep **Settings > General > Continue threads after restarts** on. After T3 Code restarts, it then
+follows a cloud run that was still going. With it off, the run finishes on Cursor without T3 Code
+seeing the result.
+
 ## V2 Capability Mapping
 
 The adapter supports:
 
-- creating and resuming local Cursor agent threads;
+- creating and resuming local and Cursor Cloud agent threads;
 - changing the model and model parameters between turns;
 - assistant text, reasoning, tool activity, plans, and todo streaming;
-- thread-scoped T3 Code MCP tools;
+- thread-scoped T3 Code MCP tools, for local threads;
 - image attachments;
 - interruption, queued app messages, and orchestrator-owned interrupt/restart steering;
 - provider conversation snapshots through `Agent.messages.list()`;

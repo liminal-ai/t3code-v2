@@ -8,7 +8,11 @@
  * @module provider-cursor/server/cloud
  */
 import type { RunResult } from "@cursor/sdk";
-import type { ChatAttachment, ChatFileAttachment } from "@t3tools/contracts";
+import {
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  type ChatAttachment,
+  type ChatFileAttachment,
+} from "@t3tools/contracts";
 import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
 import { discardResponseBody, responsePayloads } from "@t3tools/shared/mcpResponsePayloads";
 import * as Effect from "effect/Effect";
@@ -127,14 +131,40 @@ export function isInlineCursorCloudAttachment(attachment: ChatAttachment): boole
   );
 }
 
-/** The prompt text for a non-image attachment, given its content when it was readable. */
-export function cursorCloudAttachmentText(
-  attachment: ChatAttachment,
-  text: string | undefined,
-): string {
-  return text === undefined
-    ? `[Attached ${attachment.type} "${attachment.name}" was not sent: a Cursor Cloud VM cannot read files on the machine that started it. Only text files up to 100 KB travel inline.]`
-    : `[Attached file "${attachment.name}" follows inline.]\n${text}`;
+export function cursorCloudPrompt(input: {
+  readonly note: string | undefined;
+  readonly text: string;
+  readonly attachments: ReadonlyArray<{
+    readonly attachment: ChatAttachment;
+    readonly text: string | undefined;
+  }>;
+}): string {
+  // The environment note always goes, like the runtime instructions appended
+  // later. Only attachments compete for the input limit.
+  let prompt = [input.note, input.text]
+    .filter((part) => part !== undefined && part.length > 0)
+    .join("\n\n");
+  const appendFirstThatFits = (...parts: ReadonlyArray<string>) => {
+    const part = parts.find(
+      (candidate) =>
+        (prompt.length === 0 ? 0 : prompt.length + 2) + candidate.length <=
+        PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+    );
+    if (part !== undefined) prompt = prompt.length === 0 ? part : `${prompt}\n\n${part}`;
+  };
+  for (const { attachment, text } of input.attachments) {
+    if (text === undefined) {
+      appendFirstThatFits(
+        `[Attached ${attachment.type} "${attachment.name}" was not sent: a Cursor Cloud VM cannot read files on the machine that started it. Only text files up to 100 KB travel inline.]`,
+      );
+      continue;
+    }
+    appendFirstThatFits(
+      `[Attached file "${attachment.name}" follows inline.]\n${text}`,
+      `[Attached file "${attachment.name}" was not sent: the message was over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")}-character limit for inline attachments.]`,
+    );
+  }
+  return prompt;
 }
 
 /** Pull requests a finished cloud run opened or worked on. */

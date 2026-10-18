@@ -3,13 +3,19 @@ import * as NodeChildProcess from "node:child_process";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { EnvironmentId, ProviderInstanceId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
+  ProviderInstanceId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
 import {
   cursorCloudEnvironmentNote,
+  cursorCloudPrompt,
   cursorCloudPullRequestUrls,
   linkCursorCloudPullRequests,
   resolveCursorCloudCheckout,
@@ -133,6 +139,27 @@ describe("cursorCloudEnvironmentNote", () => {
       uncommittedChanges: false,
     });
     assert.notInclude(note, "launcher's checkout");
+  });
+});
+
+describe("cursorCloudPrompt", () => {
+  it("keeps attachment notes within the input limit when the text fills it", () => {
+    const text = "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS - 100);
+    const attachments = Array.from({ length: 100 }, (_, index) => ({
+      attachment: {
+        type: "file" as const,
+        id: `file-${index}`,
+        name: `file-${index}.txt`,
+        mimeType: "text/plain",
+        sizeBytes: 50_000,
+      },
+      text: index % 2 === 0 ? "y".repeat(50_000) : undefined,
+    }));
+
+    const prompt = cursorCloudPrompt({ note: undefined, text, attachments });
+
+    assert.isAtMost(prompt.length, PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
+    assert.isTrue(prompt.startsWith(text));
   });
 });
 

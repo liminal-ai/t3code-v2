@@ -277,7 +277,7 @@ export const CursorDriver: ProviderDriver<
             ? snapshot.getSnapshot
             : Effect.all([
                 snapshot.getSnapshot,
-                probeCursorSkills(cwd, processEnv).pipe(
+                probeCursorSkills(cwd, processEnv, effectiveConfig.runtime).pipe(
                   Effect.provideService(FileSystem.FileSystem, fileSystem),
                   Effect.provideService(Path.Path, path),
                   Effect.mapError(
