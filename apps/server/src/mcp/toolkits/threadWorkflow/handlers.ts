@@ -32,7 +32,7 @@ const parseRequest = (raw: unknown) =>
 
 /**
  * The credential carries the capability when the flag is on or the thread already has an open
- * or corrupt instance. The tool stays listed either way, so a missing capability is a refusal
+ * instance. The tool stays listed either way, so a missing capability is a refusal
  * the agent can read, not a tool that vanished.
  */
 const callingThread = (operation: string) =>

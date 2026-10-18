@@ -412,7 +412,7 @@ const ViewFields = {
   revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   /** The open instance, derived: at most one instance is open. */
   activeInstanceId: Schema.NullOr(ThreadWorkflowInstanceId),
-  /** Set when the log is unreadable or a write was uncertain. The thread is read-only and cannot settle. */
+  /** Set when the log is unreadable or a write was uncertain. The workflow is read-only until the user recovers it. */
   corruption: Schema.NullOr(Schema.String),
 };
 

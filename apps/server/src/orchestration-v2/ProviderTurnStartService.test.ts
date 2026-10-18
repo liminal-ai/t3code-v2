@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
@@ -47,6 +48,8 @@ import { ThreadHooks } from "./ThreadHooks.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadWorkflow from "../threadWorkflow/layer.ts";
+import { layerThreadHooks } from "../threadWorkflow/hooks.ts";
+import { ThreadWorkflowStore } from "../threadWorkflow/store.ts";
 import { ThreadWorkflowService } from "../threadWorkflow/ThreadWorkflowService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 
@@ -849,6 +852,33 @@ effectIt.effect("prefixes the prompt with the module's note for the thread's ope
       true,
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+effectIt.effect(
+  "sends the user's text unchanged and logs a warning when the module's note dies",
+  () => {
+    const warnings: Array<unknown> = [];
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") warnings.push(message);
+    });
+    return Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        threadHooks: layerThreadHooks.pipe(
+          Layer.provide(
+            Layer.mock(ThreadWorkflowStore)({
+              state: () => Effect.die(new Error("the store broke")),
+            }),
+          ),
+        ),
+      });
+
+      yield* harness.start;
+
+      expect(harness.prompts).toEqual(["Continue"]);
+      expect(JSON.stringify(warnings)).toContain("thread workflow turn note failed");
+    }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+  },
 );
 
 effectIt.effect("asks for the turn note as compacting on /compact and sends none", () =>

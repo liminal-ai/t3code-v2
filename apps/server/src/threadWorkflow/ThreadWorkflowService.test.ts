@@ -203,21 +203,23 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
     ),
   );
 
-  it.effect("blocks lifecycle actions for a corrupt log until the user recovers it", () =>
+  it.effect("keeps a corrupt log read-only and visible without blocking the thread", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const harness = yield* makeHarness({ seedLog: "not json\n" });
+        const harness = yield* makeHarness({ enabled: false, seedLog: "not json\n" });
         yield* Effect.gen(function* () {
           const service = yield* ThreadWorkflowService;
           const hooks = yield* ThreadHooks;
-          assert.match(
-            (yield* hooks.lifecycleBlocker({ threadId, action: "settle" })) ?? "",
-            /cannot be trusted/,
-          );
+          for (const action of ["settle", "archive", "delete"] as const) {
+            assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action }));
+          }
           assert.match(
             yield* hooks.turnNote({ threadId, runId: "run-1" as never, compacting: false }),
             /cannot be trusted/,
           );
+          const pane = yield* service.state(threadId);
+          assert.isTrue(pane.visible);
+          assert.strictEqual(pane.view.corruption, "line 1 of its log is not JSON");
           const refused = yield* service.apply(agent, threadId, start).pipe(Effect.flip);
           assert.strictEqual(refused.code, "corrupt");
           const agentRecover = yield* service
@@ -229,7 +231,6 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
             reason: "disk hiccup",
           });
           assert.isNull(recovered.view.corruption);
-          assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action: "settle" }));
         }).pipe(Effect.provide(harness.layer));
       }),
     ),

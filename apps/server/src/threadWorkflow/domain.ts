@@ -5,7 +5,7 @@
  * because every derived value (assigned ids, copied steps) is already in the event.
  *
  * Downgrade policy: a log line with an unknown `v` or event kind marks its thread corrupt
- * (read-only, cannot settle) instead of being skipped, so a rollback to an older build never
+ * (read-only) instead of being skipped, so a rollback to an older build never
  * silently drops intent. The user's `recover` sets the log aside and starts a fresh one.
  */
 // @effect-diagnostics nodeBuiltinImport:off - decide is pure and synchronous; the Crypto service is not.
@@ -863,14 +863,15 @@ const cannot: Record<LifecycleAction, string> = {
   delete: "cannot be deleted",
 };
 
-/** Why the thread may not leave active work, or null. Feeds `ThreadHooks.lifecycleBlocker`. */
+/**
+ * Why the thread may not leave active work, or null. Feeds `ThreadHooks.lifecycleBlocker`. Only a
+ * valid open instance blocks: a corrupt log never does, so unreadable state cannot trap a thread.
+ */
 export const lifecycleBlocker = (
   state: ThreadWorkflowState,
   action: LifecycleAction,
 ): string | null => {
-  if (state.corruption !== null) {
-    return `This thread's workflow log cannot be trusted (${state.corruption}), so the thread ${cannot[action]}. The user can recover it from the Workflow tab on web or desktop.`;
-  }
+  if (state.corruption !== null) return null;
   const open = openInstance(state);
   if (open === undefined) return null;
   const { id, title } = open.instance;

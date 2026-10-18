@@ -25,8 +25,11 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import type * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
@@ -51,6 +54,7 @@ import * as VcsDriverRegistry from "../vcs/VcsDriverRegistry.ts";
 import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import * as ThreadWorkflow from "./layer.ts";
+import { threadLogFileName } from "./store.ts";
 import * as IdleReactor from "./ThreadWorkflowIdleReactor.ts";
 import { ThreadWorkflowService } from "./ThreadWorkflowService.ts";
 
@@ -67,18 +71,6 @@ const layerPlatformTest = Layer.merge(
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
-);
-const layerServerConfig = ServerConfig.layerTest(process.cwd(), {
-  prefix: "t3-thread-workflow-integration-",
-});
-const layerCheckpointStoreTest = CheckpointStore.layer.pipe(
-  Layer.provide(
-    VcsDriverRegistry.layer.pipe(
-      Layer.provide(VcsProcess.layer),
-      Layer.provide(layerServerConfig),
-      Layer.provide(layerPlatformTest),
-    ),
-  ),
 );
 const driver = ProviderDriverKind.make("codex");
 const providerInstance = {
@@ -106,60 +98,89 @@ const layerProviderInstances = Layer.succeed(ProviderInstanceRegistry.ProviderIn
   subscribeChanges: Effect.never,
 });
 
-const layerSettings = ServerSettings.layerTest({ threadWorkflowsEnabled: true });
-const layerRuntime = RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService));
-const layerModule = ThreadWorkflow.layer.pipe(
-  Layer.provide(layerSettings),
-  Layer.provide(ProjectionStore.layer),
-  Layer.provide(ThreadCommandExecutor.layer),
-);
+interface ModuleSetup {
+  /** Written into the threads directory before the module folds it at layer build. */
+  readonly seed?: (
+    threadsDir: string,
+  ) => Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path>;
+}
 
-const layerTest = Layer.mergeAll(
-  layerRuntime,
-  RuntimeLayer.layerProjectService,
-  RuntimeLayer.layerEventSink,
-  ThreadCommandExecutor.layer,
-  ProjectionStore.layer,
-  IdleReactor.layer.pipe(Layer.provide(layerRuntime), Layer.provide(ProjectionStore.layer)),
-).pipe(
-  Layer.provideMerge(layerModule),
-  Layer.provide(
-    Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
-      peek: () =>
-        Effect.succeed({
-          repositoryIdentity: null,
-          faviconPath: null,
-          repositoryIdentityResolved: false,
-        }),
-      getAvailable: () =>
-        Effect.succeed({
-          repositoryIdentity: null,
-          faviconPath: null,
-          repositoryIdentityResolved: false,
-        }),
-      invalidate: () => Effect.void,
+const makeLayerTest = (setup: ModuleSetup = {}) => {
+  const layerServerConfig = ServerConfig.layerTest(process.cwd(), {
+    prefix: "t3-thread-workflow-integration-",
+  });
+  const layerSeed = Layer.effectDiscard(
+    Effect.gen(function* () {
+      if (setup.seed === undefined) return;
+      const path = yield* Path.Path;
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      yield* setup.seed(path.join(stateDir, "thread-workflows", "threads"));
     }),
-  ),
-  Layer.provide(
-    Layer.mock(WorkspacePaths.WorkspacePaths)({
-      normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
-    }),
-  ),
-  Layer.provide(McpSessionRegistryTestkit.layer),
-  Layer.provide(McpProviderSessions.layer),
-  Layer.provideMerge(SqlitePersistence.layerMemory),
-  Layer.provide(layerCheckpointStoreTest),
-  Layer.provide(layerServerConfig),
-  Layer.provideMerge(layerSettings),
-  Layer.provide(layerProviderInstances),
-  Layer.provide(
-    Layer.mock(GitWorkflow.GitWorkflowService)({
-      pruneWorktrees: () => Effect.void,
-      createWorktree: () => Effect.succeed({} as never),
-    }),
-  ),
-  Layer.provide(layerPlatformTest),
-);
+  );
+  const layerCheckpointStoreTest = CheckpointStore.layer.pipe(
+    Layer.provide(
+      VcsDriverRegistry.layer.pipe(
+        Layer.provide(VcsProcess.layer),
+        Layer.provide(layerServerConfig),
+        Layer.provide(layerPlatformTest),
+      ),
+    ),
+  );
+  const layerSettings = ServerSettings.layerTest({ threadWorkflowsEnabled: true });
+  const layerRuntime = RuntimeLayer.layer.pipe(Layer.provide(RuntimeLayer.layerProjectService));
+  const layerModule = ThreadWorkflow.layer.pipe(
+    Layer.provide(layerSeed),
+    Layer.provide(layerSettings),
+    Layer.provide(ProjectionStore.layer),
+    Layer.provide(ThreadCommandExecutor.layer),
+  );
+  return Layer.mergeAll(
+    layerRuntime,
+    RuntimeLayer.layerProjectService,
+    RuntimeLayer.layerEventSink,
+    ThreadCommandExecutor.layer,
+    ProjectionStore.layer,
+    IdleReactor.layer.pipe(Layer.provide(layerRuntime), Layer.provide(ProjectionStore.layer)),
+  ).pipe(
+    Layer.provideMerge(layerModule),
+    Layer.provide(
+      Layer.mock(ProjectEnrichmentService.ProjectEnrichmentService)({
+        peek: () =>
+          Effect.succeed({
+            repositoryIdentity: null,
+            faviconPath: null,
+            repositoryIdentityResolved: false,
+          }),
+        getAvailable: () =>
+          Effect.succeed({
+            repositoryIdentity: null,
+            faviconPath: null,
+            repositoryIdentityResolved: false,
+          }),
+        invalidate: () => Effect.void,
+      }),
+    ),
+    Layer.provide(
+      Layer.mock(WorkspacePaths.WorkspacePaths)({
+        normalizeWorkspaceRoot: (workspaceRoot) => Effect.succeed(workspaceRoot),
+      }),
+    ),
+    Layer.provide(McpSessionRegistryTestkit.layer),
+    Layer.provide(McpProviderSessions.layer),
+    Layer.provideMerge(SqlitePersistence.layerMemory),
+    Layer.provide(layerCheckpointStoreTest),
+    Layer.provide(layerServerConfig),
+    Layer.provideMerge(layerSettings),
+    Layer.provide(layerProviderInstances),
+    Layer.provide(
+      Layer.mock(GitWorkflow.GitWorkflowService)({
+        pruneWorktrees: () => Effect.void,
+        createWorktree: () => Effect.succeed({} as never),
+      }),
+    ),
+    Layer.provide(layerPlatformTest),
+  );
+};
 
 const id = (value: string) => CommandId.make(value);
 
@@ -276,7 +297,7 @@ const finishLatestRun = (
     });
   });
 
-it.layer(layerTest)("thread workflow module on the orchestration graph", (it) => {
+it.layer(makeLayerTest())("thread workflow module on the orchestration graph", (it) => {
   it.effect("refuses every way out of active work while an instance is open", () =>
     Effect.gen(function* () {
       yield* TestClock.setTime(T0);
@@ -446,6 +467,60 @@ it.layer(layerTest)("thread workflow module on the orchestration graph", (it) =>
           quietSinceMs: T0 + 25 * HOUR,
           quietDays: 1,
         }),
+      );
+    }),
+  );
+});
+
+const corruptThread = ThreadId.make("workflow-corrupt-thread");
+
+it.layer(
+  makeLayerTest({
+    seed: (threadsDir) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        yield* fileSystem.makeDirectory(threadsDir, { recursive: true });
+        yield* fileSystem.writeFileString(
+          path.join(threadsDir, threadLogFileName(corruptThread)),
+          "not json\n",
+        );
+      }),
+  }),
+)("thread workflow module with a corrupt thread log", (it) => {
+  it.effect("lets the corrupt thread settle and still refuses a valid open instance", () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(T0);
+      const threads = yield* ThreadManagementService.ThreadManagementService;
+      const service = yield* ThreadWorkflowService;
+      const projectId = ProjectId.make("workflow-corrupt-project");
+      const openThread = ThreadId.make("workflow-corrupt-neighbour");
+      yield* createProject(projectId);
+      yield* createThread(corruptThread, projectId);
+      yield* createThread(openThread, projectId);
+      yield* startWorkflow(openThread);
+      assert.isTrue((yield* service.state(corruptThread)).visible);
+
+      yield* threads.dispatch({
+        type: "thread.settle",
+        commandId: id(`${corruptThread}-settle`),
+        threadId: corruptThread,
+      });
+      const refused = yield* threads
+        .dispatch({
+          type: "thread.settle",
+          commandId: id(`${openThread}-settle`),
+          threadId: openThread,
+        })
+        .pipe(Effect.flip);
+      assert.match(dispatchError(refused), /open workflow "Open-ended" \(w1/);
+
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const settled = (yield* orchestrator.getThreadProjection(corruptThread)).thread;
+      assert.strictEqual(settled.settledOverride, "settled");
+      assert.strictEqual(
+        (yield* service.view(corruptThread)).corruption,
+        "line 1 of its log is not JSON",
       );
     }),
   );

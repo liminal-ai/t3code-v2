@@ -119,7 +119,7 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
           const state = yield* store.state(threadId);
           assert.strictEqual(state.corruption, "line 2 of its log is not JSON");
           assert.strictEqual(toView(state).activeInstanceId, "w1");
-          assert.isNotNull(lifecycleBlocker(state, "settle"));
+          assert.isNull(lifecycleBlocker(state, "settle"));
           const refused = yield* store.append(threadId, second).pipe(Effect.flip);
           assert.strictEqual(refused.code, "store_unavailable");
         }),
@@ -193,7 +193,7 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
           assert.strictEqual(failed.code, "store_unavailable");
           const state: ThreadWorkflowState = yield* store.state(threadId);
           assert.strictEqual(state.corruption, "a write did not complete");
-          assert.isNotNull(lifecycleBlocker(state, "archive"));
+          assert.isNull(lifecycleBlocker(state, "archive"));
         }),
       );
     }),

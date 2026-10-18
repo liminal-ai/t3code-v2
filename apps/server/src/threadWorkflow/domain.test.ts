@@ -681,12 +681,10 @@ describe("lifecycleBlocker", () => {
     expect(lifecycleBlocker(state, "delete")).toContain("cannot be deleted");
   });
 
-  it("blocks a corrupt thread even with nothing open", () => {
-    const message = lifecycleBlocker(
-      markCorrupt(given().state, "line 1 of its log is not JSON"),
-      "settle",
-    );
-    expect(message).toContain("line 1 of its log is not JSON");
-    expect(message).toContain("Workflow tab on web or desktop");
+  it("never blocks a corrupt thread, even one whose readable prefix has an open instance", () => {
+    const corrupt = markCorrupt(given(started).state, "line 2 of its log is not JSON");
+    for (const action of ["settle", "archive", "delete"] as const) {
+      expect(lifecycleBlocker(corrupt, action)).toBeNull();
+    }
   });
 });

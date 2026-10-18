@@ -20,7 +20,8 @@ export class ThreadHooks extends Context.Reference<{
   }) => Effect.Effect<string>;
   /**
    * Why the thread may not take this action, worded to follow "Thread <id> ",
-   * or null. An implementation that cannot tell fails closed.
+   * or null. An implementation that cannot tell returns null: a module fault
+   * must never trap a thread.
    */
   readonly lifecycleBlocker: (input: {
     readonly threadId: ThreadId;

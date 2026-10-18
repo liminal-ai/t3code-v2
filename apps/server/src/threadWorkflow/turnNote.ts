@@ -50,7 +50,7 @@ export const turnNote = (view: ThreadWorkflowSubscriptionView): string => {
   if (view.corruption !== null) {
     return [
       "<thread-workflow>",
-      `This thread's workflow log cannot be trusted (${view.corruption}), so the thread cannot settle, archive or be deleted. Ask the user to recover it from the Workflow tab on web or desktop.`,
+      `This thread's workflow log cannot be trusted (${view.corruption}), so its workflow is read-only and does not hold the thread open. Ask the user to recover it from the Workflow tab on web or desktop.`,
       "</thread-workflow>",
     ].join("\n");
   }

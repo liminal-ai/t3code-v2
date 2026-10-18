@@ -30,14 +30,7 @@ import * as NodeOS from "node:os";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import {
-  decide,
-  lifecycleBlocker,
-  recordFor,
-  toSubscriptionView,
-  toView,
-  type ResolvedTemplate,
-} from "./domain.ts";
+import { decide, recordFor, toSubscriptionView, toView, type ResolvedTemplate } from "./domain.ts";
 import { ThreadWorkflowStore } from "./store.ts";
 import { builtInTemplates, freshness } from "./templates/index.ts";
 
@@ -121,10 +114,11 @@ const make = Effect.gen(function* () {
   const stateOf = (threadId: ThreadId) =>
     Effect.gen(function* () {
       const [current, flag] = yield* Effect.all([store.state(threadId), enabled]);
+      const view = toSubscriptionView(current);
       return {
         enabled: flag,
-        visible: flag || lifecycleBlocker(current, "settle") !== null,
-        view: toSubscriptionView(current),
+        visible: flag || view.corruption !== null || view.activeInstanceId !== null,
+        view,
       } satisfies ThreadWorkflowSubscriptionState;
     });
 
