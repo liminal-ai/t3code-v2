@@ -51,6 +51,7 @@ export type T3McpToolSummaryAction =
   | "project-clone"
   | "environment-read"
   | "environment-update"
+  | "thread-workflow"
   | "attachment-prepare"
   | "attachment-discard"
   | "attachment-send"
@@ -312,6 +313,20 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
   t3_environment_preferences_update: tool(
     ["Update", "Updating", "Updated", "environment preferences"],
     "environment-update",
+  ),
+  thread_workflow_get: tool(["Read", "Reading", "Read", "the thread workflow"], "thread-workflow"),
+  thread_workflow_start: tool(
+    ["Start", "Starting", "Started", "a thread workflow"],
+    "thread-workflow",
+  ),
+  thread_workflow_tick: tool(["Tick", "Ticking", "Ticked", "a workflow step"], "thread-workflow"),
+  thread_workflow_change: tool(
+    ["Change", "Changing", "Changed", "the thread workflow"],
+    "thread-workflow",
+  ),
+  thread_workflow_close: tool(
+    ["Close", "Closing", "Closed", "a thread workflow"],
+    "thread-workflow",
   ),
   t3_thread_launch: tool(["Launch", "Launching", "Launched", "a project thread"], "thread-create"),
   t3_project_list: tool(["List", "Listing", "Listed", "projects"], "project-list"),

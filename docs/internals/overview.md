@@ -50,6 +50,32 @@ connections and project membership. An unavailable target must not fall back to 
 default or a promise to synchronize offline or future environments. Project-group targets similarly
 select known environment-local checkouts; the group itself does not store inherited defaults.
 
+## Thread hooks
+
+[ThreadHooks](../../apps/server/src/orchestration-v2/ThreadHooks.ts) is core's only port to the
+fork's optional thread module (`apps/server/src/threadWorkflow/`). It is a `Context.Reference`
+with an inert default, so each consumer (the orchestrator, provider turn start, thread management,
+the settlement sweep, project deletion, provider sessions) reads whatever is in context when its
+layer builds. `server.ts` provides the module once, outside every consumer's build site; a consumer
+built elsewhere, such as a test graph or a new worker, gets the default and silently stops
+refusing settles. The hooks read the module's in-memory state and take no lock. The orchestrator
+asks `lifecycleBlocker` under the thread's non-reentrant dispatch lock, where the answer is
+authoritative; the turn note is asked from the `provider-turn.start` outbox handler without it, so
+it can lag a write by a moment. Neither may fail or stall, and each call site bounds the hook with
+`failOpen` in case the module's own containment does not hold.
+
+The module's own writes take that same lock through `ThreadCommandExecutor`, which is why a
+`start` and a `thread.settle` on one thread serialize and the loser refuses. A workflow write must
+never dispatch an orchestration command while it holds the lock. Turning `threadWorkflowsEnabled`
+off means "no new instances": `start`, reopening a closed instance, and the idle ping stop, while
+the guard, the turn note, and the close paths keep working for any open instance, so the flag is
+never a way around an open workflow. The operator's way around it is
+`threadWorkflowEnforcementDisabled` in settings or `T3CODE_THREAD_WORKFLOW_ENFORCEMENT=off`.
+
+Only a valid open instance blocks. A corrupt log, a threads directory that cannot be read at
+startup, or a fault inside a hook gives no blocker and no note, because the module must never stop
+a turn, trap a thread, or keep the server from starting.
+
 ## Durable intent and side effects
 
 The event log is the source of truth for orchestration state. The

@@ -142,7 +142,7 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
-import { ThreadHooks } from "./ThreadHooks.ts";
+import { lifecycleActionOf, ThreadHooks } from "./ThreadHooks.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ServerSettings from "../serverSettings.ts";
 
@@ -838,6 +838,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               cause,
             }),
         ),
+      );
+
+  const refuseIfThreadBlocked = (
+    command: Extract<OrchestrationV2ServerCommand, { type: keyof typeof lifecycleActionOf }>,
+  ) =>
+    threadHooks
+      .lifecycleBlocker({ threadId: command.threadId, action: lifecycleActionOf[command.type] })
+      .pipe(
+        Effect.flatMap((blocker) =>
+          blocker === null ? Effect.void : Effect.fail(`Thread ${command.threadId} ${blocker}`),
+        ),
+        mapDispatchError(command),
       );
 
   const mapDelegatedCompletionError = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -2532,17 +2544,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       });
     }
     if (command.type === "thread.settle" || command.type === "thread.archive") {
-      const blocker = yield* threadHooks.lifecycleBlocker({
-        threadId: command.threadId,
-        action: command.type === "thread.settle" ? "settle" : "archive",
-      });
-      if (blocker !== null) {
-        return yield* new OrchestratorDispatchError({
-          commandId: command.commandId,
-          commandType: command.type,
-          cause: `Thread ${command.threadId} ${blocker}`,
-        });
-      }
+      yield* refuseIfThreadBlocked(command);
     }
     if (command.type === "thread.unarchive" && thread.archivedAt === null) {
       return yield* new OrchestratorDispatchError({
@@ -10704,17 +10706,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       }
       case "thread.delete": {
-        const blocker = yield* threadHooks.lifecycleBlocker({
-          threadId: command.threadId,
-          action: "delete",
-        });
-        if (blocker !== null) {
-          return yield* new OrchestratorDispatchError({
-            commandId: command.commandId,
-            commandType: command.type,
-            cause: `Thread ${command.threadId} ${blocker}`,
-          });
-        }
+        yield* refuseIfThreadBlocked(command);
         const projection = yield* projectionStore
           .getThreadRecords(command.threadId, [
             "runs",
