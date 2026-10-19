@@ -44,7 +44,7 @@ import { newId } from "./domain.ts";
 
 export const MIGRATIONS_TABLE = "group_chat_migrations";
 
-const migrations = Migrator.fromRecord({
+export const migrations = {
   "1_groups": Effect.flatMap(
     SqlClient.SqlClient,
     (sql) => sql`
@@ -213,7 +213,7 @@ const migrations = Migrator.fromRecord({
       yield* sql`ALTER TABLE deliveries ADD COLUMN external_json TEXT`;
     }),
   ),
-});
+};
 
 const runMigrations = Migrator.make({});
 
@@ -998,7 +998,7 @@ export const open = Effect.fn("groupChat.store.open")(function* (file: string) {
   yield* sql`PRAGMA foreign_keys = ON`;
   yield* sql`PRAGMA journal_mode = WAL`;
   yield* sql`PRAGMA synchronous = NORMAL`;
-  yield* runMigrations({ loader: migrations, table: MIGRATIONS_TABLE }).pipe(
+  yield* runMigrations({ loader: Migrator.fromRecord(migrations), table: MIGRATIONS_TABLE }).pipe(
     Effect.provideService(SqlClient.SqlClient, sql),
   );
 

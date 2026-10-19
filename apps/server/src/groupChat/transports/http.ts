@@ -2,7 +2,12 @@ import type { GroupChatDeliveryId, GroupChatMember } from "@t3tools/contracts";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import { HttpClient, type HttpClientResponse, HttpClientRequest } from "effect/http";
+import {
+  FetchHttpClient,
+  HttpClient,
+  type HttpClientResponse,
+  HttpClientRequest,
+} from "effect/http";
 
 import { shorten } from "../envelope.ts";
 
@@ -72,9 +77,10 @@ const tooLarge = (status: number): SendFailure => ({
 /** Reads the body as it streams and stops at the cap, so a body with no declared length cannot grow without bound. */
 const readCapped = (
   response: HttpClientResponse.HttpClientResponse,
+  redact: (text: string) => string,
 ): Effect.Effect<string, SendFailure> =>
   response.stream.pipe(
-    Stream.mapError((error): SendFailure => ({ _tag: "transient", reason: error.message })),
+    Stream.mapError((error): SendFailure => ({ _tag: "transient", reason: redact(error.message) })),
     Stream.runFoldEffect(
       (): { chunks: Array<Uint8Array>; total: number } => ({ chunks: [], total: 0 }),
       (acc, chunk): Effect.Effect<{ chunks: Array<Uint8Array>; total: number }, SendFailure> =>
@@ -86,52 +92,89 @@ const readCapped = (
   );
 
 /** The timeout covers the whole exchange, body included, since headers can arrive long before the body ends. */
+/** Replaces every secret the request carried, so an agent that echoes the request cannot put a token into a stored error. */
+const redactSecrets = (text: string, secrets: ReadonlyArray<string>): string =>
+  secrets.reduce(
+    (redacted, secret) => (secret === "" ? redacted : redacted.split(secret).join("<redacted>")),
+    text,
+  );
+
+/** The token in a hook URL's query, or the URL's whole query when the operator put a key there. */
+export const queryValues = (url: string): ReadonlyArray<string> => {
+  try {
+    const parsed = new URL(url);
+    return [...parsed.searchParams.values(), parsed.search.slice(1)];
+  } catch {
+    return [];
+  }
+};
+
 export const post = (input: {
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
   readonly body: string;
   readonly timeout: Duration.Input;
+  /** Everything a failure message must not repeat: header values, tokens, the signing secret. */
+  readonly secrets: ReadonlyArray<string>;
 }): Effect.Effect<string, SendFailure, HttpClient.HttpClient> =>
-  Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient;
-    const { status, text } = yield* Effect.gen(function* () {
-      const response = yield* client
-        .execute(
-          HttpClientRequest.post(input.url).pipe(
-            HttpClientRequest.setHeaders(input.headers),
-            HttpClientRequest.bodyText(input.body, "application/json"),
-          ),
-        )
-        .pipe(
-          Effect.mapError((error): SendFailure => ({ _tag: "transient", reason: error.message })),
-        );
-      const length = Number(response.headers["content-length"] ?? "0");
-      if (Number.isFinite(length) && length > RESPONSE_MAX_BYTES) {
-        return yield* Effect.fail(tooLarge(response.status));
+  // The client tracer records the request URL and headers as span attributes, and this request
+  // carries the callback URL's token, the member's own headers and whatever the operator put in
+  // the agent's URL, so nothing about the exchange reaches a span.
+  Effect.withTracerEnabled(false)(
+    Effect.gen(function* () {
+      const client = yield* HttpClient.HttpClient;
+      const redact = (text: string) => redactSecrets(text, input.secrets);
+      const { status, text } = yield* Effect.gen(function* () {
+        // A redirect would resend the envelope, the member's headers and the callback URL to
+        // whatever the endpoint named, so the request never follows one.
+        const response = yield* client
+          .execute(
+            HttpClientRequest.post(input.url).pipe(
+              HttpClientRequest.setHeaders(input.headers),
+              HttpClientRequest.bodyText(input.body, "application/json"),
+            ),
+          )
+          .pipe(
+            Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+            Effect.mapError((error): SendFailure => ({
+              _tag: "transient",
+              reason: redact(error.message),
+            })),
+          );
+        if (response.status >= 300 && response.status < 400) {
+          return yield* Effect.fail<SendFailure>({
+            _tag: "permanent",
+            reason: `HTTP ${response.status}: the endpoint redirects, and a redirect is never followed; point the member at the final URL`,
+          });
+        }
+        const length = Number(response.headers["content-length"] ?? "0");
+        if (Number.isFinite(length) && length > RESPONSE_MAX_BYTES) {
+          return yield* Effect.fail(tooLarge(response.status));
+        }
+        return { status: response.status, text: yield* readCapped(response, redact) };
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: input.timeout,
+          orElse: () =>
+            Effect.fail<SendFailure>({
+              _tag: "transient",
+              reason: `no answer within ${String(input.timeout)}`,
+            }),
+        }),
+      );
+      const message = `HTTP ${status}: ${redact(excerpt(text))}`;
+      if (status === 408 || status === 429) {
+        return yield* Effect.fail<SendFailure>({ _tag: "transient", reason: message });
       }
-      return { status: response.status, text: yield* readCapped(response) };
-    }).pipe(
-      Effect.timeoutOrElse({
-        duration: input.timeout,
-        orElse: () =>
-          Effect.fail<SendFailure>({
-            _tag: "transient",
-            reason: `no answer within ${String(input.timeout)}`,
-          }),
-      }),
-    );
-    const message = `HTTP ${status}: ${excerpt(text)}`;
-    if (status === 408 || status === 429) {
-      return yield* Effect.fail<SendFailure>({ _tag: "transient", reason: message });
-    }
-    if (status >= 400 && status < 500) {
-      return yield* Effect.fail<SendFailure>({ _tag: "permanent", reason: message });
-    }
-    if (status < 200 || status >= 300) {
-      return yield* Effect.fail<SendFailure>({ _tag: "transient", reason: message });
-    }
-    return text;
-  });
+      if (status >= 400 && status < 500) {
+        return yield* Effect.fail<SendFailure>({ _tag: "permanent", reason: message });
+      }
+      if (status < 200 || status >= 300) {
+        return yield* Effect.fail<SendFailure>({ _tag: "transient", reason: message });
+      }
+      return text;
+    }),
+  );
 
 export interface OutboundInput {
   readonly member: GroupChatMember;

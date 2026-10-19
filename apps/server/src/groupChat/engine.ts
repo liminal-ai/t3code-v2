@@ -1224,7 +1224,15 @@ export const makeEngine = (store: GroupChatStore) =>
         const action = onWithdraw({ state: d.state, dispatch: d.dispatch });
         if (action === "cancel" || stalled.has(d.id)) {
           stalled.delete(d.id);
-          yield* tx.updateDelivery(d.id, { state: "cancelled", error: reason, wait: null });
+          // An external request that failed in a way worth retrying may still have reached the
+          // agent, so a callback it sends after this Stop must land late, like a reply T3 produces
+          // for a withdrawn envelope.
+          yield* tx.updateDelivery(d.id, {
+            state: "cancelled",
+            error: reason,
+            wait: null,
+            withdrawn: reason,
+          });
           return;
         }
         yield* tx.updateDelivery(d.id, { withdrawn: reason });

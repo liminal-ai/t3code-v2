@@ -16,6 +16,7 @@ import {
   idHeaders,
   type OutboundInput,
   post,
+  queryValues,
   renderTemplate,
   type SendFailure,
   templateVars,
@@ -42,6 +43,21 @@ export const replyUrl = (origin: string, deliveryId: GroupChatDeliveryId, token:
 export const inboundUrl = (origin: string, memberId: GroupChatMemberId, token: string) =>
   `${origin}${GROUP_CHAT_HOOK_INBOUND_PATH.replace(":memberId", encodeURIComponent(memberId))}?token=${encodeURIComponent(token)}`;
 
+/** What a failure message may never repeat: the member's header values, its secret and signature, and the tokens in both hook URLs. */
+export const requestSecrets = (
+  external: ExternalSecrets,
+  input: OutboundInput,
+  headers: Readonly<Record<string, string>>,
+): ReadonlyArray<string> => [
+  ...Object.values(external.headers),
+  external.secret,
+  external.inboundToken,
+  headers[GROUP_CHAT_HOOK_SIGNATURE_HEADER] ?? "",
+  ...queryValues(input.callbackUrl),
+  ...queryValues(input.inboundUrl),
+  ...queryValues(external.url),
+];
+
 export const signedHeaders = (
   external: ExternalSecrets,
   input: OutboundInput,
@@ -60,10 +76,12 @@ export const deliverWebhook = (
   input: OutboundInput,
 ): Effect.Effect<void, SendFailure, HttpClient.HttpClient> => {
   const body = renderTemplate(external.bodyTemplate, templateVars(input));
+  const headers = { ...signedHeaders(external, input, body), "x-reply-to": input.callbackUrl };
   return post({
     url: external.url,
-    headers: { ...signedHeaders(external, input, body), "x-reply-to": input.callbackUrl },
+    headers,
     body,
     timeout: input.timeout,
+    secrets: requestSecrets(external, input, headers),
   });
 };

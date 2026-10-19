@@ -10,7 +10,7 @@ import {
   type SendFailure,
   templateVars,
 } from "./http.ts";
-import { signedHeaders } from "./webhook.ts";
+import { requestSecrets, signedHeaders } from "./webhook.ts";
 
 /** Posts the envelope and reads the reply out of the response at `replyPath`. */
 export const deliverRest = (
@@ -18,11 +18,13 @@ export const deliverRest = (
   input: OutboundInput,
 ): Effect.Effect<string, SendFailure, HttpClient.HttpClient> => {
   const body = renderTemplate(external.bodyTemplate, templateVars(input));
+  const headers = signedHeaders(external, input, body);
   return post({
     url: external.url,
-    headers: signedHeaders(external, input, body),
+    headers,
     body,
     timeout: input.timeout,
+    secrets: requestSecrets(external, input, headers),
   }).pipe(
     Effect.flatMap((raw) => {
       const text = extractText(raw, external.replyPath);

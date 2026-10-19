@@ -8,8 +8,6 @@ import { CLOUD_LINKED_USER_ID } from "../cloud/config.ts";
 import * as ServerConfig from "../config.ts";
 import { formatHostForUrl, isLoopbackHost, isWildcardHost } from "../startupAccess.ts";
 
-const LINK_STATE_TTL = "10 seconds";
-
 export class GroupChatReach extends Context.Service<
   GroupChatReach,
   {
@@ -26,10 +24,10 @@ const make = Effect.gen(function* () {
   const loopback = isLoopbackHost(config.host);
   const host =
     loopback || isWildcardHost(config.host) ? "127.0.0.1" : formatHostForUrl(config.host!);
-  const linkedOrUnreadable = yield* secrets.get(CLOUD_LINKED_USER_ID).pipe(
+  // Read on every post, so unsigned posts are refused the moment T3 Connect is linked.
+  const linkedOrUnreadable = secrets.get(CLOUD_LINKED_USER_ID).pipe(
     Effect.map(Option.isSome),
     Effect.orElseSucceed(() => true),
-    Effect.cachedWithTTL(LINK_STATE_TTL),
   );
   return GroupChatReach.of({
     exposed: loopback ? linkedOrUnreadable : Effect.succeed(true),

@@ -636,6 +636,7 @@ export interface AgentCall {
 export interface AgentAnswer {
   readonly status: number;
   readonly body: string;
+  readonly headers?: Readonly<Record<string, string>>;
   /** `hang` sends the headers and one byte and never ends; `chunked` sends the body without a content-length. */
   readonly mode?: "hang" | "chunked";
 }
@@ -664,7 +665,10 @@ export const fakeAgent = (
           };
           calls.push(call);
           const answered = agent.answer(call);
-          response.writeHead(answered.status, { "content-type": "application/json" });
+          response.writeHead(answered.status, {
+            "content-type": "application/json",
+            ...answered.headers,
+          });
           if (answered.mode === "hang") {
             response.write(answered.body.slice(0, 1));
             return;

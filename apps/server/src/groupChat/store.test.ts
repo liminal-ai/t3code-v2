@@ -14,7 +14,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import { GroupChat, layer as groupChatLayer } from "./layer.ts";
-import { MIGRATIONS_TABLE, open, type StoreEvent, storeFile } from "./store.ts";
+import { MIGRATIONS_TABLE, migrations, open, type StoreEvent, storeFile } from "./store.ts";
+import * as Migrator from "effect/sql/Migrator";
 import { layerNeverPort } from "./testkit.ts";
 
 const setup = Effect.gen(function* () {
@@ -160,5 +161,143 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
       const failure = yield* openModule(baseDir);
       assert.deepStrictEqual(failure, new GroupChatUnavailable({ reason: "store_unavailable" }));
     }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "upgrades a populated pre-GC6 database without losing members, messages or deliveries",
+    () =>
+      Effect.gen(function* () {
+        const { fileSystem, file } = yield* setup;
+        const path = yield* Path.Path;
+        yield* fileSystem.makeDirectory(path.dirname(file), { recursive: true });
+        const legacy = Object.fromEntries(
+          Object.entries(migrations).filter(([name]) => !name.startsWith("6_")),
+        );
+        yield* withFile(file, (sql) =>
+          Effect.gen(function* () {
+            yield* Migrator.make({})({
+              loader: Migrator.fromRecord(legacy),
+              table: MIGRATIONS_TABLE,
+            }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            yield* sql`
+            INSERT INTO groups (id, title, settled_at, created_at, last_activity_at) VALUES
+              ('grp_1', 'Crew', NULL, '2026-10-01T00:00:00.000Z', '2026-10-02T00:00:00.000Z')
+          `;
+            yield* sql`
+            INSERT INTO members (
+              id, group_id, handle, handle_history_json, color, environment_id, thread_id,
+              thread_title, seen_seq, introduced, told_roster_json, added_at, removed_at
+            ) VALUES
+              ('mem_a', 'grp_1', 'alpha', '["alph"]', 0, 'env', 'thr_a', 'Alpha', 3, 1,
+               '{"mem_a":"alpha","mem_b":"bravo"}', '2026-10-01T00:00:01.000Z', NULL),
+              ('mem_b', 'grp_1', 'bravo', '[]', 1, 'env', 'thr_b', 'Bravo', 0, 0, NULL,
+               '2026-10-01T00:00:02.000Z', '2026-10-01T00:05:00.000Z')
+          `;
+            yield* sql`
+            INSERT INTO messages (
+              id, group_id, seq, author_json, kind, text, display_text, recipients_json, turn_key,
+              trigger_message_id, discussion_id, round, sign_off, late, created_at
+            ) VALUES
+              ('msg_1', 'grp_1', 1, '{"_tag":"operator"}', 'chat', 'hello', 'hello', '["mem_a"]',
+               'msg_1', NULL, NULL, NULL, 0, 0, '2026-10-01T00:01:00.000Z'),
+              ('msg_2', 'grp_1', 2, '{"_tag":"member","memberId":"mem_a"}', 'reply', 'hi', 'hi',
+               '[]', 'msg_1', 'msg_1', NULL, NULL, 0, 0, '2026-10-01T00:02:00.000Z')
+          `;
+            yield* sql`
+            INSERT INTO deliveries (
+              id, group_id, member_id, trigger_message_id, turn_key, discussion_id, round, state,
+              dispatch, attempt, envelope, from_seq, to_seq, run_id, message_id, sent_text,
+              wait_json, withdrawn, reply_message_id, error, roster_json, created_at, updated_at
+            ) VALUES
+              ('dlv_1', 'grp_1', 'mem_a', 'msg_1', 'msg_1', NULL, NULL, 'replied', 'accepted', 1,
+               'the envelope', 1, 1, 'run:1', 'message:group-chat:1', NULL, NULL, NULL, 'msg_2',
+               NULL, '{"mem_a":"alpha"}', '2026-10-01T00:01:01.000Z', '2026-10-01T00:02:00.000Z'),
+              ('dlv_2', 'grp_1', 'mem_b', 'msg_1', 'msg_1', NULL, NULL, 'cancelled', 'unsent', 1,
+               '', 0, 1, NULL, NULL, NULL, NULL, 'member removed', NULL, 'member removed', NULL,
+               '2026-10-01T00:01:01.000Z', '2026-10-01T00:05:00.000Z')
+          `;
+            yield* sql`INSERT INTO lanes (thread_id, paused_at) VALUES ('thr_a', '2026-10-01T00:03:00.000Z')`;
+          }),
+        );
+        assert.strictEqual((yield* recordedMigrations(file)).length, 5);
+
+        const store = yield* open(file);
+        assert.strictEqual((yield* recordedMigrations(file)).length, 6);
+        const members = yield* store.members("grp_1" as never, true);
+        // Brands drop out through JSON, so the literals below can be plain strings.
+        const plain = (value: unknown) => JSON.parse(JSON.stringify(value)) as unknown;
+        assert.deepStrictEqual(
+          plain(
+            members.map((m) => ({
+              id: m.id,
+              handle: m.handle,
+              handleHistory: m.handleHistory,
+              color: m.color,
+              seenSeq: m.seenSeq,
+              introduced: m.introduced,
+              removedAt: m.removedAt,
+              kind: m.kind,
+            })),
+          ),
+          [
+            {
+              id: "mem_a",
+              handle: "alpha",
+              handleHistory: ["alph"],
+              color: 0,
+              seenSeq: 3,
+              introduced: true,
+              removedAt: null,
+              kind: {
+                _tag: "t3",
+                thread: { environmentId: "env", threadId: "thr_a", title: "Alpha" },
+              },
+            },
+            {
+              id: "mem_b",
+              handle: "bravo",
+              handleHistory: [],
+              color: 1,
+              seenSeq: 0,
+              introduced: false,
+              removedAt: "2026-10-01T00:05:00.000Z",
+              kind: {
+                _tag: "t3",
+                thread: { environmentId: "env", threadId: "thr_b", title: "Bravo" },
+              },
+            },
+          ],
+        );
+        assert.deepStrictEqual(members[0]!.toldRoster, { mem_a: "alpha", mem_b: "bravo" });
+        assert.isNull(members[0]!.external);
+        assert.strictEqual((yield* store.messages("grp_1" as never)).length, 2);
+        const deliveries = yield* store.deliveriesOfThread("thr_a" as never);
+        assert.deepStrictEqual(
+          plain(
+            deliveries.map((d) => ({
+              id: d.id,
+              state: d.state,
+              replyMessageId: d.replyMessageId,
+              external: d.external,
+              roster: d.roster,
+            })),
+          ),
+          [
+            {
+              id: "dlv_1",
+              state: "replied",
+              replyMessageId: "msg_2",
+              external: null,
+              roster: { mem_a: "alpha" },
+            },
+          ],
+        );
+        assert.strictEqual((yield* store.deliveriesOfGroup("grp_1" as never)).length, 2);
+        assert.strictEqual(
+          (yield* store.memberByThread("grp_1" as never, "thr_b" as never)).length,
+          1,
+        );
+        assert.isTrue(yield* store.lanePaused("thr_a" as never));
+      }).pipe(Effect.scoped),
   );
 });
