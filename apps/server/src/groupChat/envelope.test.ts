@@ -351,4 +351,36 @@ describe("group chat envelope and text", () => {
     expect(block).toMatch(/shortened by the group-chat app/);
     expect(block.length).toBeLessThan(7_000);
   });
+
+  it("required replies from many participants share the budget instead of breaking it", () => {
+    const members = Array.from({ length: 10 }, (_, i) =>
+      member(`m${i}`, `member${i}`, { introduced: true }),
+    );
+    const me = members[0]!;
+    const replies = members.slice(1).map((m, i) => ({
+      ...msg(
+        i + 1,
+        { _tag: "member", memberId: m.id },
+        `R${i}-HEAD\n${"r".repeat(6_000)}\nR${i}-TAIL`,
+      ),
+      kind: "discussion_reply" as const,
+      round: 1,
+    }));
+    const marker = msg(20, { _tag: "system" }, "Discussion round 2 of 2.");
+    const text = renderEnvelope({
+      group,
+      member: me,
+      members,
+      unseen: [...replies, marker],
+      required: new Set(replies.map((m) => m.id)),
+      expectedRepliers: [me.id],
+      footer: "",
+    });
+    expect(text.length).toBeLessThan(45_000);
+    for (let i = 0; i < 9; i++) {
+      expect(text).toContain(`| R${i}-HEAD`);
+      expect(text).toContain(`| R${i}-TAIL`);
+    }
+    expect(text).toMatch(/9 long messages were shortened/);
+  });
 });

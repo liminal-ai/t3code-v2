@@ -285,12 +285,16 @@ const make = Effect.gen(function* () {
         shell === null
           ? Effect.succeed(null)
           : records(threadId, []).pipe(
-              Effect.map(({ thread }) => ({
-                projectId: thread.projectId,
-                title: thread.title,
-                archived: thread.archivedAt !== null,
-                subagent: thread.lineage.relationshipToParent === "subagent",
-              })),
+              Effect.map(({ thread }) =>
+                thread.deletedAt !== null
+                  ? null
+                  : {
+                      projectId: thread.projectId,
+                      title: thread.title,
+                      archived: thread.archivedAt !== null,
+                      subagent: thread.lineage.relationshipToParent === "subagent",
+                    },
+              ),
             ),
       ),
     );

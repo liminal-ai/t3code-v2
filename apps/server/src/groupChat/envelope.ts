@@ -81,6 +81,7 @@ export interface EnvelopeInput {
 
 const SECTION_MAX = 6_000;
 const LAST_SECTION_MAX = 40_000;
+const MIN_SHARED_SECTION = 1_000;
 
 const hhmm = (iso: string) => iso.slice(11, 16) + "Z";
 
@@ -122,17 +123,33 @@ export function renderEnvelope(input: EnvelopeInput): string {
   const required = input.required ?? new Set<string>();
   const last = input.unseen.at(-1)?.id;
   const keep = (m: GroupChatMessage) => m.id === last || required.has(m.id);
-  const cap = (m: GroupChatMessage) => (m.id === last ? LAST_SECTION_MAX : SECTION_MAX);
+  const baseCap = (m: GroupChatMessage) => (m.id === last ? LAST_SECTION_MAX : SECTION_MAX);
+  const sizeWith = (ms: ReadonlyArray<GroupChatMessage>, capOf: (m: GroupChatMessage) => number) =>
+    ms.reduce((n, m) => n + Math.min(m.text.length, capOf(m)) + 60, 0);
   let sections = input.unseen;
   let trimmed = 0;
-  const size = (ms: ReadonlyArray<GroupChatMessage>) =>
-    ms.reduce((n, m) => n + Math.min(m.text.length, cap(m)) + 60, 0);
-  while (sections.length > MAX_SECTIONS || size(sections) > MAX_CHARS) {
+  while (sections.length > MAX_SECTIONS || sizeWith(sections, baseCap) > MAX_CHARS) {
     const drop = sections.findIndex((m) => !keep(m));
     if (drop < 0) break;
     sections = sections.filter((_, i) => i !== drop);
     trimmed++;
   }
+  // Required replies are never dropped, so when they alone overflow the budget each gets an
+  // equal, smaller share. Every reply still keeps its head and its tail.
+  let requiredCap = SECTION_MAX;
+  const shared = sections.filter((m) => required.has(m.id) && m.id !== last);
+  if (shared.length > 0 && sizeWith(sections, baseCap) > MAX_CHARS) {
+    const rest = sizeWith(
+      sections.filter((m) => !shared.includes(m)),
+      baseCap,
+    );
+    requiredCap = Math.max(
+      MIN_SHARED_SECTION,
+      Math.min(SECTION_MAX, Math.floor((MAX_CHARS - rest) / shared.length) - 60),
+    );
+  }
+  const cap = (m: GroupChatMessage) =>
+    m.id === last ? LAST_SECTION_MAX : shared.includes(m) ? requiredCap : SECTION_MAX;
 
   const contents = [group.title, discussion?.topic ?? "", ...sections.map((m) => m.text)].join(
     "\n",

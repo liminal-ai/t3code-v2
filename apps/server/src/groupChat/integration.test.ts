@@ -525,6 +525,25 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
     }),
   );
 
+  it.effect("a send to a deleted member thread fails for good", () =>
+    Effect.gen(function* () {
+      const app = yield* openApp;
+      const orchestrator = yield* Orchestrator.OrchestratorV2;
+      const threadId = ThreadId.make("gc-deleted-thread");
+      const { group, member } = yield* createGroup(app, "gc-deleted", [threadId]);
+      yield* orchestrator.dispatch({
+        type: "thread.delete",
+        commandId: id(`${threadId}-delete`),
+        threadId,
+      });
+      yield* send(app, group.id, "to a deleted thread", [member(threadId).id]);
+      const failed = yield* awaitDelivery(app, member(threadId).id, (d) => d.state === "failed");
+      assert.strictEqual(failed.dispatch, "rejected");
+      assert.strictEqual(failed.error, "the member's thread no longer exists");
+      assert.strictEqual(failed.attempt, 1);
+    }),
+  );
+
   it.effect("waiting on a restarted run returns its continuation", () =>
     Effect.gen(function* () {
       const app = yield* openApp;
