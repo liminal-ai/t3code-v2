@@ -25,6 +25,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
+import { FetchHttpClient } from "effect/http";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -50,6 +51,7 @@ import * as VcsProcess from "../vcs/VcsProcess.ts";
 import * as WorkspacePaths from "../workspace/WorkspacePaths.ts";
 import type { GroupChatEngine } from "./engine.ts";
 import * as GroupChat from "./layer.ts";
+import * as Reach from "./reach.ts";
 import type { DeliveryRow, GroupChatStore } from "./store.ts";
 import { dispatchIds, GroupChatThreadPort, GROUP_CHAT_MESSAGE_PREFIX } from "./threadPort.ts";
 import * as ThreadPort from "./threadPort.ts";
@@ -198,6 +200,8 @@ const makeLayerTest = () => {
   const layerPort = layerGatedPort.pipe(Layer.provide(layerGraph), Layer.provide(layerIdentity));
   const layerModule = GroupChat.layer.pipe(
     Layer.provide(layerPort),
+    Layer.provide(Reach.layerFixed({ exposed: false, origin: "http://127.0.0.1:1" })),
+    Layer.provide(FetchHttpClient.layer),
     Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     Layer.provide(layerGraph),
   );
@@ -367,7 +371,8 @@ const createGroup = (app: App, name: string, threads: ReadonlyArray<ThreadId>) =
     return {
       group,
       projectId,
-      member: (threadId: ThreadId) => members.find((m) => m.thread.threadId === threadId)!,
+      member: (threadId: ThreadId) =>
+        members.find((m) => m.kind._tag === "t3" && m.kind.thread.threadId === threadId)!,
     };
   });
 
@@ -717,6 +722,8 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
           Layer.build(
             Layer.fresh(GroupChat.layer).pipe(
               Layer.provide(Layer.succeed(GroupChatThreadPort, port)),
+              Layer.provide(Reach.layerFixed({ exposed: false, origin: "http://127.0.0.1:1" })),
+              Layer.provide(FetchHttpClient.layer),
               Layer.provide(Layer.succeed(ServerConfig.ServerConfig, config)),
               Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
               Layer.provide(NodeServices.layer),

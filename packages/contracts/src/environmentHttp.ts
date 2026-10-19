@@ -64,6 +64,13 @@ import {
   GroupChatGroupPage,
   GroupChatGroupParams,
   GroupChatGroupQuery,
+  GroupChatHookInboundAccepted,
+  GroupChatHookInboundParams,
+  GroupChatHookQuery,
+  GroupChatHookReplyAccepted,
+  GroupChatHookReplyParams,
+  GROUP_CHAT_HOOK_INBOUND_PATH,
+  GROUP_CHAT_HOOK_REPLY_PATH,
   GroupChatInvalid,
   GroupChatNotFound,
   GroupChatRefused,
@@ -811,6 +818,27 @@ class EnvironmentGroupChatHttpApi extends HttpApiGroup.make("groupChat")
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
 
+/**
+ * Where external group chat members post. Unauthenticated like `webhooks`: the token in the
+ * query and an optional body signature are the credential, and the handler reads the raw body
+ * itself so the signature covers the exact bytes and the size cap applies while reading.
+ */
+class EnvironmentGroupChatHooksHttpApi extends HttpApiGroup.make("groupChatHooks")
+  .add(
+    HttpApiEndpoint.post("reply", GROUP_CHAT_HOOK_REPLY_PATH, {
+      params: GroupChatHookReplyParams,
+      query: GroupChatHookQuery,
+      success: GroupChatHookReplyAccepted,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("inbound", GROUP_CHAT_HOOK_INBOUND_PATH, {
+      params: GroupChatHookInboundParams,
+      query: GroupChatHookQuery,
+      success: GroupChatHookInboundAccepted,
+    }),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
@@ -820,4 +848,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
   .add(EnvironmentWebhooksHttpApi)
-  .add(EnvironmentGroupChatHttpApi) {}
+  .add(EnvironmentGroupChatHttpApi)
+  .add(EnvironmentGroupChatHooksHttpApi) {}

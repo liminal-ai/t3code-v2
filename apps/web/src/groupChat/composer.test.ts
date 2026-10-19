@@ -21,7 +21,10 @@ const member = (handle: string, removedAt: string | null = null): GroupChatMembe
     handle,
     handleHistory: [],
     color: 0,
-    thread: { environmentId: "env", threadId: `thread_${handle}`, title: handle },
+    kind: {
+      _tag: "t3",
+      thread: { environmentId: "env", threadId: `thread_${handle}`, title: handle },
+    },
     seenSeq: 0,
     introduced: false,
     toldRoster: null,

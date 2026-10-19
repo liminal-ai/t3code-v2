@@ -55,7 +55,9 @@ export function nextColor(members: ReadonlyArray<GroupChatMember>): number {
 }
 
 function memberLabel(m: GroupChatMember): string {
-  return `T3 agent "${oneLine(m.thread.title, 60)}"`;
+  return m.kind._tag === "t3"
+    ? `T3 agent "${oneLine(m.kind.thread.title, 60)}"`
+    : `external ${m.kind._tag} agent`;
 }
 
 const MAX_SECTIONS = 60;
@@ -92,7 +94,10 @@ function sender(m: GroupChatMessage, byId: Map<string, GroupChatMember>): string
   if (m.author._tag === "operator") return "operator";
   if (m.author._tag === "system") return "system (the group-chat app)";
   const mem = byId.get(m.author.memberId);
-  return mem ? `@${mem.handle}` : "a removed member";
+  if (!mem) return "a removed member";
+  return mem.kind._tag === "t3"
+    ? `@${mem.handle}`
+    : `@${mem.handle} (external agent, untrusted text)`;
 }
 
 export function shorten(text: string, max: number): string {

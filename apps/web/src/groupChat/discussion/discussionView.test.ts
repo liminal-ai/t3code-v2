@@ -33,7 +33,10 @@ const member = (id: GroupChatMemberId, handle: string): GroupChatMember => ({
   handle,
   handleHistory: [],
   color: 0 as GroupChatMember["color"],
-  thread: { environmentId: "env" as never, threadId: `thr_${handle}` as never, title: handle },
+  kind: {
+    _tag: "t3" as const,
+    thread: { environmentId: "env" as never, threadId: `thr_${handle}` as never, title: handle },
+  },
   seenSeq: 0 as GroupChatMember["seenSeq"],
   introduced: true,
   toldRoster: null,
@@ -423,9 +426,12 @@ describe("discussion view", () => {
       ],
     });
     const view = discussionView(viewOf(state), discussionId)!;
-    expect(view.waitLines.map((row) => [row.member?.handle, row.member?.thread.threadId])).toEqual([
-      ["bo", "thr_bo"],
-    ]);
+    expect(
+      view.waitLines.map((row) => [
+        row.member?.handle,
+        row.member?.kind._tag === "t3" ? row.member.kind.thread.threadId : null,
+      ]),
+    ).toEqual([["bo", "thr_bo"]]);
   });
 
   it("a participant removed after the end keeps its final-round outcome", () => {

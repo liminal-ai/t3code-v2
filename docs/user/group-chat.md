@@ -70,6 +70,21 @@ Removing a member keeps its messages in the log. Add the same thread back and it
 
 **Delete** removes the group and its log after you confirm. The member threads are never deleted, archived or changed.
 
+## External members
+
+A member can also be an agent outside T3, reached over HTTP. In **Manage**, pick **Add external member** and choose the kind:
+
+- **REST**. The server posts the envelope and reads the reply out of the response. Set **Reply path** to where the text sits in the agent's JSON, such as `reply` or `choices.0.message.content`. A plain-text response is taken whole.
+- **Webhook**. The server posts the envelope and expects only an acknowledgement. The agent posts its reply later to the callback URL it was given, in the `X-Reply-To` header and as `{{callbackUrl}}` in the body. A webhook that has not called back after 90 seconds fails with **Retry**. A late callback still lands as the reply.
+
+The **Body template** is the JSON the agent receives, with `{{envelope}}` and the other placeholders filled in. Every request carries an `Idempotency-Key` that stays the same for the life of that envelope, across automatic retries, restarts and **Retry**, and an `X-Gchat-Attempt` count, so an agent can drop a duplicate. An endpoint that fails, times out, or answers 408 or 429 is tried again a few times with a growing wait, shown as **endpoint failed, trying again**, then fails with **Retry**. Any other 4xx answer, or a redirect, fails at once. **Stop** and removing the member cancel a delivery that waits to retry.
+
+Every external member gets an **Inbound URL**, shown in **Manage**. A POST there with `{"text": "..."}` posts into the group as that member, marked **posted on its own**. External text is labelled untrusted in the envelopes other members receive, and a post over 1 MB is refused.
+
+Put an endpoint's keys in **Extra headers**, not in its URL: the URL shows in the member list, and headers never do. Set a **Shared secret** when you add the member. The server signs what it sends with `X-Signature: sha256=<hex HMAC-SHA256 of the body>`, and the agent signs its callbacks and inbound posts the same way. Once the server is reachable beyond this machine, through a non-loopback `--host`, Tailscale Serve, a T3 Connect link, or a **Callback origin** that is not this machine, a secret is required: the server refuses to add an external member without one, and refuses unsigned posts to any hook URL. Hook URLs carry a token, so share them only with the agent. Each one accepts a burst of 60 posts and then 2 a second; past that, posts get 429.
+
+**Callback origin** is where the agent should reach this server. Leave it empty when the agent runs on this machine; set it when the agent is elsewhere, for example to a Tailscale Serve address.
+
 ## Turn group chat off
 
 Start the server with `T3CODE_GROUP_CHAT=off`. The sidebar entry stays, and the page says group chat is turned off. Every delivery and discussion stays where it was and carries on when the server starts without the flag.

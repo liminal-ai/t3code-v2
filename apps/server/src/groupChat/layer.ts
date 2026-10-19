@@ -12,7 +12,9 @@ import * as Path from "effect/Path";
 import * as ServerConfig from "../config.ts";
 import * as Engine from "./engine.ts";
 import * as Events from "./events.ts";
+import * as Hooks from "./hooks.ts";
 import * as Http from "./http.ts";
+import * as Reach from "./reach.ts";
 import * as Store from "./store.ts";
 import * as ThreadPort from "./threadPort.ts";
 
@@ -63,12 +65,14 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(GroupChat, make);
 
-const layerForServer = layer.pipe(Layer.provide(ThreadPort.layer));
+const layerForServer = layer.pipe(Layer.provide(ThreadPort.layer), Layer.provideMerge(Reach.layer));
 
 const withModule = <A, E, R>(build: (groupChat: GroupChat["Service"]) => Layer.Layer<A, E, R>) =>
   Layer.unwrap(Effect.map(Effect.service(GroupChat), build)).pipe(Layer.provide(layerForServer));
 
-export const layerHttpApi = withModule(Http.makeLayer);
+export const layerHttpApi = withModule((groupChat) =>
+  Layer.merge(Http.makeLayer(groupChat), Hooks.makeLayer(groupChat)),
+);
 
 export const routeLayer = withModule(Events.makeRouteLayer);
 

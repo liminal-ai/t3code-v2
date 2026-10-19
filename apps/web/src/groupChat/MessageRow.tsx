@@ -153,6 +153,11 @@ export function MemberMessage({
             round {message.round}
           </Badge>
         ) : null}
+        {message.kind === "inbound" ? (
+          <Badge variant="outline" size="sm" data-testid="inbound-message">
+            posted on its own
+          </Badge>
+        ) : null}
         {message.signOff ? (
           <Badge variant="warning" size="sm" data-testid="signed-off">
             signed off
