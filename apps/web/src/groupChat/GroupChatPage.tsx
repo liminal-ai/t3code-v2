@@ -66,7 +66,10 @@ const readViewKind = (groupId: GroupChatGroupId) => ({
   kind: (localStorage.getItem(viewKindKey(groupId)) === "lanes" ? "lanes" : "chat") as ViewKind,
 });
 
-/** A segmented toggle, or on a phone one button that flips the view, so the title keeps its room. */
+/**
+ * A segmented toggle, or on a phone one button that flips the view. Settle hides on a phone too,
+ * since Manage offers it, so the title keeps its room beside the controls.
+ */
 function ViewToggle({ kind, onChange }: { kind: ViewKind; onChange: (kind: ViewKind) => void }) {
   const lanes = kind === "lanes";
   return (
@@ -134,6 +137,7 @@ function GroupHeaderActions({
         <Button
           size="xs"
           variant="ghost-muted"
+          className="hidden sm:inline-flex"
           onClick={() =>
             void attempt(() =>
               dispatchGroupChat({
