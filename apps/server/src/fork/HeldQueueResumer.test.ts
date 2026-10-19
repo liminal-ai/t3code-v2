@@ -385,6 +385,17 @@ const resumeCommandIds = (threadId: ThreadId) =>
 const continuationOf = (runs: ReadonlyArray<OrchestrationV2Run>, sourceId: RunId) =>
   runs.find((run) => run.restartContinuationOfRunId === sourceId);
 
+const finishContinuation = (threadId: ThreadId, sourceId: RunId, started: Array<StartedTurn>) =>
+  Effect.gen(function* () {
+    const continuation = continuationOf(yield* runsOf(threadId), sourceId)!;
+    const settled = yield* runStatus(continuation.id, "waiting");
+    const completed = yield* runStatus(continuation.id, "completed");
+    yield* finishTurn(started.find((entry) => entry.turn.runId === continuation.id)!);
+    yield* Fiber.join(settled);
+    yield* drain;
+    yield* Fiber.join(completed);
+  });
+
 const recordPendingRequest = (
   threadId: ThreadId,
   run: OrchestrationV2Run,
@@ -462,7 +473,7 @@ const withHarness = <A, E>(
 it.effect("resumes a restart-held queue only when the setting is on", () =>
   withHarness(
     "setting",
-    ({ cwd }) =>
+    ({ cwd, started }) =>
       Effect.gen(function* () {
         const on = ThreadId.make("thread:setting-on");
         const off = ThreadId.make("thread:setting-off");
@@ -478,13 +489,13 @@ it.effect("resumes a restart-held queue only when the setting is on", () =>
         }
         const scanning = yield* scan.pipe(Effect.forkScoped);
         yield* drain;
+        yield* finishContinuation(on, onThread.active.id, started);
         yield* Fiber.join(scanning);
+        yield* drain;
         const onRuns = yield* runsOf(on);
-        const continuation = continuationOf(onRuns, onThread.active.id);
-        assert.isDefined(continuation, "the cut turn continued");
-        assert.equal(continuation?.status, "running");
+        assert.equal(continuationOf(onRuns, onThread.active.id)?.status, "completed");
         const resumed = onRuns.find((run) => run.id === onThread.queued[0]!.id);
-        assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+        assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
         const offRuns = yield* runsOf(off);
         assert.isUndefined(continuationOf(offRuns, offThread.active.id));
         const stillHeld = offRuns.find((run) => run.id === offThread.queued[0]!.id);
@@ -494,7 +505,7 @@ it.effect("resumes a restart-held queue only when the setting is on", () =>
   ),
 );
 
-it.effect("keeps the queued message behind the continuation while its effect is pending", () =>
+it.effect("keeps the queued message held until the continuation ends", () =>
   withHarness("ordering", ({ cwd, started }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:ordering");
@@ -502,115 +513,98 @@ it.effect("keeps the queued message behind the continuation while its effect is 
       yield* restartOneSecondLater;
       const scanning = yield* scan.pipe(Effect.forkScoped);
       yield* drain;
+      const running = yield* runsOf(threadId);
+      assert.equal(continuationOf(running, active.id)?.status, "running");
+      const waiting = running.find((run) => run.id === queued[0]!.id);
+      assert.deepEqual([waiting?.status, waiting?.queueHeld], ["queued", true]);
+      assert.deepEqual(yield* resumeCommandIds(threadId), []);
+      yield* finishContinuation(threadId, active.id, started);
       yield* Fiber.join(scanning);
-      const afterResume = yield* runsOf(threadId);
-      const continuation = continuationOf(afterResume, active.id)!;
-      assert.equal(continuation.status, "running");
-      const waiting = afterResume.find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([waiting?.status, waiting?.queueHeld], ["queued", false]);
-      const continued = started.find(
-        (entry) => entry.turn.attemptId === continuation.activeAttemptId,
-      )!;
-      const settled = yield* runStatus(continuation.id, "waiting");
-      const queuedStarting = yield* runStatus(queued[0]!.id, "starting");
-      const queuedRunning = yield* runStatus(queued[0]!.id, "running");
-      yield* finishTurn(continued);
-      yield* Fiber.join(settled);
       yield* drain;
-      yield* Fiber.join(queuedStarting);
-      yield* drain;
-      yield* Fiber.join(queuedRunning);
-      const afterContinuation = yield* runsOf(threadId);
-      assert.equal(
-        afterContinuation.find((run) => run.id === continuation.id)?.status,
-        "completed",
+      const after = yield* runsOf(threadId);
+      assert.equal(continuationOf(after, active.id)?.status, "completed");
+      assert.equal(after.find((run) => run.id === queued[0]!.id)?.status, "running");
+    }),
+  ),
+);
+
+it.effect("resumes past a cancelled run that never started and is newer than the cut turn", () =>
+  withHarness("newer-cancelled", ({ cwd, started }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:newer-cancelled");
+      const { active, queued } = yield* busyThread({ threadId, cwd, queued: 2 });
+      const [first, second] = queued;
+      yield* dispatch({
+        type: "queued-run.cancel",
+        commandId: CommandId.make(`${threadId}:cancel`),
+        threadId,
+        runId: second!.id,
+      });
+      assert.isTrue(
+        (yield* runsOf(threadId)).some(
+          (run) => run.id === second!.id && run.status === "cancelled" && run.startedAt === null,
+        ),
       );
-      assert.equal(afterContinuation.find((run) => run.id === queued[0]!.id)?.status, "running");
+      yield* restartOneSecondLater;
+      const scanning = yield* scan.pipe(Effect.forkScoped);
+      yield* drain;
+      yield* finishContinuation(threadId, active.id, started);
+      yield* Fiber.join(scanning);
+      yield* drain;
+      const runs = yield* runsOf(threadId);
+      assert.equal(continuationOf(runs, active.id)?.status, "completed");
+      const resumed = runs.find((run) => run.id === first!.id);
+      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
+    }),
+  ),
+);
+
+it.effect("resumes behind the continuation after a crash, where the startup pass writes it", () =>
+  withHarness("crash", ({ cwd, started }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:crash");
+      const { active, queued } = yield* busyThread({ threadId, cwd });
+      yield* crashAndRestartOneSecondLater;
+      const scanning = yield* scan.pipe(Effect.forkScoped);
+      yield* drain;
+      yield* finishContinuation(threadId, active.id, started);
+      yield* Fiber.join(scanning);
+      yield* drain;
+      const runs = yield* runsOf(threadId);
+      assert.equal(continuationOf(runs, active.id)?.status, "completed");
+      const resumed = runs.find((run) => run.id === queued[0]!.id);
+      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
     }),
   ),
 );
 
 it.effect(
-  "takes the source from the continuation effect when a cancelled run that never started is newer",
+  "resumes behind the continuation of a second restart that cut the first continuation",
   () =>
-    withHarness("newer-cancelled", ({ cwd }) =>
+    withHarness("restart-during-continuation", ({ cwd, started }) =>
       Effect.gen(function* () {
-        const threadId = ThreadId.make("thread:newer-cancelled");
-        const { active, queued } = yield* busyThread({ threadId, cwd, queued: 2 });
-        const [first, second] = queued;
-        yield* dispatch({
-          type: "queued-run.cancel",
-          commandId: CommandId.make(`${threadId}:cancel`),
-          threadId,
-          runId: second!.id,
-        });
-        assert.isTrue(
-          (yield* runsOf(threadId)).some(
-            (run) => run.id === second!.id && run.status === "cancelled" && run.startedAt === null,
-          ),
-        );
+        const threadId = ThreadId.make("thread:restart-during-continuation");
+        const { active, queued } = yield* busyThread({ threadId, cwd });
+        yield* restartOneSecondLater;
+        // The first server's scan never got to resume: it was still waiting when the next restart came.
+        const continuationTurn = yield* nextTurnRunning(active);
+        yield* drain;
+        yield* Fiber.join(continuationTurn);
+        const first = continuationOf(yield* runsOf(threadId), active.id)!;
+        assert.equal(first.status, "running");
         yield* restartOneSecondLater;
         const scanning = yield* scan.pipe(Effect.forkScoped);
         yield* drain;
+        yield* finishContinuation(threadId, first.id, started);
         yield* Fiber.join(scanning);
+        yield* drain;
         const runs = yield* runsOf(threadId);
-        assert.equal(continuationOf(runs, active.id)?.status, "running");
-        const resumed = runs.find((run) => run.id === first!.id);
-        assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+        assert.equal(runs.find((run) => run.id === first.id)?.status, "cancelled");
+        assert.equal(continuationOf(runs, first.id)?.status, "completed");
+        const resumed = runs.find((run) => run.id === queued[0]!.id);
+        assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
       }),
     ),
-);
-
-it.effect("resumes behind the continuation the startup pass wrote itself after a crash", () =>
-  withHarness("crash", ({ cwd }) =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("thread:crash");
-      const { active, queued } = yield* busyThread({ threadId, cwd });
-      yield* crashAndRestartOneSecondLater;
-      const reconcileCommandId = yield* holdCommandId(threadId, queued[0]!.id);
-      const sql = yield* SqlClient.SqlClient;
-      const effects = yield* sql<{ readonly command_id: string }>`
-        SELECT command_id FROM orchestration_v2_effect_outbox
-        WHERE thread_id = ${threadId} AND effect_type = 'provider-runtime.continue'
-      `;
-      assert.deepEqual(
-        effects.map((row) => row.command_id),
-        [reconcileCommandId],
-      );
-      const scanning = yield* scan.pipe(Effect.forkScoped);
-      yield* drain;
-      yield* Fiber.join(scanning);
-      const runs = yield* runsOf(threadId);
-      assert.equal(continuationOf(runs, active.id)?.status, "running");
-      const resumed = runs.find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
-    }),
-  ),
-);
-
-it.effect("awaits the continuation of a second restart that cut the first continuation", () =>
-  withHarness("restart-during-continuation", ({ cwd }) =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("thread:restart-during-continuation");
-      const { active, queued } = yield* busyThread({ threadId, cwd });
-      yield* restartOneSecondLater;
-      // The first server's scan never got to resume: it was still waiting when the next restart came.
-      const continuationTurn = yield* nextTurnRunning(active);
-      yield* drain;
-      yield* Fiber.join(continuationTurn);
-      const first = continuationOf(yield* runsOf(threadId), active.id)!;
-      assert.equal(first.status, "running");
-      yield* restartOneSecondLater;
-      const scanning = yield* scan.pipe(Effect.forkScoped);
-      yield* drain;
-      yield* Fiber.join(scanning);
-      const runs = yield* runsOf(threadId);
-      assert.equal(runs.find((run) => run.id === first.id)?.status, "cancelled");
-      assert.equal(continuationOf(runs, first.id)?.status, "running");
-      const resumed = runs.find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
-    }),
-  ),
 );
 
 it.effect.each(["while its effect is pending", "after its effect settled"] as const)(
@@ -672,25 +666,25 @@ it.effect.each(["while its effect is pending", "after its effect settled"] as co
           yield* restartOneSecondLater;
           const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
           assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
-          if (timing === "while its effect is pending") {
-            const scanning = yield* scan.pipe(Effect.forkScoped);
-            yield* drain;
-            yield* Fiber.join(scanning);
-          } else {
-            yield* drain;
-            yield* scan;
-          }
+          const scanning =
+            timing === "while its effect is pending"
+              ? yield* scan.pipe(Effect.forkScoped)
+              : yield* drain.pipe(Effect.andThen(scan.pipe(Effect.forkScoped)));
+          yield* drain;
+          yield* finishContinuation(threadId, active.id, started);
+          yield* Fiber.join(scanning);
+          yield* drain;
           const runs = yield* runsOf(threadId);
           assert.equal(runs.find((run) => run.id === active.id)?.status, "completed");
-          assert.equal(continuationOf(runs, active.id)?.status, "running");
+          assert.equal(continuationOf(runs, active.id)?.status, "completed");
           const resumed = runs.find((run) => run.id === queued[0]!.id);
-          assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+          assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
         }),
     ),
 );
 
-it.effect("awaits a continuation still pending from an earlier restart", () =>
-  withHarness("pending-from-earlier", ({ cwd }) =>
+it.effect("resumes behind a continuation still pending from an earlier restart", () =>
+  withHarness("pending-from-earlier", ({ cwd, started }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:pending-from-earlier");
       const { active, queued } = yield* busyThread({ threadId, cwd });
@@ -699,11 +693,13 @@ it.effect("awaits a continuation still pending from an earlier restart", () =>
       yield* restartOneSecondLater;
       const scanning = yield* scan.pipe(Effect.forkScoped);
       yield* drain;
+      yield* finishContinuation(threadId, active.id, started);
       yield* Fiber.join(scanning);
+      yield* drain;
       const runs = yield* runsOf(threadId);
-      assert.equal(continuationOf(runs, active.id)?.status, "running");
+      assert.equal(continuationOf(runs, active.id)?.status, "completed");
       const resumed = runs.find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
     }),
   ),
 );
@@ -798,6 +794,12 @@ it.effect("leaves the queue held after a Stop on a later turn", () =>
         runId: later.id,
         holdQueue: true,
       });
+      const interrupted = yield* runStatus(later.id, "interrupted");
+      yield* finishTurn(
+        started.find((entry) => entry.turn.runId === later.id)!,
+        "interrupted",
+      );
+      yield* Fiber.join(interrupted);
       yield* scan;
       const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
       assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
@@ -833,7 +835,7 @@ it.effect("leaves a Stop-held queue held across a restart", () =>
 );
 
 it.effect("keeps the restart class after the held queue is reordered", () =>
-  withHarness("reorder", ({ cwd }) =>
+  withHarness("reorder", ({ cwd, started }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:reorder");
       const { active, queued } = yield* busyThread({ threadId, cwd, queued: 2 });
@@ -848,19 +850,13 @@ it.effect("keeps the restart class after the held queue is reordered", () =>
       });
       const scanning = yield* scan.pipe(Effect.forkScoped);
       yield* drain;
+      yield* finishContinuation(threadId, active.id, started);
       yield* Fiber.join(scanning);
+      yield* drain;
       const runs = yield* runsOf(threadId);
-      assert.equal(continuationOf(runs, active.id)?.status, "running");
-      assert.deepEqual(
-        runs
-          .filter((run) => run.status === "queued")
-          .sort((left, right) => left.queuePosition! - right.queuePosition!)
-          .map((run) => [run.id, run.queueHeld]),
-        [
-          [second!.id, false],
-          [first!.id, false],
-        ],
-      );
+      const byId = (id: RunId) => runs.find((run) => run.id === id);
+      assert.deepEqual([byId(second!.id)?.status, byId(second!.id)?.queueHeld], ["running", false]);
+      assert.deepEqual([byId(first!.id)?.status, byId(first!.id)?.queueHeld], ["queued", false]);
       const reconcileCommandId = yield* holdCommandId(threadId, first!.id);
       assert.deepEqual(yield* resumeCommandIds(threadId), [
         resumeCommandId({
@@ -1120,35 +1116,40 @@ it.effect("leaves the hold when a Stop lands while the continuation is still bei
 );
 
 it.effect("resumes again after a second restart under a new id", () =>
-  withHarness("twice", ({ cwd }) =>
+  withHarness("twice", ({ cwd, started }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:twice");
-      const { active, queued } = yield* busyThread({ threadId, cwd });
+      const { active, queued } = yield* busyThread({ threadId, cwd, queued: 2 });
+      const [first, second] = queued;
       yield* restartOneSecondLater;
-      const continuationTurn = yield* nextTurnRunning(active);
-      const first = yield* scan.pipe(Effect.forkScoped);
+      const firstScan = yield* scan.pipe(Effect.forkScoped);
       yield* drain;
-      yield* Fiber.join(first);
-      yield* Fiber.join(continuationTurn);
-      const continuation = continuationOf(yield* runsOf(threadId), active.id)!;
-      assert.equal(continuation.status, "running");
+      yield* finishContinuation(threadId, active.id, started);
+      yield* Fiber.join(firstScan);
+      yield* drain;
+      assert.equal(
+        (yield* runsOf(threadId)).find((run) => run.id === first!.id)?.status,
+        "running",
+      );
       yield* restartOneSecondLater;
-      const reheld = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
+      const reheld = (yield* runsOf(threadId)).find((run) => run.id === second!.id);
       assert.deepEqual([reheld?.status, reheld?.queueHeld], ["queued", true]);
-      const second = yield* scan.pipe(Effect.forkScoped);
+      const secondScan = yield* scan.pipe(Effect.forkScoped);
       yield* drain;
-      yield* Fiber.join(second);
+      yield* finishContinuation(threadId, first!.id, started);
+      yield* Fiber.join(secondScan);
+      yield* drain;
       const runs = yield* runsOf(threadId);
-      assert.equal(continuationOf(runs, continuation.id)?.status, "running");
-      const resumed = runs.find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+      assert.equal(continuationOf(runs, first!.id)?.status, "completed");
+      const resumed = runs.find((run) => run.id === second!.id);
+      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
       assert.lengthOf(yield* resumeCommandIds(threadId), 2);
     }),
   ),
 );
 
 it.effect("uses one command id across a rebuilt layer", () =>
-  withHarness("rebuilt", ({ cwd }) =>
+  withHarness("rebuilt", ({ cwd, started }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:rebuilt");
       const { active, queued } = yield* busyThread({ threadId, cwd });
@@ -1157,28 +1158,22 @@ it.effect("uses one command id across a rebuilt layer", () =>
       const first = yield* scan.pipe(Effect.forkScoped);
       const second = yield* scan.pipe(Effect.provide(Layer.fresh(resumerLayer)), Effect.forkScoped);
       yield* drain;
+      yield* finishContinuation(threadId, active.id, started);
       yield* Fiber.join(first);
       yield* Fiber.join(second);
+      yield* drain;
       const runs = yield* runsOf(threadId);
-      assert.equal(continuationOf(runs, active.id)?.status, "running");
+      assert.equal(continuationOf(runs, active.id)?.status, "completed");
       const resumed = runs.find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
       const expected = resumeCommandId({
         threadId,
         headRunId: queued[0]!.id,
         reconcileCommandId: CommandId.make(reconcileCommandId!),
       });
       assert.deepEqual(yield* resumeCommandIds(threadId), [expected]);
-      const sink = yield* EventSink.EventSinkV2;
-      const releases = yield* sink.readByCommandId({ commandId: expected }).pipe(
-        Stream.runCollect,
-        Effect.map((chunk) => [...chunk]),
-      );
       assert.lengthOf(
-        releases.filter(
-          (stored) =>
-            stored.event.type === "run.updated" && stored.event.payload.id === queued[0]!.id,
-        ),
+        started.filter((entry) => entry.turn.runId === queued[0]!.id),
         1,
       );
     }),

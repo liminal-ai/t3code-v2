@@ -1,9 +1,10 @@
 /**
  * Upstream holds every queued run at a restart and waits for the user's Resume. This fork
- * releases a queue that only a restart held, once the cut turn's continuation is admitted.
- * `queueHeld` carries no reason, so the stored command id of the event that set it is the one
- * record of why, and only a `command:runtime-reconcile:` hold counts as a restart.
+ * releases a queue that only a restart held, once the thread is quiet and its last turn ended
+ * well. `queueHeld` carries no reason, so the stored command id of the event that set it is the
+ * one record of why, and only a `command:runtime-reconcile:` hold counts as a restart.
  */
+import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -18,6 +19,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
@@ -38,32 +40,14 @@ export class HeldQueueResumer extends Context.Service<
 >()("t3/fork/HeldQueueResumer") {}
 
 type HoldSource =
-  | {
-      readonly kind: "restart";
-      readonly reconcileCommandId: CommandId;
-      readonly sequence: number;
-      readonly heldAt: DateTime.Utc;
-    }
+  | { readonly kind: "restart"; readonly reconcileCommandId: CommandId; readonly sequence: number }
   | { readonly kind: "stopped" }
   | { readonly kind: "system" };
-
-/** The thread's latest reconcile pass that cancelled a run or noted cancelled work on one. */
-interface ReconcilePass {
-  readonly commandId: CommandId;
-  /**
-   * The newest run it cancelled or noted. Core continues the newest started run, so this is the
-   * run a shutdown prepare wrote the continuation for, cut if it was running and noted if it was
-   * waiting on work the shutdown cancelled.
-   */
-  readonly sourceRunId: RunId;
-}
 
 interface RestartHeld {
   readonly kind: "restart";
   readonly threadId: ThreadId;
   readonly reconcileCommandId: CommandId;
-  readonly heldAt: DateTime.Utc;
-  readonly latestPass: ReconcilePass | undefined;
 }
 
 type HeldThreadClass =
@@ -72,9 +56,8 @@ type HeldThreadClass =
 
 interface RunEventRow {
   readonly sequence: number;
-  readonly event_type: "run.created" | "run.updated" | "run.background-work-cancelled";
+  readonly event_type: "run.created" | "run.updated";
   readonly command_id: string | null;
-  readonly occurred_at: string;
   readonly run_id: RunId;
   readonly status: OrchestrationV2Run["status"] | null;
   readonly queue_held: 0 | 1 | null;
@@ -88,7 +71,6 @@ const holdFromRow = (row: RunEventRow): HoldSource =>
           kind: "restart",
           reconcileCommandId: CommandId.make(row.command_id),
           sequence: row.sequence,
-          heldAt: DateTime.makeUnsafe(row.occurred_at),
         }
       : { kind: "stopped" };
 
@@ -119,43 +101,21 @@ const classifyHeldThread = (
     [...runs.values()].flatMap((run) =>
       run.status === "queued" && run.hold !== null ? [run.hold] : [],
     );
-  const createdOrder = new Map<RunId, number>();
-  let latestPass: { commandId: CommandId; sourceRunId: RunId } | undefined;
-  const touchedBy = (row: RunEventRow) => {
-    if (row.command_id === null || !row.command_id.startsWith(RECONCILE_COMMAND_PREFIX)) return;
-    if (
-      latestPass?.commandId !== row.command_id ||
-      (createdOrder.get(row.run_id) ?? -1) > (createdOrder.get(latestPass.sourceRunId) ?? -1)
-    )
-      latestPass = { commandId: CommandId.make(row.command_id), sourceRunId: row.run_id };
-  };
   for (const row of rows) {
-    if (row.event_type === "run.background-work-cancelled") {
-      touchedBy(row);
-      continue;
-    }
     const status = row.status ?? "queued";
     const held = row.queue_held === 1;
     if (row.event_type === "run.created") {
-      createdOrder.set(row.run_id, createdOrder.size);
       runs.set(row.run_id, { status, hold: held ? bornHold(heldQueuedRuns()) : null });
       continue;
     }
     const prior = runs.get(row.run_id);
     const hold = !held ? null : prior?.hold != null ? prior.hold : holdFromRow(row);
     runs.set(row.run_id, { status, hold });
-    if (status === "cancelled" && prior?.status !== "cancelled") touchedBy(row);
   }
   const hold = strictestHold(heldQueuedRuns());
   if (hold === undefined) return { kind: "unknown", threadId };
   if (hold.kind !== "restart") return { kind: hold.kind, threadId };
-  return {
-    kind: "restart",
-    threadId,
-    reconcileCommandId: hold.reconcileCommandId,
-    heldAt: hold.heldAt,
-    latestPass,
-  };
+  return { kind: "restart", threadId, reconcileCommandId: hold.reconcileCommandId };
 };
 
 export const resumeCommandId = (input: {
@@ -167,21 +127,18 @@ export const resumeCommandId = (input: {
     `command:fork-held-queue-resume:${input.threadId}:${input.headRunId}:${input.reconcileCommandId}`,
   );
 
-/** `queue.resume` starts the queue with no failed run to re-hold it behind, so these refuse. */
-const ENDED_WITHOUT_COMPLETING = new Set<OrchestrationV2Run["status"]>([
-  "failed",
-  "cancelled",
-  "rolled_back",
-]);
+/** A turn about to start or in progress. `waiting` is not one: core starts the next queued run then. */
+const ACTIVE = new Set<OrchestrationV2Run["status"]>(["preparing", "starting", "running"]);
 
-const IN_FLIGHT = new Set<OrchestrationV2Run["status"]>(["starting", "running"]);
+const ENDED_WELL = new Set<OrchestrationV2Run["status"]>(["completed", "waiting"]);
 
 type Outcome =
   | "resumed"
   | "setting-off"
-  | "declined"
-  | "stopped-since-hold"
   | "needs-user"
+  | "cut"
+  | "stopped"
+  | "failed"
   | "released"
   | "refused";
 
@@ -204,15 +161,13 @@ const make = Effect.gen(function* () {
   `.pipe(Effect.map((rows) => rows.map((row) => row.thread_id)));
 
   // A reorder copies `queueHeld: true` forward under the user's command, so the walk reads
-  // every flagged row in order and takes the flip, not the latest row. Reconcile rows come
-  // too, because the latest pass's cancels say which run its continuation is for.
+  // every flagged row in order and takes the flip, not the latest row.
   const runEventRows = (threadId: ThreadId) => sql<RunEventRow>`
     SELECT
       sequence,
       event_type,
       command_id,
-      occurred_at,
-      COALESCE(json_extract(payload_json, '$.id'), json_extract(payload_json, '$.runId')) AS run_id,
+      json_extract(payload_json, '$.id') AS run_id,
       json_extract(payload_json, '$.status') AS status,
       json_extract(payload_json, '$.queueHeld') AS queue_held
     FROM orchestration_events
@@ -222,10 +177,6 @@ const make = Effect.gen(function* () {
       AND (
         event_type = 'run.created'
         OR (event_type = 'run.updated' AND json_type(payload_json, '$.queueHeld') IS NOT NULL)
-        OR (
-          event_type IN ('run.updated', 'run.background-work-cancelled')
-          AND command_id LIKE ${`${RECONCILE_COMMAND_PREFIX}%`}
-        )
       )
     ORDER BY sequence ASC
   `;
@@ -233,48 +184,31 @@ const make = Effect.gen(function* () {
   const classify = (threadId: ThreadId) =>
     runEventRows(threadId).pipe(Effect.map((rows) => classifyHeldThread(threadId, rows)));
 
-  interface Continuation {
-    readonly effectId: string;
-    readonly sourceRunId: RunId;
-  }
-
-  // A continuation not yet settled is still owed, whichever restart wrote it.
   const pendingContinuation = (threadId: ThreadId) =>
-    sql<{ readonly effect_id: string; readonly source_run_id: RunId }>`
-      SELECT effect_id, json_extract(payload_json, '$.sourceRunId') AS source_run_id
-      FROM orchestration_v2_effect_outbox
+    sql<{ readonly effect_id: string }>`
+      SELECT effect_id FROM orchestration_v2_effect_outbox
       WHERE thread_id = ${threadId}
         AND effect_type = 'provider-runtime.continue'
         AND status IN ('pending', 'running')
-      ORDER BY created_at DESC, rowid DESC
       LIMIT 1
-    `.pipe(
-      Effect.map((rows): Continuation | undefined =>
-        rows[0] === undefined
-          ? undefined
-          : { effectId: rows[0].effect_id, sourceRunId: rows[0].source_run_id },
-      ),
-    );
+    `.pipe(Effect.map((rows) => rows[0]?.effect_id));
 
-  // A startup pass writes its continuation under its own command id. A clean shutdown writes it
-  // just before, under `command:restart-prepare:<runId>`, for the run the shutdown pass then cuts
-  // or notes. Any other continuation on the thread is an older restart's.
-  const continuationWrittenBy = (threadId: ThreadId, pass: ReconcilePass) =>
-    sql<{ readonly effect_id: string; readonly source_run_id: RunId }>`
-      SELECT effect_id, json_extract(payload_json, '$.sourceRunId') AS source_run_id
-      FROM orchestration_v2_effect_outbox
-      WHERE thread_id = ${threadId}
-        AND effect_type = 'provider-runtime.continue'
-        AND command_id IN (${pass.commandId}, ${`command:restart-prepare:${pass.sourceRunId}`})
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT 1
-    `.pipe(
-      Effect.map((rows): Continuation | undefined =>
-        rows[0] === undefined
-          ? undefined
-          : { effectId: rows[0].effect_id, sourceRunId: rows[0].source_run_id },
-      ),
-    );
+  const quiet = (threadId: ThreadId) =>
+    Effect.gen(function* () {
+      while (true) {
+        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+        const pending = yield* pendingContinuation(threadId);
+        if (pending !== undefined) {
+          yield* outbox.awaitSettled(pending);
+          continue;
+        }
+        const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
+        if (!runs.some((run) => ACTIVE.has(run.status))) return runs;
+        yield* orchestrator
+          .streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" })
+          .pipe(Stream.take(1), Stream.runDrain);
+      }
+    });
 
   const parkedForUser = (shell: OrchestrationV2ThreadShell, now: DateTime.Utc) =>
     shell.archivedAt !== null ||
@@ -294,27 +228,7 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  // A Stop never re-holds a held queue, so the one trace of a Stop after the hold is an
-  // interrupt item on whichever run it stopped.
-  const stoppedSince = (threadId: ThreadId, heldAt: DateTime.Utc) =>
-    projections
-      .getThreadRecords(threadId, ["turnItems"], { turnItemTypes: ["run_interrupt_request"] })
-      .pipe(
-        Effect.map(({ turnItems }) =>
-          turnItems.some(
-            (item) =>
-              item.completedAt !== null &&
-              DateTime.isGreaterThanOrEqualTo(item.completedAt, heldAt),
-          ),
-        ),
-      );
-
-  interface Release {
-    readonly held: RestartHeld;
-    readonly continuation: Continuation | undefined;
-  }
-
-  const admit = (held: RestartHeld): Effect.Effect<Outcome | Release> =>
+  const admit = (held: RestartHeld): Effect.Effect<Outcome | RestartHeld> =>
     Effect.gen(function* () {
       const shell = yield* projections.getThreadShell(held.threadId);
       if (shell === null || shell.deletedAt !== null) return "needs-user" as const;
@@ -323,13 +237,7 @@ const make = Effect.gen(function* () {
         !resolveProjectSettings(current, shell.projectId).settings.continueThreadsAfterServerUpdate
       )
         return "setting-off" as const;
-      const continuation =
-        (yield* pendingContinuation(held.threadId)) ??
-        (held.latestPass === undefined
-          ? undefined
-          : yield* continuationWrittenBy(held.threadId, held.latestPass));
-      if (continuation === undefined && held.latestPass !== undefined) return "declined" as const;
-      return { held, continuation };
+      return held;
     }).pipe(
       Effect.catchCause((cause) =>
         Effect.logWarning("held queue not admitted", { threadId: held.threadId, cause }).pipe(
@@ -338,28 +246,20 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const resume = ({ held, continuation }: Release) =>
+  const decide = (held: RestartHeld, runs: ReadonlyArray<OrchestrationV2Run>) =>
     Effect.gen(function* () {
       const { threadId } = held;
       const shell = yield* projections.getThreadShell(threadId);
       if (shell === null || shell.deletedAt !== null) return "needs-user";
-      const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
-      const continued =
-        continuation === undefined
-          ? undefined
-          : runs.find((run) => run.restartContinuationOfRunId === continuation.sourceRunId);
-      if (continuation !== undefined) {
-        if (continued === undefined || ENDED_WITHOUT_COMPLETING.has(continued.status))
-          return "declined";
-        if (continued.status === "interrupted") return "stopped-since-hold";
-      }
-      const followsContinuation = continued !== undefined && IN_FLIGHT.has(continued.status);
-      if (
-        !followsContinuation &&
-        (parkedForUser(shell, yield* DateTime.now) || (yield* secretPending(threadId)))
-      )
+      if (parkedForUser(shell, yield* DateTime.now) || (yield* secretPending(threadId)))
         return "needs-user";
-      if (yield* stoppedSince(threadId, held.heldAt)) return "stopped-since-hold";
+      const last = latestExecutedRun(runs);
+      if (last !== null && !ENDED_WELL.has(last.status))
+        return last.status === "cancelled"
+          ? "cut"
+          : last.status === "interrupted"
+            ? "stopped"
+            : "failed";
       const queued = runs
         .filter((run) => run.status === "queued")
         .sort(
@@ -380,18 +280,16 @@ const make = Effect.gen(function* () {
       return "resumed" as Outcome;
     });
 
-  const release = (pending: Release) =>
+  const release = (held: RestartHeld) =>
     Effect.gen(function* () {
-      const { threadId } = pending.held;
       const from = yield* Clock.currentTimeMillis;
-      if (pending.continuation !== undefined)
-        yield* outbox.awaitSettled(pending.continuation.effectId);
+      const runs = yield* quiet(held.threadId);
       const waitedMs = (yield* Clock.currentTimeMillis) - from;
-      const outcome = yield* resume(pending);
-      yield* Effect.logInfo("held queue release", { threadId, outcome, waitedMs });
+      const outcome = yield* decide(held, runs);
+      yield* Effect.logInfo("held queue release", { threadId: held.threadId, outcome, waitedMs });
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("held queue not resumed", { threadId: pending.held.threadId, cause }),
+        Effect.logWarning("held queue not resumed", { threadId: held.threadId, cause }),
       ),
     );
 
