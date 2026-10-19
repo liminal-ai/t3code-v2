@@ -18,6 +18,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
@@ -137,6 +138,7 @@ type Outcome =
   | "setting-off"
   | "needs-user"
   | "cut"
+  | "declined"
   | "stopped"
   | "failed"
   | "released"
@@ -260,6 +262,13 @@ const make = Effect.gen(function* () {
           : last.status === "interrupted"
             ? "stopped"
             : "failed";
+      // Core writes this effect for a run it meant to continue. With nothing continuing the run,
+      // core declined when the effect ran, as it does past its chain cap.
+      if (
+        last !== null &&
+        Option.isSome(yield* outbox.get(`effect:restart-continuation:${last.id}`))
+      )
+        return "declined";
       const queued = runs
         .filter((run) => run.status === "queued")
         .sort(
