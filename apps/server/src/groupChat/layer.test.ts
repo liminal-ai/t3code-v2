@@ -84,10 +84,13 @@ it.layer(NodeServices.layer)("group chat module", (it) => {
                 groupId: group.id,
                 handle: "alpha",
                 color: 0,
-                thread: {
-                  environmentId: EnvironmentId.make("env"),
-                  threadId: ThreadId.make("alpha"),
-                  title: "Alpha",
+                source: {
+                  _tag: "t3",
+                  thread: {
+                    environmentId: EnvironmentId.make("env"),
+                    threadId: ThreadId.make("alpha"),
+                    title: "Alpha",
+                  },
                 },
               });
               const message = yield* tx.appendMessage({

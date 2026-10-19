@@ -21,10 +21,12 @@ import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
+import { FetchHttpClient } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
-import { type GroupChatEngine, RetryDelay } from "./engine.ts";
+import { ExternalDeliveryConfig, type GroupChatEngine, RetryDelay } from "./engine.ts";
 import * as GroupChatLayer from "./layer.ts";
+import * as Reach from "./reach.ts";
 import type { GroupChatStore, StoreError } from "./store.ts";
 import {
   GroupChatThreadPort,
@@ -538,7 +540,12 @@ const neverPort: GroupChatThreadPort["Service"] = {
   respond: () => Effect.never,
 };
 
-export const layerNeverPort = Layer.succeed(GroupChatThreadPort, neverPort);
+/** A port that never answers, with the rest of what the module needs to build. */
+export const layerNeverPort = Layer.mergeAll(
+  Layer.succeed(GroupChatThreadPort, neverPort),
+  Reach.layerFixed({ exposed: false, origin: "http://127.0.0.1:1" }),
+  FetchHttpClient.layer,
+);
 
 const layerFakePort = (fake: FakeThreads) => Layer.succeed(GroupChatThreadPort, fake.port);
 
@@ -561,6 +568,15 @@ export const boot = (
     const layer = GroupChatLayer.layer.pipe(
       Layer.provide(layerFakePort(fake)),
       Layer.provide(Layer.succeed(RetryDelay, "10 millis")),
+      Layer.provide(
+        Layer.succeed(ExternalDeliveryConfig, {
+          maxAttempts: 3,
+          backoffBase: "10 millis",
+          callbackTimeout: "300 millis",
+        }),
+      ),
+      Layer.provide(Reach.layerFixed({ exposed: false, origin: "http://127.0.0.1:1" })),
+      Layer.provide(FetchHttpClient.layer),
       Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     );

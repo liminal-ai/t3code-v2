@@ -32,10 +32,13 @@ const member = (
   handle,
   handleHistory: [],
   color: 0,
-  thread: {
-    environmentId: "e" as EnvironmentId,
-    threadId: `t-${id}` as ThreadId,
-    title: `${handle} thread`,
+  kind: {
+    _tag: "t3",
+    thread: {
+      environmentId: "e" as EnvironmentId,
+      threadId: `t-${id}` as ThreadId,
+      title: `${handle} thread`,
+    },
   },
   seenSeq: 0,
   introduced: false,

@@ -1,0 +1,235 @@
+import {
+  EnvironmentHttpApi,
+  GROUP_CHAT_HOOK_SIGNATURE_HEADER,
+  type GroupChatHookQuery,
+} from "@t3tools/contracts";
+import * as ByteSize from "effect/ByteSize";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+
+import type { GroupChat } from "./layer.ts";
+import { GroupChatReach } from "./reach.ts";
+import type { ExternalSecrets } from "./store.ts";
+import { extractText } from "./transports/http.ts";
+import { constantTimeEquals, verifySignature } from "./transports/webhook.ts";
+
+/** One megabyte. A larger post is refused while it is still being read. */
+export const HOOK_MAX_BODY_BYTES = 1_000_000;
+
+/** Posts a hook URL accepts: a burst of `capacity`, refilled at `perSecond`. */
+export const HOOK_RATE_LIMIT = { capacity: 60, perSecond: 2 } as const;
+/** Buckets a flood of valid tokens could leave behind before idle ones are swept. */
+const BUCKET_SWEEP_SIZE = 1024;
+
+interface Bucket {
+  tokens: number;
+  at: number;
+}
+
+/** A token bucket per hook. Returns false when the hook is over its limit right now. */
+export const makeRateLimiter = (limit: {
+  readonly capacity: number;
+  readonly perSecond: number;
+}) => {
+  const buckets = new Map<string, Bucket>();
+  const refill = (bucket: Bucket, nowMs: number) => {
+    bucket.tokens = Math.min(
+      limit.capacity,
+      bucket.tokens + ((nowMs - bucket.at) / 1000) * limit.perSecond,
+    );
+    bucket.at = nowMs;
+  };
+  return (key: string, nowMs: number): boolean => {
+    if (buckets.size > BUCKET_SWEEP_SIZE) {
+      for (const [other, bucket] of buckets) {
+        refill(bucket, nowMs);
+        if (bucket.tokens >= limit.capacity) buckets.delete(other);
+      }
+    }
+    const bucket = buckets.get(key) ?? { tokens: limit.capacity, at: nowMs };
+    refill(bucket, nowMs);
+    buckets.set(key, bucket);
+    if (bucket.tokens < 1) return false;
+    bucket.tokens -= 1;
+    return true;
+  };
+};
+
+export type SignatureCheck = "ok" | "invalid_signature" | "signature_required";
+
+/** A member with a secret must sign every post. Without one, unsigned posts pass only while nothing beyond this machine can reach the server. */
+export const checkSignature = (input: {
+  readonly external: ExternalSecrets;
+  readonly body: Uint8Array;
+  readonly header: string | undefined;
+  readonly exposed: boolean;
+}): SignatureCheck => {
+  if (input.external.secret !== "") {
+    return verifySignature(input.external.secret, input.body, input.header)
+      ? "ok"
+      : "invalid_signature";
+  }
+  return input.exposed ? "signature_required" : "ok";
+};
+
+const json = (status: number, body: Record<string, unknown>) =>
+  HttpServerResponse.jsonUnsafe(body, { status });
+const refused = (status: number, error: string) => json(status, { error });
+
+/**
+ * Reads the body under the cap. The content-length check answers a declared oversize post at
+ * once; the capped reader stops a chunked one as soon as it crosses the cap, before the rest
+ * is buffered.
+ */
+const readBody = (
+  request: HttpServerRequest.HttpServerRequest,
+): Effect.Effect<Uint8Array | "too_large"> =>
+  Effect.gen(function* () {
+    const declared = Number(request.headers["content-length"] ?? "0");
+    if (!Number.isFinite(declared) || declared > HOOK_MAX_BODY_BYTES) return "too_large" as const;
+    const body = yield* request.arrayBuffer.pipe(
+      Effect.map((buffer) => new Uint8Array(buffer)),
+      Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(HOOK_MAX_BODY_BYTES)),
+      Effect.option,
+    );
+    if (Option.isNone(body) || body.value.byteLength > HOOK_MAX_BODY_BYTES) {
+      return "too_large" as const;
+    }
+    return body.value;
+  });
+
+const decoder = new TextDecoder();
+
+export const makeLayer = (groupChat: GroupChat["Service"]) =>
+  HttpApiBuilder.group(
+    EnvironmentHttpApi,
+    "groupChatHooks",
+    Effect.fnUntraced(function* (handlers) {
+      const reach = yield* GroupChatReach;
+      const underLimit = makeRateLimiter(HOOK_RATE_LIMIT);
+
+      /** Everything after the token check: rate, size, signature, text. */
+      const accept = (input: {
+        readonly key: string;
+        readonly external: ExternalSecrets;
+        readonly request: HttpServerRequest.HttpServerRequest;
+      }) =>
+        Effect.gen(function* () {
+          if (!underLimit(input.key, yield* Clock.currentTimeMillis)) {
+            return { _tag: "refused", response: refused(429, "rate_limited") } as const;
+          }
+          const body = yield* readBody(input.request);
+          if (body === "too_large") {
+            return { _tag: "refused", response: refused(413, "body_too_large") } as const;
+          }
+          const signature = checkSignature({
+            external: input.external,
+            body,
+            header: input.request.headers[GROUP_CHAT_HOOK_SIGNATURE_HEADER],
+            exposed: yield* reach.exposed,
+          });
+          if (signature !== "ok") {
+            return { _tag: "refused", response: refused(401, signature) } as const;
+          }
+          const text = extractText(decoder.decode(body), input.external.replyPath);
+          if (text === null) {
+            return {
+              _tag: "refused",
+              response: refused(400, `no text at "${input.external.replyPath}"`),
+            } as const;
+          }
+          return { _tag: "text", text } as const;
+        });
+
+      const module = Effect.all([groupChat.store, groupChat.engine]).pipe(
+        Effect.map(([store, engine]) => ({ store, engine })),
+        Effect.catchTags({
+          GroupChatUnavailable: (error) => Effect.succeed(refused(503, error.reason)),
+        }),
+      );
+
+      const isResponse = (value: unknown): value is HttpServerResponse.HttpServerResponse =>
+        HttpServerResponse.isHttpServerResponse(value);
+
+      const failed = (cause: unknown) =>
+        Effect.logError("group chat hook failed", { cause }).pipe(
+          Effect.as(refused(500, "internal_error")),
+        );
+
+      const reply = ({
+        params,
+        query,
+        request,
+      }: {
+        readonly params: { readonly deliveryId: import("@t3tools/contracts").GroupChatDeliveryId };
+        readonly query: GroupChatHookQuery;
+        readonly request: HttpServerRequest.HttpServerRequest;
+      }) =>
+        Effect.gen(function* () {
+          const ready = yield* module;
+          if (isResponse(ready)) return ready;
+          const delivery = yield* ready.store.delivery(params.deliveryId);
+          const member = delivery === null ? null : yield* ready.store.member(delivery.memberId);
+          const token = delivery?.external?.callbackToken ?? null;
+          if (
+            delivery === null ||
+            member === null ||
+            member.external === null ||
+            token === null ||
+            !constantTimeEquals(token, query.token)
+          ) {
+            return refused(404, "unknown_callback");
+          }
+          const accepted = yield* accept({
+            key: `reply:${delivery.id}`,
+            external: member.external,
+            request,
+          });
+          if (accepted._tag === "refused") return accepted.response;
+          const outcome = yield* ready.engine.landReply(delivery.id, accepted.text);
+          return outcome === "not_found"
+            ? refused(404, "unknown_callback")
+            : json(200, { ok: true });
+        }).pipe(Effect.catchCause(failed));
+
+      const inbound = ({
+        params,
+        query,
+        request,
+      }: {
+        readonly params: { readonly memberId: import("@t3tools/contracts").GroupChatMemberId };
+        readonly query: GroupChatHookQuery;
+        readonly request: HttpServerRequest.HttpServerRequest;
+      }) =>
+        Effect.gen(function* () {
+          const ready = yield* module;
+          if (isResponse(ready)) return ready;
+          const member = yield* ready.store.member(params.memberId);
+          if (
+            member === null ||
+            member.removedAt !== null ||
+            member.external === null ||
+            !constantTimeEquals(member.external.inboundToken, query.token)
+          ) {
+            return refused(404, "unknown_inbound_url");
+          }
+          const accepted = yield* accept({
+            key: `inbound:${member.id}`,
+            external: member.external,
+            request,
+          });
+          if (accepted._tag === "refused") return accepted.response;
+          const message = yield* ready.engine.postInbound(member.id, accepted.text);
+          return message === null
+            ? refused(404, "unknown_inbound_url")
+            : json(200, { messageId: message.id });
+        }).pipe(Effect.catchCause(failed));
+
+      return handlers.handleRaw("reply", reply).handleRaw("inbound", inbound);
+    }),
+  );

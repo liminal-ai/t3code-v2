@@ -32,7 +32,9 @@ const createGroup = (app: App, title: string, threads: ReadonlyArray<ThreadId>) 
     assert.strictEqual(result._tag, "group");
     const group = result._tag === "group" ? result.group : null;
     const members = yield* app.store.members(group!.id, true);
-    const byThread = new Map(members.map((m) => [m.thread.threadId, m]));
+    const byThread = new Map(
+      members.map((m) => [m.kind._tag === "t3" ? m.kind.thread.threadId : null, m]),
+    );
     return { group: group!, members, member: (threadId: ThreadId) => byThread.get(threadId)! };
   });
 
@@ -82,8 +84,8 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       yield* awaitState(app, member(alpha).id, "running");
       yield* awaitState(app, member(bravo).id, "running");
       yield* reply(fake, alpha, "hi from alpha");
-      yield* reply(fake, bravo, "hi from bravo");
       const a = yield* awaitState(app, member(alpha).id, "replied");
+      yield* reply(fake, bravo, "hi from bravo");
       const b = yield* awaitState(app, member(bravo).id, "replied");
       assert.strictEqual(a.dispatch, "accepted");
       assert.strictEqual(b.attempt, 1);

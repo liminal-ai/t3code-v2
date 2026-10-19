@@ -8,10 +8,12 @@ import {
   GroupChatDiscussionId,
   GroupChatDiscussionState,
   GroupChatDispatchState,
+  type GroupChatExternalKind,
   GroupChatGroup,
   GroupChatGroupId,
-  GroupChatMember,
+  type GroupChatMember,
   GroupChatMemberId,
+  type GroupChatMemberThread,
   GroupChatMessage,
   GroupChatMessageId,
   GroupChatMessageKind,
@@ -172,6 +174,45 @@ const migrations = Migrator.fromRecord({
     SqlClient.SqlClient,
     (sql) => sql`ALTER TABLE cancels ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0`,
   ),
+  // SQLite cannot drop NOT NULL from the thread columns, so the table is rebuilt with them nullable.
+  "6_external_members": Effect.flatMap(SqlClient.SqlClient, (sql) =>
+    Effect.gen(function* () {
+      yield* sql`
+        CREATE TABLE members_external (
+          id TEXT PRIMARY KEY,
+          group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
+          handle TEXT NOT NULL,
+          handle_history_json TEXT NOT NULL DEFAULT '[]',
+          color INTEGER NOT NULL,
+          kind TEXT NOT NULL DEFAULT 't3',
+          environment_id TEXT,
+          thread_id TEXT,
+          thread_title TEXT,
+          external_json TEXT,
+          seen_seq INTEGER NOT NULL DEFAULT 0,
+          introduced INTEGER NOT NULL DEFAULT 0,
+          told_roster_json TEXT,
+          added_at TEXT NOT NULL,
+          removed_at TEXT
+        )
+      `;
+      yield* sql`
+        INSERT INTO members_external (
+          id, group_id, handle, handle_history_json, color, kind, environment_id, thread_id,
+          thread_title, seen_seq, introduced, told_roster_json, added_at, removed_at
+        )
+        SELECT id, group_id, handle, handle_history_json, color, 't3', environment_id, thread_id,
+          thread_title, seen_seq, introduced, told_roster_json, added_at, removed_at
+        FROM members
+        ORDER BY rowid
+      `;
+      yield* sql`DROP TABLE members`;
+      yield* sql`ALTER TABLE members_external RENAME TO members`;
+      yield* sql`CREATE INDEX members_group ON members(group_id)`;
+      yield* sql`CREATE INDEX members_thread ON members(thread_id)`;
+      yield* sql`ALTER TABLE deliveries ADD COLUMN external_json TEXT`;
+    }),
+  ),
 });
 
 const runMigrations = Migrator.make({});
@@ -179,21 +220,58 @@ const runMigrations = Migrator.make({});
 const Roster = Schema.Record(Schema.String, Schema.String);
 const SignedOff = Schema.Record(Schema.String, Schema.Int);
 
-const MemberRow = Schema.Struct({
+/** An external member's configuration as the store keeps it, secrets included. */
+const ExternalSecrets = Schema.Struct({
+  url: Schema.String,
+  headers: Schema.Record(Schema.String, Schema.String),
+  bodyTemplate: Schema.String,
+  replyPath: Schema.String,
+  secret: Schema.String,
+  callbackOrigin: Schema.String,
+  inboundToken: Schema.String,
+});
+export type ExternalSecrets = typeof ExternalSecrets.Type;
+
+/**
+ * A member as the engine reads it: the public shape plus the external secrets. `publicMember`
+ * strips them before anything leaves the module.
+ */
+export type MemberRow = GroupChatMember & { readonly external: ExternalSecrets | null };
+
+export const publicMember = ({ external: _external, ...member }: MemberRow): GroupChatMember =>
+  member;
+
+export type MemberSource =
+  | { readonly _tag: "t3"; readonly thread: GroupChatMemberThread }
+  | { readonly _tag: GroupChatExternalKind; readonly external: ExternalSecrets };
+
+const MemberDbRow = Schema.Struct({
   id: GroupChatMemberId,
   groupId: GroupChatGroupId,
   handle: Schema.String,
   handleHistory: Schema.fromJsonString(Schema.Array(Schema.String)),
   color: Schema.Int,
-  environmentId: EnvironmentId,
-  threadId: ThreadId,
-  threadTitle: Schema.String,
+  kind: Schema.Literals(["t3", "rest", "webhook"]),
+  environmentId: Schema.NullOr(EnvironmentId),
+  threadId: Schema.NullOr(ThreadId),
+  threadTitle: Schema.NullOr(Schema.String),
+  external: Schema.NullOr(Schema.fromJsonString(ExternalSecrets)),
   seenSeq: Schema.Int,
   introduced: Schema.BooleanFromBit,
   toldRoster: Schema.NullOr(Schema.fromJsonString(Roster)),
   addedAt: IsoDateTime,
   removedAt: Schema.NullOr(IsoDateTime),
 });
+
+/** The external delivery's request bookkeeping. `sends` counts every request for life; `tries` since the last Retry. */
+const ExternalDelivery = Schema.Struct({
+  sends: Schema.Int,
+  tries: Schema.Int,
+  nextAttemptAt: Schema.NullOr(IsoDateTime),
+  callbackToken: Schema.NullOr(Schema.String),
+  acceptedAt: Schema.NullOr(IsoDateTime),
+});
+export type ExternalDelivery = typeof ExternalDelivery.Type;
 
 const MessageRow = Schema.Struct({
   id: GroupChatMessageId,
@@ -235,6 +313,7 @@ const DeliveryRow = Schema.Struct({
   replyMessageId: Schema.NullOr(GroupChatMessageId),
   error: Schema.NullOr(Schema.String),
   roster: Schema.NullOr(Schema.fromJsonString(Roster)),
+  external: Schema.NullOr(Schema.fromJsonString(ExternalDelivery)),
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 });
@@ -261,11 +340,13 @@ const encodeAuthor = Schema.encodeSync(Schema.fromJsonString(GroupChatAuthor));
 const encodeMemberIds = Schema.encodeSync(Schema.fromJsonString(Schema.Array(GroupChatMemberId)));
 const encodeWait = Schema.encodeSync(Schema.fromJsonString(GroupChatWait));
 const encodeSignedOff = Schema.encodeSync(Schema.fromJsonString(SignedOff));
+const encodeExternalSecrets = Schema.encodeSync(Schema.fromJsonString(ExternalSecrets));
+const encodeExternalDelivery = Schema.encodeSync(Schema.fromJsonString(ExternalDelivery));
 
 export type StoreChange =
   | { readonly _tag: "group"; readonly group: GroupChatGroup }
   | { readonly _tag: "group.deleted"; readonly groupId: GroupChatGroupId }
-  | { readonly _tag: "member"; readonly member: GroupChatMember }
+  | { readonly _tag: "member"; readonly member: MemberRow }
   | { readonly _tag: "message"; readonly message: GroupChatMessage }
   | { readonly _tag: "delivery"; readonly delivery: DeliveryRow }
   | { readonly _tag: "discussion"; readonly discussion: GroupChatDiscussion };
@@ -327,6 +408,7 @@ export type DeliveryPatch = Partial<
     | "replyMessageId"
     | "error"
     | "roster"
+    | "external"
   >
 >;
 
@@ -355,13 +437,13 @@ export interface Reads {
   readonly members: (
     groupId: GroupChatGroupId,
     includeRemoved: boolean,
-  ) => Effect.Effect<ReadonlyArray<GroupChatMember>, StoreError>;
-  readonly activeMembers: Effect.Effect<ReadonlyArray<GroupChatMember>, StoreError>;
-  readonly member: (id: GroupChatMemberId) => Effect.Effect<GroupChatMember | null, StoreError>;
+  ) => Effect.Effect<ReadonlyArray<MemberRow>, StoreError>;
+  readonly activeMembers: Effect.Effect<ReadonlyArray<MemberRow>, StoreError>;
+  readonly member: (id: GroupChatMemberId) => Effect.Effect<MemberRow | null, StoreError>;
   readonly memberByThread: (
     groupId: GroupChatGroupId,
     threadId: ThreadId,
-  ) => Effect.Effect<ReadonlyArray<GroupChatMember>, StoreError>;
+  ) => Effect.Effect<ReadonlyArray<MemberRow>, StoreError>;
   readonly messages: (
     groupId: GroupChatGroupId,
     afterSeq?: number,
@@ -421,12 +503,12 @@ export interface Writes {
     readonly groupId: GroupChatGroupId;
     readonly handle: string;
     readonly color: number;
-    readonly thread: GroupChatMember["thread"];
-  }) => Effect.Effect<GroupChatMember, StoreError>;
+    readonly source: MemberSource;
+  }) => Effect.Effect<MemberRow, StoreError>;
   readonly updateMember: (
     id: GroupChatMemberId,
     patch: MemberPatch,
-  ) => Effect.Effect<GroupChatMember, StoreError>;
+  ) => Effect.Effect<MemberRow, StoreError>;
   readonly touchMember: (id: GroupChatMemberId) => Effect.Effect<void, StoreError>;
   readonly pauseLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
   readonly resumeLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
@@ -471,18 +553,41 @@ export interface GroupChatStore extends Reads {
 export const storeFile = (path: Path.Path, stateDir: string) =>
   path.join(stateDir, "group-chat", "groupchat.sqlite");
 
-const toMember = (row: typeof MemberRow.Type): GroupChatMember => ({
+const memberKind = (row: typeof MemberDbRow.Type): GroupChatMember["kind"] => {
+  if (row.kind === "t3") {
+    if (row.environmentId === null || row.threadId === null || row.threadTitle === null) {
+      throw new Error(`member ${row.id} is a thread member without a thread`);
+    }
+    return {
+      _tag: "t3",
+      thread: { environmentId: row.environmentId, threadId: row.threadId, title: row.threadTitle },
+    };
+  }
+  if (row.external === null) throw new Error(`member ${row.id} is ${row.kind} without its config`);
+  return {
+    _tag: row.kind,
+    url: row.external.url,
+    bodyTemplate: row.external.bodyTemplate,
+    replyPath: row.external.replyPath,
+    headerNames: Object.keys(row.external.headers),
+    hasSecret: row.external.secret !== "",
+    callbackOrigin: row.external.callbackOrigin,
+  };
+};
+
+const toMember = (row: typeof MemberDbRow.Type): MemberRow => ({
   id: row.id,
   groupId: row.groupId,
   handle: row.handle,
   handleHistory: row.handleHistory,
   color: row.color,
-  thread: { environmentId: row.environmentId, threadId: row.threadId, title: row.threadTitle },
+  kind: memberKind(row),
   seenSeq: row.seenSeq,
   introduced: row.introduced,
   toldRoster: row.toldRoster,
   addedAt: row.addedAt,
   removedAt: row.removedAt,
+  external: row.external,
 });
 
 const OPEN_STATES: ReadonlyArray<GroupChatDelivery["state"]> = ["pending", "queued", "running"];
@@ -501,10 +606,11 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
   });
   const memberRows = SqlSchema.findAll({
     Request: Schema.Struct({ where: Schema.Any }),
-    Result: MemberRow,
+    Result: MemberDbRow,
     execute: ({ where }) => sql`
       SELECT id, group_id AS "groupId", handle, handle_history_json AS "handleHistory", color,
-        environment_id AS "environmentId", thread_id AS "threadId", thread_title AS "threadTitle",
+        kind, environment_id AS "environmentId", thread_id AS "threadId",
+        thread_title AS "threadTitle", external_json AS external,
         seen_seq AS "seenSeq", introduced, told_roster_json AS "toldRoster",
         added_at AS "addedAt", removed_at AS "removedAt"
       FROM members
@@ -548,7 +654,8 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
         discussion_id AS "discussionId", round, state, dispatch, attempt, envelope,
         from_seq AS "fromSeq", to_seq AS "toSeq", run_id AS "runId", message_id AS "messageId",
         sent_text AS "sentText", wait_json AS wait, withdrawn, reply_message_id AS "replyMessageId",
-        error, roster_json AS roster, created_at AS "createdAt", updated_at AS "updatedAt"
+        error, roster_json AS roster, external_json AS external, created_at AS "createdAt",
+        updated_at AS "updatedAt"
       FROM deliveries
       WHERE ${where as Statement.Fragment}
       ORDER BY created_at, rowid
@@ -681,12 +788,17 @@ const makeWrites = (
       Effect.gen(function* () {
         const id = GroupChatMemberId.make(newId("mem"));
         const at = yield* now;
+        const thread = input.source._tag === "t3" ? input.source.thread : null;
+        const external =
+          input.source._tag === "t3" ? null : encodeExternalSecrets(input.source.external);
         yield* sql`
           INSERT INTO members (
-            id, group_id, handle, color, environment_id, thread_id, thread_title, added_at
+            id, group_id, handle, color, kind, environment_id, thread_id, thread_title,
+            external_json, added_at
           ) VALUES (
-            ${id}, ${input.groupId}, ${input.handle}, ${input.color},
-            ${input.thread.environmentId}, ${input.thread.threadId}, ${input.thread.title}, ${at}
+            ${id}, ${input.groupId}, ${input.handle}, ${input.color}, ${input.source._tag},
+            ${thread?.environmentId ?? null}, ${thread?.threadId ?? null}, ${thread?.title ?? null},
+            ${external}, ${at}
           )
         `;
         const member = yield* stored("member", reads.member(id));
@@ -789,13 +901,15 @@ const makeWrites = (
         const at = yield* now;
         const wait = next.wait === null ? null : encodeWait(next.wait);
         const roster = next.roster === null ? null : encodeRoster(next.roster);
+        const external = next.external === null ? null : encodeExternalDelivery(next.external);
         yield* sql`
           UPDATE deliveries SET
             state = ${next.state}, dispatch = ${next.dispatch}, attempt = ${next.attempt},
             envelope = ${next.envelope}, from_seq = ${next.fromSeq}, run_id = ${next.runId},
             message_id = ${next.messageId}, sent_text = ${next.sentText}, wait_json = ${wait},
             withdrawn = ${next.withdrawn}, reply_message_id = ${next.replyMessageId},
-            error = ${next.error}, roster_json = ${roster}, updated_at = ${at}
+            error = ${next.error}, roster_json = ${roster}, external_json = ${external},
+            updated_at = ${at}
           WHERE id = ${id}
         `;
         const delivery = yield* stored("delivery", reads.delivery(id));

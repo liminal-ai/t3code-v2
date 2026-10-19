@@ -26,7 +26,8 @@ const setup = (threads: ReadonlyArray<ThreadId>) =>
     });
     const group = created._tag === "group" ? created.group : assert.fail("group");
     const members = yield* app.store.members(group.id, true);
-    const member = (threadId: ThreadId) => members.find((m) => m.thread.threadId === threadId)!;
+    const member = (threadId: ThreadId) =>
+      members.find((m) => m.kind._tag === "t3" && m.kind.thread.threadId === threadId)!;
     return { fake, app, group, member };
   });
 

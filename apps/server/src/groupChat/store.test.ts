@@ -70,6 +70,7 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
           "3_lanes",
           "4_cancels",
           "5_cancel_in_flight",
+          "6_external_members",
         ],
       );
     }).pipe(Effect.scoped),
@@ -85,10 +86,13 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
             groupId: group.id,
             handle: "alpha",
             color: 0,
-            thread: {
-              environmentId: EnvironmentId.make("env"),
-              threadId: ThreadId.make("alpha"),
-              title: "Alpha",
+            source: {
+              _tag: "t3",
+              thread: {
+                environmentId: EnvironmentId.make("env"),
+                threadId: ThreadId.make("alpha"),
+                title: "Alpha",
+              },
             },
           }),
         ),
@@ -139,7 +143,7 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
           ["older", null],
         ],
       );
-      assert.strictEqual((yield* recordedMigrations(file)).length, 5);
+      assert.strictEqual((yield* recordedMigrations(file)).length, 6);
     }).pipe(Effect.scoped),
   );
 

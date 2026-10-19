@@ -43,6 +43,41 @@ export const GroupChatMemberThread = Schema.Struct({
 });
 export type GroupChatMemberThread = typeof GroupChatMemberThread.Type;
 
+export const GroupChatExternalKind = Schema.Literals(["rest", "webhook"]);
+export type GroupChatExternalKind = typeof GroupChatExternalKind.Type;
+
+/**
+ * What the operator configures for a REST or webhook member. `headers` and `secret` are secrets
+ * and never come back out; the member shows their names and whether a secret is set. An empty
+ * `callbackOrigin` means the server's own address.
+ */
+export const GroupChatExternalConfig = Schema.Struct({
+  url: Schema.String,
+  headers: Schema.Record(Schema.String, Schema.String),
+  bodyTemplate: Schema.String,
+  replyPath: Schema.String,
+  secret: Schema.String,
+  callbackOrigin: Schema.String,
+});
+export type GroupChatExternalConfig = typeof GroupChatExternalConfig.Type;
+
+const externalMemberFields = {
+  url: Schema.String,
+  bodyTemplate: Schema.String,
+  replyPath: Schema.String,
+  headerNames: Schema.Array(Schema.String),
+  hasSecret: Schema.Boolean,
+  callbackOrigin: Schema.String,
+};
+
+/** A T3 thread, or an external agent reached over HTTP: synchronous REST, or a webhook that calls back. */
+export const GroupChatMemberKind = Schema.Union([
+  Schema.TaggedStruct("t3", { thread: GroupChatMemberThread }),
+  Schema.TaggedStruct("rest", externalMemberFields),
+  Schema.TaggedStruct("webhook", externalMemberFields),
+]);
+export type GroupChatMemberKind = typeof GroupChatMemberKind.Type;
+
 /** A member keeps its identity, seen mark and handle history while removed, so a re-add restores them. */
 export const GroupChatMember = Schema.Struct({
   id: GroupChatMemberId,
@@ -50,7 +85,7 @@ export const GroupChatMember = Schema.Struct({
   handle: TrimmedNonEmptyString,
   handleHistory: Schema.Array(Schema.String),
   color: NonNegativeInt,
-  thread: GroupChatMemberThread,
+  kind: GroupChatMemberKind,
   seenSeq: NonNegativeInt,
   introduced: Schema.Boolean,
   toldRoster: Schema.NullOr(Schema.Record(Schema.String, Schema.String)),
@@ -69,6 +104,8 @@ export type GroupChatAuthor = typeof GroupChatAuthor.Type;
 export const GroupChatMessageKind = Schema.Literals([
   "chat",
   "reply",
+  /** An external member posted into the group on its own, through its inbound URL. */
+  "inbound",
   "discussion_prompt",
   "discussion_reply",
   "system",
@@ -134,6 +171,8 @@ const waitsWithoutQuestion = [
   Schema.TaggedStruct("queue_held", { note: Schema.String }),
   Schema.TaggedStruct("waiting_on_approval", {}),
   Schema.TaggedStruct("stopped_in_t3", {}),
+  /** An external endpoint failed in a way worth another try; the delivery's `error` says how. */
+  Schema.TaggedStruct("retrying", { nextAttemptAt: IsoDateTime }),
 ] as const;
 
 /** Why a delivery has not run yet. Each one points at the member's thread. */
@@ -310,6 +349,15 @@ export const GroupChatCommand = Schema.Union([
   Schema.TaggedStruct("group.unsettle", { groupId: GroupChatGroupId }),
   Schema.TaggedStruct("group.delete", { groupId: GroupChatGroupId }),
   Schema.TaggedStruct("member.add", { groupId: GroupChatGroupId, threadId: ThreadId }),
+  /** An empty `handle` derives one from the kind. */
+  Schema.TaggedStruct("member.addExternal", {
+    groupId: GroupChatGroupId,
+    handle: Schema.String,
+    kind: GroupChatExternalKind,
+    config: GroupChatExternalConfig,
+  }),
+  /** Reads an external member's inbound URL. It carries a secret, so it never rides on the member. */
+  Schema.TaggedStruct("member.inboundUrl", { memberId: GroupChatMemberId }),
   Schema.TaggedStruct("member.remove", { memberId: GroupChatMemberId }),
   Schema.TaggedStruct("member.rename", { memberId: GroupChatMemberId, handle: Schema.String }),
   Schema.TaggedStruct("member.thread.settle", { memberId: GroupChatMemberId }),
@@ -345,9 +393,26 @@ export const GroupChatDispatchResult = Schema.Union([
   Schema.TaggedStruct("message", { message: GroupChatMessage }),
   Schema.TaggedStruct("delivery", { delivery: GroupChatDelivery }),
   Schema.TaggedStruct("discussion", { discussion: GroupChatDiscussion }),
+  Schema.TaggedStruct("url", { url: Schema.String }),
   Schema.TaggedStruct("done", {}),
 ]);
 export type GroupChatDispatchResult = typeof GroupChatDispatchResult.Type;
+
+/**
+ * The hook endpoints external agents post to. The token rides in the query string, because the
+ * server's request log and trace record a URL's path and never its query. An agent whose member
+ * has a secret signs the raw body with `X-Signature: sha256=<hex HMAC-SHA256>`.
+ */
+export const GROUP_CHAT_HOOK_REPLY_PATH = "/api/group-chat/hooks/reply/:deliveryId";
+export const GROUP_CHAT_HOOK_INBOUND_PATH = "/api/group-chat/hooks/inbound/:memberId";
+export const GROUP_CHAT_HOOK_SIGNATURE_HEADER = "x-signature";
+
+export const GroupChatHookReplyParams = Schema.Struct({ deliveryId: GroupChatDeliveryId });
+export const GroupChatHookInboundParams = Schema.Struct({ memberId: GroupChatMemberId });
+export const GroupChatHookQuery = Schema.Struct({ token: TrimmedNonEmptyString });
+export type GroupChatHookQuery = typeof GroupChatHookQuery.Type;
+export const GroupChatHookReplyAccepted = Schema.Struct({ ok: Schema.Literal(true) });
+export const GroupChatHookInboundAccepted = Schema.Struct({ messageId: GroupChatMessageId });
 
 /**
  * One changed row per event, without bodies: a message's text, a delivery's envelope and a
