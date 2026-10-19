@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import { FetchHttpClient } from "effect/http";
 import { AsyncResult } from "effect/reactivity";
 
+import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
@@ -24,13 +25,16 @@ export type GroupChatSnapshotState =
 
 const SNAPSHOT_TIMEOUT_MS = 15_000;
 
+const notServedByT3 = {
+  status: "failed",
+  message: "Group chat works only on the T3 server that serves this page.",
+} as const satisfies GroupChatSnapshotState;
+
 const fetchSnapshot = (prepared: PreparedConnection) =>
   Effect.gen(function* () {
     const client = yield* makeEnvironmentHttpApiGroupClient(prepared.httpBaseUrl, "groupChat");
     const authorization = prepared.httpAuthorization;
-    if (authorization?._tag === "Dpop") {
-      return { status: "failed", message: "Group chat is only available on this server." } as const;
-    }
+    if (authorization?._tag === "Dpop") return notServedByT3;
     const request = client
       .snapshot({
         headers: authorization === null ? {} : { authorization: `Bearer ${authorization.token}` },
@@ -55,7 +59,11 @@ const fetchSnapshot = (prepared: PreparedConnection) =>
 
 const groupChatSnapshotAtom = connectionAtomRuntime.atom((get) => {
   const environmentId = get(primaryEnvironmentIdAtom);
-  if (environmentId === null) return Effect.never;
+  if (environmentId === null) {
+    return get(environmentCatalog.catalogValueAtom).isReady
+      ? Effect.succeed(notServedByT3)
+      : Effect.never;
+  }
   const prepared = Option.getOrNull(
     get(environmentSession.preparedConnectionValueAtom(environmentId)),
   );
