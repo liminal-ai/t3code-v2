@@ -613,69 +613,80 @@ it.effect("awaits the continuation of a second restart that cut the first contin
   ),
 );
 
-it.effect("awaits a wake continuation whose source the restart did not cancel", () =>
-  withHarness("wake", ({ cwd, started }) =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("thread:wake");
-      const { active, queued } = yield* busyThread({ threadId, cwd });
-      const sink = yield* EventSink.EventSinkV2;
-      const now = yield* DateTime.now;
-      const projection = yield* Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
-        orchestrator.getThreadProjection(threadId),
-      );
-      const turn = projection.providerTurns[0]!;
-      // A native subagent the turn awaits, still running when the turn itself settles.
-      yield* sink.write({
-        events: [
-          {
-            id: EventId.make(`event:${threadId}:subagent`),
-            type: "turn-item.updated",
-            threadId,
-            runId: active.id,
-            occurredAt: now,
-            payload: {
-              id: TurnItemId.make(`turn-item:${threadId}:subagent`),
-              threadId,
-              runId: active.id,
-              nodeId: active.rootNodeId,
-              providerThreadId: turn.providerThreadId,
-              providerTurnId: turn.id,
-              nativeItemRef: { driver, nativeId: "agent-1", strength: "strong" },
-              parentItemId: null,
-              ordinal: 100,
-              status: "running",
-              title: "Sleeper",
-              startedAt: now,
-              completedAt: null,
-              updatedAt: now,
-              type: "subagent",
-              subagentId: NodeId.make(`node:${threadId}:subagent`),
-              origin: "provider_native",
-              driver,
-              providerInstanceId: instanceId,
-              childThreadId: null,
-              prompt: "Sleep",
-              result: null,
-            },
-          },
-        ],
-      });
-      const settled = yield* runStatus(active.id, "waiting");
-      yield* finishTurn(started.find((entry) => entry.turn.runId === active.id)!);
-      yield* Fiber.join(settled);
-      yield* restartOneSecondLater;
-      const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
-      const scanning = yield* scan.pipe(Effect.forkScoped);
-      yield* drain;
-      yield* Fiber.join(scanning);
-      const runs = yield* runsOf(threadId);
-      assert.equal(runs.find((run) => run.id === active.id)?.status, "completed");
-      assert.equal(continuationOf(runs, active.id)?.status, "running");
-      const resumed = runs.find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
-    }),
-  ),
+it.effect.each(["while its effect is pending", "after its effect settled"] as const)(
+  "resumes behind a wake continuation whose source the restart did not cancel, %s",
+  (timing) =>
+    withHarness(
+      `wake-${timing === "while its effect is pending" ? "pending" : "settled"}`,
+      ({ cwd, started }) =>
+        Effect.gen(function* () {
+          const threadId = ThreadId.make(
+            `thread:wake-${timing === "while its effect is pending" ? "pending" : "settled"}`,
+          );
+          const { active, queued } = yield* busyThread({ threadId, cwd });
+          const sink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          const projection = yield* Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
+            orchestrator.getThreadProjection(threadId),
+          );
+          const turn = projection.providerTurns[0]!;
+          // A native subagent the turn awaits, still running when the turn itself settles.
+          yield* sink.write({
+            events: [
+              {
+                id: EventId.make(`event:${threadId}:subagent`),
+                type: "turn-item.updated",
+                threadId,
+                runId: active.id,
+                occurredAt: now,
+                payload: {
+                  id: TurnItemId.make(`turn-item:${threadId}:subagent`),
+                  threadId,
+                  runId: active.id,
+                  nodeId: active.rootNodeId,
+                  providerThreadId: turn.providerThreadId,
+                  providerTurnId: turn.id,
+                  nativeItemRef: { driver, nativeId: "agent-1", strength: "strong" },
+                  parentItemId: null,
+                  ordinal: 100,
+                  status: "running",
+                  title: "Sleeper",
+                  startedAt: now,
+                  completedAt: null,
+                  updatedAt: now,
+                  type: "subagent",
+                  subagentId: NodeId.make(`node:${threadId}:subagent`),
+                  origin: "provider_native",
+                  driver,
+                  providerInstanceId: instanceId,
+                  childThreadId: null,
+                  prompt: "Sleep",
+                  result: null,
+                },
+              },
+            ],
+          });
+          const settled = yield* runStatus(active.id, "waiting");
+          yield* finishTurn(started.find((entry) => entry.turn.runId === active.id)!);
+          yield* Fiber.join(settled);
+          yield* restartOneSecondLater;
+          const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
+          assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+          if (timing === "while its effect is pending") {
+            const scanning = yield* scan.pipe(Effect.forkScoped);
+            yield* drain;
+            yield* Fiber.join(scanning);
+          } else {
+            yield* drain;
+            yield* scan;
+          }
+          const runs = yield* runsOf(threadId);
+          assert.equal(runs.find((run) => run.id === active.id)?.status, "completed");
+          assert.equal(continuationOf(runs, active.id)?.status, "running");
+          const resumed = runs.find((run) => run.id === queued[0]!.id);
+          assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+        }),
+    ),
 );
 
 it.effect("awaits a continuation still pending from an earlier restart", () =>

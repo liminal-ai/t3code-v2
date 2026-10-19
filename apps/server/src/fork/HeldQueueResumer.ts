@@ -50,8 +50,12 @@ type HoldSource =
 /** The thread's latest reconcile pass that cancelled a run or noted cancelled work on one. */
 interface ReconcilePass {
   readonly commandId: CommandId;
-  /** The newest run it cancelled, which is the run a shutdown prepare wrote the continuation for. */
-  readonly cutRunId: RunId | undefined;
+  /**
+   * The newest run it cancelled or noted. Core continues the newest started run, so this is the
+   * run a shutdown prepare wrote the continuation for, cut if it was running and noted if it was
+   * waiting on work the shutdown cancelled.
+   */
+  readonly sourceRunId: RunId;
 }
 
 interface RestartHeld {
@@ -116,21 +120,18 @@ const classifyHeldThread = (
       run.status === "queued" && run.hold !== null ? [run.hold] : [],
     );
   const createdOrder = new Map<RunId, number>();
-  let latestPass: { commandId: CommandId; cutRunId: RunId | undefined } | undefined;
-  const touchedBy = (row: RunEventRow, cut: boolean) => {
+  let latestPass: { commandId: CommandId; sourceRunId: RunId } | undefined;
+  const touchedBy = (row: RunEventRow) => {
     if (row.command_id === null || !row.command_id.startsWith(RECONCILE_COMMAND_PREFIX)) return;
-    if (latestPass?.commandId !== row.command_id)
-      latestPass = { commandId: CommandId.make(row.command_id), cutRunId: undefined };
     if (
-      cut &&
-      (latestPass.cutRunId === undefined ||
-        (createdOrder.get(row.run_id) ?? -1) > (createdOrder.get(latestPass.cutRunId) ?? -1))
+      latestPass?.commandId !== row.command_id ||
+      (createdOrder.get(row.run_id) ?? -1) > (createdOrder.get(latestPass.sourceRunId) ?? -1)
     )
-      latestPass.cutRunId = row.run_id;
+      latestPass = { commandId: CommandId.make(row.command_id), sourceRunId: row.run_id };
   };
   for (const row of rows) {
     if (row.event_type === "run.background-work-cancelled") {
-      touchedBy(row, false);
+      touchedBy(row);
       continue;
     }
     const status = row.status ?? "queued";
@@ -143,7 +144,7 @@ const classifyHeldThread = (
     const prior = runs.get(row.run_id);
     const hold = !held ? null : prior?.hold != null ? prior.hold : holdFromRow(row);
     runs.set(row.run_id, { status, hold });
-    if (status === "cancelled" && prior?.status !== "cancelled") touchedBy(row, true);
+    if (status === "cancelled" && prior?.status !== "cancelled") touchedBy(row);
   }
   const hold = strictestHold(heldQueuedRuns());
   if (hold === undefined) return { kind: "unknown", threadId };
@@ -256,17 +257,15 @@ const make = Effect.gen(function* () {
     );
 
   // A startup pass writes its continuation under its own command id. A clean shutdown writes it
-  // just before, under `command:restart-prepare:<runId>`, for the run the shutdown pass then cuts.
-  // Any other continuation on the thread is an older restart's.
-  const continuationWrittenBy = (threadId: ThreadId, pass: ReconcilePass) => {
-    const prepareCommandId =
-      pass.cutRunId === undefined ? pass.commandId : `command:restart-prepare:${pass.cutRunId}`;
-    return sql<{ readonly effect_id: string; readonly source_run_id: RunId }>`
+  // just before, under `command:restart-prepare:<runId>`, for the run the shutdown pass then cuts
+  // or notes. Any other continuation on the thread is an older restart's.
+  const continuationWrittenBy = (threadId: ThreadId, pass: ReconcilePass) =>
+    sql<{ readonly effect_id: string; readonly source_run_id: RunId }>`
       SELECT effect_id, json_extract(payload_json, '$.sourceRunId') AS source_run_id
       FROM orchestration_v2_effect_outbox
       WHERE thread_id = ${threadId}
         AND effect_type = 'provider-runtime.continue'
-        AND command_id IN (${pass.commandId}, ${prepareCommandId})
+        AND command_id IN (${pass.commandId}, ${`command:restart-prepare:${pass.sourceRunId}`})
       ORDER BY created_at DESC, rowid DESC
       LIMIT 1
     `.pipe(
@@ -276,7 +275,6 @@ const make = Effect.gen(function* () {
           : { effectId: rows[0].effect_id, sourceRunId: rows[0].source_run_id },
       ),
     );
-  };
 
   const parkedForUser = (shell: OrchestrationV2ThreadShell, now: DateTime.Utc) =>
     shell.archivedAt !== null ||
