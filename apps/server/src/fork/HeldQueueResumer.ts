@@ -222,7 +222,7 @@ const classifyHeldThread = (threadId: ThreadId, history: HoldHistory): HeldThrea
 };
 
 /** The hold class of one thread whose queued runs `heldRunIds` are held now. */
-export const classifyHeld = (threadId: ThreadId, heldRunIds: ReadonlyArray<RunId>) =>
+const classifyHeld = (threadId: ThreadId, heldRunIds: ReadonlyArray<RunId>) =>
   readHoldHistory(threadId, heldRunIds).pipe(
     Effect.map((history) => classifyHeldThread(threadId, history)),
   );
