@@ -365,14 +365,21 @@ export const makeEngine = (store: GroupChatStore) =>
 
     const send = (d: DeliveryRow): Effect.Effect<void, StoreError | PortReadError> =>
       Effect.gen(function* () {
-        const claimed = yield* claim(d.id);
-        if (claimed === null) return;
-        const threadId = claimed.member.thread.threadId;
+        const member = yield* store.member(d.memberId);
+        if (member === null) {
+          yield* fail(d.id, "member or group no longer exists");
+          return;
+        }
+        const threadId = member.thread.threadId;
         const projectId = yield* projectIdOf(threadId);
         if (projectId === null) {
           yield* fail(d.id, "the member's thread no longer exists", "rejected");
           return;
         }
+        // The claim is the last check before the dispatch, so a Stop during the thread read above
+        // still cancels the envelope before anything leaves.
+        const claimed = yield* claim(d.id);
+        if (claimed === null) return;
         const sent = yield* port
           .send({
             threadId,
@@ -405,11 +412,13 @@ export const makeEngine = (store: GroupChatStore) =>
           );
           return;
         }
+        // Recorded as queued even when T3 started it at once; the first follow step promotes it
+        // and moves the member's seen mark in the same transaction.
         yield* store.transaction((tx) =>
           tx.updateDelivery(d.id, {
             dispatch: "accepted",
             runId: sent.success.runId,
-            state: sent.success.delivery === "queued" ? "queued" : "running",
+            state: "queued",
             error: null,
           }),
         );
@@ -531,6 +540,11 @@ export const makeEngine = (store: GroupChatStore) =>
       });
 
     const follow = (d: DeliveryRow): Effect.Effect<void, StoreError | PortReadError> =>
+      Effect.scoped(followScoped(d));
+
+    const followScoped = (
+      d: DeliveryRow,
+    ): Effect.Effect<void, StoreError | PortReadError, Scope.Scope> =>
       Effect.gen(function* () {
         const member = yield* store.member(d.memberId);
         if (member === null || d.runId === null) {

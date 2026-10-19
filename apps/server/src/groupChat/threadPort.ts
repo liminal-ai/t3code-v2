@@ -20,6 +20,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
@@ -165,7 +166,7 @@ export class GroupChatThreadPort extends Context.Service<
     /** One signal per run or request change on the thread, from the moment this effect runs. */
     readonly changes: (
       threadId: ThreadId,
-    ) => Effect.Effect<Stream.Stream<void, PortReadError>, PortReadError>;
+    ) => Effect.Effect<Stream.Stream<void, PortReadError>, PortReadError, Scope.Scope>;
     readonly cancelQueued: (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;

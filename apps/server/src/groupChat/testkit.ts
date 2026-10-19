@@ -15,12 +15,22 @@ import {
   RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import type * as NodeServices from "@effect/platform-node/NodeServices";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
+import * as Scope from "effect/Scope";
+import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 
+import * as ServerConfig from "../config.ts";
+import type { GroupChatEngine } from "./engine.ts";
+import * as GroupChatLayer from "./layer.ts";
+import type { GroupChatStore, StoreError } from "./store.ts";
 import {
   GroupChatThreadPort,
   type PortBlocking,
@@ -64,6 +74,10 @@ export interface FakeThread {
   settleRefusal: string | null;
   pending: GroupChatPendingInput | null;
   held: boolean;
+  /** When set, a send waits here after T3 would have received it and before it answers. */
+  sendGate: Deferred.Deferred<void> | null;
+  /** When set, the thread read a send makes first waits here. */
+  readGate: Deferred.Deferred<void> | null;
   readonly faults: SendFault[];
   readonly runs: FakeRun[];
   readonly changes: PubSub.PubSub<void>;
@@ -147,6 +161,8 @@ export const makeFakeThreads = Effect.sync(() => {
         settleRefusal: null,
         pending: null,
         held: false,
+        sendGate: null,
+        readGate: null,
         faults: [],
         runs: [],
         changes,
@@ -252,11 +268,13 @@ export const makeFakeThreads = Effect.sync(() => {
   const port: GroupChatThreadPort["Service"] = {
     environmentId: Effect.succeed(FAKE_ENVIRONMENT_ID),
     thread: (threadId) =>
-      Effect.map(thread(threadId), (t) =>
-        t.deleted
+      Effect.gen(function* () {
+        const t = yield* thread(threadId);
+        if (t.readGate !== null) yield* Deferred.await(t.readGate);
+        return t.deleted
           ? null
-          : { projectId: t.projectId, title: t.title, archived: t.archived, subagent: false },
-      ),
+          : { projectId: t.projectId, title: t.title, archived: t.archived, subagent: false };
+      }),
     send: (input) =>
       Effect.gen(function* () {
         const t = yield* thread(input.threadId);
@@ -275,6 +293,7 @@ export const makeFakeThreads = Effect.sync(() => {
           return yield* new PortUnknown({ threadId: t.id, cause: "lost" });
         }
         const run = yield* commit(t, input.commandId, input.messageId, input.text);
+        if (t.sendGate !== null) yield* Deferred.await(t.sendGate);
         if (fault?.type === "commit-silently") {
           return yield* new PortUnknown({ threadId: t.id, cause: "response lost" });
         }
@@ -327,7 +346,10 @@ export const makeFakeThreads = Effect.sync(() => {
         return { kind, runId: active.id, pending: t.pending };
       }),
     pendingRequest: (threadId) => Effect.map(thread(threadId), (t) => t.pending),
-    changes: (threadId) => Effect.map(thread(threadId), (t) => Stream.fromPubSub(t.changes)),
+    changes: (threadId) =>
+      Effect.flatMap(thread(threadId), (t) =>
+        Effect.map(PubSub.subscribe(t.changes), Stream.fromSubscription),
+      ),
     cancelQueued: (input) =>
       Effect.gen(function* () {
         const t = yield* thread(input.threadId);
@@ -479,3 +501,56 @@ export const neverPort: GroupChatThreadPort["Service"] = {
 export const layerNeverPort = Layer.succeed(GroupChatThreadPort, neverPort);
 
 export const layerFakePort = (fake: FakeThreads) => Layer.succeed(GroupChatThreadPort, fake.port);
+
+export interface App {
+  readonly engine: GroupChatEngine["Service"];
+  readonly store: GroupChatStore;
+  /** The server dying: every lane stops where it is, and the store closes. */
+  readonly shutdown: Effect.Effect<void>;
+  /** Re-reads after each store change until the predicate holds. Never sleeps or polls. */
+  readonly until: <A>(
+    read: Effect.Effect<A, StoreError>,
+    predicate: (value: A) => boolean,
+  ) => Effect.Effect<A, StoreError>;
+  readonly dispatch: GroupChatEngine["Service"]["dispatch"];
+}
+
+/** One module boot on a base directory. Booting again on the same directory is a restart. */
+export const boot = (
+  fake: FakeThreads,
+  baseDir: string,
+): Effect.Effect<App, never, Scope.Scope | NodeServices.NodeServices> =>
+  Effect.gen(function* () {
+    const layer = GroupChatLayer.layer.pipe(
+      Layer.provide(layerFakePort(fake)),
+      Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
+      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+    );
+    const scope = yield* Scope.make();
+    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+    const context = yield* Layer.buildWithScope(layer, scope).pipe(Effect.orDie);
+    const groupChat = Context.get(context, GroupChatLayer.GroupChat);
+    const engine = yield* groupChat.engine.pipe(Effect.orDie);
+    const store = yield* groupChat.store.pipe(Effect.orDie);
+    const subscription = yield* PubSub.subscribe(store.changes);
+    yield* engine.start;
+    const until: App["until"] = (read, predicate) =>
+      Effect.gen(function* () {
+        for (;;) {
+          const value = yield* read;
+          if (predicate(value)) return value;
+          yield* PubSub.take(subscription);
+        }
+      });
+    return {
+      engine,
+      store,
+      until,
+      dispatch: engine.dispatch,
+      shutdown: Scope.close(scope, Exit.void),
+    };
+  });
+
+export const tempBaseDir = Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
+  fileSystem.makeTempDirectoryScoped({ prefix: "t3-group-chat-" }),
+);
