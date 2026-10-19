@@ -138,6 +138,9 @@ const isNotFound = (cause: unknown) =>
 const REQUEST_TIMEOUT_MS = 30_000;
 
 const describeFailure = (cause: unknown): string => {
+  if (cause instanceof RemoteEnvironmentAuthFetchError && cause.cause !== undefined) {
+    return describeFailure(cause.cause);
+  }
   if (typeof cause === "object" && cause !== null && "_tag" in cause) {
     const tagged = cause as { readonly _tag: string; readonly message?: unknown };
     switch (tagged._tag) {

@@ -107,7 +107,6 @@ export class GroupChatEngine extends Context.Service<
   }
 >()("t3/groupChat/engine/GroupChatEngine") {}
 
-/** The attempt budget and the waits for REST and webhook members. Tests shorten them. */
 export interface ExternalDeliverySettings {
   /** Requests per operator attempt before the delivery fails with Retry. */
   readonly maxAttempts: number;
@@ -115,6 +114,10 @@ export interface ExternalDeliverySettings {
   readonly backoffBase: Duration.Input;
   /** How long a webhook member may take to call back before its delivery fails. */
   readonly callbackTimeout: Duration.Input;
+  /** How long a REST member may take to answer, body included. */
+  readonly restTimeout: Duration.Input;
+  /** How long a webhook member may take to acknowledge the envelope. */
+  readonly webhookPostTimeout: Duration.Input;
 }
 
 export class ExternalDeliveryConfig extends Context.Reference<ExternalDeliverySettings>(
@@ -124,6 +127,8 @@ export class ExternalDeliveryConfig extends Context.Reference<ExternalDeliverySe
       maxAttempts: 5,
       backoffBase: "1 second",
       callbackTimeout: "90 seconds",
+      restTimeout: "120 seconds",
+      webhookPostTimeout: "30 seconds",
     }),
   },
 ) {}
@@ -135,14 +140,13 @@ const backoffMs = (tries: number, baseMs: number) =>
 const DEFAULT_BODY_TEMPLATE = '{"text": "{{envelope}}"}';
 const DEFAULT_REPLY_PATH = "reply";
 const EXTERNAL_START: ExternalDelivery = {
-  sends: 0,
-  tries: 0,
+  lifetimeRequests: 0,
+  requestsSinceRetry: 0,
   nextAttemptAt: null,
   callbackToken: null,
   acceptedAt: null,
 };
 
-/** A T3 thread's envelopes go out one at a time whatever group they come from; an external member is its own lane. */
 type Lane =
   | { readonly _tag: "thread"; readonly threadId: ThreadId }
   | { readonly _tag: "member"; readonly memberId: GroupChatMemberId };
@@ -304,8 +308,7 @@ export const makeEngine = (store: GroupChatStore) =>
         ? reads.deliveriesOfThread(lane.threadId)
         : reads.deliveriesOfMember(lane.memberId);
 
-    /** Returns once the lane is kicked or the wait is over, so a sleeping lane still sees a Stop or a Retry. */
-    const napUntil = (l: LaneState, untilMs: number): Effect.Effect<void> =>
+    const waitForKickOrDeadline = (l: LaneState, untilMs: number): Effect.Effect<void> =>
       Effect.flatMap(Clock.currentTimeMillis, (now) =>
         untilMs <= now
           ? Effect.void
@@ -374,7 +377,7 @@ export const makeEngine = (store: GroupChatStore) =>
           case "send":
             return sendExternal(l, work.delivery);
           case "resolve":
-            return resolveExternal(work.delivery);
+            return recoverInterruptedExternal(work.delivery);
           case "follow":
             return followExternal(l, work.delivery);
         }
@@ -404,7 +407,6 @@ export const makeEngine = (store: GroupChatStore) =>
         }
       });
 
-    /** Only a thread lane pauses, because only a T3 Stop pauses one. */
     const releaseLane = (lane: Lane): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         if (lane._tag !== "thread") return;
@@ -479,11 +481,6 @@ export const makeEngine = (store: GroupChatStore) =>
         return { envelope, fromSeq: member.seenSeq + 1, roster, group };
       });
 
-    /**
-     * Takes an unsent envelope for the request that is about to leave. A T3 envelope gets its
-     * derived ids. An external one counts the request now, so a crash mid-request still spends
-     * one try, and a REST member reads as responding for the length of the call.
-     */
     const claim = (deliveryId: GroupChatDeliveryId) =>
       store.transaction((tx) =>
         Effect.gen(function* () {
@@ -536,8 +533,8 @@ export const makeEngine = (store: GroupChatStore) =>
           const previous = d.external ?? EXTERNAL_START;
           const external: ExternalDelivery = {
             ...previous,
-            sends: previous.sends + 1,
-            tries: previous.tries + 1,
+            lifetimeRequests: previous.lifetimeRequests + 1,
+            requestsSinceRetry: previous.requestsSinceRetry + 1,
             nextAttemptAt: null,
             callbackToken:
               member!.kind._tag === "webhook" && previous.callbackToken === null
@@ -561,17 +558,7 @@ export const makeEngine = (store: GroupChatStore) =>
           yield* fail(d.id, "member or group no longer exists");
           return;
         }
-        const at = d.external?.nextAttemptAt ?? null;
-        if (at !== null) {
-          // The lane sleeps through the backoff and lets the loop look again, so Stop, removal
-          // and Retry during the wait all take effect before the next request leaves.
-          const now = yield* Clock.currentTimeMillis;
-          const until = Date.parse(at);
-          if (until > now) {
-            yield* napUntil(l, until);
-            return;
-          }
-        }
+        if (yield* sleptThroughBackoff(l, d)) return;
         const claimed = yield* claim(d.id);
         if (claimed === null) return;
         const external = member.external;
@@ -582,7 +569,11 @@ export const makeEngine = (store: GroupChatStore) =>
           groupTitle: claimed.group.title,
           deliveryId: d.id,
           envelope: claimed.envelope,
-          attempt: bookkeeping.sends,
+          attempt: bookkeeping.lifetimeRequests,
+          timeout:
+            member.kind._tag === "rest"
+              ? externalConfig.restTimeout
+              : externalConfig.webhookPostTimeout,
           callbackUrl:
             member.kind._tag === "webhook" && bookkeeping.callbackToken !== null
               ? replyUrl(origin, d.id, bookkeeping.callbackToken)
@@ -602,7 +593,7 @@ export const makeEngine = (store: GroupChatStore) =>
           Effect.result,
         );
         if (Result.isFailure(sent)) {
-          yield* externalFailed(d.id, sent.failure);
+          yield* retryOrFailExternal(d.id, sent.failure);
           return;
         }
         const acceptedAt = DateTime.formatIso(yield* DateTime.now);
@@ -617,7 +608,6 @@ export const makeEngine = (store: GroupChatStore) =>
               wait: null,
               external: { ...(current.external ?? EXTERNAL_START), acceptedAt },
             });
-            // The agent has the envelope, so the mark moves: its next envelope starts after this one.
             yield* tx.updateMember(current.memberId, {
               seenSeq: current.toSeq,
               introduced: true,
@@ -630,10 +620,21 @@ export const makeEngine = (store: GroupChatStore) =>
       });
 
     /**
-     * A refusal fails the delivery until Retry. Anything else is tried again with the same
-     * Idempotency-Key after a growing wait, up to the attempt budget.
+     * True when the delivery's next try lies ahead: the lane slept until then or until it was
+     * kicked, and the loop looks at the delivery again, so Stop, removal and Retry during the
+     * wait take effect before the next request leaves.
      */
-    const externalFailed = (
+    const sleptThroughBackoff = (l: LaneState, d: DeliveryRow): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        const at = d.external?.nextAttemptAt ?? null;
+        if (at === null) return false;
+        const until = Date.parse(at);
+        if (until <= (yield* Clock.currentTimeMillis)) return false;
+        yield* waitForKickOrDeadline(l, until);
+        return true;
+      });
+
+    const retryOrFailExternal = (
       deliveryId: GroupChatDeliveryId,
       failure: SendFailure,
     ): Effect.Effect<void, StoreError> =>
@@ -645,10 +646,11 @@ export const makeEngine = (store: GroupChatStore) =>
         const current = yield* store.delivery(deliveryId);
         if (current === null || !OPEN.has(current.state)) return;
         const external = current.external ?? EXTERNAL_START;
-        if (external.tries >= externalConfig.maxAttempts) {
+        const tried = external.requestsSinceRetry;
+        if (tried >= externalConfig.maxAttempts) {
           yield* fail(
             deliveryId,
-            `Gave up after ${external.tries} attempt${external.tries === 1 ? "" : "s"}. Last error: ${failure.reason}`,
+            `Gave up after ${tried} attempt${tried === 1 ? "" : "s"}. Last error: ${failure.reason}`,
             { dispatch: "unknown" },
           );
           return;
@@ -656,7 +658,7 @@ export const makeEngine = (store: GroupChatStore) =>
         const now = yield* Clock.currentTimeMillis;
         const nextAttemptAt = DateTime.formatIso(
           DateTime.makeUnsafe(
-            now + backoffMs(external.tries, Duration.toMillis(externalConfig.backoffBase)),
+            now + backoffMs(tried, Duration.toMillis(externalConfig.backoffBase)),
           ),
         );
         yield* store.transaction((tx) =>
@@ -674,14 +676,12 @@ export const makeEngine = (store: GroupChatStore) =>
         );
       });
 
-    /** A request was in flight when the server stopped, so its outcome is unknown; the next try carries the same key. */
-    const resolveExternal = (d: DeliveryRow): Effect.Effect<void, StoreError> =>
-      externalFailed(d.id, {
+    const recoverInterruptedExternal = (d: DeliveryRow): Effect.Effect<void, StoreError> =>
+      retryOrFailExternal(d.id, {
         _tag: "transient",
         reason: "the request's outcome is unknown after a restart",
       });
 
-    /** Waits for a webhook member's callback, and fails the delivery once the callback window closes. */
     const followExternal = (l: LaneState, d: DeliveryRow): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         const acceptedAt = d.external?.acceptedAt ?? null;
@@ -692,7 +692,7 @@ export const makeEngine = (store: GroupChatStore) =>
         const timeout = Duration.toMillis(externalConfig.callbackTimeout);
         const deadline = Date.parse(acceptedAt) + timeout;
         if (deadline > (yield* Clock.currentTimeMillis)) {
-          yield* napUntil(l, deadline);
+          yield* waitForKickOrDeadline(l, deadline);
           return;
         }
         const current = yield* store.delivery(d.id);
@@ -1484,7 +1484,23 @@ export const makeEngine = (store: GroupChatStore) =>
       });
 
     const HTTP_URL = /^https?:\/\/\S+$/i;
-    const ORIGIN = /^https?:\/\/[^/\s]+$/i;
+
+    /** A http(s) origin and nothing more, so a hook path appended to it is still the hook path. */
+    const parseOrigin = (input: string): string | null => {
+      try {
+        const url = new URL(input);
+        const bare =
+          (url.protocol === "http:" || url.protocol === "https:") &&
+          url.pathname === "/" &&
+          url.search === "" &&
+          url.hash === "" &&
+          url.username === "" &&
+          url.password === "";
+        return bare ? url.origin : null;
+      } catch {
+        return null;
+      }
+    };
 
     const addExternalMember = (
       groupId: GroupChatGroupId,
@@ -1497,10 +1513,11 @@ export const makeEngine = (store: GroupChatStore) =>
         if (!HTTP_URL.test(url)) {
           return yield* new GroupChatInvalid({ reason: "a http(s) URL is required" });
         }
-        const callbackOrigin = config.callbackOrigin.trim().replace(/\/+$/, "");
-        if (callbackOrigin !== "" && !ORIGIN.test(callbackOrigin)) {
+        const callbackOrigin =
+          config.callbackOrigin.trim() === "" ? "" : parseOrigin(config.callbackOrigin.trim());
+        if (callbackOrigin === null) {
           return yield* new GroupChatInvalid({
-            reason: "the callback origin must be a http(s) origin with no path",
+            reason: "the callback origin must be a http(s) origin with no path, query or fragment",
           });
         }
         if (config.secret === "" && (yield* reach.exposed)) {
@@ -1730,11 +1747,15 @@ export const makeEngine = (store: GroupChatStore) =>
                   error: null,
                   wait: null,
                   withdrawn: null,
-                  // A fresh try budget under the same Idempotency-Key and callback URL.
                   external:
                     current.external === null
                       ? null
-                      : { ...current.external, tries: 0, nextAttemptAt: null, acceptedAt: null },
+                      : {
+                          ...current.external,
+                          requestsSinceRetry: 0,
+                          nextAttemptAt: null,
+                          acceptedAt: null,
+                        },
                 })
               : current;
           }),

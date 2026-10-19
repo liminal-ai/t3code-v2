@@ -1,4 +1,3 @@
-import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import type { HttpClient } from "effect/http";
 
@@ -13,9 +12,6 @@ import {
 } from "./http.ts";
 import { signedHeaders } from "./webhook.ts";
 
-/** A REST agent answers in the same call, so it may take a while. */
-export const REST_TIMEOUT: Duration.Input = "120 seconds";
-
 /** Posts the envelope and reads the reply out of the response at `replyPath`. */
 export const deliverRest = (
   external: ExternalSecrets,
@@ -26,7 +22,7 @@ export const deliverRest = (
     url: external.url,
     headers: signedHeaders(external, input, body),
     body,
-    timeout: REST_TIMEOUT,
+    timeout: input.timeout,
   }).pipe(
     Effect.flatMap((raw) => {
       const text = extractText(raw, external.replyPath);

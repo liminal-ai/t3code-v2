@@ -60,11 +60,7 @@ const setup = Effect.gen(function* () {
 const inboundPath = (memberId: GroupChatMemberId, token: string) =>
   `/api/hooks/group-chat/inbound/${memberId}?token=${encodeURIComponent(token)}`;
 
-/**
- * The hooks group on a real socket, so the body cap runs through Node's request like production,
- * under the server's own request logger and its untraced-path rule.
- */
-const serve = (app: App, exposed: boolean) =>
+const serveOnNodeSocket = (app: App, exposed: boolean) =>
   Effect.gen(function* () {
     const groupChat = { store: Effect.succeed(app.store), engine: Effect.succeed(app.engine) };
     const services = yield* Layer.build(
@@ -100,13 +96,12 @@ it.live("a body over 1 MB gets 413 before it is buffered", () =>
   Effect.gen(function* () {
     const { app, group, external } = yield* setup;
     const member = yield* external("s3cret");
-    const { port, post } = yield* serve(app, false);
+    const { port, post } = yield* serveOnNodeSocket(app, false);
     const path = inboundPath(member.id, member.token);
 
     const declared = yield* post(path, JSON.stringify({ text: "x".repeat(1_000_001) }));
     assert.strictEqual(declared.status, 413);
 
-    // A chunked body that never ends: a reader that buffered to the end would never answer.
     const status = yield* Effect.callback<number>((resume) => {
       const request = NodeHttp.request(
         {
@@ -146,7 +141,7 @@ it.live("a wrong token is refused and the group gains no message", () =>
   Effect.gen(function* () {
     const { app, group, external } = yield* setup;
     const member = yield* external("s3cret");
-    const { post } = yield* serve(app, false);
+    const { post } = yield* serveOnNodeSocket(app, false);
     const body = JSON.stringify({ text: "hello" });
     const wrong = yield* post(
       inboundPath(member.id, `${member.token}x`),
@@ -171,7 +166,7 @@ it.live("the rate limit answers 429", () =>
   Effect.gen(function* () {
     const { app, group, external } = yield* setup;
     const member = yield* external("s3cret");
-    const { post } = yield* serve(app, false);
+    const { post } = yield* serveOnNodeSocket(app, false);
     const body = JSON.stringify({ text: "burst" });
     const statuses = yield* Effect.forEach(
       Array.from({ length: Hooks.HOOK_RATE_LIMIT.capacity + 1 }),
@@ -192,13 +187,13 @@ it.live("an unsigned post is refused when signatures are required", () =>
     const { app, group, external } = yield* setup;
     const open = yield* external("");
     const body = JSON.stringify({ text: "hello" });
-    const exposed = yield* serve(app, true);
+    const exposed = yield* serveOnNodeSocket(app, true);
     const refused = yield* exposed.post(inboundPath(open.id, open.token), body);
     assert.strictEqual(refused.status, 401);
     assert.deepStrictEqual(JSON.parse(yield* refused.text), { error: "signature_required" });
     assert.strictEqual(yield* messageCount(app, group.id), 0);
 
-    const loopback = yield* serve(app, false);
+    const loopback = yield* serveOnNodeSocket(app, false);
     const accepted = yield* loopback.post(inboundPath(open.id, open.token), body);
     assert.strictEqual(accepted.status, 200);
 
@@ -232,7 +227,7 @@ it.live("a logged path carries no token", () => {
   return Effect.gen(function* () {
     const { app, external } = yield* setup;
     const member = yield* external("s3cret");
-    const { post } = yield* serve(app, false);
+    const { post } = yield* serveOnNodeSocket(app, false);
     const body = JSON.stringify({ text: "hello" });
     const response = yield* post(
       inboundPath(member.id, member.token),
@@ -240,7 +235,6 @@ it.live("a logged path carries no token", () => {
       signed("s3cret", body),
     );
     assert.strictEqual(response.status, 200);
-    // The test's own HTTP client traces its request too; only what the server records counts.
     const recorded = [
       ...logs,
       ...spans.flatMap((span) =>

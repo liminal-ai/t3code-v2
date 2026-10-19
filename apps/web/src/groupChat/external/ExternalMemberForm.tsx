@@ -18,7 +18,7 @@ const DEFAULT_REPLY_PATH = "reply";
 const COPIED_FOR_MS = 1200;
 
 /** `Name: value` per line. A line without a colon is ignored. */
-export function parseHeaderLines(text: string): Record<string, string> {
+function parseHeaderLines(text: string): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const line of text.split(/\r?\n/)) {
     const colon = line.indexOf(":");
@@ -29,8 +29,7 @@ export function parseHeaderLines(text: string): Record<string, string> {
   return headers;
 }
 
-/** The URL with its token hidden, for a screen someone else may see. */
-export const maskToken = (url: string) => url.replace(/([?&]token=)[^&]*/, "$1••••••••");
+const maskToken = (url: string) => url.replace(/([?&]token=)[^&]*/, "$1••••••••");
 
 export const fetchInboundUrl = async (memberId: GroupChatMemberId): Promise<string> => {
   const result = await dispatchGroupChat({ _tag: "member.inboundUrl", memberId });
@@ -38,7 +37,6 @@ export const fetchInboundUrl = async (memberId: GroupChatMemberId): Promise<stri
   return result.url;
 };
 
-/** Shows an inbound URL masked, with Reveal and Copy, so the token is never on screen by accident. */
 export function InboundUrl({ url }: { url: string }) {
   const [revealed, setRevealed] = useState(false);
   const [copied, setCopied] = useState<"idle" | "copied" | "failed">("idle");
@@ -97,7 +95,11 @@ export function ExternalMemberForm({
   const [replyPath, setReplyPath] = useState(DEFAULT_REPLY_PATH);
   const [callbackOrigin, setCallbackOrigin] = useState("");
   const [busy, setBusy] = useState(false);
-  const [added, setAdded] = useState<{ handle: string; inboundUrl: string } | null>(null);
+  const [added, setAdded] = useState<{
+    id: GroupChatMemberId;
+    handle: string;
+    inboundUrl: string | null;
+  } | null>(null);
   const { refusal, run } = useRefusal();
   const ids = {
     handle: useId(),
@@ -109,11 +111,13 @@ export function ExternalMemberForm({
     origin: useId(),
   };
 
+  // The member exists once the first call returns, whatever the URL read does after it, so a
+  // failed read never sends the operator back to a form that would create a second member.
   const submit = async () => {
     if (busy || url.trim() === "") return;
     setBusy(true);
-    const result = await run(async () => {
-      const created = await dispatchGroupChat({
+    const created = await run(async () => {
+      const result = await dispatchGroupChat({
         _tag: "member.addExternal",
         groupId,
         handle: handle.trim(),
@@ -127,14 +131,22 @@ export function ExternalMemberForm({
           callbackOrigin: callbackOrigin.trim(),
         },
       });
-      if (created._tag !== "member") throw new Error("the server did not return the member");
-      return {
-        handle: created.member.handle,
-        inboundUrl: await fetchInboundUrl(created.member.id),
-      };
+      if (result._tag !== "member") throw new Error("the server did not return the member");
+      return result.member;
     });
     setBusy(false);
-    if (result !== undefined) setAdded(result);
+    if (created === undefined) return;
+    setAdded({ id: created.id, handle: created.handle, inboundUrl: null });
+    await loadInboundUrl(created.id);
+  };
+
+  const loadInboundUrl = async (id: GroupChatMemberId) => {
+    setBusy(true);
+    const inboundUrl = await run(() => fetchInboundUrl(id));
+    setBusy(false);
+    if (inboundUrl !== undefined) {
+      setAdded((current) => (current === null ? current : { ...current, inboundUrl }));
+    }
   };
 
   if (added !== null) {
@@ -144,7 +156,22 @@ export function ExternalMemberForm({
           Added <span className="font-medium">@{added.handle}</span>. Give the agent its inbound URL
           if it should post on its own.
         </p>
-        <InboundUrl url={added.inboundUrl} />
+        {added.inboundUrl === null ? (
+          <div className="flex items-center gap-2">
+            <Refusal text={refusal} />
+            <Button
+              size="xs"
+              variant="outline"
+              type="button"
+              disabled={busy}
+              onClick={() => void loadInboundUrl(added.id)}
+            >
+              Load inbound URL
+            </Button>
+          </div>
+        ) : (
+          <InboundUrl url={added.inboundUrl} />
+        )}
         <div className="flex justify-end">
           <Button size="sm" onClick={onClose}>
             Done

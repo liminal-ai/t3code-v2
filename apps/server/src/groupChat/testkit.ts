@@ -549,7 +549,6 @@ const neverPort: GroupChatThreadPort["Service"] = {
   respond: () => Effect.never,
 };
 
-/** A port that never answers, with the rest of what the module needs to build. */
 export const layerNeverPort = Layer.mergeAll(
   Layer.succeed(GroupChatThreadPort, neverPort),
   Reach.layerFixed({ exposed: false, origin: "http://127.0.0.1:1" }),
@@ -571,11 +570,12 @@ export interface App {
 
 export const FAKE_ORIGIN = "http://127.0.0.1:1";
 
-/** Fast enough for a test, long enough to act while a delivery waits to retry. */
 const FAST_EXTERNAL: ExternalDeliverySettings = {
   maxAttempts: 3,
   backoffBase: "10 millis",
   callbackTimeout: "300 millis",
+  restTimeout: "300 millis",
+  webhookPostTimeout: "300 millis",
 };
 
 export const boot = (
@@ -636,9 +636,10 @@ export interface AgentCall {
 export interface AgentAnswer {
   readonly status: number;
   readonly body: string;
+  /** `hang` sends the headers and one byte and never ends; `chunked` sends the body without a content-length. */
+  readonly mode?: "hang" | "chunked";
 }
 
-/** An external agent on loopback that records every request and answers as the test decides. */
 export interface FakeAgent {
   readonly url: string;
   readonly calls: Array<AgentCall>;
@@ -664,6 +665,17 @@ export const fakeAgent = (
           calls.push(call);
           const answered = agent.answer(call);
           response.writeHead(answered.status, { "content-type": "application/json" });
+          if (answered.mode === "hang") {
+            response.write(answered.body.slice(0, 1));
+            return;
+          }
+          if (answered.mode === "chunked") {
+            for (let at = 0; at < answered.body.length; at += 65_536) {
+              response.write(answered.body.slice(at, at + 65_536));
+            }
+            response.end();
+            return;
+          }
           response.end(answered.body);
         });
       });

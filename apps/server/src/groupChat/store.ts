@@ -220,7 +220,6 @@ const runMigrations = Migrator.make({});
 const Roster = Schema.Record(Schema.String, Schema.String);
 const SignedOff = Schema.Record(Schema.String, Schema.Int);
 
-/** An external member's configuration as the store keeps it, secrets included. */
 const ExternalSecrets = Schema.Struct({
   url: Schema.String,
   headers: Schema.Record(Schema.String, Schema.String),
@@ -232,10 +231,6 @@ const ExternalSecrets = Schema.Struct({
 });
 export type ExternalSecrets = typeof ExternalSecrets.Type;
 
-/**
- * A member as the engine reads it: the public shape plus the external secrets. `publicMember`
- * strips them before anything leaves the module.
- */
 export type MemberRow = GroupChatMember & { readonly external: ExternalSecrets | null };
 
 export const publicMember = ({ external: _external, ...member }: MemberRow): GroupChatMember =>
@@ -263,10 +258,9 @@ const MemberDbRow = Schema.Struct({
   removedAt: Schema.NullOr(IsoDateTime),
 });
 
-/** The external delivery's request bookkeeping. `sends` counts every request for life; `tries` since the last Retry. */
 const ExternalDelivery = Schema.Struct({
-  sends: Schema.Int,
-  tries: Schema.Int,
+  lifetimeRequests: Schema.Int,
+  requestsSinceRetry: Schema.Int,
   nextAttemptAt: Schema.NullOr(IsoDateTime),
   callbackToken: Schema.NullOr(Schema.String),
   acceptedAt: Schema.NullOr(IsoDateTime),

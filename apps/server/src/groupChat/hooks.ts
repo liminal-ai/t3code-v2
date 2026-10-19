@@ -20,12 +20,10 @@ import type { ExternalSecrets } from "./store.ts";
 import { extractText } from "./transports/http.ts";
 import { constantTimeEquals, verifySignature } from "./transports/webhook.ts";
 
-/** One megabyte. A larger post is refused while it is still being read. */
-export const HOOK_MAX_BODY_BYTES = 1_000_000;
+const HOOK_MAX_BODY_BYTES = 1_000_000;
 
 /** Posts a hook URL accepts: a burst of `capacity`, refilled at `perSecond`. */
 export const HOOK_RATE_LIMIT = { capacity: 60, perSecond: 2 } as const;
-/** Buckets a flood of valid tokens could leave behind before idle ones are swept. */
 const BUCKET_SWEEP_SIZE = 1024;
 
 interface Bucket {
@@ -33,11 +31,7 @@ interface Bucket {
   at: number;
 }
 
-/** A token bucket per hook. Returns false when the hook is over its limit right now. */
-export const makeRateLimiter = (limit: {
-  readonly capacity: number;
-  readonly perSecond: number;
-}) => {
+const makeRateLimiter = (limit: { readonly capacity: number; readonly perSecond: number }) => {
   const buckets = new Map<string, Bucket>();
   const refill = (bucket: Bucket, nowMs: number) => {
     bucket.tokens = Math.min(
@@ -65,7 +59,7 @@ export const makeRateLimiter = (limit: {
 export type SignatureCheck = "ok" | "invalid_signature" | "signature_required";
 
 /** A member with a secret must sign every post. Without one, unsigned posts pass only while nothing beyond this machine can reach the server. */
-export const checkSignature = (input: {
+const checkSignature = (input: {
   readonly external: ExternalSecrets;
   readonly body: Uint8Array;
   readonly header: string | undefined;
@@ -82,7 +76,7 @@ export const checkSignature = (input: {
 const json = (status: number, body: Record<string, unknown>, headers?: Record<string, string>) =>
   HttpServerResponse.jsonUnsafe(body, { status, headers });
 const refused = (status: number, error: string) => json(status, { error });
-/** `connection: close` makes Node flush the answer and then drop the socket, so the rest of the body is never read. */
+// Node flushes the answer and drops the socket on `connection: close`, so the rest of the body is never read.
 const tooLarge = json(413, { error: "body_too_large" }, { connection: "close" });
 
 /**
@@ -126,11 +120,6 @@ const collectCapped = (
     return Effect.sync(cleanup);
   });
 
-/**
- * Reads the body under the cap. The content-length check answers a declared oversize post on
- * the headers alone; a chunked one is refused as soon as it crosses the cap, before the rest is
- * buffered.
- */
 const readBody = (
   request: HttpServerRequest.HttpServerRequest,
 ): Effect.Effect<Uint8Array | "too_large"> =>
@@ -161,7 +150,6 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
       const reach = yield* GroupChatReach;
       const underLimit = makeRateLimiter(HOOK_RATE_LIMIT);
 
-      /** Everything after the token check: rate, size, signature, text. */
       const accept = (input: {
         readonly key: string;
         readonly external: ExternalSecrets;

@@ -38,7 +38,6 @@ export const memberThreadRef = (member: GroupChatMember): ScopedThreadRef | null
 
 export const isExternalMember = (member: GroupChatMember) => member.kind._tag !== "t3";
 
-/** What to show under a handle: the thread's title, or the external endpoint's host. */
 export function memberSubtitle(member: GroupChatMember, shellTitle?: string | null): string {
   if (member.kind._tag === "t3") return shellTitle ?? member.kind.thread.title;
   try {

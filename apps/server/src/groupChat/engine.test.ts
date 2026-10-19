@@ -489,6 +489,39 @@ it.layer(NodeServices.layer)("group chat engine, external members", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a callback origin is a bare http(s) origin", () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const add = (callbackOrigin: string) =>
+        app.dispatch({
+          _tag: "member.addExternal",
+          groupId: group.id,
+          handle: "",
+          kind: "webhook",
+          config: { ...externalConfig("http://127.0.0.1:1/x"), callbackOrigin },
+        });
+      for (const bad of [
+        "https://agent.example?base=1",
+        "https://agent.example/hooks",
+        "https://agent.example/#x",
+        "agent.example",
+      ]) {
+        assert.match((yield* add(bad).pipe(Effect.flip)).message, /origin/, bad);
+      }
+      const added = yield* add("https://agent.example/");
+      const member = added._tag === "member" ? added.member : assert.fail("member");
+      assert.strictEqual(
+        member.kind._tag === "webhook" ? member.kind.callbackOrigin : "",
+        "https://agent.example",
+      );
+      const url = yield* app.dispatch({ _tag: "member.inboundUrl", memberId: member.id });
+      assert.match(
+        url._tag === "url" ? url.url : "",
+        /^https:\/\/agent\.example\/api\/hooks\/group-chat\/inbound\//,
+      );
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("only a 1 MB safety cap applies at ingestion, and it keeps the head and the tail", () =>
     Effect.gen(function* () {
       const { fake, app, group, member } = yield* setup([alpha]);
@@ -593,5 +626,35 @@ it.live(
       );
       assert.match(envelope, /NOTE this envelope was shortened: .*1 long message was shortened/);
       assert.isBelow(section.length, 6_500, `section is bounded (${section.length})`);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "a response that never ends fails within the request timeout, and a body over the cap is refused",
+  () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const stalled = yield* fakeAgent(() => ({
+        status: 200,
+        body: '{"reply":"never"}',
+        mode: "hang",
+      }));
+      const slow = yield* addExternal(app, group.id, "slow", "rest", stalled.url);
+      yield* send(app, group.id, "hi", [slow.id]);
+      const timedOut = yield* deliveryOf(app, slow.id, (d) => d.state === "failed");
+      assert.match(timedOut.error!, /Gave up after 3 attempts\. Last error: no answer within/);
+      assert.strictEqual(stalled.calls.length, 3);
+
+      const huge = yield* fakeAgent(() => ({
+        status: 200,
+        body: JSON.stringify({ reply: "y".repeat(4_000_001) }),
+        mode: "chunked",
+      }));
+      const big = yield* addExternal(app, group.id, "big", "rest", huge.url);
+      yield* send(app, group.id, "hi", [big.id]);
+      const refused = yield* deliveryOf(app, big.id, (d) => d.state === "failed");
+      assert.strictEqual(refused.dispatch, "rejected", "a refusal, not a retry loop");
+      assert.match(refused.error!, /response body is larger than 4000000 bytes/);
+      assert.strictEqual(huge.calls.length, 1);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

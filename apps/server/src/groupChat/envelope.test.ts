@@ -441,6 +441,14 @@ describe("group chat envelope and text", () => {
       keep: "{{unknown}}",
       key: "dlv_1",
     });
+    expect(
+      JSON.parse(
+        renderTemplate('{"text": "{{envelope}}", "cb": "{{callbackUrl}}"}', {
+          envelope: "later use {{callbackUrl}} and {{inboundUrl}}",
+          callbackUrl: "http://x/cb",
+        }),
+      ),
+    ).toEqual({ text: "later use {{callbackUrl}} and {{inboundUrl}}", cb: "http://x/cb" });
     expect(readPath({ a: { b: [{ c: "x" }] } }, "a.b.0.c")).toBe("x");
     expect(
       extractText('{"choices":[{"message":{"content":"deep"}}]}', "choices.0.message.content"),

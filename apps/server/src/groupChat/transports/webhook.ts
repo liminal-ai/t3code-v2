@@ -8,7 +8,6 @@ import {
   type GroupChatDeliveryId,
   type GroupChatMemberId,
 } from "@t3tools/contracts";
-import type * as Duration from "effect/Duration";
 import type * as Effect from "effect/Effect";
 import type { HttpClient } from "effect/http";
 
@@ -22,12 +21,9 @@ import {
   templateVars,
 } from "./http.ts";
 
-export const WEBHOOK_POST_TIMEOUT: Duration.Input = "30 seconds";
-
 export const sign = (secret: string, raw: Uint8Array | string): string =>
   `sha256=${NodeCrypto.createHmac("sha256", secret).update(raw).digest("hex")}`;
 
-/** Compares two strings without leaking their length or where they differ through timing. */
 export const constantTimeEquals = (a: string, b: string): boolean => {
   const digestA = NodeCrypto.createHash("sha256").update(a).digest();
   const digestB = NodeCrypto.createHash("sha256").update(b).digest();
@@ -68,6 +64,6 @@ export const deliverWebhook = (
     url: external.url,
     headers: { ...signedHeaders(external, input, body), "x-reply-to": input.callbackUrl },
     body,
-    timeout: WEBHOOK_POST_TIMEOUT,
+    timeout: input.timeout,
   });
 };

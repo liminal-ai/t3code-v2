@@ -70,7 +70,6 @@ const layerForServer = layer.pipe(Layer.provide(ThreadPort.layer), Layer.provide
 const withModule = <A, E, R>(build: (groupChat: GroupChat["Service"]) => Layer.Layer<A, E, R>) =>
   Layer.unwrap(Effect.map(Effect.service(GroupChat), build)).pipe(Layer.provide(layerForServer));
 
-/** Both API groups the module owns: the operator's, and the hooks external members post to. */
 export const layerHttpApi = withModule((groupChat) =>
   Layer.merge(Http.makeLayer(groupChat), Hooks.makeLayer(groupChat)),
 );
