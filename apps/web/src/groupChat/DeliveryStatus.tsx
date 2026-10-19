@@ -21,10 +21,8 @@ export type DeliveryTone = "muted" | "info" | "warning" | "error" | "success";
 export interface DeliveryView {
   readonly label: string;
   readonly tone: DeliveryTone;
-  /** A longer sentence under the label, such as the queue-held note or the failure. */
   readonly detail: string | null;
   readonly retry: boolean;
-  /** Every wait reason points at the member's thread. */
   readonly threadLink: boolean;
   readonly answerable: boolean;
 }
@@ -136,7 +134,6 @@ export function RetryButton({ delivery }: { delivery: GroupChatDeliveryHead }) {
   );
 }
 
-/** The compact chip under an operator message. Opens the envelope the member received. */
 export function DeliveryChip({
   delivery,
   member,
@@ -165,7 +162,6 @@ export function DeliveryChip({
   );
 }
 
-/** A delivery still open, shown after the last message of its turn. */
 export function PendingReply({
   delivery,
   member,

@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -36,16 +36,11 @@ const reconnectWithFreshTicket = () => appAtomRegistry.refresh(eventsAccessAtom)
 
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(GroupChatStreamEvent));
 
-const openEventSource = (access: DeviceHubAccess, onError: () => void) => {
+const openEventSource = (access: DeviceHubAccess, onOpen: () => void, onError: () => void) => {
   const source = new EventSource(withDeviceHubQuery(`${access.httpBase}/events`, access), {
     withCredentials: access.credentials,
   });
-  let opened = false;
-  source.addEventListener("open", () => {
-    // The first open follows the page's own load; a later one follows a dropped connection.
-    if (opened) resyncAll();
-    opened = true;
-  });
+  source.addEventListener("open", onOpen);
   source.addEventListener("message", (event) => {
     let decoded: GroupChatStreamEvent;
     try {
@@ -62,13 +57,23 @@ const openEventSource = (access: DeviceHubAccess, onError: () => void) => {
 export function useGroupChatEvents(enabled: boolean): void {
   const result = useAtomValue(eventsAccessAtom);
   const access = AsyncResult.isSuccess(result) ? result.value : null;
+  // Nothing says what the stream missed while it was down, so every open after the first one
+  // reads the loaded groups again.
+  const openedBefore = useRef(false);
   useEffect(() => {
     if (!enabled || access === null) return;
     let reconnect: ReturnType<typeof setTimeout> | undefined;
-    const close = openEventSource(access, () => {
-      close();
-      reconnect = setTimeout(reconnectWithFreshTicket, RECONNECT_DELAY_MS);
-    });
+    const close = openEventSource(
+      access,
+      () => {
+        if (openedBefore.current) resyncAll();
+        openedBefore.current = true;
+      },
+      () => {
+        close();
+        reconnect = setTimeout(reconnectWithFreshTicket, RECONNECT_DELAY_MS);
+      },
+    );
     return () => {
       close();
       clearTimeout(reconnect);

@@ -34,7 +34,6 @@ export function ThreadStatusBadge({ thread }: { thread: EnvironmentThreadShell }
   );
 }
 
-/** Picks T3 threads from the client's own shells. Archived threads and deleted ones never show. */
 export function ThreadPicker({
   selected,
   onToggle,

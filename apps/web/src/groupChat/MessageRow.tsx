@@ -11,7 +11,6 @@ import { MemberLabel } from "./MemberChip";
 import { LONG_MESSAGE_CHARS, plainSnippet, previewOf } from "./messageText";
 import type { TurnInfo } from "./store";
 
-/** A long message shows a preview until Show all. Collapsing again keeps the row in view. */
 function Collapsible({ text, render }: { text: string; render: (text: string) => ReactNode }) {
   const [expanded, setExpanded] = useState(false);
   const root = useRef<HTMLDivElement>(null);
@@ -91,7 +90,7 @@ function ReplyContext({
   message: GroupChatMessage;
   turn: TurnInfo | undefined;
   prompt: GroupChatMessage | undefined;
-  onJump: (messageId: GroupChatMessage["id"]) => void;
+  onJump: (messageId: GroupChatMessage["id"]) => Promise<void>;
 }) {
   if (turn === undefined || prompt === undefined || prompt.id === message.id) return null;
   return (
@@ -99,7 +98,7 @@ function ReplyContext({
       size="xs"
       variant="link"
       className="max-w-full justify-start"
-      onClick={() => onJump(prompt.id)}
+      onClick={() => void onJump(prompt.id)}
       data-testid="reply-context"
     >
       <span className="truncate">
@@ -120,10 +119,8 @@ export function MemberMessage({
   member: GroupChatMember | undefined;
   turn: TurnInfo | undefined;
   prompt: GroupChatMessage | undefined;
-  onJump: (messageId: GroupChatMessage["id"]) => void;
+  onJump: (messageId: GroupChatMessage["id"]) => Promise<void>;
 }) {
-  // The server marks a reply late when its delivery no longer counted: the operator stopped it,
-  // the discussion ended, or the envelope was withdrawn.
   const lateLabel =
     message.kind === "discussion_reply" ? "arrived after the round · not counted" : "late reply";
   return (

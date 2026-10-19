@@ -240,7 +240,6 @@ export const GroupChatDeliveryParams = Schema.Struct({
   deliveryId: GroupChatDeliveryId,
 });
 
-/** How many messages one group page holds. */
 export const GROUP_CHAT_PAGE_SIZE = 200;
 
 const SeqFromQuery = Schema.FiniteFromString.check(

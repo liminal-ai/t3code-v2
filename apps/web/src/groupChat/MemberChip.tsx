@@ -17,7 +17,6 @@ import { cn } from "../lib/utils";
 import { useThreadShell } from "../state/entities";
 import { attempt, dispatchGroupChat } from "./api";
 
-/** Fixed per-member colours, chosen to read on both themes. The index is the member's `color`. */
 const MEMBER_COLORS = [
   "#3b82f6",
   "#10b981",
@@ -91,7 +90,6 @@ export function runtimeLabel(status: string | undefined): string {
   return status === undefined || status === "idle" ? "idle" : status;
 }
 
-/** What a member's thread is doing, from its shell, beside anything its open delivery waits on. */
 export function MemberChip({
   member,
   wait,
@@ -149,10 +147,6 @@ const answerFor = (
   return question.multiSelect ? all : (all[0] ?? "");
 };
 
-/**
- * The member's question with its options and a free-text answer. The answer goes to the thread's
- * runtime request in T3, not into the group.
- */
 export function AnswerBox({
   member,
   wait,

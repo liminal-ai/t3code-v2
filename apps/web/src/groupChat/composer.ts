@@ -8,13 +8,11 @@ import type {
 const MENTION_AT_CARET = /(^|\s)@([a-z0-9_-]*)$/i;
 const MENTION_TOKEN = /(^|[\s(])@([a-z0-9][a-z0-9_-]*)(?=$|[\s,.:;!?)])/gi;
 
-/** The partial handle being typed at the caret, or null when the caret is not in a mention. */
 export function mentionAtCaret(text: string, caret: number): string | null {
   const match = MENTION_AT_CARET.exec(text.slice(0, caret));
   return match === null ? null : match[2]!.toLowerCase();
 }
 
-/** The members whose full handle the text names. */
 export function mentionedMembers(
   text: string,
   members: ReadonlyArray<GroupChatMember>,
@@ -35,7 +33,6 @@ export function suggestions(
   return members.filter((m) => m.handle.startsWith(partial));
 }
 
-/** The text after the caret's partial mention is replaced by the picked handle. */
 export function completeMention(
   text: string,
   caret: number,
@@ -47,7 +44,6 @@ export function completeMention(
   return { text: before + text.slice(caret), caret: before.length };
 }
 
-/** Ticks stay as the operator left them, plus any member the text names. */
 export function tickedAfterTyping(
   ticked: ReadonlyArray<GroupChatMemberId>,
   text: string,
@@ -57,7 +53,6 @@ export function tickedAfterTyping(
   return named.length === 0 ? ticked : [...ticked, ...named];
 }
 
-/** A send with nobody ticked only logs the message: no member is asked to reply. */
 export function sendCommand(
   groupId: GroupChatGroupId,
   text: string,
@@ -75,7 +70,6 @@ export function sendCommand(
 
 const recipientsKey = (groupId: GroupChatGroupId) => `t3code:group-chat:recipients:${groupId}`;
 
-/** Recipients are kept per group across sends and reloads. */
 export function loadRecipients(
   groupId: GroupChatGroupId,
   storage: Pick<Storage, "getItem"> = localStorage,

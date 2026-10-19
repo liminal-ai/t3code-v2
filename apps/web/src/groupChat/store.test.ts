@@ -140,11 +140,11 @@ describe("group chat store", () => {
   it("a message head past the loaded end asks for the bodies after it, once", () => {
     const start = loaded([1, 2]);
     const first = applyEvent(start, event(1, { _tag: "message", message: messageHead(3) }));
-    expect(first.fetches).toEqual([{ _tag: "after", groupId, after: 2 }]);
+    expect(first.fetches).toEqual([{ _tag: "since", groupId, seq: 2 }]);
     expect(seqsOf(first.state)).toEqual([1, 2]);
     const second = applyEvent(first.state, event(2, { _tag: "message", message: messageHead(4) }));
     expect(second.fetches).toEqual([]);
-    const filled = applyPage(second.state, groupId, page([3, 4]), "after");
+    const filled = applyPage(second.state, groupId, page([3, 4]), "since");
     expect(seqsOf(filled)).toEqual([1, 2, 3, 4]);
     expect(filled.groups.get(groupId)!.messages.get("msg_3" as never)!.text).toBe("message 3");
     expect(filled.groups.get(groupId)!.highSeq).toBe(4);
@@ -181,7 +181,7 @@ describe("group chat store", () => {
       start,
       groupId,
       page([300, 301], { olderBefore: 300 as never }),
-      "after",
+      "since",
     );
     expect(seqsOf(replaced)).toEqual([300, 301]);
     expect(replaced.groups.get(groupId)!.olderBefore).toBe(300);

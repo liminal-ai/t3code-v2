@@ -118,7 +118,6 @@ type GroupChatClient = Effect.Success<
 >;
 type BearerHeaders = { readonly authorization?: string };
 
-/** The sentence to show for a failed group chat request. */
 export class GroupChatRequestError extends Error {
   override readonly name = "GroupChatRequestError";
 }
@@ -206,22 +205,19 @@ export const fetchDelivery = (deliveryId: GroupChatDeliveryId): Promise<GroupCha
 export const dispatchGroupChat = (command: GroupChatCommand): Promise<GroupChatDispatchResult> =>
   groupChatRequest(
     (urls) => urls.dispatch(),
-    // The client types each union member as its own request shape, so a command typed as the
-    // union has to be narrowed again here, which a cast does without a 16-way switch.
-    (client, headers) =>
-      (
-        client.dispatch as (input: {
-          readonly payload: GroupChatCommand;
-          readonly headers: BearerHeaders;
-        }) => Effect.Effect<
-          GroupChatDispatchResult,
-          GroupChatCommandError | GroupChatUnavailable | Error,
-          HttpClient.HttpClient
-        >
-      )({ payload: command, headers }),
+    (client, headers) => (client.dispatch as DispatchCall)({ payload: command, headers }),
   );
 
-/** Runs a group chat request and reports a failure as a toast instead of throwing. */
+/** `client.dispatch` is typed per command; this is its shape for the whole union. */
+type DispatchCall = (input: {
+  readonly payload: GroupChatCommand;
+  readonly headers: BearerHeaders;
+}) => Effect.Effect<
+  GroupChatDispatchResult,
+  GroupChatCommandError | GroupChatUnavailable | Error,
+  HttpClient.HttpClient
+>;
+
 export async function attempt<A>(run: () => Promise<A>): Promise<A | undefined> {
   try {
     return await run();

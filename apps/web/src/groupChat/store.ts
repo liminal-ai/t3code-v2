@@ -19,11 +19,6 @@ import { Atom } from "effect/reactivity";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { fetchGroupPage, refreshGroupChatSnapshot } from "./api";
 
-/**
- * One loaded group. `messages` hold every seq from `lowSeq` to `highSeq` once their bodies have
- * arrived; a stream head past `highSeq` asks the group read for what it lacks. `deliveries` are
- * heads, since the envelope dialog reads a body on its own.
- */
 export interface GroupView {
   readonly group: GroupChatGroup;
   readonly members: ReadonlyMap<GroupChatMemberId, GroupChatMember>;
@@ -38,21 +33,20 @@ export interface GroupView {
 }
 
 export interface StoreState {
-  /** The stream's last applied seq. Null before the first event and after a resync. */
   readonly lastEventSeq: number | null;
   readonly groups: ReadonlyMap<GroupChatGroupId, GroupView>;
 }
 
-export type PageMode = "latest" | "older" | "after";
+export type PageMode = "latest" | "older" | "since";
 
+/** `since` reads what arrived past a seq: message bodies and new discussions alike. */
 export type FetchRequest =
   | { readonly _tag: "latest"; readonly groupId: GroupChatGroupId }
-  | { readonly _tag: "after"; readonly groupId: GroupChatGroupId; readonly after: number };
+  | { readonly _tag: "since"; readonly groupId: GroupChatGroupId; readonly seq: number };
 
 export interface Applied {
   readonly state: StoreState;
   readonly fetches: ReadonlyArray<FetchRequest>;
-  /** The sidebar snapshot changed too: a group or member row moved. */
   readonly snapshotChanged: boolean;
 }
 
@@ -108,14 +102,7 @@ export function applyPage(
 ): StoreState {
   const current = state.groups.get(groupId);
   const first = page.messages[0]?.seq ?? null;
-  // A page that does not abut what is loaded replaces it, since the messages between are unknown.
-  const abuts =
-    current !== undefined &&
-    current.highSeq > 0 &&
-    first !== null &&
-    (mode === "older" ? current.lowSeq === page.olderBefore || first < current.lowSeq : true) &&
-    (mode === "older" || first <= current.highSeq + 1);
-  if (current === undefined || !abuts || (mode === "after" && page.olderBefore !== null)) {
+  if (current === undefined || pageRelation(current, page, mode) === "replaces") {
     const deliveries =
       current === undefined || mode === "older"
         ? byId(page.deliveries)
@@ -137,7 +124,23 @@ export function applyPage(
   return withGroup(state, groupId, view);
 }
 
-/** A message whose body a command returned goes straight in when it is the next one. */
+/**
+ * A page joins what is loaded only when no unknown messages lie between them. An older page
+ * joins below `lowSeq`; a latest or since page joins at or before `highSeq + 1`, unless the server
+ * says more lie below it, which means the client fell more than a page behind.
+ */
+function pageRelation(
+  current: GroupView,
+  page: GroupChatGroupPage,
+  mode: PageMode,
+): "joins" | "replaces" {
+  const first = page.messages[0]?.seq;
+  if (first === undefined || current.highSeq === 0) return "replaces";
+  if (mode === "older") return first < current.lowSeq ? "joins" : "replaces";
+  if (page.olderBefore !== null && mode === "since") return "replaces";
+  return first <= current.highSeq + 1 ? "joins" : "replaces";
+}
+
 export function applyMessage(state: StoreState, message: GroupChatMessage): StoreState {
   const current = state.groups.get(message.groupId);
   if (current === undefined) return state;
@@ -162,21 +165,40 @@ export function setLoadingOlder(
   return current === undefined ? state : withGroup(state, groupId, { ...current, loadingOlder });
 }
 
+/**
+ * Where an event falls against the last one applied. The stream's seq begins again when the
+ * server restarts; the reconnect that follows clears `lastEventSeq`, so a lower seq here is a
+ * replay, not a reset.
+ */
+function eventRelation(
+  lastEventSeq: number | null,
+  seq: number,
+): "first" | "next" | "stale" | "gap" {
+  if (lastEventSeq === null) return "first";
+  if (seq <= lastEventSeq) return "stale";
+  return seq === lastEventSeq + 1 ? "next" : "gap";
+}
+
 export function applyEvent(state: StoreState, event: GroupChatStreamEvent): Applied {
-  if (state.lastEventSeq !== null && event.seq <= state.lastEventSeq) {
-    return { state, fetches: [], snapshotChanged: false };
-  }
-  // A gap means events were missed, or the server restarted and its seq began again. Every
-  // loaded group is read again, after the event itself is applied.
-  const gap = state.lastEventSeq !== null && event.seq !== state.lastEventSeq + 1;
+  const relation = eventRelation(state.lastEventSeq, event.seq);
+  if (relation === "stale") return { state, fetches: [], snapshotChanged: false };
   const applied = applyOne({ ...state, lastEventSeq: event.seq }, event);
-  if (!gap) return applied;
+  if (relation !== "gap") return applied;
   const fetches: FetchRequest[] = [...applied.state.groups.keys()].map((groupId) => ({
     _tag: "latest",
     groupId,
   }));
   return { state: applied.state, fetches, snapshotChanged: true };
 }
+
+const readSince = (state: StoreState, current: GroupView, none: Applied): Applied =>
+  current.fetchingAfter !== null && current.fetchingAfter >= current.highSeq
+    ? none
+    : {
+        state: withGroup(state, current.group.id, { ...current, fetchingAfter: current.highSeq }),
+        fetches: [{ _tag: "since", groupId: current.group.id, seq: current.highSeq }],
+        snapshotChanged: false,
+      };
 
 function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
   const none = { state, fetches: [], snapshotChanged: false } as const;
@@ -218,15 +240,7 @@ function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
         };
       }
       if (event.message.seq <= current.highSeq) return none;
-      if (current.fetchingAfter !== null && current.fetchingAfter >= current.highSeq) return none;
-      return {
-        state: withGroup(state, event.message.groupId, {
-          ...current,
-          fetchingAfter: current.highSeq,
-        }),
-        fetches: [{ _tag: "after", groupId: event.message.groupId, after: current.highSeq }],
-        snapshotChanged: false,
-      };
+      return readSince(state, current, none);
     }
     case "delivery": {
       const current = state.groups.get(event.delivery.groupId);
@@ -243,18 +257,7 @@ function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
       const current = state.groups.get(event.discussion.groupId);
       if (current === undefined) return none;
       const known = current.discussions.get(event.discussion.id);
-      if (known === undefined) {
-        // The topic rides the page, so an unknown discussion is read like a missing body.
-        if (current.fetchingAfter !== null) return none;
-        return {
-          state: withGroup(state, event.discussion.groupId, {
-            ...current,
-            fetchingAfter: current.highSeq,
-          }),
-          fetches: [{ _tag: "after", groupId: event.discussion.groupId, after: current.highSeq }],
-          snapshotChanged: false,
-        };
-      }
+      if (known === undefined) return readSince(state, current, none);
       const discussions = new Map(current.discussions);
       discussions.set(event.discussion.id, { ...known, ...event.discussion });
       return {
@@ -277,7 +280,6 @@ const OPEN_STATES: ReadonlySet<GroupChatDeliveryHead["state"]> = new Set([
 
 export const isOpenDelivery = (d: GroupChatDeliveryHead) => OPEN_STATES.has(d.state);
 
-/** Messages by seq, each open delivery after the last message of its turn. */
 export function timelineRows(view: GroupView): ReadonlyArray<TimelineRow> {
   const messages = [...view.messages.values()].sort((a, b) => a.seq - b.seq);
   const lastOfTurn = new Map<string, number>();
@@ -306,7 +308,6 @@ export interface TurnInfo {
   readonly promptId: GroupChatMessageId | null;
 }
 
-/** Turn numbering for the "↳ Turn n · prompt" line under a reply. */
 export function turnsOf(view: GroupView): ReadonlyMap<string, TurnInfo> {
   const out = new Map<string, TurnInfo>();
   for (const m of [...view.messages.values()].sort((a, b) => a.seq - b.seq)) {
@@ -340,7 +341,6 @@ export function deliveriesByTrigger(view: GroupView) {
   return map;
 }
 
-/** The newest open delivery per member, for the chips' wait and question states. */
 export function openDeliveryByMember(view: GroupView) {
   const map = new Map<GroupChatMemberId, GroupChatDeliveryHead>();
   for (const d of view.deliveries.values()) {
@@ -373,8 +373,8 @@ const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
   for (const fetch of fetches) {
     if (fetch._tag === "latest") void loadGroup(fetch.groupId);
     else {
-      void fetchGroupPage(fetch.groupId, { after: fetch.after })
-        .then((page) => update((state) => applyPage(state, fetch.groupId, page, "after")))
+      void fetchGroupPage(fetch.groupId, { after: fetch.seq })
+        .then((page) => update((state) => applyPage(state, fetch.groupId, page, "since")))
         .catch(() =>
           update((state) => {
             const current = state.groups.get(fetch.groupId);
@@ -409,19 +409,24 @@ export async function loadGroup(groupId: GroupChatGroupId): Promise<void> {
   update((state) => applyPage(state, groupId, page, "latest"));
 }
 
-export async function loadOlder(groupId: GroupChatGroupId): Promise<void> {
-  const current = appAtomRegistry.get(storeAtom).groups.get(groupId);
-  if (current === undefined || current.olderBefore === null || current.loadingOlder) return;
+export function readGroupView(groupId: GroupChatGroupId): GroupView | null {
+  return appAtomRegistry.get(storeAtom).groups.get(groupId) ?? null;
+}
+
+/** Resolves true when an older page was loaded, false when the group has no more. */
+export async function loadOlder(groupId: GroupChatGroupId): Promise<boolean> {
+  const current = readGroupView(groupId);
+  if (current === null || current.olderBefore === null || current.loadingOlder) return false;
   update((state) => setLoadingOlder(state, groupId, true));
   try {
     const page = await fetchGroupPage(groupId, { before: current.olderBefore });
     update((state) => applyPage(state, groupId, page, "older"));
+    return true;
   } finally {
     update((state) => setLoadingOlder(state, groupId, false));
   }
 }
 
-/** After the stream reconnects nothing says what was missed, so every loaded group is read again. */
 export function resyncAll(): void {
   const state = appAtomRegistry.get(storeAtom);
   appAtomRegistry.set(storeAtom, { ...state, lastEventSeq: null });

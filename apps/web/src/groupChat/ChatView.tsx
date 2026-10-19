@@ -12,6 +12,7 @@ import {
   deliveriesByTrigger,
   type GroupView,
   loadOlder,
+  readGroupView,
   type TimelineRow,
   timelineRows,
   turnsOf,
@@ -19,6 +20,8 @@ import {
 
 const ESTIMATED_ROW_HEIGHT = 88;
 const FLASH_MS = 1_600;
+/** How far back a jump to a prompt pages before it gives up. */
+const MAX_PAGES_PER_JUMP = 10;
 
 function ListHeader({ view }: { view: GroupView }) {
   if (view.loadingOlder) {
@@ -58,20 +61,30 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
     return () => clearTimeout(timer);
   }, [flashId]);
 
-  const jumpTo = useStableCallback((messageId: GroupChatMessageId) => {
-    const index = rows.findIndex((row) => row.kind === "message" && row.message.id === messageId);
-    if (index === -1) {
-      // The prompt sits on a page not loaded yet; load one and let the next click find it.
-      void loadOlder(groupId);
-      return;
+  const jumpTo = useStableCallback(async (messageId: GroupChatMessageId) => {
+    for (let pages = 0; pages < MAX_PAGES_PER_JUMP; pages++) {
+      const current = readGroupView(groupId);
+      if (current === null) return;
+      const index = timelineRows(current).findIndex(
+        (row) => row.kind === "message" && row.message.id === messageId,
+      );
+      if (index !== -1) {
+        await listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.4 });
+        setFlashId(messageId);
+        return;
+      }
+      if (!(await loadOlder(groupId))) return;
     }
-    void listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.4 });
-    setFlashId(messageId);
   });
 
   const loadOlderPage = useStableCallback(() => {
     if (view.olderBefore !== null && !view.loadingOlder) void loadOlder(groupId);
   });
+
+  const promptOf = (turnKey: string) => {
+    const promptId = turns.get(turnKey)?.promptId ?? null;
+    return promptId === null ? undefined : view.messages.get(promptId);
+  };
 
   const renderItem = useStableCallback(({ item }: { item: TimelineRow }) => {
     if (item.kind === "pending") {
@@ -98,11 +111,7 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
           message={message}
           member={view.members.get(message.author.memberId)}
           turn={turns.get(message.turnKey)}
-          prompt={
-            turns.get(message.turnKey)?.promptId === null
-              ? undefined
-              : view.messages.get(turns.get(message.turnKey)!.promptId!)
-          }
+          prompt={promptOf(message.turnKey)}
           onJump={jumpTo}
         />
       ) : (

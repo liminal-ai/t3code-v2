@@ -24,7 +24,6 @@ describe("message previews", () => {
     const text = `intro\n\`\`\`\`md\n\`\`\`\ninner\n\`\`\`\n${filler(LONG_MESSAGE_CHARS)}\n\`\`\`\`\nafter`;
     const preview = previewOf(text);
     expect(fenceLines(preview).at(-1)).toBe("````");
-    // The three-backtick lines inside stay inner content: only the outer fence was open.
     expect(fenceLines(preview).filter((line) => line.startsWith("````"))).toEqual([
       "````md",
       "````",

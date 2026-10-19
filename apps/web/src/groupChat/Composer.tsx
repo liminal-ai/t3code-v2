@@ -55,7 +55,6 @@ export function Composer({
   );
   const [tickedGroup, setTickedGroup] = useState(groupId);
   if (tickedGroup !== groupId) {
-    // Recipients are kept per group, so a new group starts from its own saved ticks.
     setTickedGroup(groupId);
     setTicked(loadRecipients(groupId));
     setText("");

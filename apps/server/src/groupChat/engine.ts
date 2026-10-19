@@ -1554,7 +1554,6 @@ export const makeEngine = (store: GroupChatStore) =>
           limit: GROUP_CHAT_PAGE_SIZE,
         });
         const ofPage = yield* store.deliveriesOfMessages(messages.map((m) => m.id));
-        // A page read with `before` is history; the rest refresh what is still in flight too.
         const open = query.before === undefined ? yield* store.openDeliveriesOfGroup(groupId) : [];
         const rows = new Map<GroupChatDeliveryId, DeliveryRow>();
         for (const d of [...ofPage, ...open]) rows.set(d.id, d);
