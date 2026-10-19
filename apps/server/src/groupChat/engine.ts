@@ -178,10 +178,12 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         const deliveries = yield* store.deliveriesOfThread(l.threadId);
         const open = deliveries.filter((d) => OPEN.has(d.state));
-        const unresolved = open.find(
-          (d) => (d.dispatch === "sending" || d.dispatch === "unknown") && !stalled.has(d.id),
-        );
-        if (unresolved !== undefined) return { kind: "resolve", delivery: unresolved };
+        const unresolved = open.find((d) => d.dispatch === "sending" || d.dispatch === "unknown");
+        if (unresolved !== undefined) {
+          // A stalled send may still have committed, so it holds the lane until Retry, Stop or a
+          // boot looks for it again. Letting later envelopes past it could run two at once.
+          return stalled.has(unresolved.id) ? null : { kind: "resolve", delivery: unresolved };
+        }
         const outstanding = open.find((d) => d.dispatch === "accepted" && d.state !== "pending");
         if (outstanding !== undefined) return { kind: "follow", delivery: outstanding };
         const pending = open.find(
@@ -453,7 +455,7 @@ export const makeEngine = (store: GroupChatStore) =>
             tx.updateDelivery(d.id, {
               dispatch: "unknown",
               wait: null,
-              error: `${d.error ?? "the send's outcome stayed unknown"}. Retry sends it again as a new attempt; a restart looks for it first.`,
+              error: `${d.error ?? "the send's outcome stayed unknown"}. Later envelopes to this thread wait behind it. Retry sends it again as a new attempt; a restart looks for it first.`,
             }),
           );
           return;
@@ -742,7 +744,8 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         if (!OPEN.has(d.state)) return null;
         const action = onWithdraw({ state: d.state, dispatch: d.dispatch });
-        if (action === "cancel") {
+        if (action === "cancel" || stalled.has(d.id)) {
+          stalled.delete(d.id);
           yield* tx.updateDelivery(d.id, { state: "cancelled", error: reason, wait: null });
           return null;
         }

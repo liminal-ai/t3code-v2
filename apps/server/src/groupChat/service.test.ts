@@ -806,6 +806,64 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect("a stalled send holds later envelopes to its thread until Retry", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "stalled lane", [alpha]);
+      (yield* fake.thread(alpha)).faults.push({ type: "lose" }, { type: "lose" });
+      yield* send(app, group.id, "first", [member(alpha).id]);
+      const stalled = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.dispatch === "unknown" && (d.error ?? "").includes("wait behind it"),
+      );
+      yield* send(app, group.id, "second", [member(alpha).id]);
+      const second = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.wait?._tag === "lane_busy" && d.wait.deliveryId === stalled.id,
+      );
+      assert.strictEqual((yield* fake.sends(alpha)).length, 2, "the second never leaves");
+      yield* app.dispatch({ _tag: "delivery.retry", deliveryId: stalled.id });
+      yield* app.until(app.store.delivery(stalled.id), (d) => d?.state === "running");
+      yield* reply(fake, alpha, "first reply");
+      yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.id === second.id && d.state === "running",
+      );
+      assert.strictEqual((yield* fake.sends(alpha)).length, 4);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("Stop on a stalled send cancels it and releases its lane", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "stalled stop", [alpha]);
+      (yield* fake.thread(alpha)).faults.push({ type: "lose" }, { type: "lose" });
+      yield* send(app, group.id, "first", [member(alpha).id]);
+      const stalled = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.dispatch === "unknown" && (d.error ?? "").includes("wait behind it"),
+      );
+      yield* send(app, group.id, "second", [member(alpha).id]);
+      const second = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.wait?._tag === "lane_busy",
+      );
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: stalled.id });
+      yield* app.until(app.store.delivery(stalled.id), (d) => d?.state === "cancelled");
+      yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.id === second.id && d.state === "running",
+      );
+      assert.strictEqual((yield* fake.sends(alpha)).length, 3);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("a stopped lane stays paused across a restart", () =>
     Effect.gen(function* () {
       const { fake, baseDir, app } = yield* setup;
