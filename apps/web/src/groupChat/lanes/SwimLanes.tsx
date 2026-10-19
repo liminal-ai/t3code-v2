@@ -17,6 +17,15 @@ import { memberColor } from "../MemberChip";
 import { type GroupView, loadOlder } from "../store";
 import { ACCENT, LaneCard, PendingCard } from "./LaneCard";
 import {
+  idleOlderPage,
+  mayRequestOlder,
+  olderFailedAgain,
+  type OlderPageReason,
+  type OlderPageState,
+  olderRead,
+  olderRequested,
+} from "./olderPages";
+import {
   type AlignMode,
   alignTurn,
   type Block,
@@ -39,6 +48,9 @@ const LINK_STEP_MS = 120;
 const HEADER_PX = 40;
 const OLDER_THRESHOLD_PX = 240;
 const END_SLACK_PX = 2;
+
+const underfilled = (element: HTMLElement) =>
+  element.scrollHeight - element.clientHeight < OLDER_THRESHOLD_PX;
 const MARKDOWN_ROOT_MARGIN = "200% 0px";
 const OPERATOR_LANE_MIN_PX = 150;
 const MEMBER_LANE_MIN_PX = 176;
@@ -459,6 +471,8 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     setLightBaseMs,
   };
   const followingEnd = useRef(true);
+  const olderPage = useRef<OlderPageState>(idleOlderPage);
+  const [olderRetryAt, setOlderRetryAt] = useState<number | null>(null);
   const olderAnchor = useRef<{
     readonly lowSeq: number;
     readonly scrollHeight: number;
@@ -494,6 +508,10 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     const state = layoutState.current!;
     if (resized) state.scrollPending ??= "auto";
     layoutGeometry(state, { selection, mode, model, focus });
+    const element = scroller.current;
+    if (element !== null && followingEnd.current && (!resized || selection === null)) {
+      element.scrollTop = element.scrollHeight;
+    }
   });
   const registerSlot = useStableCallback((element: HTMLDivElement | null) => {
     if (element === null) return;
@@ -599,10 +617,14 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     return () => clearTimeout(timer);
   }, [spacers, sliding, selection, mode, model, focus]);
 
-  const requestOlder = useStableCallback(() => {
+  const requestOlder = useStableCallback((reason: OlderPageReason) => {
     const element = scroller.current;
-    if (element === null || olderAnchor.current !== null) return;
-    if (view.olderBefore === null || view.loadingOlder) return;
+    const before = view.olderBefore;
+    if (element === null || before === null || view.loadingOlder) return;
+    const now = Date.now();
+    if (!mayRequestOlder(olderPage.current, { before, reason, now })) return;
+    const wasFailed = olderPage.current.kind === "failed";
+    olderPage.current = olderRequested(before);
     olderAnchor.current = {
       lowSeq: view.lowSeq,
       scrollHeight: element.scrollHeight,
@@ -610,28 +632,37 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     };
     void loadOlder(groupId).then(
       (loaded) => {
+        olderPage.current = olderRead(olderPage.current, loaded ? "loaded" : "empty", Date.now());
         if (!loaded) olderAnchor.current = null;
       },
       () => {
+        const failed = olderRead(olderPage.current, "failed", Date.now());
+        const next = wasFailed ? olderFailedAgain(failed, Date.now()) : failed;
+        olderPage.current = next;
         olderAnchor.current = null;
+        setOlderRetryAt(next.kind === "failed" ? next.retryAt : null);
       },
     );
   });
+  useEffect(() => {
+    if (olderRetryAt === null) return;
+    const timer = setTimeout(
+      () => {
+        setOlderRetryAt(null);
+        const element = scroller.current;
+        if (element !== null && underfilled(element)) requestOlder("underfill");
+      },
+      Math.max(0, olderRetryAt - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [olderRetryAt, requestOlder]);
   const onScroll = () => {
     const element = scroller.current;
     if (element === null) return;
     followingEnd.current =
       element.scrollTop + element.clientHeight >= element.scrollHeight - END_SLACK_PX;
-    if (element.scrollTop < OLDER_THRESHOLD_PX) requestOlder();
+    if (element.scrollTop < OLDER_THRESHOLD_PX) requestOlder("scroll");
   };
-
-  const followedSeq = useRef(view.highSeq);
-  useLayoutEffect(() => {
-    const element = scroller.current;
-    const newer = view.highSeq > followedSeq.current;
-    followedSeq.current = view.highSeq;
-    if (element !== null && newer && followingEnd.current) element.scrollTop = element.scrollHeight;
-  }, [view.highSeq]);
 
   useLayoutEffect(() => {
     const element = scroller.current;
@@ -642,7 +673,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
       olderAnchor.current = null;
     }
     if (view.olderBefore === null || view.loadingOlder) return;
-    if (element.scrollHeight - element.clientHeight < OLDER_THRESHOLD_PX) requestOlder();
+    if (underfilled(element)) requestOlder("underfill");
   }, [view.lowSeq, view.olderBefore, view.loadingOlder, requestOlder]);
 
   const spacerFor = (blockKey: string, lane: string, index: number) =>
