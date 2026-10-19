@@ -335,7 +335,7 @@ export interface Spacer {
   readonly height: number;
 }
 
-export function naturalTops(heights: ReadonlyArray<number>): number[] {
+function naturalTops(heights: ReadonlyArray<number>): number[] {
   const tops: number[] = [];
   let y = 0;
   for (const h of heights) {
