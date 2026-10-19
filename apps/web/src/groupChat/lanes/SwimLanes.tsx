@@ -13,6 +13,7 @@ import { useStableCallback } from "../../hooks/useStableCallback";
 import { isEditableFocused } from "../../lib/editableFocus";
 import { observeResize } from "../../lib/observeResize";
 import { cn } from "../../lib/utils";
+import { followAfter, type FollowEvent, geometryOf, keyTowardStart } from "../followEnd";
 import { memberColor } from "../MemberChip";
 import { type GroupView, loadOlder } from "../store";
 import { ACCENT, LaneCard, PendingCard } from "./LaneCard";
@@ -47,7 +48,6 @@ const LIGHT_STEP_MS = 120;
 const LINK_STEP_MS = 120;
 const HEADER_PX = 40;
 const OLDER_THRESHOLD_PX = 240;
-const END_SLACK_PX = 2;
 
 const underfilled = (element: HTMLElement) =>
   element.scrollHeight - element.clientHeight < OLDER_THRESHOLD_PX;
@@ -258,6 +258,8 @@ interface LayoutState {
   drawnSignature: string;
   /** The scroll the next draw owes the reader: smooth after a selection, instant after a resize. */
   scrollPending: ScrollBehavior | null;
+  /** The reader is at the end, so a card that lands or grows there keeps the end in view. */
+  followingEnd: boolean;
   readonly setSpacers: (spacers: Spacers) => void;
   readonly setSliding: (sliding: boolean) => void;
   readonly setDrawn: (update: (current: Drawn) => Drawn) => void;
@@ -268,6 +270,10 @@ function keepInView(state: LayoutState, inputs: LayoutInputs, behavior: ScrollBe
   const element = state.scroller.current;
   const { selection, focus, model } = inputs;
   if (element === null || selection === null) return;
+  const scrollBy = (top: number) => {
+    state.followingEnd = false;
+    element.scrollBy({ top, behavior });
+  };
   const rects = [...focus.emphasis.keys()]
     .map((id) => state.cardEls.get(id)?.getBoundingClientRect())
     .filter((rect): rect is DOMRect => rect !== undefined);
@@ -280,13 +286,10 @@ function keepInView(state: LayoutState, inputs: LayoutInputs, behavior: ScrollBe
     (focalId === null ? undefined : state.cardEls.get(focalId)?.getBoundingClientRect()) ??
     rects[0]!;
   if (bottom - top <= viewport.height - HEADER_PX - 24) {
-    if (top < viewport.top + HEADER_PX + 8) {
-      element.scrollBy({ top: top - viewport.top - HEADER_PX - 12, behavior });
-    } else if (bottom > viewport.bottom - 12) {
-      element.scrollBy({ top: bottom - viewport.bottom + 16, behavior });
-    }
+    if (top < viewport.top + HEADER_PX + 8) scrollBy(top - viewport.top - HEADER_PX - 12);
+    else if (bottom > viewport.bottom - 12) scrollBy(bottom - viewport.bottom + 16);
   } else if (focal.top < viewport.top + HEADER_PX || focal.bottom > viewport.bottom - 20) {
-    element.scrollBy({ top: focal.top - viewport.top - HEADER_PX - 50, behavior });
+    scrollBy(focal.top - viewport.top - HEADER_PX - 50);
   }
 }
 
@@ -471,12 +474,12 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     drawId: 0,
     drawnSignature: "",
     scrollPending: null,
+    followingEnd: true,
     setSpacers,
     setSliding,
     setDrawn,
     setLightBaseMs,
   };
-  const followingEnd = useRef(true);
   const olderPage = useRef<OlderPageState>(idleOlderPage);
   const [olderRetryAt, setOlderRetryAt] = useState<number | null>(null);
   const olderAnchor = useRef<{
@@ -515,8 +518,15 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     if (resized) state.scrollPending ??= "auto";
     layoutGeometry(state, { selection, mode, model, focus });
     const element = scroller.current;
-    if (element !== null && followingEnd.current && (!resized || selection === null)) {
+    if (element !== null && state.followingEnd && (!resized || selection === null)) {
       element.scrollTop = element.scrollHeight;
+    }
+  });
+  const follow = useStableCallback((event: FollowEvent) => {
+    const element = scroller.current;
+    const state = layoutState.current!;
+    if (element !== null) {
+      state.followingEnd = followAfter(state.followingEnd, event, geometryOf(element));
     }
   });
   const registerSlot = useStableCallback((element: HTMLDivElement | null) => {
@@ -552,6 +562,36 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     document.addEventListener("keydown", onKeyDown, { capture: true });
     return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [step, clearSelection]);
+
+  // Only a reader's gesture leaves the end; a pin or a scroll the lanes make never does.
+  useEffect(() => {
+    const element = scroller.current;
+    if (element === null) return;
+    const onWheel = (event: WheelEvent) => follow({ kind: "wheel", deltaY: event.deltaY });
+    const onTouchMove = () => follow({ kind: "touch" });
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target === element) follow({ kind: "scrollbar" });
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        keyTowardStart(event.key) &&
+        !event.defaultPrevented &&
+        !isEditableFocused(event.target)
+      ) {
+        follow({ kind: "key", key: event.key });
+      }
+    };
+    element.addEventListener("wheel", onWheel, { passive: true });
+    element.addEventListener("touchmove", onTouchMove, { passive: true });
+    element.addEventListener("pointerdown", onPointerDown, { passive: true });
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      element.removeEventListener("wheel", onWheel);
+      element.removeEventListener("touchmove", onTouchMove);
+      element.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [follow]);
 
   useEffect(() => {
     const element = scroller.current;
@@ -665,10 +705,20 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   const onScroll = () => {
     const element = scroller.current;
     if (element === null) return;
-    followingEnd.current =
-      element.scrollTop + element.clientHeight >= element.scrollHeight - END_SLACK_PX;
+    follow({ kind: "scroll" });
     if (element.scrollTop < OLDER_THRESHOLD_PX) requestOlder("scroll");
   };
+
+  // A newer message, never an older page, moves a reader who is at the end.
+  const followedSeq = useRef(view.highSeq);
+  useLayoutEffect(() => {
+    const element = scroller.current;
+    const newer = view.highSeq > followedSeq.current;
+    followedSeq.current = view.highSeq;
+    if (element !== null && newer && layoutState.current!.followingEnd) {
+      element.scrollTop = element.scrollHeight;
+    }
+  }, [view.highSeq]);
 
   useLayoutEffect(() => {
     const element = scroller.current;
