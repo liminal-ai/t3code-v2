@@ -14,6 +14,7 @@ import {
   emptyState,
   followUpRead,
   readFailed,
+  retryDelayMs,
   type StoreState,
   timelineRows,
 } from "./store";
@@ -339,6 +340,38 @@ describe("group chat store, questions", () => {
     expect(followUpRead(failed, groupId).fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
     const landed = applyPage(failed, groupId, page([2]), "since");
     expect(followUpRead(landed, groupId).fetches).toEqual([]);
+  });
+
+  it("a head that arrives during a question's page read is still read after an empty page", () => {
+    const start = loaded([1]);
+    const asked = applyEvent(start, event(1, { _tag: "delivery", delivery: questionHead }));
+    expect(asked.fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
+    const announced = applyEvent(
+      asked.state,
+      event(2, { _tag: "message", message: messageHead(2) }),
+    );
+    expect(announced.fetches).toEqual([]);
+    const empty = applyPage(
+      announced.state,
+      groupId,
+      page([], {
+        deliveries: [
+          { ...delivery("d1", 1, "queued", "2026-10-19T00:02:00Z"), wait: question as never },
+        ],
+      }),
+      "since",
+    );
+    expect(seqsOf(empty)).toEqual([1]);
+    expect(followUpRead(empty, groupId).fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
+    const landed = applyPage(followUpRead(empty, groupId).state, groupId, page([2]), "since");
+    expect(seqsOf(landed)).toEqual([1, 2]);
+    expect(followUpRead(landed, groupId).fetches).toEqual([]);
+  });
+
+  it("a failed latest-page read waits longer each time, up to half a minute", () => {
+    expect([1, 2, 3, 4, 5, 6].map(retryDelayMs)).toEqual([
+      2_000, 4_000, 8_000, 16_000, 30_000, 30_000,
+    ]);
   });
 
   it("a page that raced the question is read once more", () => {

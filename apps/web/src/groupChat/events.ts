@@ -15,7 +15,7 @@ import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { environmentSession } from "../state/session";
-import { applyStreamEvent, resyncAll } from "./store";
+import { applyStreamEvent, resyncAll, stopRetries } from "./store";
 
 const GROUP_CHAT_BASE_PATH = "/api/group-chat";
 const RECONNECT_DELAY_MS = 5_000;
@@ -64,10 +64,12 @@ export function useGroupChatEvents(enabled: boolean): void {
     let reconnect: ReturnType<typeof setTimeout> | undefined;
     const close = openEventSource(access, resyncAll, () => {
       close();
+      stopRetries();
       reconnect = setTimeout(reconnectWithFreshTicket, RECONNECT_DELAY_MS);
     });
     return () => {
       close();
+      stopRetries();
       clearTimeout(reconnect);
     };
   }, [enabled, access]);
