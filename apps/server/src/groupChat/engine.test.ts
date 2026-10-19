@@ -837,6 +837,30 @@ it.live(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.live("a secret the agent echoes across the excerpt's end leaves no prefix in the error", () =>
+  Effect.gen(function* () {
+    const { app, group } = yield* setup([alpha]);
+    const key = "straddle-0123456789abcdef0123456789abcdef0123456789abcdef";
+    const echoing = yield* fakeAgent((call) => ({
+      status: 400,
+      body: `${"x".repeat(184)}${String(call.headers["x-api-key"])} rest of the error`,
+    }));
+    const added = yield* app.dispatch({
+      _tag: "member.addExternal",
+      groupId: group.id,
+      handle: "echo",
+      kind: "rest",
+      config: { ...externalConfig(echoing.url), headers: { "x-api-key": key } },
+    });
+    const echo = added._tag === "member" ? added.member : assert.fail("member");
+    yield* send(app, group.id, "hi", [echo.id]);
+    const failed = yield* deliveryOf(app, echo.id, (d) => d.state === "failed");
+    for (let length = 4; length <= key.length; length++) {
+      assert.notInclude(failed.error!, key.slice(0, length), "the stored error repeats the key");
+    }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.live(
   "a webhook callback that beats its own acknowledgement still moves the member's seen mark",
   () =>

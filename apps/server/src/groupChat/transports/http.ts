@@ -166,7 +166,7 @@ export const post = (input: {
             }),
         }),
       );
-      const message = `HTTP ${status}: ${redact(excerpt(text))}`;
+      const message = `HTTP ${status}: ${excerpt(redact(text))}`;
       if (status === 408 || status === 429) {
         return yield* Effect.fail<SendFailure>({ _tag: "transient", reason: message });
       }
