@@ -253,7 +253,7 @@ describe("lanes model", () => {
     });
     const items = packedItems(view);
     const lanesItems = (heights: Record<string, number[]>): LaneItems[] =>
-      [OPERATOR_LANE, alpha.id, beta.id, gamma.id].map((lane) => ({
+      ([OPERATOR_LANE, alpha.id, beta.id, gamma.id] as const).map((lane) => ({
         lane,
         items: items.filter((item) => item.lane === lane),
         heights: heights[lane] ?? [],
@@ -295,7 +295,7 @@ describe("lanes model", () => {
     // starts, and so where the other lanes line up.
     const align = (longCardHeight: number) =>
       alignTurn({
-        lanesItems: [OPERATOR_LANE, alpha.id, beta.id].map((lane) => ({
+        lanesItems: ([OPERATOR_LANE, alpha.id, beta.id] as const).map((lane) => ({
           lane,
           items: items.filter((item) => item.lane === lane),
           heights: lane === alpha.id ? [longCardHeight, 50] : lane === beta.id ? [50] : [30, 30],

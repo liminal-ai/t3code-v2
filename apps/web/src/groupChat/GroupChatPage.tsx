@@ -1,9 +1,11 @@
 import type { GroupChatGroupId } from "@t3tools/contracts";
+import { Columns3Icon, MessageSquareTextIcon } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
+import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -13,6 +15,7 @@ import {
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { useEscapeToGoBack } from "../hooks/useNavigateBack";
+import { cn } from "../lib/utils";
 import {
   attempt,
   dispatchGroupChat,
@@ -23,6 +26,7 @@ import { ChatView } from "./ChatView";
 import { runningDiscussion } from "./discussion/discussionView";
 import { StartDiscussionDialog } from "./discussion/StartDiscussionDialog";
 import { useGroupChatEvents } from "./events";
+import { LanesView } from "./lanes/LanesView";
 import { ManageGroupDialog } from "./ManageGroupDialog";
 import { MemberChip } from "./MemberChip";
 import { type GroupView, leaveGroup, openDeliveryByMember, showGroup, useGroupView } from "./store";
@@ -53,7 +57,47 @@ function notice(snapshot: GroupChatSnapshotState, groupId: string | undefined): 
   }
 }
 
-function GroupHeaderActions({ view }: { view: GroupView }) {
+type ViewKind = "chat" | "lanes";
+
+const viewKindKey = (groupId: GroupChatGroupId) => `t3.groupChat.view.${groupId}`;
+
+const readViewKind = (groupId: GroupChatGroupId) => ({
+  groupId,
+  kind: (localStorage.getItem(viewKindKey(groupId)) === "lanes" ? "lanes" : "chat") as ViewKind,
+});
+
+function ViewToggle({ kind, onChange }: { kind: ViewKind; onChange: (kind: ViewKind) => void }) {
+  return (
+    <ToggleGroup
+      aria-label="Group chat view"
+      variant="segmented"
+      value={[kind]}
+      onValueChange={(next) => {
+        const value = next[0];
+        if (value === "chat" || value === "lanes") onChange(value);
+      }}
+    >
+      <Toggle value="chat" aria-label="Chat" data-testid="view-chat">
+        <MessageSquareTextIcon className="size-3.5" />
+        <span className="hidden sm:inline">Chat</span>
+      </Toggle>
+      <Toggle value="lanes" aria-label="Lanes" data-testid="view-lanes">
+        <Columns3Icon className="size-3.5" />
+        <span className="hidden sm:inline">Lanes</span>
+      </Toggle>
+    </ToggleGroup>
+  );
+}
+
+function GroupHeaderActions({
+  view,
+  viewKind,
+  onViewKind,
+}: {
+  view: GroupView;
+  viewKind: ViewKind;
+  onViewKind: (kind: ViewKind) => void;
+}) {
   const [manageOpen, setManageOpen] = useState(false);
   const [discussOpen, setDiscussOpen] = useState(false);
   const members = [...view.members.values()]
@@ -70,6 +114,7 @@ function GroupHeaderActions({ view }: { view: GroupView }) {
         ))}
       </div>
       <div className="flex shrink-0 items-center gap-2">
+        <ViewToggle kind={viewKind} onChange={onViewKind} />
         <Button
           size="xs"
           variant="ghost-muted"
@@ -105,7 +150,7 @@ function GroupHeaderActions({ view }: { view: GroupView }) {
   );
 }
 
-function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
+function GroupBody({ groupId, viewKind }: { groupId: GroupChatGroupId; viewKind: ViewKind }) {
   const view = useGroupView(groupId);
   const [failed, setFailed] = useState<{
     readonly groupId: GroupChatGroupId;
@@ -141,7 +186,23 @@ function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
       </Empty>
     );
   }
-  return <ChatView key={groupId} groupId={groupId} view={view} />;
+  const lanes = viewKind === "lanes";
+  // The chat stays mounted under the lanes, so switching back lands where the reader was.
+  return (
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <div
+        className={cn("absolute inset-0 flex min-h-0 min-w-0 flex-col", lanes && "invisible")}
+        inert={lanes || undefined}
+      >
+        <ChatView key={groupId} groupId={groupId} view={view} />
+      </div>
+      {lanes ? (
+        <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
+          <LanesView key={groupId} groupId={groupId} view={view} />
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
@@ -152,6 +213,15 @@ export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
     snapshot.status === "ready" ? snapshot.groups.find((entry) => entry.id === groupId) : undefined;
   const view = useGroupView((groupId ?? "") as GroupChatGroupId);
   const shown = notice(snapshot, groupId);
+  const [viewKind, setViewKind] = useState(() => readViewKind((groupId ?? "") as GroupChatGroupId));
+  if (viewKind.groupId !== (groupId ?? "")) {
+    setViewKind(readViewKind((groupId ?? "") as GroupChatGroupId));
+  }
+  const switchView = (kind: ViewKind) => {
+    if (groupId === undefined) return;
+    localStorage.setItem(viewKindKey(groupId as GroupChatGroupId), kind);
+    setViewKind({ groupId: groupId as GroupChatGroupId, kind });
+  };
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none isolate">
       <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background text-foreground">
@@ -171,7 +241,9 @@ export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
               </>
             )}
           </WorkspaceBreadcrumb>
-          {group !== undefined && view !== null ? <GroupHeaderActions view={view} /> : null}
+          {group !== undefined && view !== null ? (
+            <GroupHeaderActions view={view} viewKind={viewKind.kind} onViewKind={switchView} />
+          ) : null}
         </WorkspacePageHeader>
         {shown !== null ? (
           <Empty className="flex-1">
@@ -180,7 +252,7 @@ export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
             </EmptyHeader>
           </Empty>
         ) : group === undefined ? null : (
-          <GroupBody groupId={group.id} />
+          <GroupBody groupId={group.id} viewKind={viewKind.kind} />
         )}
       </div>
     </SidebarInset>
