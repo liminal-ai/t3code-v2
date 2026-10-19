@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { FetchHttpClient } from "effect/http";
 import { AsyncResult } from "effect/reactivity";
+import { useEffect } from "react";
 
 import { environmentCatalog } from "../connection/catalog";
 import { connectionAtomRuntime } from "../connection/runtime";
@@ -24,6 +25,7 @@ export type GroupChatSnapshotState =
   | { readonly status: "failed"; readonly message: string };
 
 const SNAPSHOT_TIMEOUT_MS = 15_000;
+const SNAPSHOT_RETRY_DELAY_MS = 5_000;
 
 const notServedByT3 = {
   status: "failed",
@@ -77,6 +79,14 @@ export function refreshGroupChatSnapshot(): void {
 
 export function useGroupChatSnapshot(): GroupChatSnapshotState {
   const result = useAtomValue(groupChatSnapshotAtom);
+  // The event stream opens only once a snapshot is ready, so nothing else
+  // would refetch after a transient failure while the connection stays up.
+  const retryDue = AsyncResult.isFailure(result) && !result.waiting;
+  useEffect(() => {
+    if (!retryDue) return;
+    const retry = setTimeout(refreshGroupChatSnapshot, SNAPSHOT_RETRY_DELAY_MS);
+    return () => clearTimeout(retry);
+  }, [retryDue]);
   if (AsyncResult.isSuccess(result)) return result.value;
   if (AsyncResult.isFailure(result)) {
     return { status: "failed", message: "Group chat could not reach this server." };
