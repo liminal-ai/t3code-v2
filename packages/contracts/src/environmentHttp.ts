@@ -58,9 +58,14 @@ import {
 } from "./orchestrationV2.ts";
 import {
   GroupChatCommand,
+  GroupChatDispatchResult,
   GroupChatGroupParams,
   GroupChatGroupSnapshot,
+  GroupChatInvalid,
+  GroupChatNotFound,
+  GroupChatRefused,
   GroupChatSnapshot,
+  GroupChatThreadRefused,
   GroupChatUnavailable,
 } from "./groupChat.ts";
 import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
@@ -761,6 +766,10 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
 
 const GroupChatErrors = [
   GroupChatUnavailable,
+  GroupChatNotFound,
+  GroupChatInvalid,
+  GroupChatRefused,
+  GroupChatThreadRefused,
   EnvironmentScopeRequiredError,
   EnvironmentInternalError,
 ] as const;
@@ -785,6 +794,7 @@ class EnvironmentGroupChatHttpApi extends HttpApiGroup.make("groupChat")
     HttpApiEndpoint.post("dispatch", "/api/group-chat/dispatch", {
       headers: OptionalBearerHeaders,
       payload: GroupChatCommand,
+      success: GroupChatDispatchResult,
       error: GroupChatErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   ) {}
