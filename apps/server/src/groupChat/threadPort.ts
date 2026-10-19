@@ -152,8 +152,10 @@ export class GroupChatThreadPort extends Context.Service<
     readonly pendingRequest: (
       threadId: ThreadId,
     ) => Effect.Effect<GroupChatPendingInput | null, PortReadError>;
+    /** Run and request changes; with `messages`, also every change to a message of the thread. */
     readonly changes: (
       threadId: ThreadId,
+      options?: { readonly messages?: boolean },
     ) => Effect.Effect<Stream.Stream<void, PortReadError>, PortReadError, Scope.Scope>;
     readonly cancelQueued: (input: {
       readonly threadId: ThreadId;
@@ -439,22 +441,20 @@ const make = Effect.gen(function* () {
       turnItemTypes: ["user_input_request"],
     }).pipe(Effect.map((projection) => pendingInputOf(projection, null)));
 
-  const changes: GroupChatThreadPort["Service"]["changes"] = (threadId) =>
+  const changes: GroupChatThreadPort["Service"]["changes"] = (threadId, options) =>
     threads.getThreadEventSequence(threadId).pipe(
       Effect.mapError(readError(threadId)),
-      Effect.map((afterSequence) =>
-        Stream.merge(
-          threads.streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" }),
-          threads.streamStoredEventsFrom({
-            threadId,
-            afterSequence,
-            eventType: "runtime-request.updated",
-          }),
+      Effect.map((afterSequence) => {
+        const events = (eventType: "run.updated" | "runtime-request.updated" | "message.updated") =>
+          threads.streamStoredEventsFrom({ threadId, afterSequence, eventType });
+        return Stream.merge(
+          Stream.merge(events("run.updated"), events("runtime-request.updated")),
+          options?.messages === true ? events("message.updated") : Stream.empty,
         ).pipe(
           Stream.mapError(readError(threadId)),
           Stream.map(() => undefined),
-        ),
-      ),
+        );
+      }),
     );
 
   const dispatch = <A, E>(

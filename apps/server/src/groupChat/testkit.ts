@@ -38,6 +38,8 @@ import {
 
 export type SendFault =
   | { readonly type: "reject"; readonly reason: string }
+  /** Rejected only once the send passed the gate, as T3 answers after the operator's Stop. */
+  | { readonly type: "reject-late"; readonly reason: string }
   | { readonly type: "commit-silently" }
   | { readonly type: "lose" };
 
@@ -49,6 +51,8 @@ export interface FakeRun {
   readonly messageId: MessageId;
   text: string;
   reply: string | null;
+  /** The last assistant message is still being written, as T3 reports right after the run ends. */
+  streaming: boolean;
   readonly continuationOf: RunId | null;
   readonly own: boolean;
   readonly ended: Deferred.Deferred<void>;
@@ -69,6 +73,10 @@ export interface FakeThread {
   sendReached: Deferred.Deferred<void> | null;
   sendGate: Deferred.Deferred<void> | null;
   readGate: Deferred.Deferred<void> | null;
+  /** Resolved when a thread read reaches the gate, so a test knows the lane is parked there. */
+  readReached: Deferred.Deferred<void> | null;
+  /** How many times the port read this thread's reply. */
+  replyReads: number;
   readonly faults: SendFault[];
   /** Reads of the thread's runs that fail before one succeeds, as a transient store fault would. */
   readFaults: number;
@@ -110,7 +118,10 @@ export interface FakeThreads {
     threadId: ThreadId,
     runId: RunId,
     reply: string | null,
+    streaming?: boolean,
   ) => Effect.Effect<void>;
+  /** Closes a reply that `complete` left streaming. */
+  readonly settleReply: (threadId: ThreadId, runId: RunId) => Effect.Effect<void>;
   readonly interrupt: (
     threadId: ThreadId,
     runId: RunId,
@@ -155,6 +166,8 @@ export const makeFakeThreads = Effect.sync(() => {
         sendReached: null,
         sendGate: null,
         readGate: null,
+        readReached: null,
+        replyReads: 0,
         faults: [],
         readFaults: 0,
         cancelFaults: 0,
@@ -190,6 +203,7 @@ export const makeFakeThreads = Effect.sync(() => {
       messageId: input.messageId,
       text: input.text,
       reply: null,
+      streaming: false,
       continuationOf: input.continuationOf,
       own: input.own,
       ended,
@@ -213,10 +227,12 @@ export const makeFakeThreads = Effect.sync(() => {
     run: FakeRun,
     status: OrchestrationV2Run["status"],
     reply: string | null,
+    streaming = false,
   ) =>
     Effect.gen(function* () {
       run.status = status;
       run.reply = reply;
+      run.streaming = streaming;
       yield* Deferred.succeed(run.ended, undefined);
       yield* signal(t);
       yield* startNextQueued(t);
@@ -264,6 +280,7 @@ export const makeFakeThreads = Effect.sync(() => {
     thread: (threadId) =>
       Effect.gen(function* () {
         const t = yield* thread(threadId);
+        if (t.readReached !== null) yield* Deferred.succeed(t.readReached, undefined);
         if (t.readGate !== null) yield* Deferred.await(t.readGate);
         return t.deleted
           ? null
@@ -291,6 +308,9 @@ export const makeFakeThreads = Effect.sync(() => {
         if (t.sendGate !== null) yield* Deferred.await(t.sendGate);
         if (fault?.type === "commit-silently") {
           return yield* new PortUnknown({ threadId: t.id, cause: "response lost" });
+        }
+        if (fault?.type === "reject-late") {
+          return yield* new PortRejected({ threadId: t.id, reason: fault.reason });
         }
         return {
           runId: run.id,
@@ -326,7 +346,8 @@ export const makeFakeThreads = Effect.sync(() => {
     readReply: (input) =>
       Effect.map(thread(input.threadId), (t) => {
         const run = t.runs.find((candidate) => candidate.id === input.runId);
-        return run?.reply == null ? null : { text: run.reply, streaming: false };
+        t.replyReads += 1;
+        return run?.reply == null ? null : { text: run.reply, streaming: run.streaming };
       }),
     blockingRun: (input) =>
       Effect.map(thread(input.threadId), (t): PortBlocking | null => {
@@ -415,8 +436,15 @@ export const makeFakeThreads = Effect.sync(() => {
         yield* signal(t);
         return run;
       }),
-    complete: (threadId, runId, reply) =>
-      Effect.flatMap(thread(threadId), (t) => end(t, runOf(t, runId), "completed", reply)),
+    complete: (threadId, runId, reply, streaming = false) =>
+      Effect.flatMap(thread(threadId), (t) =>
+        end(t, runOf(t, runId), "completed", reply, streaming),
+      ),
+    settleReply: (threadId, runId) =>
+      Effect.flatMap(thread(threadId), (t) => {
+        runOf(t, runId).streaming = false;
+        return signal(t);
+      }),
     interrupt: (threadId, runId, reply = null) =>
       Effect.flatMap(thread(threadId), (t) => end(t, runOf(t, runId), "interrupted", reply)),
     failRun: (threadId, runId) =>

@@ -3,13 +3,17 @@ import { assert, it } from "@effect/vitest";
 import {
   type GroupChatGroupId,
   type GroupChatMemberId,
+  GroupChatStreamEvent,
   type RuntimeRequestId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 
-import type { DeliveryRow } from "./store.ts";
+import type { DeliveryRow, GroupChatStore } from "./store.ts";
 import { type App, boot, type FakeThreads, makeFakeThreads, tempBaseDir } from "./testkit.ts";
 
 const alpha = ThreadId.make("alpha");
@@ -427,6 +431,10 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         member(alpha).id,
         (d) => d.wait?._tag === "queue_held",
       );
+      if (held.wait?._tag === "queue_held") {
+        assert.match(held.wait.note, /Resume thread/);
+        assert.match(held.wait.note, /whole queue/);
+      }
       assert.strictEqual(held.state, "queued");
       yield* fake.hold(alpha, false);
       yield* awaitState(app, member(alpha).id, "running");
@@ -630,6 +638,174 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       yield* reply(fake, alpha, "done");
       yield* awaitState(app, member(alpha).id, "replied");
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("a claim that finds its delivery already sent leaves it alone", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "stale claim", [alpha]);
+      const gate = yield* Deferred.make<void>();
+      const thread = yield* fake.thread(alpha);
+      thread.readGate = gate;
+      thread.readReached = yield* Deferred.make<void>();
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      const pending = yield* awaitState(app, member(alpha).id, "pending");
+      yield* Deferred.await(thread.readReached);
+      // A second lane fiber, had one slipped in, would have sent this by now and be following it.
+      const run = yield* fake.startOwnRun(alpha, "the envelope, sent by someone else");
+      yield* app.store.transaction((tx) =>
+        tx.updateDelivery(pending.id, {
+          dispatch: "accepted",
+          state: "running",
+          runId: run.id,
+          messageId: run.messageId,
+        }),
+      );
+      yield* Deferred.succeed(gate, undefined);
+      yield* fake.complete(alpha, run.id, "the reply");
+      const done = yield* awaitDelivery(app, member(alpha).id, (d) => d.state !== "running");
+      assert.strictEqual(done.state, "replied", done.error ?? "");
+      assert.strictEqual((yield* fake.sends(alpha)).length, 0, "the lane never sent it again");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("Stop keeps cancelling a queued envelope after a transient cancel failure", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "cancel retry", [alpha]);
+      const own = yield* fake.startOwnRun(alpha);
+      yield* send(app, group.id, "must not run after Stop", [member(alpha).id]);
+      const queued = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.wait?._tag === "busy_with_own_run",
+      );
+      (yield* fake.thread(alpha)).cancelFaults = 1;
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: queued.id });
+      const envelopeRun = () =>
+        Effect.map(fake.thread(alpha), (t) => t.runs.find((r) => r.id === queued.runId)!);
+      for (let looks = 0; looks < 20 && (yield* envelopeRun()).status !== "cancelled"; looks++) {
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("10 millis");
+      }
+      assert.strictEqual((yield* envelopeRun()).status, "cancelled", "the cancel was retried");
+      yield* fake.complete(alpha, own.id, "own finished");
+      const ended = yield* app.until(
+        app.store.delivery(queued.id),
+        (d) => d?.state === "cancelled",
+      );
+      assert.strictEqual(ended!.error, "stopped by operator");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a reply still streaming when its run ends is taken once the message closes", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "streaming", [alpha]);
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      const running = yield* awaitState(app, member(alpha).id, "running");
+      yield* fake.complete(alpha, running.runId!, "the whole reply", true);
+      while ((yield* fake.thread(alpha)).replyReads === 0) yield* Effect.yieldNow;
+      yield* fake.settleReply(alpha, running.runId!);
+      const replied = yield* awaitState(app, member(alpha).id, "replied");
+      const message = (yield* app.store.message(replied.replyMessageId!))!;
+      assert.strictEqual(message.text, "the whole reply");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("stream events carry heads, so a long message and its delivery stay under 4 KiB", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "events", [alpha]);
+      const seen: GroupChatStreamEvent[] = [];
+      yield* app.engine.events.pipe(
+        Stream.runForEach((event) => Effect.sync(() => void seen.push(event))),
+        Effect.forkChild,
+      );
+      yield* Effect.yieldNow;
+      yield* send(app, group.id, "x".repeat(12_000), [member(alpha).id]);
+      yield* awaitState(app, member(alpha).id, "running");
+      yield* reply(fake, alpha, "short");
+      yield* awaitState(app, member(alpha).id, "replied");
+      const encode = Schema.encodeEffect(Schema.fromJsonString(GroupChatStreamEvent));
+      assert.isTrue(
+        seen.some((e) => e._tag === "message") && seen.some((e) => e._tag === "delivery"),
+      );
+      for (const event of seen) {
+        assert.isBelow(Buffer.byteLength(yield* encode(event)), 4096, `${event._tag} event`);
+        if (event._tag === "message") assert.isFalse("text" in event.message);
+        if (event._tag === "delivery") assert.isFalse("envelope" in event.delivery);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a crash right after a Stop's own transaction commits leaves the lane paused at boot",
+    () =>
+      Effect.gen(function* () {
+        const { fake, baseDir, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "crash pause", [alpha]);
+        yield* send(app, group.id, "first", [member(alpha).id]);
+        const first = yield* awaitState(app, member(alpha).id, "running");
+        yield* send(app, group.id, "second", [member(alpha).id]);
+        const second = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.wait?._tag === "lane_busy",
+        );
+        // The process dies the instant the transaction that closes the stopped run has committed.
+        const committed = yield* Deferred.make<void>();
+        const store = app.store as { transaction: GroupChatStore["transaction"] };
+        const original = store.transaction;
+        store.transaction = (body) =>
+          original(body).pipe(
+            Effect.tap(() =>
+              Effect.flatMap(app.store.delivery(first.id), (d) =>
+                d?.state === "failed"
+                  ? Deferred.succeed(committed, undefined).pipe(Effect.andThen(Effect.never))
+                  : Effect.void,
+              ),
+            ),
+          );
+        yield* fake.interrupt(alpha, first.runId!);
+        yield* Deferred.await(committed);
+        yield* app.shutdown;
+        const again = yield* boot(fake, baseDir);
+        yield* again.until(again.store.delivery(first.id), (d) => d?.state === "failed");
+        const held = (yield* again.store.delivery(second.id))!;
+        assert.strictEqual(held.state, "pending");
+        assert.strictEqual(held.wait?._tag, "stopped_in_t3");
+        assert.strictEqual((yield* fake.sends(alpha)).length, 1, "the boot released nothing");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "Stop during an in-flight dispatch that T3 then rejects ends cancelled, not failed",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "withdraw reject", [alpha]);
+        const thread = yield* fake.thread(alpha);
+        thread.sendReached = yield* Deferred.make<void>();
+        thread.sendGate = yield* Deferred.make<void>();
+        thread.faults.push({ type: "reject-late", reason: "the provider is disabled" });
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        yield* Deferred.await(thread.sendReached);
+        const inFlight = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.dispatch === "sending",
+        );
+        yield* app.dispatch({ _tag: "delivery.stop", deliveryId: inFlight.id });
+        yield* Deferred.succeed(thread.sendGate, undefined);
+        const ended = yield* app.until(
+          app.store.delivery(inFlight.id),
+          (d) => d?.dispatch === "rejected",
+        );
+        assert.strictEqual(ended!.state, "cancelled");
+        assert.strictEqual(ended!.error, "the provider is disabled");
+        assert.strictEqual(ended!.withdrawn, "stopped by operator");
+      }).pipe(Effect.scoped),
   );
 
   it.effect("a multi-select answer reaches T3 as the array the member asked for", () =>
@@ -991,7 +1167,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
   );
 
   it.effect(
-    "a reply cut short by Stop still pauses the lane, so the next round waits for Retry",
+    "a reply cut short by Stop is noted but not counted, and the round waits for Retry",
     () =>
       Effect.gen(function* () {
         const { fake, app } = yield* setup;
@@ -1010,24 +1186,26 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         yield* reply(fake, alpha, "A-R1");
         yield* awaitState(app, member(alpha).id, "replied");
         yield* fake.interrupt(bravo, b.runId!, "B-R1, cut");
-        const cut = yield* app.until(app.store.delivery(b.id), (d) => d?.state === "replied");
-        assert.match((yield* app.store.message(cut!.replyMessageId!))!.text, /run interrupted/);
-        yield* app.until(app.store.discussion(discussion.id), (d) => d?.round === 2);
-        const held = yield* awaitDelivery(
-          app,
-          member(bravo).id,
-          (d) => d.round === 2 && d.wait?._tag === "stopped_in_t3",
+        const stopped = yield* app.until(app.store.delivery(b.id), (d) => d?.state === "failed");
+        assert.strictEqual(stopped!.wait?._tag, "stopped_in_t3");
+        assert.isNull(stopped!.replyMessageId, "a stopped reply is never counted");
+        const partial = (yield* app.store.messages(group.id)).find((m) =>
+          m.text.includes("B-R1, cut"),
         );
-        assert.strictEqual(held.state, "pending");
-        yield* awaitDelivery(app, member(alpha).id, (d) => d.round === 2 && d.state === "running");
+        assert.isDefined(partial, "what was written so far stays visible");
+        assert.match(partial!.text, /run interrupted/);
+        assert.isTrue(partial!.late);
+        assert.strictEqual((yield* app.store.discussion(discussion.id))!.round, 1, "round waits");
         assert.strictEqual((yield* fake.sends(bravo)).length, 1, "Stop starts no new run on bravo");
-        yield* app.dispatch({ _tag: "delivery.retry", deliveryId: held.id });
+        assert.strictEqual((yield* fake.sends(alpha)).length, 1, "and no round two for alpha");
+        yield* app.dispatch({ _tag: "delivery.retry", deliveryId: b.id });
         yield* awaitDelivery(
           app,
           member(bravo).id,
-          (d) => d.id === held.id && d.state === "running",
+          (d) => d.state === "running" && d.attempt === 2,
         );
-        assert.strictEqual((yield* fake.sends(bravo)).length, 2);
+        yield* reply(fake, bravo, "B-R1 again");
+        yield* app.until(app.store.discussion(discussion.id), (d) => d?.round === 2);
       }).pipe(Effect.scoped),
   );
 

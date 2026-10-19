@@ -29,7 +29,9 @@ import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
+import * as Option from "effect/Option";
 import * as Result from "effect/Result";
+import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -73,7 +75,10 @@ const TERMINAL = new Set<PortRun["status"]>([
 ]);
 
 const MAX_RESENDS = 1;
-const STREAMING_LOOKS = 20;
+/** A boot cancels a withdrawn queued envelope again, so the retries here only need to outlast a blip. */
+const CANCEL_RETRIES = 5;
+const QUEUE_HELD_NOTE =
+  "T3 is holding this thread's queue after a Stop. Resume thread in T3 releases the whole queue, this envelope included, in the order it was queued.";
 
 /** How long a lane waits after a read or store failure before it looks at its envelope again. */
 export class RetryDelay extends Context.Reference<Duration.Input>(
@@ -162,10 +167,13 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         const existing = lanes.get(threadId);
         if (existing !== undefined) return existing;
-        const created: Lane = {
-          threadId,
-          signal: yield* Queue.make<void>({ capacity: 1, strategy: "sliding" }),
-        };
+        const signal = yield* Queue.make<void>({ capacity: 1, strategy: "sliding" });
+        // Two first sends to one thread can both get past the lookup, and a second lane fiber
+        // would send every envelope twice. After the yield the map decides, and the loser uses
+        // the winner's lane.
+        const raced = lanes.get(threadId);
+        if (raced !== undefined) return raced;
+        const created: Lane = { threadId, signal };
         lanes.set(threadId, created);
         yield* Effect.forkIn(runLane(created), scope);
         return created;
@@ -331,7 +339,9 @@ export const makeEngine = (store: GroupChatStore) =>
       store.transaction((tx) =>
         Effect.gen(function* () {
           const d = yield* tx.delivery(deliveryId);
-          if (d === null) return null;
+          // Only an unsent envelope is this lane's to claim. Anything else moved since the lane
+          // looked: Stop cancelled it, or it already went out and is being followed.
+          if (d === null || d.state !== "pending" || d.dispatch !== "unsent") return null;
           const member = yield* tx.member(d.memberId);
           const discussion = d.discussionId === null ? null : yield* tx.discussion(d.discussionId);
           const gate = gateSend({
@@ -379,7 +389,7 @@ export const makeEngine = (store: GroupChatStore) =>
         const threadId = member.thread.threadId;
         const projectId = yield* projectIdOf(threadId);
         if (projectId === null) {
-          yield* fail(d.id, "the member's thread no longer exists", "rejected");
+          yield* fail(d.id, "the member's thread no longer exists", { dispatch: "rejected" });
           return;
         }
         const claimed = yield* claim(d.id);
@@ -435,7 +445,7 @@ export const makeEngine = (store: GroupChatStore) =>
           return;
         }
         if ((yield* port.thread(member.thread.threadId)) === null) {
-          yield* fail(d.id, "the member's thread no longer exists", "rejected");
+          yield* fail(d.id, "the member's thread no longer exists", { dispatch: "rejected" });
           return;
         }
         const found = yield* port.findMessage({
@@ -485,7 +495,7 @@ export const makeEngine = (store: GroupChatStore) =>
         }
         return ownPending?._tag === "approval" ? { _tag: "waiting_on_approval" } : null;
       }
-      if (view.queueHeld) return { _tag: "queue_held" };
+      if (view.queueHeld) return { _tag: "queue_held", note: QUEUE_HELD_NOTE };
       if (blocking === null) return null;
       if (blocking.pending?._tag === "question") {
         return {
@@ -652,43 +662,61 @@ export const makeEngine = (store: GroupChatStore) =>
           yield* onTerminal(d.id);
           return;
         }
-        let reply = yield* port.readReply({ threadId, runId: run.id });
-        // The adapter closes a message before it ends the run, so a streaming one here is a
-        // moment away from done. A bounded wait is cheaper than following a terminal run.
-        for (let looks = 0; reply?.streaming === true && looks < STREAMING_LOOKS; looks++) {
-          yield* Effect.sleep(retryDelay);
-          reply = yield* port.readReply({ threadId, runId: run.id });
-        }
+        const reply = yield* finishedReply(threadId, run.id);
         const text = reply === null || reply.text.trim() === "" ? null : reply.text;
-        const note =
-          reply?.streaming === true
-            ? "\n\n_(the reply was still streaming when the run ended)_"
-            : "";
-        // The pause is written in the transaction that closes the delivery, so a boot that looks
-        // at an interrupted run again cannot undo a Retry the operator already gave.
-        const pause = run.status === "interrupted" ? threadId : null;
         if (run.status === "completed") {
           if (text === null) yield* fail(d.id, "the run ended without a text reply");
-          else yield* ingestReply(d.id, `${text}${note}`);
+          else yield* ingestReply(d.id, text);
+        } else if (run.status === "interrupted") {
+          // A reply the operator stopped is never counted: the lane pauses, a discussion round
+          // waits, and Retry asks again. What was written so far stays visible as a note.
+          yield* fail(d.id, "T3 run interrupted", {
+            wait: { _tag: "stopped_in_t3" },
+            pause: threadId,
+            partial: text === null ? null : `${text}\n\n_(run interrupted)_`,
+          });
         } else if (text !== null) {
-          yield* ingestReply(d.id, `${text}${note}\n\n_(run ${run.status})_`, pause);
+          yield* ingestReply(d.id, `${text}\n\n_(run ${run.status})_`);
         } else {
-          yield* fail(
-            d.id,
-            `T3 run ${run.status}`,
-            undefined,
-            pause === null ? null : { _tag: "stopped_in_t3" },
-            pause,
-          );
+          yield* fail(d.id, `T3 run ${run.status}`);
         }
       });
+
+    // The adapter closes the last message after the run's own event, so a terminal run can read
+    // as still streaming for a moment. The reply is taken only once the message is closed, and
+    // the wait is on the thread's message events, never on a timer.
+    const finishedReply = (
+      threadId: ThreadId,
+      runId: RunId,
+    ): Effect.Effect<
+      { readonly text: string; readonly streaming: boolean } | null,
+      PortReadError
+    > =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const changes = yield* port.changes(threadId, { messages: true });
+          const first = yield* port.readReply({ threadId, runId });
+          if (first?.streaming !== true) return first;
+          const closed = yield* changes.pipe(
+            Stream.mapEffect(() => port.readReply({ threadId, runId })),
+            Stream.takeUntil((reply) => reply?.streaming !== true),
+            Stream.runLast,
+          );
+          return Option.getOrElse(closed, () => first);
+        }),
+      );
 
     const fail = (
       deliveryId: GroupChatDeliveryId,
       error: string,
-      dispatch?: GroupChatDelivery["dispatch"],
-      wait: GroupChatWait | null = null,
-      pause: ThreadId | null = null,
+      options: {
+        readonly dispatch?: GroupChatDelivery["dispatch"];
+        readonly wait?: GroupChatWait | null;
+        /** The thread whose lane pauses, written in this same transaction. */
+        readonly pause?: ThreadId | null;
+        /** Text the run produced before it ended, kept as a note that counts for nothing. */
+        readonly partial?: string | null;
+      } = {},
     ): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         const failed = yield* store.transaction((tx) =>
@@ -698,10 +726,28 @@ export const makeEngine = (store: GroupChatStore) =>
             const updated = yield* tx.updateDelivery(deliveryId, {
               state: d.withdrawn === null ? "failed" : "cancelled",
               error,
-              wait,
-              ...(dispatch === undefined ? {} : { dispatch }),
+              wait: options.wait ?? null,
+              ...(options.dispatch === undefined ? {} : { dispatch: options.dispatch }),
             });
-            if (pause !== null) yield* markPaused(tx, pause);
+            if (options.partial != null) {
+              const member = yield* tx.member(d.memberId);
+              yield* tx.appendMessage({
+                groupId: d.groupId,
+                author: { _tag: "member", memberId: d.memberId },
+                kind: d.discussionId === null ? "reply" : "discussion_reply",
+                text: options.partial,
+                displayText:
+                  member === null
+                    ? options.partial
+                    : stripLeadingHandle(options.partial, [member.handle, ...member.handleHistory]),
+                turnKey: d.turnKey,
+                triggerMessageId: d.triggerMessageId,
+                discussionId: d.discussionId,
+                round: d.round,
+                late: true,
+              });
+            }
+            if (options.pause != null) yield* markPaused(tx, options.pause);
             yield* tx.touchMember(d.memberId);
             return updated;
           }),
@@ -712,7 +758,6 @@ export const makeEngine = (store: GroupChatStore) =>
     const ingestReply = (
       deliveryId: GroupChatDeliveryId,
       raw: string,
-      pause: ThreadId | null = null,
     ): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         const stored = yield* store.transaction((tx) =>
@@ -757,7 +802,6 @@ export const makeEngine = (store: GroupChatStore) =>
               error: null,
               wait: null,
             });
-            if (pause !== null) yield* markPaused(tx, pause);
             yield* tx.touchMember(d.memberId);
             return reply;
           }),
@@ -799,7 +843,30 @@ export const makeEngine = (store: GroupChatStore) =>
     ): Effect.Effect<void> =>
       Effect.forEach(
         targets.flatMap((t) => (t === null ? [] : [t])),
-        (target) => port.cancelQueued(target).pipe(Effect.ignoreCause({ log: true })),
+        (target) =>
+          port.cancelQueued(target).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.interrupt
+                : // A cancel that never reached T3 would let a stopped envelope run once the
+                  // thread frees up, so it is tried again while the operator's Stop returns.
+                  Effect.logWarning("group chat cancel did not reach T3; retrying", {
+                    ...target,
+                    cause,
+                  }).pipe(
+                    Effect.andThen(
+                      port.cancelQueued(target).pipe(
+                        Effect.retry({
+                          times: CANCEL_RETRIES,
+                          schedule: Schedule.spaced(retryDelay),
+                        }),
+                        Effect.ignoreCause({ log: true }),
+                        Effect.forkIn(scope),
+                      ),
+                    ),
+                  ),
+            ),
+          ),
         { discard: true },
       );
 
@@ -1453,21 +1520,24 @@ export const makeEngine = (store: GroupChatStore) =>
       Stream.mapEffect(({ seq, change }): Effect.Effect<GroupChatStreamEvent, StoreError> => {
         switch (change._tag) {
           case "delivery":
-            return Effect.map(decorateRead(change.delivery), (delivery) => ({
-              _tag: "delivery",
-              seq,
-              delivery,
-            }));
+            return Effect.map(decorateRead(change.delivery), (decorated) => {
+              const { envelope: _envelope, sentText: _sentText, ...delivery } = decorated;
+              return { _tag: "delivery", seq, delivery };
+            });
           case "group":
             return Effect.succeed({ _tag: "group", seq, group: change.group });
           case "group.deleted":
             return Effect.succeed({ _tag: "group.deleted", seq, groupId: change.groupId });
           case "member":
             return Effect.succeed({ _tag: "member", seq, member: change.member });
-          case "message":
-            return Effect.succeed({ _tag: "message", seq, message: change.message });
-          case "discussion":
-            return Effect.succeed({ _tag: "discussion", seq, discussion: change.discussion });
+          case "message": {
+            const { text: _text, displayText: _displayText, ...message } = change.message;
+            return Effect.succeed({ _tag: "message", seq, message });
+          }
+          case "discussion": {
+            const { topic: _topic, ...discussion } = change.discussion;
+            return Effect.succeed({ _tag: "discussion", seq, discussion });
+          }
         }
       }),
     );

@@ -75,15 +75,12 @@ export const GroupChatMessageKind = Schema.Literals([
 ]);
 export type GroupChatMessageKind = typeof GroupChatMessageKind.Type;
 
-export const GroupChatMessage = Schema.Struct({
+const messageHeadFields = {
   id: GroupChatMessageId,
   groupId: GroupChatGroupId,
   seq: PositiveInt,
   author: GroupChatAuthor,
   kind: GroupChatMessageKind,
-  text: Schema.String,
-  /** The text to render: a member's leading self-label and a counted sign-off line are gone. */
-  displayText: Schema.String,
   recipients: Schema.Array(GroupChatMemberId),
   turnKey: Schema.String,
   triggerMessageId: Schema.NullOr(GroupChatMessageId),
@@ -92,6 +89,16 @@ export const GroupChatMessage = Schema.Struct({
   signOff: Schema.Boolean,
   late: Schema.Boolean,
   createdAt: IsoDateTime,
+};
+/** A message without its body, as the event stream carries it. The group page has the body. */
+export const GroupChatMessageHead = Schema.Struct(messageHeadFields);
+export type GroupChatMessageHead = typeof GroupChatMessageHead.Type;
+
+export const GroupChatMessage = Schema.Struct({
+  ...messageHeadFields,
+  text: Schema.String,
+  /** The text to render: a member's leading self-label and a counted sign-off line are gone. */
+  displayText: Schema.String,
 });
 export type GroupChatMessage = typeof GroupChatMessage.Type;
 
@@ -124,7 +131,8 @@ export type GroupChatPendingInput = typeof GroupChatPendingInput.Type;
 export const GroupChatWait = Schema.Union([
   Schema.TaggedStruct("lane_busy", { deliveryId: GroupChatDeliveryId }),
   Schema.TaggedStruct("busy_with_own_run", { runId: RunId }),
-  Schema.TaggedStruct("queue_held", {}),
+  /** `note` tells the operator that Resume in T3 releases the thread's whole queue, this envelope included. */
+  Schema.TaggedStruct("queue_held", { note: Schema.String }),
   Schema.TaggedStruct("waiting_on_question", {
     requestId: RuntimeRequestId,
     questions: Schema.Array(GroupChatQuestion),
@@ -158,7 +166,7 @@ export const GroupChatDispatchState = Schema.Literals([
 ]);
 export type GroupChatDispatchState = typeof GroupChatDispatchState.Type;
 
-export const GroupChatDelivery = Schema.Struct({
+const deliveryHeadFields = {
   id: GroupChatDeliveryId,
   groupId: GroupChatGroupId,
   memberId: GroupChatMemberId,
@@ -170,13 +178,10 @@ export const GroupChatDelivery = Schema.Struct({
   dispatch: GroupChatDispatchState,
   /** Rises only on an operator Retry after a definite rejection or an ended run. */
   attempt: PositiveInt,
-  envelope: Schema.String,
   fromSeq: NonNegativeInt,
   toSeq: NonNegativeInt,
   runId: Schema.NullOr(RunId),
   messageId: Schema.NullOr(MessageId),
-  /** The text that ran when it differs from the envelope, because it was edited in T3. */
-  sentText: Schema.NullOr(Schema.String),
   wait: Schema.NullOr(GroupChatWait),
   /** Set when the operator no longer wants the reply while T3 still has the envelope. */
   withdrawn: Schema.NullOr(Schema.String),
@@ -185,17 +190,26 @@ export const GroupChatDelivery = Schema.Struct({
   retryable: Schema.Boolean,
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
+};
+/** A delivery without the envelope it sent, as the event stream carries it. */
+export const GroupChatDeliveryHead = Schema.Struct(deliveryHeadFields);
+export type GroupChatDeliveryHead = typeof GroupChatDeliveryHead.Type;
+
+export const GroupChatDelivery = Schema.Struct({
+  ...deliveryHeadFields,
+  envelope: Schema.String,
+  /** The text that ran when it differs from the envelope, because it was edited in T3. */
+  sentText: Schema.NullOr(Schema.String),
 });
 export type GroupChatDelivery = typeof GroupChatDelivery.Type;
 
 export const GroupChatDiscussionState = Schema.Literals(["running", "ended"]);
 export type GroupChatDiscussionState = typeof GroupChatDiscussionState.Type;
 
-export const GroupChatDiscussion = Schema.Struct({
+const discussionHeadFields = {
   id: GroupChatDiscussionId,
   groupId: GroupChatGroupId,
   participants: Schema.Array(GroupChatMemberId),
-  topic: Schema.String,
   maxRounds: PositiveInt,
   round: PositiveInt,
   state: GroupChatDiscussionState,
@@ -204,7 +218,12 @@ export const GroupChatDiscussion = Schema.Struct({
   signedOff: Schema.Record(Schema.String, PositiveInt),
   createdAt: IsoDateTime,
   endedAt: Schema.NullOr(IsoDateTime),
-});
+};
+/** A discussion without its topic, as the event stream carries it. */
+export const GroupChatDiscussionHead = Schema.Struct(discussionHeadFields);
+export type GroupChatDiscussionHead = typeof GroupChatDiscussionHead.Type;
+
+export const GroupChatDiscussion = Schema.Struct({ ...discussionHeadFields, topic: Schema.String });
 export type GroupChatDiscussion = typeof GroupChatDiscussion.Type;
 
 export const GroupChatSnapshot = Schema.Struct({
@@ -277,14 +296,18 @@ export const GroupChatDispatchResult = Schema.Union([
 ]);
 export type GroupChatDispatchResult = typeof GroupChatDispatchResult.Type;
 
-/** One changed row per event. `seq` rises per server boot, so a client can spot a gap and refetch. */
+/**
+ * One changed row per event, without bodies: a message's text, a delivery's envelope and a
+ * discussion's topic come from the group page. `seq` rises per server boot, so a client can spot a
+ * gap and refetch.
+ */
 export const GroupChatStreamEvent = Schema.Union([
   Schema.TaggedStruct("group", { seq: PositiveInt, group: GroupChatGroup }),
   Schema.TaggedStruct("group.deleted", { seq: PositiveInt, groupId: GroupChatGroupId }),
   Schema.TaggedStruct("member", { seq: PositiveInt, member: GroupChatMember }),
-  Schema.TaggedStruct("message", { seq: PositiveInt, message: GroupChatMessage }),
-  Schema.TaggedStruct("delivery", { seq: PositiveInt, delivery: GroupChatDelivery }),
-  Schema.TaggedStruct("discussion", { seq: PositiveInt, discussion: GroupChatDiscussion }),
+  Schema.TaggedStruct("message", { seq: PositiveInt, message: GroupChatMessageHead }),
+  Schema.TaggedStruct("delivery", { seq: PositiveInt, delivery: GroupChatDeliveryHead }),
+  Schema.TaggedStruct("discussion", { seq: PositiveInt, discussion: GroupChatDiscussionHead }),
 ]);
 export type GroupChatStreamEvent = typeof GroupChatStreamEvent.Type;
 
