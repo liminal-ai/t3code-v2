@@ -905,6 +905,46 @@ it.live(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
+it.live(
+  "a webhook callback that lands after its acknowledgement timed out still moves the member's seen mark",
+  () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeThreads;
+      const app = yield* boot(fake, yield* tempBaseDir, {
+        external: { webhookPostTimeout: "300 millis", backoffBase: "1 minute" },
+      });
+      const created = yield* app.dispatch({
+        _tag: "group.create",
+        title: "Crew",
+        threadIds: [alpha],
+      });
+      const group = created._tag === "group" ? created.group : assert.fail("group");
+      let calls = 0;
+      const agent = yield* fakeAgent(() =>
+        calls++ === 0 ? { status: 202, body: "{}", delayMs: 1_500 } : { status: 202, body: "{}" },
+      );
+      const hook = yield* addExternal(app, group.id, "hook", "webhook", agent.url);
+      yield* send(app, group.id, "hi", [hook.id]);
+      const timedOut = yield* deliveryOf(app, hook.id, (d) => d.wait?._tag === "retrying");
+      assert.strictEqual(yield* app.engine.landReply(timedOut.id, "answer anyway"), "landed");
+      yield* send(app, group.id, "again", [hook.id]);
+      yield* deliveryOf(
+        app,
+        hook.id,
+        (d) => d.triggerMessageId !== timedOut.triggerMessageId && d.dispatch === "accepted",
+      );
+      const second = JSON.parse(agent.calls[1]!.body).text as string;
+      assert.notInclude(second, "ABOUT THIS GROUP CHAT", "the intro is not repeated");
+      assert.notInclude(second, "| hi\n", "the old message is not repeated");
+      assert.include(second, "| again");
+      const first = (yield* app.store.deliveriesOfMember(hook.id)).find(
+        (d) => d.id === timedOut.id,
+      )!;
+      assert.strictEqual(first.dispatch, "accepted");
+      assert.strictEqual(first.state, "replied");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
 it.live("a REST reply is stored in the same transaction as its acceptance", () =>
   Effect.gen(function* () {
     const { app, group } = yield* setup([alpha]);

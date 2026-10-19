@@ -597,35 +597,16 @@ export const makeEngine = (store: GroupChatStore) =>
           yield* retryOrFailExternal(d.id, sent.failure);
           return;
         }
-        const acceptedAt = DateTime.formatIso(yield* DateTime.now);
         const outcome = sent.success;
-        // Acceptance, the seen mark and a REST reply commit together, so a crash between them
-        // cannot lose the reply. A webhook callback can land before the acknowledgement returns,
-        // so the bookkeeping runs whenever it has not run yet and only an open delivery moves on.
         const landed = yield* store.transaction((tx) =>
           Effect.gen(function* () {
             const current = yield* tx.delivery(d.id);
             if (current === null) return "not_found" as const;
-            const unrecorded = current.dispatch === "sending";
-            const acceptance: DeliveryPatch = unrecorded
-              ? {
-                  dispatch: "accepted",
-                  external: { ...(current.external ?? EXTERNAL_START), acceptedAt },
-                }
-              : {};
-            if (unrecorded) {
-              yield* tx.updateMember(current.memberId, {
-                seenSeq: current.toSeq,
-                introduced: true,
-                ...(current.roster === null ? {} : { toldRoster: current.roster }),
-              });
-            }
+            const acceptance = yield* acceptOnceIn(tx, current);
             if (outcome._tag === "replied") {
-              const stored = yield* ingestReplyIn(tx, d.id, capUntrusted(outcome.text), acceptance);
-              if (stored === "duplicate" && unrecorded) yield* tx.updateDelivery(d.id, acceptance);
-              return stored;
+              return yield* ingestReplyIn(tx, d.id, capUntrusted(outcome.text), acceptance ?? {});
             }
-            if (unrecorded) {
+            if (acceptance !== null) {
               yield* tx.updateDelivery(d.id, {
                 ...acceptance,
                 ...(OPEN.has(current.state) ? { state: "running", error: null, wait: null } : {}),
@@ -635,6 +616,27 @@ export const makeEngine = (store: GroupChatStore) =>
           }),
         );
         if (landed === "landed") yield* onTerminal(d.id);
+      });
+
+    const acceptOnceIn = (
+      tx: Tx,
+      d: DeliveryRow,
+    ): Effect.Effect<DeliveryPatch | null, StoreError> =>
+      Effect.gen(function* () {
+        if (d.dispatch === "accepted") return null;
+        const member = yield* tx.member(d.memberId);
+        if (member !== null && d.toSeq >= member.seenSeq) {
+          yield* tx.updateMember(d.memberId, {
+            seenSeq: d.toSeq,
+            introduced: true,
+            ...(d.roster === null ? {} : { toldRoster: d.roster }),
+          });
+        }
+        const acceptedAt = DateTime.formatIso(yield* DateTime.now);
+        return {
+          dispatch: "accepted",
+          external: { ...(d.external ?? EXTERNAL_START), acceptedAt },
+        };
       });
 
     /**
@@ -2210,8 +2212,11 @@ export const makeEngine = (store: GroupChatStore) =>
           Effect.gen(function* () {
             const d = yield* tx.delivery(deliveryId);
             const member = d === null ? null : yield* tx.member(d.memberId);
-            if (member === null || member.removedAt !== null) return "not_found" as const;
-            return yield* ingestReplyIn(tx, deliveryId, capUntrusted(text));
+            if (d === null || member === null || member.removedAt !== null) {
+              return "not_found" as const;
+            }
+            const acceptance = yield* acceptOnceIn(tx, d);
+            return yield* ingestReplyIn(tx, d.id, capUntrusted(text), acceptance ?? {});
           }),
         );
         if (stored === "landed") yield* onTerminal(deliveryId);
