@@ -202,8 +202,9 @@ the text. Drag a row by its handle to reorder it, use the handle's arrow keys, p
 to a steer, or remove it.
 
 If the server restarts, saved queued messages keep their order and are held. When
-**Settings → General → Continue threads after restarts** is on, the interrupted turn continues on
-its own and the held messages resume after it, in order, with no press. A queue that **Stop** held,
+**Settings → General → Continue threads after restarts** on web and desktop, or
+**Settings → Maintenance → Continue after restart** on mobile, is on, the interrupted turn continues
+on its own and the held messages resume after it, in order, with no press. A queue that **Stop** held,
 or one behind a turn the server chose not to continue, still waits. Press **Resume** in an empty
 composer on web or desktop, or **Resume queue** in the queue sheet on mobile, to continue it. You
 can edit, reorder, or remove held messages without starting them.
