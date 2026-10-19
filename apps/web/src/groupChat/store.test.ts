@@ -27,6 +27,7 @@ import {
   followUpRead,
   forgetGroup,
   leaveGroup,
+  loadOlder,
   readFailed,
   readGroupView,
   retryDelayMs,
@@ -558,7 +559,7 @@ describe("group chat store, read retries", () => {
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
   });
 
-  it("a catch-up page that lands after the stream closed leaves its follow-up to the reopen", async () => {
+  it("a catch-up page that lands after the stream closed leaves the group to the reopen", async () => {
     const id = groupNamed("grp_inflight_ok");
     api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
     await showGroup(id);
@@ -571,7 +572,7 @@ describe("group chat store, read retries", () => {
     held().resolve(pageFor(id, [2]));
     await vi.advanceTimersByTimeAsync(10_000);
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
-    expect(readGroupView(id)?.highSeq).toBe(2);
+    expect(readGroupView(id)?.highSeq).toBe(1);
     api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1, 2, 3]));
     streamOpened();
     await vi.advanceTimersByTimeAsync(0);
@@ -591,5 +592,93 @@ describe("group chat store, read retries", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
     expect(readGroupView(id)?.highSeq).toBe(1);
+  });
+
+  const renamed = (id: GroupChatGroupPage["group"]["id"], seqs: ReadonlyArray<number>) => ({
+    ...pageFor(id, seqs),
+    group: { ...group, id, title: "After restart" },
+  });
+
+  it("a latest page read before the stream closed does not overwrite the reopen's page", async () => {
+    const id = groupNamed("grp_stale_latest");
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    const held = heldRead();
+    const stale = showGroup(id);
+    streamClosed();
+    api.fetchGroupPage.mockResolvedValueOnce(renamed(id, [1, 2, 3]));
+    streamOpened();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readGroupView(id)?.group.title).toBe("After restart");
+    held().resolve(pageFor(id, [2]));
+    await stale;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
+    expect(readGroupView(id)?.group.title).toBe("After restart");
+    expect(readGroupView(id)?.highSeq).toBe(3);
+  });
+
+  it("a catch-up page read before the stream closed does not overwrite the reopen's page", async () => {
+    const id = groupNamed("grp_stale_catchup");
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    const held = heldRead();
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(0);
+    streamClosed();
+    api.fetchGroupPage.mockResolvedValueOnce(renamed(id, [1, 2, 3]));
+    streamOpened();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readGroupView(id)?.group.title).toBe("After restart");
+    held().resolve(pageFor(id, [2]));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
+    expect(readGroupView(id)?.group.title).toBe("After restart");
+  });
+
+  it("a catch-up read that fails after the stream reopened leaves the reopen's read in flight", async () => {
+    const id = groupNamed("grp_stale_failure");
+    api.fetchGroupPage.mockRejectedValue(new Error("a read the test did not expect"));
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    const stale = heldRead();
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(0);
+    streamClosed();
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1, 2]));
+    streamOpened();
+    await vi.advanceTimersByTimeAsync(0);
+    const current = heldRead();
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(3, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(4);
+    stale().reject(new Error("connection lost"));
+    await vi.advanceTimersByTimeAsync(0);
+    applyStreamEvent(event(2, { _tag: "message", message: messageHead(4, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(4);
+    current().resolve(pageFor(id, [3, 4]));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(4);
+    expect(readGroupView(id)?.highSeq).toBe(4);
+  });
+
+  it("an older page read before the stream closed does not overwrite the reopen's page", async () => {
+    const id = groupNamed("grp_stale_older");
+    api.fetchGroupPage.mockResolvedValueOnce({
+      ...pageFor(id, [201, 202]),
+      olderBefore: 201 as never,
+    });
+    await showGroup(id);
+    const held = heldRead();
+    const older = loadOlder(id);
+    streamClosed();
+    api.fetchGroupPage.mockResolvedValueOnce(renamed(id, [201, 202, 203]));
+    streamOpened();
+    await vi.advanceTimersByTimeAsync(0);
+    held().resolve(pageFor(id, [199, 200]));
+    await expect(older).resolves.toBe(false);
+    expect(readGroupView(id)?.group.title).toBe("After restart");
+    expect(readGroupView(id)?.loadingOlder).toBe(false);
   });
 });
