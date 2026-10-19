@@ -55,6 +55,10 @@ does not wake it; the thread learns about it with your next message.
 A thread is not resumed while it waits for your approval, answer, or secret, or
 while it is archived, snoozed, or settled. After three automatic resumes in a row,
 the thread waits for your next message.
+Messages queued behind the interrupted turn resume on their own once it has continued,
+in the order you queued them. A queue held by **Stop**, by a turn the server chose
+not to continue, or for more than a week, waits for **Resume** in that thread. With the setting off, every queue
+held by a restart waits for **Resume**.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry
 every kind of runtime history forward. Read [Threads from older T3 Code versions](./thread-migration.md)
