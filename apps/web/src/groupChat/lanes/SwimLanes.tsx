@@ -43,10 +43,11 @@ import {
   stepSelection,
 } from "./model";
 
-const SLIDE_MS = 500;
-const LIGHT_LEAD_MS = 260;
-const LIGHT_STEP_MS = 120;
-const LINK_STEP_MS = 120;
+/** The slide, the links and the light-up all end within a second of the selection. */
+const SLIDE_MS = 300;
+const LIGHT_LEAD_MS = 160;
+const LIGHT_STAGGER_MS = 240;
+const LINK_STAGGER_MS = 240;
 const HEADER_PX = 40;
 const OLDER_THRESHOLD_PX = 240;
 
@@ -148,7 +149,7 @@ function drawLinks(links: ReadonlyArray<Link>, box: (id: GroupChatMessageId) => 
       ...link,
       d: path.d,
       length: path.length,
-      delay: i * LINK_STEP_MS,
+      delay: links.length <= 1 ? 0 : (i / (links.length - 1)) * LINK_STAGGER_MS,
       dot: link.style === "primary" ? path.start : null,
     });
   });
@@ -169,7 +170,7 @@ function drawLinkOnMount(element: SVGPathElement | null) {
   }
   const length = Number(element.dataset.length);
   element.animate([{ strokeDashoffset: length }, { strokeDashoffset: 0 }], {
-    duration: element.dataset.style === "primary" ? 380 : 300,
+    duration: element.dataset.style === "primary" ? 300 : 240,
     delay,
     easing: "cubic-bezier(.3,.7,.2,1)",
     fill: "both",
@@ -369,7 +370,7 @@ function layoutSelection(state: LayoutState, inputs: LayoutInputs) {
   state.drawId += 1;
   state.setLightBaseMs(slide ? SLIDE_MS : 0);
   state.scrollPending = "smooth";
-  if (moved || slidingChanged) state.drawPending = true;
+  if (moved || slidingChanged || state.drawPending) state.drawPending = true;
   else draw(state, inputs);
 }
 
@@ -382,7 +383,7 @@ function layoutGeometry(state: LayoutState, inputs: LayoutInputs) {
     clearFocus(state);
     return;
   }
-  if (moved || slidingChanged) state.drawPending = true;
+  if (moved || slidingChanged || state.drawPending) state.drawPending = true;
   else draw(state, inputs);
 }
 
@@ -739,9 +740,12 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   const lightDelayFor = (id: GroupChatMessageId) => {
     const emphasis = focus.emphasis.get(id);
     const index = lightIndex.get(id) ?? 0;
-    return emphasis !== undefined && index > 0 && emphasis !== "selected" && emphasis !== "anchor"
-      ? lightBaseMs + LIGHT_LEAD_MS + (index - 1) * LIGHT_STEP_MS
-      : 0;
+    if (emphasis === undefined || index === 0 || emphasis === "selected" || emphasis === "anchor") {
+      return 0;
+    }
+    const lit = focus.lightOrder.length - 1;
+    const stagger = lit <= 1 ? 0 : ((index - 1) / (lit - 1)) * LIGHT_STAGGER_MS;
+    return lightBaseMs + LIGHT_LEAD_MS + stagger;
   };
 
   const memberLanes = model.lanes.length - 1;
@@ -911,7 +915,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
                             data-item-id={item.id}
                             className={cn(
                               "relative z-[1]",
-                              sliding && "transition-[margin-top] duration-500 ease-drawer",
+                              sliding && "transition-[margin-top] duration-300 ease-drawer",
                             )}
                             style={{
                               marginTop:

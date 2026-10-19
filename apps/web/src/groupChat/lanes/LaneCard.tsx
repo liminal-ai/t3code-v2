@@ -20,7 +20,7 @@ import type { Emphasis } from "./model";
 export const ACCENT = "var(--primary)";
 
 const CARD =
-  "relative w-full cursor-pointer rounded-lg border border-border bg-card px-2.5 pt-2 pb-2.25 text-left text-xs leading-snug text-foreground outline-none transition-[box-shadow,background-color,border-color] duration-300 ease-out focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [overflow-wrap:anywhere]";
+  "relative w-full cursor-pointer rounded-lg border border-border bg-card px-2.5 pt-2 pb-2.25 text-left text-xs leading-snug text-foreground outline-none transition-[box-shadow,background-color,border-color] duration-200 ease-out focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [overflow-wrap:anywhere]";
 
 const EMPHASIS_CLASS: Record<Emphasis, string> = {
   anchor:
@@ -131,7 +131,7 @@ export const LaneCard = memo(function LaneCard({
     >
       <div
         className={cn(
-          "transition-opacity duration-300",
+          "transition-opacity duration-200",
           dimmed ? "opacity-50" : emphasis && CONTENT_OPACITY[emphasis],
         )}
       >
