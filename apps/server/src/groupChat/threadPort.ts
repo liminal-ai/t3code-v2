@@ -2,6 +2,7 @@ import {
   CommandId,
   type EnvironmentId,
   type GroupChatPendingInput,
+  isProviderNativeSubagentThread,
   type MessageId,
   type OrchestrationV2Run,
   type ProjectId,
@@ -41,7 +42,7 @@ export interface PortThread {
   readonly projectId: ProjectId;
   readonly title: string;
   readonly archived: boolean;
-  readonly subagent: boolean;
+  readonly readOnly: boolean;
 }
 
 export interface PortRun {
@@ -297,7 +298,7 @@ const make = Effect.gen(function* () {
                       projectId: thread.projectId,
                       title: thread.title,
                       archived: thread.archivedAt !== null,
-                      subagent: thread.lineage.relationshipToParent === "subagent",
+                      readOnly: isProviderNativeSubagentThread(thread),
                     },
               ),
             ),

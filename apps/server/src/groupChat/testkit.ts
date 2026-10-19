@@ -60,6 +60,8 @@ export interface FakeThread {
   title: string;
   archived: boolean;
   deleted: boolean;
+  /** A provider-native subagent thread, which T3 refuses messages into. */
+  readOnly: boolean;
   settled: boolean;
   settleRefusal: string | null;
   pending: GroupChatPendingInput | null;
@@ -145,6 +147,7 @@ export const makeFakeThreads = Effect.sync(() => {
         title: `${id} thread`,
         archived: false,
         deleted: false,
+        readOnly: false,
         settled: false,
         settleRefusal: null,
         pending: null,
@@ -264,7 +267,7 @@ export const makeFakeThreads = Effect.sync(() => {
         if (t.readGate !== null) yield* Deferred.await(t.readGate);
         return t.deleted
           ? null
-          : { projectId: t.projectId, title: t.title, archived: t.archived, subagent: false };
+          : { projectId: t.projectId, title: t.title, archived: t.archived, readOnly: t.readOnly };
       }),
     send: (input) =>
       Effect.gen(function* () {

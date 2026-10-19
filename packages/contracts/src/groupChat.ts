@@ -378,7 +378,7 @@ export class GroupChatRefused extends Schema.TaggedError<GroupChatRefused>()(
 export class GroupChatThreadRefused extends Schema.TaggedError<GroupChatThreadRefused>()(
   "GroupChatThreadRefused",
   {
-    action: Schema.Literals(["settle", "unsettle", "answer"]),
+    action: Schema.Literals(["add", "settle", "unsettle", "answer"]),
     threadId: ThreadId,
     reason: Schema.String,
   },

@@ -593,6 +593,45 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect("a provider-native subagent thread is refused as a member", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      (yield* fake.thread(bravo)).readOnly = true;
+      const refused = yield* app
+        .dispatch({ _tag: "group.create", title: "ro", threadIds: [alpha, bravo] })
+        .pipe(Effect.flip);
+      assert.strictEqual(refused._tag, "GroupChatThreadRefused");
+      if (refused._tag === "GroupChatThreadRefused") {
+        assert.strictEqual(refused.action, "add");
+        assert.strictEqual(refused.threadId, bravo);
+      }
+      assert.strictEqual((yield* app.store.groups).length, 0, "nothing was created");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a refresh that fails to read the run skips one look and keeps following", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "refresh", [alpha]);
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      yield* awaitState(app, member(alpha).id, "running");
+      (yield* fake.thread(alpha)).readFaults = 1;
+      yield* fake.ask(alpha, "req-r", "First?", ["a"]);
+      yield* fake.ask(alpha, "req-r", "Second?", ["b"]);
+      const waiting = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.wait?._tag === "waiting_on_question",
+      );
+      assert.strictEqual((yield* fake.thread(alpha)).readFaults, 0, "the failed look was taken");
+      if (waiting.wait?._tag === "waiting_on_question") {
+        assert.strictEqual(waiting.wait.questions[0]!.id, "Second?");
+      }
+      yield* reply(fake, alpha, "done");
+      yield* awaitState(app, member(alpha).id, "replied");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("a multi-select answer reaches T3 as the array the member asked for", () =>
     Effect.gen(function* () {
       const { fake, app } = yield* setup;

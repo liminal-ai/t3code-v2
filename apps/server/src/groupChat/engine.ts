@@ -573,10 +573,41 @@ export const makeEngine = (store: GroupChatStore) =>
         }
         const first = yield* step(d.id, threadId);
         if (first === "done") return;
-        const refresher = yield* changes.pipe(
-          Stream.runForEach(() => Effect.asVoid(step(d.id, threadId))),
-          Effect.forkChild,
-        );
+        // The run's verdict comes from awaitRun below, so a refresh that fails must never end the
+        // follow: a read error skips one look, a lost stream is subscribed again after the delay.
+        const refresh = (deliveryId: GroupChatDeliveryId): Effect.Effect<void> =>
+          step(deliveryId, threadId).pipe(
+            Effect.asVoid,
+            Effect.catchCause((cause) =>
+              Cause.hasInterrupts(cause)
+                ? Effect.interrupt
+                : Effect.logError("group chat lane could not refresh a delivery", {
+                    deliveryId,
+                    threadId,
+                    cause,
+                  }),
+            ),
+          );
+        const refresher = yield* Effect.gen(function* () {
+          let stream = changes;
+          for (;;) {
+            const ended = yield* stream.pipe(
+              Stream.runForEach(() => refresh(d.id)),
+              Effect.result,
+            );
+            yield* Effect.logError("group chat lane lost its thread's events; subscribing again", {
+              deliveryId: d.id,
+              threadId,
+              cause: Result.isFailure(ended) ? ended.failure : "the stream ended",
+            });
+            yield* Effect.sleep(retryDelay);
+            const again = yield* Effect.result(port.changes(threadId));
+            if (Result.isSuccess(again)) {
+              stream = again.success;
+              yield* refresh(d.id);
+            }
+          }
+        }).pipe(Effect.forkChild);
         // Only T3's own wait knows whether a restart continuation is still pending for a run that
         // reads as terminal, so the verdict always comes from it, even when the first look ended.
         const awaited = yield* port.awaitRun({ threadId, projectId, runId: d.runId }).pipe(
@@ -962,6 +993,13 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         const info = yield* port.thread(threadId);
         if (info === null) return yield* notFound("thread", threadId);
+        if (info.readOnly) {
+          return yield* new GroupChatThreadRefused({
+            action: "add",
+            threadId,
+            reason: "T3 does not accept messages into a provider-native subagent thread",
+          });
+        }
         const environmentId = yield* port.environmentId;
         return { environmentId, threadId, title: info.title };
       });
