@@ -62,6 +62,15 @@ describe("delivery status", () => {
     expect(replied.retry).toBe(false);
   });
 
+  it("Stop is offered while an envelope has not replied, and not after", () => {
+    for (const state of ["pending", "queued", "running"] as const) {
+      expect(describeDelivery(head({ state })).stoppable).toBe(true);
+    }
+    for (const state of ["replied", "failed", "cancelled"] as const) {
+      expect(describeDelivery(head({ state })).stoppable).toBe(false);
+    }
+  });
+
   it("a held queue shows the engine's note", () => {
     const view = describeDelivery(
       head({

@@ -13,6 +13,7 @@ import {
   applyPage,
   emptyState,
   followUpRead,
+  readFailed,
   type StoreState,
   timelineRows,
 } from "./store";
@@ -307,6 +308,37 @@ describe("group chat store, questions", () => {
     expect(kept?._tag === "waiting_on_question" && kept.questions[0]!.question).toBe(
       "Red or blue?",
     );
+  });
+
+  it("a catch-up page with no messages keeps the timeline and takes the question", () => {
+    const start = loaded([1, 2]);
+    const asked = applyEvent(start, event(1, { _tag: "delivery", delivery: questionHead }));
+    const read = applyPage(
+      asked.state,
+      groupId,
+      page([], {
+        deliveries: [
+          { ...delivery("d1", 1, "queued", "2026-10-19T00:02:00Z"), wait: question as never },
+        ],
+      }),
+      "since",
+    );
+    const view = read.groups.get(groupId)!;
+    expect(seqsOf(read)).toEqual([1, 2]);
+    expect([view.lowSeq, view.highSeq]).toEqual([1, 2]);
+    const wait = view.deliveries.get("d1" as never)!.wait;
+    expect(wait?._tag === "waiting_on_question" && wait.questions.length).toBe(1);
+    expect(followUpRead(read, groupId).fetches).toEqual([]);
+  });
+
+  it("a failed catch-up read is read again", () => {
+    const start = loaded([1]);
+    const asked = applyEvent(start, event(1, { _tag: "message", message: messageHead(2) }));
+    expect(asked.fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
+    const failed = readFailed(asked.state, groupId);
+    expect(followUpRead(failed, groupId).fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
+    const landed = applyPage(failed, groupId, page([2]), "since");
+    expect(followUpRead(landed, groupId).fetches).toEqual([]);
   });
 
   it("a page that raced the question is read once more", () => {

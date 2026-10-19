@@ -130,6 +130,20 @@ export function applyPage(
 ): StoreState {
   const current = state.groups.get(groupId);
   const first = page.messages[0]?.seq ?? null;
+  if (current !== undefined && first === null && current.highSeq > 0) {
+    // A page with no messages still carries the group, its members, discussions and open
+    // deliveries, such as a question a member just asked. What is loaded stays.
+    return withGroup(state, groupId, {
+      ...current,
+      group: page.group,
+      members: byId(page.members),
+      discussions: byId(page.discussions),
+      deliveries: mergeDeliveries(current.deliveries, page.deliveries),
+      olderBefore: mode === "older" ? page.olderBefore : current.olderBefore,
+      fetchingAfter: mode === "older" ? current.fetchingAfter : null,
+      awaitedSeq: mode === "older" ? current.awaitedSeq : 0,
+    });
+  }
   if (current === undefined || pageRelation(current, page, mode) === "replaces") {
     const deliveries =
       current === undefined || mode === "older"
@@ -151,6 +165,18 @@ export function applyPage(
     awaitedSeq: current.awaitedSeq > highSeq ? current.awaitedSeq : 0,
   };
   return withGroup(state, groupId, view);
+}
+
+/** A since read that failed leaves nothing in flight, so the next follow-up reads again. */
+export function readFailed(state: StoreState, groupId: GroupChatGroupId): StoreState {
+  const current = state.groups.get(groupId);
+  return current === undefined
+    ? state
+    : withGroup(state, groupId, {
+        ...current,
+        fetchingAfter: null,
+        awaitedSeq: Math.max(current.awaitedSeq, current.highSeq + 1),
+      });
 }
 
 /** After a since page lands, the read a head asked for while it was out. */
@@ -444,32 +470,32 @@ export function useGroupView(groupId: GroupChatGroupId): GroupView | null {
 const update = (next: (state: StoreState) => StoreState) =>
   appAtomRegistry.set(storeAtom, next(appAtomRegistry.get(storeAtom)));
 
+/** A read that failed is tried again after this long; a tunnel drops requests now and then. */
+const READ_RETRY_DELAY_MS = 2_000;
+
+const runFollowUp = (groupId: GroupChatGroupId) => {
+  const next = followUpRead(appAtomRegistry.get(storeAtom), groupId);
+  appAtomRegistry.set(storeAtom, next.state);
+  runFetches(next.fetches);
+};
+
 const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
   for (const fetch of fetches) {
-    if (fetch._tag === "latest") void loadGroup(fetch.groupId);
-    else {
-      void fetchGroupPage(fetch.groupId, { after: fetch.seq })
-        .then((page) => {
-          update((state) => applyPage(state, fetch.groupId, page, "since"));
-          const next = followUpRead(appAtomRegistry.get(storeAtom), fetch.groupId);
-          appAtomRegistry.set(storeAtom, next.state);
-          runFetches(next.fetches);
-        })
-        .catch(() =>
-          update((state) => {
-            const current = state.groups.get(fetch.groupId);
-            return current === undefined
-              ? state
-              : {
-                  ...state,
-                  groups: new Map(state.groups).set(fetch.groupId, {
-                    ...current,
-                    fetchingAfter: null,
-                  }),
-                };
-          }),
-        );
+    if (fetch._tag === "latest") {
+      void loadGroup(fetch.groupId).catch(() =>
+        setTimeout(() => void loadGroup(fetch.groupId).catch(() => {}), READ_RETRY_DELAY_MS),
+      );
+      continue;
     }
+    void fetchGroupPage(fetch.groupId, { after: fetch.seq })
+      .then((page) => {
+        update((state) => applyPage(state, fetch.groupId, page, "since"));
+        runFollowUp(fetch.groupId);
+      })
+      .catch(() => {
+        update((state) => readFailed(state, fetch.groupId));
+        setTimeout(() => runFollowUp(fetch.groupId), READ_RETRY_DELAY_MS);
+      });
   }
 };
 
@@ -511,7 +537,7 @@ export function resyncAll(): void {
   const state = appAtomRegistry.get(storeAtom);
   appAtomRegistry.set(storeAtom, { ...state, lastEventSeq: null });
   refreshGroupChatSnapshot();
-  for (const groupId of state.groups.keys()) void loadGroup(groupId);
+  runFetches([...state.groups.keys()].map((groupId) => ({ _tag: "latest", groupId })));
 }
 
 export function forgetGroup(groupId: GroupChatGroupId): void {

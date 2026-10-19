@@ -24,6 +24,8 @@ export interface DeliveryView {
   readonly retry: boolean;
   readonly threadLink: boolean;
   readonly answerable: boolean;
+  /** Stop withdraws an envelope that has not replied yet: the way back out of a send. */
+  readonly stoppable: boolean;
 }
 
 const WAIT_LABEL: Record<NonNullable<GroupChatPageDelivery["wait"]>["_tag"], string> = {
@@ -50,8 +52,10 @@ const DISPATCH_LABEL: Record<GroupChatPageDelivery["dispatch"], string> = {
 export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
   const wait = d.wait;
   const retry = d.retryable && (d.state === "failed" || wait?._tag === "stopped_in_t3");
-  if (wait !== null && (d.state === "pending" || d.state === "queued" || d.state === "running")) {
+  const stoppable = d.state === "pending" || d.state === "queued" || d.state === "running";
+  if (wait !== null && stoppable) {
     return {
+      stoppable,
       label: WAIT_LABEL[wait._tag],
       tone:
         wait._tag === "stopped_in_t3" || wait._tag === "queue_held"
@@ -74,6 +78,7 @@ export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
         retry,
         threadLink: false,
         answerable: false,
+        stoppable,
       };
     case "queued":
       return {
@@ -83,6 +88,7 @@ export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
         retry: false,
         threadLink: true,
         answerable: false,
+        stoppable,
       };
     case "running":
       return {
@@ -92,6 +98,7 @@ export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
         retry: false,
         threadLink: false,
         answerable: false,
+        stoppable,
       };
     case "replied":
       return {
@@ -101,6 +108,7 @@ export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
         retry: false,
         threadLink: false,
         answerable: false,
+        stoppable,
       };
     case "failed":
       return {
@@ -110,6 +118,7 @@ export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
         retry,
         threadLink: wait?._tag === "stopped_in_t3",
         answerable: false,
+        stoppable,
       };
     case "cancelled":
       return {
@@ -119,6 +128,7 @@ export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
         retry: false,
         threadLink: false,
         answerable: false,
+        stoppable,
       };
   }
 }
@@ -133,6 +143,17 @@ const TONE_BADGE: Record<DeliveryTone, "outline" | "info" | "warning" | "error" 
 
 const retryDelivery = (d: GroupChatPageDelivery) =>
   attempt(() => dispatchGroupChat({ _tag: "delivery.retry", deliveryId: d.id }));
+
+const stopDelivery = (d: GroupChatPageDelivery) =>
+  attempt(() => dispatchGroupChat({ _tag: "delivery.stop", deliveryId: d.id }));
+
+function StopButton({ delivery }: { delivery: GroupChatPageDelivery }) {
+  return (
+    <Button size="xs" variant="ghost-muted" onClick={() => void stopDelivery(delivery)}>
+      Stop
+    </Button>
+  );
+}
 
 function RetryButton({ delivery }: { delivery: GroupChatPageDelivery }) {
   return (
@@ -197,6 +218,7 @@ export function PendingReply({
           </ThreadLink>
         ) : null}
         {view.retry ? <RetryButton delivery={delivery} /> : null}
+        {view.stoppable ? <StopButton delivery={delivery} /> : null}
       </div>
       {view.detail === null ? null : (
         <p
