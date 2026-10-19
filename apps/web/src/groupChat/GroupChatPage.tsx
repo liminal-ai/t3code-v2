@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
-import { Spinner } from "../components/ui/spinner";
 import {
   WorkspaceBreadcrumb,
   WorkspaceBreadcrumbItem,
@@ -111,7 +110,7 @@ function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
       <Empty className="flex-1">
         <EmptyHeader>
           {failure === null ? (
-            <Spinner size="md" />
+            <EmptyTitle>Reading this group chat…</EmptyTitle>
           ) : (
             <>
               <EmptyTitle>Could not load this group chat</EmptyTitle>

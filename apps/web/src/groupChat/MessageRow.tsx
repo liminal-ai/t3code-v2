@@ -92,17 +92,20 @@ function ReplyContext({
   prompt: GroupChatMessage | undefined;
   onJump: (messageId: GroupChatMessage["id"]) => Promise<void>;
 }) {
-  if (turn === undefined || prompt === undefined || prompt.id === message.id) return null;
+  const promptId = turn?.promptId ?? null;
+  if (turn === undefined || promptId === null || promptId === message.id) return null;
+  // The prompt may sit on a page not loaded yet; the jump pages back to it.
   return (
     <Button
       size="xs"
       variant="link"
       className="max-w-full justify-start"
-      onClick={() => void onJump(prompt.id)}
+      onClick={() => void onJump(promptId)}
       data-testid="reply-context"
     >
       <span className="truncate">
-        ↳ {turn.label} · {plainSnippet(prompt.displayText)}
+        ↳ {turn.label} ·{" "}
+        {prompt === undefined ? "earlier message" : plainSnippet(prompt.displayText)}
       </span>
     </Button>
   );

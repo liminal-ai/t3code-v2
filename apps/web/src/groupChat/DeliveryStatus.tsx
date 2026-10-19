@@ -11,7 +11,6 @@ import {
   DialogPopup,
   DialogTitle,
 } from "../components/ui/dialog";
-import { Spinner } from "../components/ui/spinner";
 import { cn } from "../lib/utils";
 import { attempt, dispatchGroupChat, fetchDelivery } from "./api";
 import { AnswerBox, MemberLabel, ThreadLink } from "./MemberChip";
@@ -44,21 +43,30 @@ const DISPATCH_LABEL: Record<GroupChatDeliveryHead["dispatch"], string> = {
   rejected: "refused",
 };
 
-function describeDelivery(d: GroupChatDeliveryHead): DeliveryView {
+/**
+ * What a delivery shows. A wait reason names the row whatever the run state, since a member can
+ * ask a question mid-run, and every wait but the lane's own points at the member's thread.
+ */
+export function describeDelivery(d: GroupChatDeliveryHead): DeliveryView {
   const wait = d.wait;
   const retry = d.retryable && (d.state === "failed" || wait?._tag === "stopped_in_t3");
+  if (wait !== null && (d.state === "pending" || d.state === "queued" || d.state === "running")) {
+    return {
+      label: WAIT_LABEL[wait._tag],
+      tone:
+        wait._tag === "stopped_in_t3" || wait._tag === "queue_held"
+          ? "warning"
+          : wait._tag === "waiting_on_question" || wait._tag === "waiting_on_approval"
+            ? "info"
+            : "muted",
+      detail: wait._tag === "queue_held" ? wait.note : d.state === "pending" ? d.error : null,
+      retry,
+      threadLink: wait._tag !== "lane_busy",
+      answerable: wait._tag === "waiting_on_question",
+    };
+  }
   switch (d.state) {
     case "pending":
-      if (wait !== null) {
-        return {
-          label: WAIT_LABEL[wait._tag],
-          tone: wait._tag === "stopped_in_t3" ? "warning" : "muted",
-          detail: wait._tag === "queue_held" ? wait.note : d.error,
-          retry,
-          threadLink: wait._tag !== "lane_busy",
-          answerable: wait._tag === "waiting_on_question",
-        };
-      }
       return {
         label: DISPATCH_LABEL[d.dispatch],
         tone: d.dispatch === "unknown" ? "warning" : "muted",
@@ -69,12 +77,12 @@ function describeDelivery(d: GroupChatDeliveryHead): DeliveryView {
       };
     case "queued":
       return {
-        label: wait === null ? "queued in the thread" : WAIT_LABEL[wait._tag],
-        tone: wait?._tag === "queue_held" ? "warning" : "muted",
-        detail: wait?._tag === "queue_held" ? wait.note : null,
+        label: "queued in the thread",
+        tone: "muted",
+        detail: null,
         retry: false,
         threadLink: true,
-        answerable: wait?._tag === "waiting_on_question",
+        answerable: false,
       };
     case "running":
       return {
@@ -96,7 +104,7 @@ function describeDelivery(d: GroupChatDeliveryHead): DeliveryView {
       };
     case "failed":
       return {
-        label: "failed",
+        label: wait?._tag === "stopped_in_t3" ? WAIT_LABEL.stopped_in_t3 : "failed",
         tone: "error",
         detail: d.error,
         retry,
@@ -183,7 +191,6 @@ export function PendingReply({
         <Badge variant={TONE_BADGE[view.tone]} size="sm">
           {view.label}
         </Badge>
-        {delivery.state === "running" ? <Spinner size="xs" /> : null}
         {view.threadLink && member !== undefined ? (
           <ThreadLink member={member} className="text-2xs">
             Open the thread
@@ -222,11 +229,14 @@ function EnvelopeDialog({
 }) {
   const [body, setBody] = useState<GroupChatDelivery | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // The envelope is built at send and the text that ran is stored when the run starts, so a
+  // head that moved while the dialog is open means the body may have too.
   useEffect(() => {
     let alive = true;
     fetchDelivery(delivery.id)
       .then((fetched) => {
-        if (alive) setBody(fetched);
+        // A read that raced an older head is not the body this head describes.
+        if (alive && fetched.updatedAt >= delivery.updatedAt) setBody(fetched);
       })
       .catch((error: unknown) => {
         if (alive) setFailure(error instanceof Error ? error.message : String(error));
@@ -234,7 +244,7 @@ function EnvelopeDialog({
     return () => {
       alive = false;
     };
-  }, [delivery.id]);
+  }, [delivery.id, delivery.updatedAt]);
   const view = describeDelivery(delivery);
   const edited = body !== null && body.sentText !== null;
   return (
@@ -247,11 +257,14 @@ function EnvelopeDialog({
       <DialogPopup className="sm:max-w-2xl">
         <DialogHeader>
           <DialogTitle>Envelope sent to @{member?.handle ?? "removed"}</DialogTitle>
-          <DialogDescription>
-            {view.label}
-            {delivery.attempt > 1 ? ` · attempt ${delivery.attempt}` : ""}
-            {edited ? " · edited in T3" : ""}
-          </DialogDescription>
+          <div className="flex flex-wrap items-center gap-2">
+            <DialogDescription>
+              {view.label}
+              {delivery.attempt > 1 ? ` · attempt ${delivery.attempt}` : ""}
+              {edited ? " · edited in T3" : ""}
+            </DialogDescription>
+            {view.retry ? <RetryButton delivery={delivery} /> : null}
+          </div>
         </DialogHeader>
         <DialogPanel>
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-muted-foreground">
@@ -286,7 +299,7 @@ function EnvelopeDialog({
           </dl>
           {body === null ? (
             failure === null ? (
-              <Spinner size="sm" />
+              <p className="text-xs text-muted-foreground">Reading the envelope…</p>
             ) : (
               <p className="text-sm text-destructive-foreground">{failure}</p>
             )
