@@ -53,7 +53,7 @@ const fetchSnapshot = (prepared: PreparedConnection) =>
     );
   });
 
-export const groupChatSnapshotAtom = connectionAtomRuntime.atom((get) => {
+const groupChatSnapshotAtom = connectionAtomRuntime.atom((get) => {
   const environmentId = get(primaryEnvironmentIdAtom);
   if (environmentId === null) return Effect.never;
   const prepared = Option.getOrNull(

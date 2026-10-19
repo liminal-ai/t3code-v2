@@ -6,7 +6,7 @@ import { HttpRouter, HttpServerResponse } from "effect/http";
 import { authenticateMediaRequest } from "../auth/http.ts";
 import type { GroupChat } from "./layer.ts";
 
-export const GROUP_CHAT_EVENTS_PATH = "/api/group-chat/events";
+const GROUP_CHAT_EVENTS_PATH = "/api/group-chat/events";
 
 /** Proxies close a response that stays silent, so an idle stream still sends a comment line. */
 const KEEPALIVE_INTERVAL = "20 seconds";
