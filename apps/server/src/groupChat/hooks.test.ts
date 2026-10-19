@@ -256,7 +256,8 @@ it.live("a logged path carries no token", () => {
   }).pipe(
     Effect.scoped,
     Effect.provideService(Tracer.Tracer, tracer),
-    Effect.provide(Logger.layer([logger], { mergeWithExisting: false })),
-    Effect.provide(NodeServices.layer),
+    Effect.provide(
+      Layer.merge(Logger.layer([logger], { mergeWithExisting: false }), NodeServices.layer),
+    ),
   );
 });
