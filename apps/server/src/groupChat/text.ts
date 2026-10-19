@@ -1,4 +1,3 @@
-// Labels the envelopes use for non-members. No member may take one as a handle.
 export const RESERVED_HANDLES = new Set([
   "operator",
   "system",
@@ -32,11 +31,6 @@ export function handleProblem(handle: string): string | null {
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-// Agents sometimes open with their own name ("@alpha: ...", "**Alpha:** ...", "Alpha — ..."). The UI already
-// labels every message, so a leading self-label is noise; this removes it for any handle the member has had.
-// Only a real label counts: the name followed by a colon (spaces before it or not), or by a dash with whitespace
-// on both sides. "alpha-beta rocks", "Alpha-1 is done" and "inbound-pipeline is ..." are words, and stay, and a
-// colon that starts "://" opens a URI ("alpha://service/path"), not a label.
 export function stripLeadingHandle(text: string, handles: ReadonlyArray<string>): string {
   const names = handles.filter(Boolean).map(escapeRe);
   if (names.length === 0) return text;
@@ -49,18 +43,16 @@ export function stripLeadingHandle(text: string, handles: ReadonlyArray<string>)
   return out.trim() ? out : text;
 }
 
-// One line, no control characters, bounded length: for operator- or agent-supplied names in headers.
+const isControl = (ch: string) => ch.charCodeAt(0) < 32 || ch.charCodeAt(0) === 127;
+
 export function oneLine(s: string, max = 80): string {
-  const flat = s
-    // eslint-disable-next-line no-control-regex -- removing control characters is the point.
-    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+  const flat = Array.from(s, (ch) => (isControl(ch) ? " " : ch))
+    .join("")
     .replace(/\s+/g, " ")
     .trim();
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-// The one sign-off rule the discussion instructions state: the marker alone on the last non-empty line,
-// as prose. A marker line that sits inside an unclosed code fence or HTML comment is quoted text.
 export const SIGN_OFF = "[[SIGN-OFF]]";
 export function isSignOff(text: string): boolean {
   const lines = text.split(/\r?\n/);
@@ -79,7 +71,6 @@ export function isSignOff(text: string): boolean {
   }
   return !fence && !comment;
 }
-// Removes the sign-off line (only when it counted) for display.
 export function withoutSignOffLine(text: string): string {
   const lines = text.replace(/\s+$/, "").split(/\r?\n/);
   if (lines.at(-1)?.trim() === SIGN_OFF) lines.pop();

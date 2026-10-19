@@ -16,7 +16,6 @@ const encoder = new TextEncoder();
 const keepalive = encoder.encode(": keepalive\n\n");
 const encodeEvent = Schema.encodeSync(Schema.fromJsonString(GroupChatStreamEvent));
 
-/** One SSE frame per changed row, with the sequence as the event id. Never a whole snapshot. */
 const frame = (event: GroupChatStreamEvent) =>
   encoder.encode(`id: ${event.seq}\ndata: ${encodeEvent(event)}\n\n`);
 

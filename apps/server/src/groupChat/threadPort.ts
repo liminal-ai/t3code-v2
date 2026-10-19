@@ -1,8 +1,3 @@
-/**
- * The one file in the module that reaches T3's threads. Everything goes through the server's own
- * `ThreadManagementService`, never a second instance of it, because the workflow refusal lives in
- * the server's `ThreadHooks`. `integration.test.ts` pins every call made here.
- */
 import {
   CommandId,
   type EnvironmentId,
@@ -27,11 +22,9 @@ import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagementService from "../orchestration-v2/ThreadManagementService.ts";
 
-/** Group chat's own messages carry this prefix, so a queue can tell them from the operator's. */
 export const GROUP_CHAT_MESSAGE_PREFIX = "message:group-chat:";
 const IDLE_PING_PREFIX = "server:thread-workflow-idle:";
 
-/** The ids one dispatch of one envelope uses. A resend reuses them; an operator Retry raises the attempt. */
 export const dispatchIds = (input: {
   readonly groupMessageId: string;
   readonly memberId: string;
@@ -76,7 +69,6 @@ export class PortThreadNotFound extends Schema.TaggedError<PortThreadNotFound>()
   }
 }
 
-/** T3 refused the envelope for good. Only an operator Retry, as a new attempt, sends again. */
 export class PortRejected extends Schema.TaggedError<PortRejected>()("GroupChatPortRejected", {
   threadId: ThreadId,
   reason: Schema.String,
@@ -86,7 +78,6 @@ export class PortRejected extends Schema.TaggedError<PortRejected>()("GroupChatP
   }
 }
 
-/** The dispatch may or may not have committed. The derived message id in the thread settles it. */
 export class PortUnknown extends Schema.TaggedError<PortUnknown>()("GroupChatPortUnknown", {
   threadId: ThreadId,
   cause: Schema.Defect(),
@@ -96,7 +87,6 @@ export class PortUnknown extends Schema.TaggedError<PortUnknown>()("GroupChatPor
   }
 }
 
-/** T3 refused to settle, unsettle or answer. `reason` is T3's sentence, verbatim. */
 export class PortRefused extends Schema.TaggedError<PortRefused>()("GroupChatPortRefused", {
   threadId: ThreadId,
   action: Schema.Literals(["settle", "unsettle", "answer"]),
@@ -131,7 +121,6 @@ export class GroupChatThreadPort extends Context.Service<
       { readonly runId: RunId; readonly delivery: "started" | "queued" },
       PortRejected | PortUnknown
     >;
-    /** The message the derived id names, if the dispatch committed. */
     readonly findMessage: (input: {
       readonly threadId: ThreadId;
       readonly messageId: MessageId;
@@ -139,23 +128,22 @@ export class GroupChatThreadPort extends Context.Service<
       { readonly runId: RunId | null; readonly text: string } | null,
       PortReadError
     >;
-    /** The run, following restart continuations to the newest one. */
     readonly run: (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
     }) => Effect.Effect<PortRun | null, PortReadError>;
-    /** Waits until the run, or the continuation that replaced it, ends. */
     readonly awaitRun: (input: {
       readonly threadId: ThreadId;
       readonly projectId: ProjectId;
       readonly runId: RunId;
     }) => Effect.Effect<PortRun | null, PortThreadNotFound | PortReadError>;
-    /** The last assistant message of a run, or `unfinished` while it still streams. */
     readonly readReply: (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
-    }) => Effect.Effect<{ readonly text: string } | "unfinished" | null, PortReadError>;
-    /** What a queued run waits behind. */
+    }) => Effect.Effect<
+      { readonly text: string; readonly streaming: boolean } | null,
+      PortReadError
+    >;
     readonly blockingRun: (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
@@ -163,7 +151,6 @@ export class GroupChatThreadPort extends Context.Service<
     readonly pendingRequest: (
       threadId: ThreadId,
     ) => Effect.Effect<GroupChatPendingInput | null, PortReadError>;
-    /** One signal per run or request change on the thread, from the moment this effect runs. */
     readonly changes: (
       threadId: ThreadId,
     ) => Effect.Effect<Stream.Stream<void, PortReadError>, PortReadError, Scope.Scope>;
@@ -329,8 +316,6 @@ const make = Effect.gen(function* () {
         Effect.catchTags({
           ThreadManagementThreadArchivedError: (error) =>
             new PortRejected({ threadId: input.threadId, reason: error.message }),
-          ThreadManagementThreadNotFoundError: (error) =>
-            new PortRejected({ threadId: input.threadId, reason: error.message }),
           ThreadManagementProviderInstanceDisabledError: (error) =>
             new PortRejected({ threadId: input.threadId, reason: error.message }),
           OrchestratorSubagentThreadReadOnlyError: (error) =>
@@ -405,8 +390,7 @@ const make = Effect.gen(function* () {
             (a, b) => DateTime.toEpochMillis(a.createdAt) - DateTime.toEpochMillis(b.createdAt),
           )
           .at(-1);
-        if (last === undefined) return null;
-        return last.streaming ? "unfinished" : { text: last.text };
+        return last === undefined ? null : { text: last.text, streaming: last.streaming };
       }),
     );
 

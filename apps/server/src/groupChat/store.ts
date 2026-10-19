@@ -187,7 +187,6 @@ const MessageRow = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
-/** A delivery as stored. `roster` is what the envelope told the member, applied when its run starts. */
 const DeliveryRow = Schema.Struct({
   id: GroupChatDeliveryId,
   groupId: GroupChatGroupId,
@@ -389,10 +388,6 @@ export interface Writes {
 export type Tx = Reads & Writes;
 
 export interface GroupChatStore extends Reads {
-  /**
-   * Every write happens here. The sqlite client serializes write transactions on one lock, so a
-   * claim and a Stop never interleave, and the changes publish only after the commit.
-   */
   readonly transaction: <A, E>(
     body: (tx: Tx) => Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | StoreError>;

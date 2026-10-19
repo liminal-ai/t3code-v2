@@ -29,8 +29,6 @@ const words = (title: string) =>
 
 const contentWord = (w: string) => !STOP_WORDS.has(w) && /[a-z]/.test(w);
 
-// The handle comes from the first word that tells this title apart from the others in the group
-// ("Verify R4 Alpha" next to "Verify R4 Beta" gives "alpha"); a lone title uses its first content word.
 export function deriveHandle(
   title: string,
   taken: Iterable<string>,
@@ -66,24 +64,21 @@ const MAX_CHARS = 40_000;
 export interface EnvelopeInput {
   group: GroupChatGroup;
   member: GroupChatMember;
-  members: ReadonlyArray<GroupChatMember>; // all members incl. removed, for resolving authors
-  unseen: ReadonlyArray<GroupChatMessage>; // seq > member.seenSeq, already excluding the member's own messages, oldest first
-  expectedRepliers: ReadonlyArray<string>; // member ids expected to reply to this envelope
-  footer: string; // what the member should do now
+  members: ReadonlyArray<GroupChatMember>;
+  unseen: ReadonlyArray<GroupChatMessage>;
+  expectedRepliers: ReadonlyArray<string>;
+  footer: string;
   discussion?: {
     topic: string;
     round: number;
     maxRounds: number;
     participants: ReadonlyArray<string>;
   } | null;
-  nonce?: string; // tests pass a fixed tag; otherwise a fresh random one per envelope
-  repeated?: ReadonlySet<string>; // message ids included again because a discussion round requires them
-  required?: ReadonlySet<string>; // message ids that trimming may never drop (previous-round discussion replies)
+  nonce?: string;
+  repeated?: ReadonlySet<string>;
+  required?: ReadonlySet<string>;
 }
 
-// Any single section other than the newest is cut to this many characters, with a note saying so. The newest
-// message (the one to answer) gets far more room, but is still bounded head and tail, so an enormous
-// message cannot make an envelope unbounded.
 export const SECTION_MAX = 6_000;
 export const LAST_SECTION_MAX = 40_000;
 
@@ -96,15 +91,12 @@ function sender(m: GroupChatMessage, byId: Map<string, GroupChatMember>): string
   return mem ? `@${mem.handle}` : "a removed member";
 }
 
-// Keeps the head and the tail of an over-long message, so a reply's conclusion (and any sign-off) survives.
 export function shorten(text: string, max: number): string {
   const tail = Math.floor(max / 3);
   const head = max - tail;
   return `${text.slice(0, head)}\n[shortened by the group-chat app: ${text.length - max} of ${text.length} characters left out here; the start and the end are shown]\n${text.slice(-tail)}`;
 }
 
-// Message text as it appears inside a section: every line behind "| ", so no line of content can sit
-// where a boundary line sits. Members' leading self-labels are dropped; over-long text is cut.
 function quote(m: GroupChatMessage, byId: Map<string, GroupChatMember>, max: number): string {
   let text = m.text.trim();
   if (m.author._tag === "member") {
@@ -120,8 +112,6 @@ function quote(m: GroupChatMessage, byId: Map<string, GroupChatMember>, max: num
 
 const newNonce = () => randomHex(4);
 
-// The envelope is framed with a tag chosen when it is built. Message text was written before the tag
-// existed, so nothing inside a message can produce a real boundary or sender line.
 export function renderEnvelope(input: EnvelopeInput): string {
   const { group, member, members, discussion } = input;
   const byId = new Map<string, GroupChatMember>(members.map((m) => [m.id, m]));
@@ -129,8 +119,6 @@ export function renderEnvelope(input: EnvelopeInput): string {
   const resolve = (ids: ReadonlyArray<string>) => ids.flatMap((id) => byId.get(id) ?? []);
   const expected = resolve(input.expectedRepliers);
 
-  // Long messages are cut first, then the oldest sections are dropped while the backlog is too big.
-  // The newest message and every required discussion reply always stay.
   const required = input.required ?? new Set<string>();
   const last = input.unseen.at(-1)?.id;
   const keep = (m: GroupChatMessage) => m.id === last || required.has(m.id);

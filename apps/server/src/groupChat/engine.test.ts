@@ -1,4 +1,3 @@
-/** The group rules: catch-up envelopes, handles, replies, and discussion rounds. */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -56,7 +55,6 @@ const startDiscussion = (
 const roundDeliveries = (app: App, discussionId: GroupChatDiscussionId, round: number) =>
   app.store.deliveriesOfRound(discussionId, round);
 
-/** Waits until the member's envelope for `trigger` runs, then answers it. */
 const answer = (
   app: App,
   fake: FakeThreads,
@@ -258,7 +256,6 @@ it.layer(NodeServices.layer)("group chat engine rules", (it) => {
         const discussion = yield* startDiscussion(app, group.id, [a, b], "pick", 2);
         yield* sentEnvelope(app, fake, bravo, b);
         yield* answer(app, fake, alpha, a, "A-ROUND-1");
-        // The operator writes to B while B's round-1 reply is still outstanding: B sees A-ROUND-1 now.
         yield* send(app, group.id, "note to B", [b]);
         yield* answer(app, fake, bravo, b, "B-ROUND-1");
         const noteEnvelope = yield* sentEnvelope(app, fake, bravo, b);

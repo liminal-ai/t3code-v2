@@ -1,5 +1,3 @@
-// Discussion round rules and delivery gates, as pure functions. The engine reads the store, calls these,
-// and writes back what they decide; nothing here touches the store or the network.
 import type {
   GroupChatDeliveryState,
   GroupChatDiscussionState,
@@ -15,14 +13,18 @@ export type RoundDecision =
 
 const OPEN: ReadonlySet<GroupChatDeliveryState> = new Set(["pending", "queued", "running"]);
 
-// What happens to a running discussion given its current round's deliveries. Only members still in the
-// group count: a removed participant neither holds the round nor signs off.
 export function decideRound(input: {
   round: number;
   maxRounds: number;
   stillIn: ReadonlyArray<string>;
   signedOff: Readonly<Record<string, number>>;
-  deliveries: ReadonlyArray<{ memberId: string; state: GroupChatDeliveryState; signOff: boolean }>;
+  deliveries: ReadonlyArray<{
+    memberId: string;
+    state: GroupChatDeliveryState;
+    signOff: boolean;
+    /** A participant whose reply the operator stopped in T3 holds the round until Retry or Stop. */
+    paused?: boolean;
+  }>;
 }): RoundDecision | { action: "end"; reason: string } {
   const { round, maxRounds, stillIn } = input;
   if (stillIn.length < 2) {
@@ -35,7 +37,9 @@ export function decideRound(input: {
     };
   }
   const mine = input.deliveries.filter((d) => stillIn.includes(d.memberId));
-  if (mine.length === 0 || mine.some((d) => OPEN.has(d.state))) return { action: "wait" };
+  if (mine.length === 0 || mine.some((d) => OPEN.has(d.state) || d.paused === true)) {
+    return { action: "wait" };
+  }
   const signedOff = { ...input.signedOff };
   for (const d of mine) if (d.signOff) signedOff[d.memberId] = round;
   if (stillIn.every((id) => signedOff[id] === round))
@@ -49,8 +53,6 @@ export function decideRound(input: {
   return { action: "next", round: round + 1, signedOff };
 }
 
-// Whether a reply signs off: only a participant still in the group, replying to the open round of a
-// running discussion, under the stated marker rule. Anything else is an ordinary (possibly late) message.
 export function countsAsSignOff(input: {
   discussion: { state: GroupChatDiscussionState; round: number } | null;
   replyRound: number | null;
@@ -67,7 +69,6 @@ export function countsAsSignOff(input: {
   );
 }
 
-// The last check before any request leaves, evaluated in the same transaction that claims the delivery.
 export function gateSend(input: {
   state: GroupChatDeliveryState;
   withdrawn: string | null;
@@ -85,15 +86,8 @@ export function gateSend(input: {
   return { send: true };
 }
 
-export type WithdrawAction =
-  // Never left: cancel it, nothing to follow.
-  | "cancel"
-  // T3 holds it in the thread's queue: cancel that queued run.
-  | "cancel-queued"
-  // In flight, outcome unknown, running, or already over: leave it, its reply lands as a late message.
-  | "keep";
+export type WithdrawAction = "cancel" | "cancel-queued" | "keep";
 
-// What Stop or a member's removal does to one delivery.
 export function onWithdraw(input: {
   state: GroupChatDeliveryState;
   dispatch: GroupChatDispatchState;

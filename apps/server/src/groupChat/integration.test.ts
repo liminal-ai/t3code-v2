@@ -1,9 +1,3 @@
-/**
- * The module on the real orchestration graph, the way `threadWorkflow/integration.test.ts` builds
- * it: orchestrator, thread management, project service, effect worker, projections and the thread
- * lock are the production layers. Only the provider adapter, git and workspace services are stubbed.
- * These cases pin every call `threadPort.ts` makes, so an upstream change shows up here.
- */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -98,10 +92,8 @@ const layerProviderInstances = Layer.succeed(ProviderInstanceRegistry.ProviderIn
   subscribeChanges: Effect.never,
 });
 
-/** Gates the real port's steps so a Stop or a crash can land between them. */
 interface Gates {
   thread: Deferred.Deferred<void> | null;
-  /** Completed once the real send has committed, before `afterSend` holds the answer back. */
   sent: Deferred.Deferred<void> | null;
   afterSend: Deferred.Deferred<void> | null;
   beforeCancel: Deferred.Deferred<void> | null;
@@ -242,7 +234,6 @@ const createThread = (threadId: ThreadId, projectId: ProjectId) =>
     }),
   );
 
-/** A turn the operator starts from the composer. The stub adapter leaves it `starting`. */
 const operatorTurn = (threadId: ThreadId, key: string) =>
   Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
     orchestrator.dispatch({
@@ -399,7 +390,6 @@ const awaitDelivery = (
     (d) => d!,
   );
 
-/** The stub provider never starts a turn, so the test stamps the start the provider would. */
 const startEnvelope = (app: App, threadId: ThreadId, memberId: GroupChatMemberId) =>
   Effect.gen(function* () {
     const accepted = yield* awaitDelivery(
@@ -680,7 +670,7 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
   );
 
   it.effect(
-    "a crash after the dispatch commits but before the engine records it is found at boot and shown late",
+    "a crash after the dispatch commits but before the engine records it is found at boot by the derived id",
     () =>
       Effect.gen(function* () {
         const app = yield* openApp;
@@ -695,14 +685,9 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
         const sending = (yield* latest(app, member(a).id).pipe(Effect.orDie))!;
         assert.strictEqual(sending.dispatch, "sending");
         assert.isTrue((yield* threadMessages(a)).messages.some((m) => m.id === sending.messageId));
-        yield* app.engine
-          .dispatch({ _tag: "delivery.stop", deliveryId: sending.id })
-          .pipe(Effect.orDie);
         gates.afterSend = null;
         gates.sent = null;
 
-        // A second module on the same store is the server after a restart. The first lane stays
-        // stuck on its gate, as a dead process would.
         const config = yield* ServerConfig.ServerConfig;
         const port = yield* GroupChatThreadPort;
         const rebooted = yield* Effect.flatMap(
@@ -736,7 +721,6 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
           }
         });
         assert.strictEqual(found.dispatch, "accepted");
-        assert.strictEqual(found.withdrawn, "stopped by operator");
         yield* endRun(a, found.runId!, "completed", "found after the crash");
         const replied = yield* Effect.gen(function* () {
           for (;;) {
@@ -745,7 +729,9 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
             yield* PubSub.take(subscription);
           }
         });
-        assert.isTrue((yield* store.message(replied.replyMessageId!).pipe(Effect.orDie))!.late);
+        const reply = (yield* store.message(replied.replyMessageId!).pipe(Effect.orDie))!;
+        assert.strictEqual(reply.text, "found after the crash");
+        assert.isFalse(reply.late, "nobody withdrew it, so the reply is on time");
         assert.strictEqual(
           (yield* threadMessages(a)).messages.filter((m) =>
             m.id.startsWith(GROUP_CHAT_MESSAGE_PREFIX),

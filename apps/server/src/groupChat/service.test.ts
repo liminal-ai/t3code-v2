@@ -1,7 +1,3 @@
-/**
- * The engine over the real store and the fake thread port, including restarts on the same database
- * file. Every wait is a store change; nothing sleeps or polls.
- */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -62,7 +58,6 @@ const awaitDelivery = (
 const awaitState = (app: App, memberId: GroupChatMemberId, state: DeliveryRow["state"]) =>
   awaitDelivery(app, memberId, (d) => d.state === state);
 
-/** Completes the thread's running group chat envelope with a reply. */
 const reply = (fake: FakeThreads, threadId: ThreadId, text: string) =>
   Effect.gen(function* () {
     const thread = yield* fake.thread(threadId);
@@ -246,15 +241,20 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         });
         const discussion =
           started._tag === "discussion" ? started.discussion : assert.fail("discussion");
-        const failed = yield* awaitState(app, member(alpha).id, "failed");
+        const stalled = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.dispatch === "unknown" && (d.error ?? "").includes("Retry sends it again"),
+        );
+        assert.strictEqual(stalled.state, "pending", "unknown stays unknown until Retry or a boot");
         assert.strictEqual(new Set((yield* fake.sends(alpha)).map((s) => s.commandId)).size, 1);
-        assert.strictEqual(failed.attempt, 1);
+        assert.strictEqual(stalled.attempt, 1);
         yield* app.dispatch({ _tag: "discussion.stop", discussionId: discussion.id });
         const sendsAtStop = (yield* fake.sends(alpha)).length;
         yield* app.shutdown;
 
         const again = yield* boot(fake, baseDir);
-        yield* again.until(again.store.discussion(discussion.id), (d) => d?.state === "ended");
+        yield* again.until(again.store.delivery(stalled.id), (d) => d?.state === "cancelled");
         assert.strictEqual((yield* fake.sends(alpha)).length, sendsAtStop, "no send after Stop");
         assert.strictEqual((yield* fake.thread(alpha)).runs.length, 0, "T3 never ran it");
         assert.strictEqual(
@@ -271,7 +271,9 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       const { fake, baseDir, app } = yield* setup;
       const { group, member } = yield* createGroup(app, "lost response", [alpha, bravo]);
       const gate = yield* Deferred.make<void>();
+      const reached = yield* Deferred.make<void>();
       (yield* fake.thread(alpha)).sendGate = gate;
+      (yield* fake.thread(alpha)).sendReached = reached;
       const started = yield* app.dispatch({
         _tag: "discussion.start",
         groupId: group.id,
@@ -281,11 +283,11 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       });
       const discussion =
         started._tag === "discussion" ? started.discussion : assert.fail("discussion");
-      yield* awaitDelivery(app, member(alpha).id, (d) => d.dispatch === "sending");
+      yield* Deferred.await(reached);
+      assert.strictEqual((yield* latestDelivery(app, member(alpha).id))!.dispatch, "sending");
       assert.strictEqual((yield* fake.thread(alpha)).runs.length, 1, "T3 has the envelope");
       yield* app.dispatch({ _tag: "discussion.stop", discussionId: discussion.id });
 
-      // The server dies with the dispatch in flight: the delivery stays `sending` on disk.
       yield* app.shutdown;
       (yield* fake.thread(alpha)).sendGate = null;
       const booted = yield* boot(fake, baseDir);
@@ -502,9 +504,9 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       );
       assert.strictEqual(paused.state, "pending");
       assert.strictEqual((yield* fake.sends(alpha)).length, 1, "nothing goes out while paused");
-      const stopped = (yield* app.store.deliveriesOfMember(member(alpha).id))[0]!;
-      assert.strictEqual(stopped.state, "failed");
-      assert.strictEqual(stopped.error, "T3 run interrupted");
+      const stopped = yield* app.until(app.store.delivery(first.id), (d) => d?.state === "failed");
+      assert.strictEqual(stopped!.error, "T3 run interrupted");
+      assert.strictEqual(stopped!.wait?._tag, "stopped_in_t3");
       yield* app.dispatch({ _tag: "delivery.retry", deliveryId: paused.id });
       const running = yield* awaitDelivery(
         app,
@@ -774,4 +776,166 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       assert.strictEqual(stream.members.length, 1);
     }).pipe(Effect.scoped),
   );
+
+  it.effect(
+    "a send whose outcome stays unknown waits for Retry, which sends it as a new attempt",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "unknown", [alpha]);
+        (yield* fake.thread(alpha)).faults.push({ type: "lose" }, { type: "lose" });
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        const stalled = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.dispatch === "unknown" && (d.error ?? "").includes("Retry sends it again"),
+        );
+        assert.strictEqual(stalled.attempt, 1);
+        assert.isTrue((yield* app.engine.groupPage(group.id)).deliveries[0]!.retryable);
+        yield* app.dispatch({ _tag: "delivery.retry", deliveryId: stalled.id });
+        const running = yield* awaitState(app, member(alpha).id, "running");
+        assert.strictEqual(running.attempt, 2);
+        const sends = yield* fake.sends(alpha);
+        assert.strictEqual(sends.length, 3);
+        assert.strictEqual(
+          sends[0]!.commandId,
+          sends[1]!.commandId,
+          "the one resend reused its ids",
+        );
+        assert.match(sends[2]!.commandId, /:2$/);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("a stopped lane stays paused across a restart", () =>
+    Effect.gen(function* () {
+      const { fake, baseDir, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "paused", [alpha]);
+      yield* send(app, group.id, "first", [member(alpha).id]);
+      const first = yield* awaitState(app, member(alpha).id, "running");
+      yield* send(app, group.id, "second", [member(alpha).id]);
+      yield* awaitDelivery(app, member(alpha).id, (d) => d.wait?._tag === "lane_busy");
+      yield* fake.interrupt(alpha, first.runId!);
+      const paused = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.wait?._tag === "stopped_in_t3",
+      );
+      yield* app.shutdown;
+      const again = yield* boot(fake, baseDir);
+      yield* again.until(again.store.delivery(first.id), (d) => d?.state === "failed");
+      const stillPaused = yield* again.until(again.store.delivery(paused.id), (d) => d !== null);
+      assert.strictEqual(stillPaused!.state, "pending");
+      assert.strictEqual(stillPaused!.wait?._tag, "stopped_in_t3");
+      assert.strictEqual((yield* fake.sends(alpha)).length, 1, "a restart releases nothing");
+      yield* again.dispatch({ _tag: "delivery.retry", deliveryId: paused.id });
+      yield* again.until(again.store.delivery(paused.id), (d) => d?.state === "running");
+      assert.strictEqual((yield* fake.sends(alpha)).length, 2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("an interrupted participant holds the discussion round open until Retry", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "held round", [alpha, bravo]);
+      const started = yield* app.dispatch({
+        _tag: "discussion.start",
+        groupId: group.id,
+        participants: [member(alpha).id, member(bravo).id],
+        topic: "t",
+        maxRounds: 2,
+      });
+      const discussion =
+        started._tag === "discussion" ? started.discussion : assert.fail("discussion");
+      yield* awaitState(app, member(alpha).id, "running");
+      const b = yield* awaitState(app, member(bravo).id, "running");
+      yield* reply(fake, alpha, "A-R1");
+      yield* awaitState(app, member(alpha).id, "replied");
+      yield* fake.interrupt(bravo, b.runId!);
+      const stopped = yield* awaitState(app, member(bravo).id, "failed");
+      assert.strictEqual(stopped.wait?._tag, "stopped_in_t3");
+      const held = (yield* app.store.discussion(discussion.id))!;
+      assert.strictEqual(held.round, 1, "the stopped participant holds the round");
+      assert.strictEqual(held.state, "running");
+      yield* app.dispatch({ _tag: "delivery.retry", deliveryId: stopped.id });
+      yield* awaitDelivery(app, member(bravo).id, (d) => d.state === "running" && d.attempt === 2);
+      yield* reply(fake, bravo, "B-R1");
+      yield* app.until(app.store.discussion(discussion.id), (d) => d?.round === 2);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a run that started and ended before the engine looked still moves the seen mark", () =>
+    Effect.gen(function* () {
+      const { fake, baseDir, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "unseen", [alpha]);
+      const own = yield* fake.startOwnRun(alpha);
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      const queued = yield* awaitState(app, member(alpha).id, "queued");
+      yield* app.shutdown;
+      yield* fake.complete(alpha, own.id, "own");
+      yield* fake.complete(alpha, queued.runId!, "while nobody looked");
+      const again = yield* boot(fake, baseDir);
+      const replied = yield* again.until(
+        again.store.delivery(queued.id),
+        (d) => d?.state === "replied",
+      );
+      assert.strictEqual(
+        (yield* again.store.message(replied!.replyMessageId!))!.text,
+        "while nobody looked",
+      );
+      const m = (yield* again.store.member(member(alpha).id))!;
+      assert.strictEqual(m.seenSeq, 1);
+      assert.isTrue(m.introduced);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a completed run without a text reply fails and stays retryable", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "no text", [alpha]);
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      const running = yield* awaitState(app, member(alpha).id, "running");
+      yield* fake.complete(alpha, running.runId!, null);
+      const failed = yield* awaitState(app, member(alpha).id, "failed");
+      assert.strictEqual(failed.error, "the run ended without a text reply");
+      assert.isTrue((yield* app.engine.groupPage(group.id)).deliveries[0]!.retryable);
+      assert.deepStrictEqual(yield* messageTexts(app, group.id), ["hello"]);
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a Stop whose cancel never reached T3 is cancelled again at the next boot", () =>
+    Effect.gen(function* () {
+      const { fake, baseDir, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "cancel intent", [alpha]);
+      yield* fake.startOwnRun(alpha);
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      const queued = yield* awaitState(app, member(alpha).id, "queued");
+      (yield* fake.thread(alpha)).cancelFaults = 1;
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: queued.id });
+      yield* awaitDelivery(app, member(alpha).id, (d) => d.withdrawn !== null);
+      const run = (yield* fake.thread(alpha)).runs.find((r) => r.id === queued.runId)!;
+      assert.strictEqual(run.status, "queued", "T3 still queues it");
+      yield* app.shutdown;
+      const again = yield* boot(fake, baseDir);
+      yield* again.until(again.store.delivery(queued.id), (d) => d?.state === "cancelled");
+      assert.strictEqual(run.status, "cancelled");
+      assert.strictEqual((yield* again.store.member(member(alpha).id))!.seenSeq, 0);
+    }).pipe(Effect.scoped),
+  );
 });
+
+// The lane's retry pause is a real sleep, so this case runs on the live clock.
+it.live("a read failure while following keeps the envelope and the lane", () =>
+  Effect.gen(function* () {
+    const { fake, app } = yield* setup;
+    const { group, member } = yield* createGroup(app, "read fault", [alpha]);
+    yield* send(app, group.id, "hello", [member(alpha).id]);
+    const running = yield* awaitState(app, member(alpha).id, "running");
+    (yield* fake.thread(alpha)).readFaults = 2;
+    yield* fake.ask(alpha, "q", "still there?");
+    yield* fake.complete(alpha, running.runId!, "back");
+    const replied = yield* awaitState(app, member(alpha).id, "replied");
+    assert.strictEqual(replied.attempt, 1);
+    assert.strictEqual((yield* fake.sends(alpha)).length, 1);
+    assert.strictEqual((yield* fake.thread(alpha)).readFaults, 0, "the lane looked again");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

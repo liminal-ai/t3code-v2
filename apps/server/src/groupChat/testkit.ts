@@ -1,8 +1,3 @@
-/**
- * A fake thread port for engine and service tests. It models what matters for delivery: sends keyed
- * by command id that replay a recorded run, queued runs that start only when the thread is free, a
- * held queue, pending questions, restart continuations, and faults on the send path.
- */
 import {
   type CommandId,
   EnvironmentId,
@@ -28,12 +23,13 @@ import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../config.ts";
-import type { GroupChatEngine } from "./engine.ts";
+import { type GroupChatEngine, RetryDelay } from "./engine.ts";
 import * as GroupChatLayer from "./layer.ts";
 import type { GroupChatStore, StoreError } from "./store.ts";
 import {
   GroupChatThreadPort,
   type PortBlocking,
+  PortReadError,
   PortRefused,
   PortRejected,
   PortUnknown,
@@ -41,11 +37,8 @@ import {
 } from "./threadPort.ts";
 
 export type SendFault =
-  /** T3 refuses for good: an archived thread, a read-only subagent, a rejected receipt. */
   | { readonly type: "reject"; readonly reason: string }
-  /** The dispatch commits, but the caller never learns it. */
   | { readonly type: "commit-silently" }
-  /** The dispatch never commits and the caller gets an error. */
   | { readonly type: "lose" };
 
 export interface FakeRun {
@@ -56,9 +49,7 @@ export interface FakeRun {
   readonly messageId: MessageId;
   text: string;
   reply: string | null;
-  /** Set on a continuation run, to the run a restart cut. */
   readonly continuationOf: RunId | null;
-  /** Whether group chat sent it, by its derived message id. */
   readonly own: boolean;
   readonly ended: Deferred.Deferred<void>;
 }
@@ -70,15 +61,17 @@ export interface FakeThread {
   archived: boolean;
   deleted: boolean;
   settled: boolean;
-  /** A sentence that refuses settle and unsettle, as a workflow hook would. */
   settleRefusal: string | null;
   pending: GroupChatPendingInput | null;
   held: boolean;
-  /** When set, a send waits here after T3 would have received it and before it answers. */
+  sendReached: Deferred.Deferred<void> | null;
   sendGate: Deferred.Deferred<void> | null;
-  /** When set, the thread read a send makes first waits here. */
   readGate: Deferred.Deferred<void> | null;
   readonly faults: SendFault[];
+  /** Reads of the thread's runs that fail before one succeeds, as a transient store fault would. */
+  readFaults: number;
+  /** Queued-run cancels that fail before one succeeds. */
+  cancelFaults: number;
   readonly runs: FakeRun[];
   readonly changes: PubSub.PubSub<void>;
   readonly sends: Array<{
@@ -105,9 +98,7 @@ const TERMINAL = new Set<OrchestrationV2Run["status"]>([
 export interface FakeThreads {
   readonly port: GroupChatThreadPort["Service"];
   readonly thread: (id: ThreadId) => Effect.Effect<FakeThread>;
-  /** Starts a queued run now. */
   readonly start: (threadId: ThreadId, runId: RunId) => Effect.Effect<void>;
-  /** A turn the thread starts on its own: an operator message, or a workflow's idle ping. */
   readonly startOwnRun: (
     threadId: ThreadId,
     text?: string,
@@ -118,18 +109,14 @@ export interface FakeThreads {
     runId: RunId,
     reply: string | null,
   ) => Effect.Effect<void>;
-  /** The web Stop on a running reply. */
   readonly interrupt: (
     threadId: ThreadId,
     runId: RunId,
     reply?: string | null,
   ) => Effect.Effect<void>;
   readonly failRun: (threadId: ThreadId, runId: RunId) => Effect.Effect<void>;
-  /** The operator removes a queued message from the thread's queue in T3. */
   readonly removeQueued: (threadId: ThreadId, runId: RunId) => Effect.Effect<void>;
-  /** The operator edits a queued message in T3. The run keeps its id. */
   readonly editQueued: (threadId: ThreadId, runId: RunId, text: string) => Effect.Effect<void>;
-  /** A server restart cuts the running run and continues it as a new one. */
   readonly restart: (threadId: ThreadId, runId: RunId) => Effect.Effect<FakeRun>;
   readonly hold: (threadId: ThreadId, held: boolean) => Effect.Effect<void>;
   readonly ask: (
@@ -161,9 +148,12 @@ export const makeFakeThreads = Effect.sync(() => {
         settleRefusal: null,
         pending: null,
         held: false,
+        sendReached: null,
         sendGate: null,
         readGate: null,
         faults: [],
+        readFaults: 0,
+        cancelFaults: 0,
         runs: [],
         changes,
         sends: [],
@@ -293,6 +283,7 @@ export const makeFakeThreads = Effect.sync(() => {
           return yield* new PortUnknown({ threadId: t.id, cause: "lost" });
         }
         const run = yield* commit(t, input.commandId, input.messageId, input.text);
+        if (t.sendReached !== null) yield* Deferred.succeed(t.sendReached, undefined);
         if (t.sendGate !== null) yield* Deferred.await(t.sendGate);
         if (fault?.type === "commit-silently") {
           return yield* new PortUnknown({ threadId: t.id, cause: "response lost" });
@@ -308,9 +299,13 @@ export const makeFakeThreads = Effect.sync(() => {
         return run === undefined ? null : { runId: run.id, text: run.text };
       }),
     run: (input) =>
-      Effect.map(thread(input.threadId), (t) => {
+      Effect.flatMap(thread(input.threadId), (t) => {
+        if (t.readFaults > 0) {
+          t.readFaults -= 1;
+          return Effect.fail(new PortReadError({ threadId: t.id, cause: "read fault" }));
+        }
         const run = t.runs.find((candidate) => candidate.id === input.runId);
-        return run === undefined ? null : view(latest(t, run));
+        return Effect.succeed(run === undefined ? null : view(latest(t, run)));
       }),
     awaitRun: (input) =>
       Effect.gen(function* () {
@@ -327,7 +322,7 @@ export const makeFakeThreads = Effect.sync(() => {
     readReply: (input) =>
       Effect.map(thread(input.threadId), (t) => {
         const run = t.runs.find((candidate) => candidate.id === input.runId);
-        return run?.reply == null ? null : { text: run.reply };
+        return run?.reply == null ? null : { text: run.reply, streaming: false };
       }),
     blockingRun: (input) =>
       Effect.map(thread(input.threadId), (t): PortBlocking | null => {
@@ -353,6 +348,10 @@ export const makeFakeThreads = Effect.sync(() => {
     cancelQueued: (input) =>
       Effect.gen(function* () {
         const t = yield* thread(input.threadId);
+        if (t.cancelFaults > 0) {
+          t.cancelFaults -= 1;
+          return yield* new PortReadError({ threadId: t.id, cause: "cancel fault" });
+        }
         const run = t.runs.find((candidate) => candidate.id === input.runId);
         if (run === undefined || run.status !== "queued") return "started" as const;
         yield* end(t, run, "cancelled", null);
@@ -480,7 +479,6 @@ export const makeFakeThreads = Effect.sync(() => {
   return fake;
 });
 
-/** A port whose every call hangs, to prove the module builds without waiting on T3. */
 export const neverPort: GroupChatThreadPort["Service"] = {
   environmentId: Effect.never,
   thread: () => Effect.never,
@@ -505,9 +503,7 @@ export const layerFakePort = (fake: FakeThreads) => Layer.succeed(GroupChatThrea
 export interface App {
   readonly engine: GroupChatEngine["Service"];
   readonly store: GroupChatStore;
-  /** The server dying: every lane stops where it is, and the store closes. */
   readonly shutdown: Effect.Effect<void>;
-  /** Re-reads after each store change until the predicate holds. Never sleeps or polls. */
   readonly until: <A>(
     read: Effect.Effect<A, StoreError>,
     predicate: (value: A) => boolean,
@@ -515,7 +511,6 @@ export interface App {
   readonly dispatch: GroupChatEngine["Service"]["dispatch"];
 }
 
-/** One module boot on a base directory. Booting again on the same directory is a restart. */
 export const boot = (
   fake: FakeThreads,
   baseDir: string,
@@ -523,6 +518,7 @@ export const boot = (
   Effect.gen(function* () {
     const layer = GroupChatLayer.layer.pipe(
       Layer.provide(layerFakePort(fake)),
+      Layer.provide(Layer.succeed(RetryDelay, "10 millis")),
       Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     );

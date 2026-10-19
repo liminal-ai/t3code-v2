@@ -68,7 +68,6 @@ const msg = (seq: number, author: GroupChatAuthor, text: string): GroupChatMessa
   createdAt: "2026-10-17T22:00:00.000Z",
 });
 
-// Parses an envelope the way a careful reader would: only lines carrying this envelope's tag are structure.
 function parse(envelope: string) {
   const tag = /^<<GROUP CHAT ENVELOPE (\w+)>>$/m.exec(envelope)![1]!;
   const sections: { header: string; body: string[] }[] = [];
@@ -244,7 +243,6 @@ describe("group chat envelope and text", () => {
     expect(stripLeadingHandle("Alpha — hi", ["alpha"])).toBe("hi");
     expect(stripLeadingHandle("alpha : hi", ["alpha"])).toBe("hi");
     expect(stripLeadingHandle("@alpha - hi", ["alpha"])).toBe("hi");
-    // Hyphenated words that start with the handle are content, not labels.
     expect(stripLeadingHandle("alpha-beta rocks", ["alpha"])).toBe("alpha-beta rocks");
     expect(stripLeadingHandle("Alpha-1 is done", ["alpha"])).toBe("Alpha-1 is done");
     expect(

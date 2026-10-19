@@ -25,6 +25,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
@@ -59,7 +60,6 @@ export class GroupChatEngine extends Context.Service<
       command: GroupChatCommand,
     ) => Effect.Effect<GroupChatDispatchResult, EngineError>;
     readonly events: Stream.Stream<GroupChatStreamEvent, StoreError>;
-    /** Boot recovery and the lanes. Runs parked until the server activates, never awaited. */
     readonly start: Effect.Effect<void, never, Scope.Scope>;
   }
 >()("t3/groupChat/engine/GroupChatEngine") {}
@@ -73,8 +73,16 @@ const TERMINAL = new Set<PortRun["status"]>([
   "rolled_back",
 ]);
 
-/** The one bounded resend of an attempt whose dispatch never recorded an outcome at runtime. */
 const MAX_RESENDS = 1;
+const STREAMING_LOOKS = 20;
+
+/** How long a lane waits after a read or store failure before it looks at its envelope again. */
+export class RetryDelay extends Context.Reference<Duration.Input>(
+  "t3/groupChat/engine/RetryDelay",
+  {
+    defaultValue: () => "2 seconds",
+  },
+) {}
 
 interface Lane {
   readonly threadId: ThreadId;
@@ -102,6 +110,9 @@ const retryRefusal = (
     return "this discussion round is over";
   }
   if (delivery.state === "pending" && delivery.wait?._tag === "stopped_in_t3") return null;
+  if (delivery.state === "pending" && delivery.dispatch === "unknown" && delivery.error !== null) {
+    return null;
+  }
   if (delivery.state === "failed") return null;
   switch (delivery.state) {
     case "queued":
@@ -119,10 +130,13 @@ const retryRefusal = (
 export const makeEngine = (store: GroupChatStore) =>
   Effect.gen(function* () {
     const port = yield* GroupChatThreadPort;
+    const retryDelay = yield* RetryDelay;
     const scope = yield* Effect.scope;
     const lanes = new Map<ThreadId, Lane>();
     const projectIds = new Map<ThreadId, ProjectId>();
     const resends = new Map<GroupChatDeliveryId, number>();
+    /** Deliveries whose dispatch outcome stayed unknown this boot. Retry or the next boot looks again. */
+    const stalled = new Set<GroupChatDeliveryId>();
 
     const notFound = (entity: GroupChatNotFound["entity"], id: string) =>
       new GroupChatNotFound({ entity, id });
@@ -158,10 +172,16 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         const existing = lanes.get(threadId);
         if (existing !== undefined) return existing;
+        const paused = yield* store.deliveriesOfThread(threadId).pipe(
+          Effect.map((rows) =>
+            rows.some((d) => d.state === "pending" && d.wait?._tag === "stopped_in_t3"),
+          ),
+          Effect.orElseSucceed(() => false),
+        );
         const created: Lane = {
           threadId,
           signal: yield* Queue.make<void>({ capacity: 1, strategy: "sliding" }),
-          paused: yield* Ref.make(false),
+          paused: yield* Ref.make(paused),
         };
         lanes.set(threadId, created);
         yield* Effect.forkIn(runLane(created), scope);
@@ -175,12 +195,17 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         const deliveries = yield* store.deliveriesOfThread(l.threadId);
         const open = deliveries.filter((d) => OPEN.has(d.state));
-        const unresolved = open.find((d) => d.dispatch === "sending" || d.dispatch === "unknown");
+        const unresolved = open.find(
+          (d) => (d.dispatch === "sending" || d.dispatch === "unknown") && !stalled.has(d.id),
+        );
         if (unresolved !== undefined) return { kind: "resolve", delivery: unresolved };
         const outstanding = open.find((d) => d.dispatch === "accepted" && d.state !== "pending");
         if (outstanding !== undefined) return { kind: "follow", delivery: outstanding };
         if (yield* Ref.get(l.paused)) return null;
-        const pending = open.find((d) => d.state === "pending" && d.dispatch === "unsent");
+        const pending = open.find(
+          (d) =>
+            d.state === "pending" && d.dispatch === "unsent" && d.wait?._tag !== "stopped_in_t3",
+        );
         return pending === undefined ? null : { kind: "send", delivery: pending };
       });
 
@@ -199,23 +224,17 @@ export const makeEngine = (store: GroupChatStore) =>
             yield* Queue.take(l.signal);
             continue;
           }
+          // A failure to read or record is never a verdict on the envelope: the delivery keeps its
+          // state and the lane looks again after a pause, so an accepted run is never abandoned.
           yield* runWork(work).pipe(
             Effect.catchCause((cause) =>
               Cause.hasInterrupts(cause)
                 ? Effect.interrupt
-                : fail(
-                    work.delivery.id,
-                    `Group chat could not deliver this envelope: ${Cause.pretty(cause)}`,
-                  ).pipe(
-                    Effect.andThen(
-                      Effect.logError("group chat delivery failed", {
-                        deliveryId: work.delivery.id,
-                        threadId: l.threadId,
-                        cause,
-                      }),
-                    ),
-                    Effect.ignoreCause({ log: true }),
-                  ),
+                : Effect.logError("group chat lane paused after a failure", {
+                    deliveryId: work.delivery.id,
+                    threadId: l.threadId,
+                    cause,
+                  }).pipe(Effect.andThen(Effect.sleep(retryDelay))),
             ),
           );
         }
@@ -320,7 +339,6 @@ export const makeEngine = (store: GroupChatStore) =>
         return { envelope, fromSeq: member.seenSeq + 1, roster };
       });
 
-    /** The last check before a dispatch leaves, in the same transaction that claims the delivery. */
     const claim = (deliveryId: GroupChatDeliveryId) =>
       store.transaction((tx) =>
         Effect.gen(function* () {
@@ -376,8 +394,6 @@ export const makeEngine = (store: GroupChatStore) =>
           yield* fail(d.id, "the member's thread no longer exists", "rejected");
           return;
         }
-        // The claim is the last check before the dispatch, so a Stop during the thread read above
-        // still cancels the envelope before anything leaves.
         const claimed = yield* claim(d.id);
         if (claimed === null) return;
         const sent = yield* port
@@ -412,8 +428,6 @@ export const makeEngine = (store: GroupChatStore) =>
           );
           return;
         }
-        // Recorded as queued even when T3 started it at once; the first follow step promotes it
-        // and moves the member's seen mark in the same transaction.
         yield* store.transaction((tx) =>
           tx.updateDelivery(d.id, {
             dispatch: "accepted",
@@ -425,12 +439,15 @@ export const makeEngine = (store: GroupChatStore) =>
         resends.delete(d.id);
       });
 
-    /** A dispatch with no recorded outcome: the derived message id in the thread decides. */
     const resolve = (d: DeliveryRow): Effect.Effect<void, StoreError | PortReadError> =>
       Effect.gen(function* () {
         const member = yield* store.member(d.memberId);
         if (member === null || d.messageId === null) {
           yield* fail(d.id, "member or envelope record is incomplete");
+          return;
+        }
+        if ((yield* port.thread(member.thread.threadId)) === null) {
+          yield* fail(d.id, "the member's thread no longer exists", "rejected");
           return;
         }
         const found = yield* port.findMessage({
@@ -451,7 +468,14 @@ export const makeEngine = (store: GroupChatStore) =>
         const count = resends.get(d.id) ?? 0;
         if (count >= MAX_RESENDS) {
           resends.delete(d.id);
-          yield* fail(d.id, d.error ?? "the send's outcome stayed unknown", "rejected");
+          stalled.add(d.id);
+          yield* store.transaction((tx) =>
+            tx.updateDelivery(d.id, {
+              dispatch: "unknown",
+              wait: null,
+              error: `${d.error ?? "the send's outcome stayed unknown"}. Retry sends it again as a new attempt; a restart looks for it first.`,
+            }),
+          );
           return;
         }
         resends.set(d.id, count + 1);
@@ -486,7 +510,6 @@ export const makeEngine = (store: GroupChatStore) =>
       return { _tag: "busy_with_own_run", runId: blocking.runId };
     };
 
-    /** Reads the run once and records what the operator sees. Returns the run when it has ended. */
     const step = (
       deliveryId: GroupChatDeliveryId,
       threadId: ThreadId,
@@ -499,18 +522,11 @@ export const makeEngine = (store: GroupChatStore) =>
           yield* fail(d.id, "the thread's run no longer exists");
           return "done" as const;
         }
-        if (TERMINAL.has(view.status)) {
-          if (view.id !== d.runId) {
-            yield* store.transaction((tx) => tx.updateDelivery(d.id, { runId: view.id }));
-          }
-          return view;
-        }
+        const terminal = TERMINAL.has(view.status);
         const starting = view.started && d.state !== "running";
-        const blocking = view.started
-          ? null
-          : yield* port.blockingRun({ threadId, runId: view.id });
-        const ownPending = view.started ? yield* port.pendingRequest(threadId) : null;
-        const wait = waitOf(view, blocking, ownPending);
+        const blocking =
+          view.started || terminal ? null : yield* port.blockingRun({ threadId, runId: view.id });
+        const ownPending = view.started && !terminal ? yield* port.pendingRequest(threadId) : null;
         const ran =
           starting && d.messageId !== null
             ? yield* port.findMessage({ threadId, messageId: d.messageId })
@@ -524,7 +540,11 @@ export const makeEngine = (store: GroupChatStore) =>
             yield* tx.updateDelivery(d.id, {
               runId: view.id,
               state,
-              wait,
+              wait: terminal
+                ? starting
+                  ? null
+                  : current.wait
+                : waitOf(view, blocking, ownPending),
               ...(edited ? { sentText: ran.text } : {}),
             });
             if (starting) {
@@ -536,7 +556,7 @@ export const makeEngine = (store: GroupChatStore) =>
             }
           }),
         );
-        return "open" as const;
+        return terminal ? view : ("open" as const);
       });
 
     const follow = (d: DeliveryRow): Effect.Effect<void, StoreError | PortReadError> =>
@@ -558,28 +578,32 @@ export const makeEngine = (store: GroupChatStore) =>
           return;
         }
         const changes = yield* port.changes(threadId);
-        const first = yield* step(d.id, threadId);
-        let ended: PortRun | null = first === "done" ? null : first === "open" ? null : first;
-        if (first === "open") {
-          const refresher = yield* changes.pipe(
-            Stream.runForEach(() => Effect.asVoid(step(d.id, threadId))),
-            Effect.forkChild,
-          );
-          const awaited = yield* port.awaitRun({ threadId, projectId, runId: d.runId }).pipe(
-            Effect.catchTags({
-              GroupChatPortThreadNotFound: () => Effect.succeed(null),
-            }),
-          );
-          yield* Fiber.interrupt(refresher);
-          if (awaited === null) {
-            yield* fail(d.id, "the member's thread was deleted");
-            return;
-          }
-          const last = yield* step(d.id, threadId);
-          ended = last === "done" || last === "open" ? null : last;
+        // A Stop recorded before a crash may never have reached T3's queue. Cancelling again is
+        // safe: a refusal means the run started, and the follow below takes it from there.
+        if (d.withdrawn !== null && d.state === "queued") {
+          yield* port.cancelQueued({ threadId, runId: d.runId });
         }
-        if (ended === null) return;
-        yield* finish(d.id, threadId, ended);
+        const first = yield* step(d.id, threadId);
+        if (first === "done") return;
+        const refresher = yield* changes.pipe(
+          Stream.runForEach(() => Effect.asVoid(step(d.id, threadId))),
+          Effect.forkChild,
+        );
+        // Only T3's own wait knows whether a restart continuation is still pending for a run that
+        // reads as terminal, so the verdict always comes from it, even when the first look ended.
+        const awaited = yield* port.awaitRun({ threadId, projectId, runId: d.runId }).pipe(
+          Effect.catchTags({
+            GroupChatPortThreadNotFound: () => Effect.succeed(null),
+          }),
+          Effect.onExit(() => Fiber.interrupt(refresher)),
+        );
+        if (awaited === null) {
+          yield* fail(d.id, "the member's thread was deleted");
+          return;
+        }
+        const last = yield* step(d.id, threadId);
+        if (last === "done" || last === "open") return;
+        yield* finish(d.id, threadId, last);
       });
 
     const finish = (
@@ -590,7 +614,7 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         const d = yield* store.delivery(deliveryId);
         if (d === null || !OPEN.has(d.state)) return;
-        if (run.status === "cancelled" && d.state !== "running") {
+        if (run.status === "cancelled" && !run.started) {
           const found =
             d.messageId === null
               ? null
@@ -609,23 +633,45 @@ export const makeEngine = (store: GroupChatStore) =>
           yield* onTerminal(d.id);
           return;
         }
-        const reply = yield* port.readReply({ threadId, runId: run.id });
-        const text = reply === null || reply === "unfinished" ? null : reply.text;
-        if (run.status === "completed") {
-          yield* ingestReply(d.id, text ?? "_(finished without a text reply)_");
-        } else if (text !== null && text.trim() !== "") {
-          yield* ingestReply(d.id, `${text}\n\n_(run ${run.status})_`);
-        } else {
-          yield* fail(d.id, `T3 run ${run.status}`);
+        let reply = yield* port.readReply({ threadId, runId: run.id });
+        // The adapter closes a message before it ends the run, so a streaming one here is a
+        // moment away from done. A bounded wait is cheaper than following a terminal run.
+        for (let looks = 0; reply?.streaming === true && looks < STREAMING_LOOKS; looks++) {
+          yield* Effect.sleep(retryDelay);
+          reply = yield* port.readReply({ threadId, runId: run.id });
         }
-        if (run.status === "interrupted") yield* pauseLane(threadId);
+        const text = reply === null || reply.text.trim() === "" ? null : reply.text;
+        const note =
+          reply?.streaming === true
+            ? "\n\n_(the reply was still streaming when the run ended)_"
+            : "";
+        let changed: boolean;
+        if (run.status === "completed") {
+          changed =
+            text === null
+              ? yield* fail(d.id, "the run ended without a text reply")
+              : yield* ingestReply(d.id, `${text}${note}`);
+        } else if (text !== null) {
+          changed = yield* ingestReply(d.id, `${text}${note}\n\n_(run ${run.status})_`);
+        } else {
+          changed = yield* fail(
+            d.id,
+            `T3 run ${run.status}`,
+            undefined,
+            run.status === "interrupted" ? { _tag: "stopped_in_t3" } : null,
+          );
+        }
+        // Only the pass that closes the delivery pauses the lane, so a boot that looks at an
+        // interrupted run again cannot undo a Retry the operator already gave.
+        if (changed && run.status === "interrupted") yield* pauseLane(threadId);
       });
 
     const fail = (
       deliveryId: GroupChatDeliveryId,
       error: string,
       dispatch?: GroupChatDelivery["dispatch"],
-    ): Effect.Effect<void, StoreError> =>
+      wait: GroupChatWait | null = null,
+    ): Effect.Effect<boolean, StoreError> =>
       Effect.gen(function* () {
         const failed = yield* store.transaction((tx) =>
           Effect.gen(function* () {
@@ -634,7 +680,7 @@ export const makeEngine = (store: GroupChatStore) =>
             const updated = yield* tx.updateDelivery(deliveryId, {
               state: d.withdrawn === null ? "failed" : "cancelled",
               error,
-              wait: null,
+              wait,
               ...(dispatch === undefined ? {} : { dispatch }),
             });
             yield* tx.touchMember(d.memberId);
@@ -642,13 +688,13 @@ export const makeEngine = (store: GroupChatStore) =>
           }),
         );
         if (failed !== null) yield* onTerminal(deliveryId);
+        return failed !== null;
       });
 
-    /** Logs the reply into the group exactly once and closes the delivery. A reply never vanishes. */
     const ingestReply = (
       deliveryId: GroupChatDeliveryId,
       raw: string,
-    ): Effect.Effect<void, StoreError> =>
+    ): Effect.Effect<boolean, StoreError> =>
       Effect.gen(function* () {
         const stored = yield* store.transaction((tx) =>
           Effect.gen(function* () {
@@ -697,6 +743,7 @@ export const makeEngine = (store: GroupChatStore) =>
           }),
         );
         if (stored !== null) yield* onTerminal(deliveryId);
+        return stored !== null;
       });
 
     const onTerminal = (deliveryId: GroupChatDeliveryId): Effect.Effect<void, StoreError> =>
@@ -707,7 +754,6 @@ export const makeEngine = (store: GroupChatStore) =>
         if (member !== null) yield* kick(member.thread.threadId);
       });
 
-    /** Stop, removal or an ended gate: cancel what never left, cancel what T3 still queues, keep the rest. */
     const withdraw = (
       tx: Tx,
       d: DeliveryRow,
@@ -771,6 +817,8 @@ export const makeEngine = (store: GroupChatStore) =>
         const outstanding = (yield* tx.deliveriesOfThread(member.thread.threadId)).find((d) =>
           OPEN.has(d.state),
         );
+        const existing = lanes.get(member.thread.threadId);
+        const paused = existing === undefined ? false : yield* Ref.get(existing.paused);
         return yield* tx.insertDelivery({
           groupId: member.groupId,
           memberId: member.id,
@@ -779,8 +827,11 @@ export const makeEngine = (store: GroupChatStore) =>
           discussionId: options.discussionId ?? null,
           round: options.round ?? null,
           toSeq: trigger.seq,
-          wait:
-            outstanding === undefined ? null : { _tag: "lane_busy", deliveryId: outstanding.id },
+          wait: paused
+            ? { _tag: "stopped_in_t3" }
+            : outstanding === undefined
+              ? null
+              : { _tag: "lane_busy", deliveryId: outstanding.id },
         });
       });
 
@@ -829,6 +880,7 @@ export const makeEngine = (store: GroupChatStore) =>
                   memberId: d.memberId,
                   state: d.state,
                   signOff: reply?.signOff === true,
+                  paused: d.wait?._tag === "stopped_in_t3",
                 }),
               ),
             );
@@ -882,7 +934,6 @@ export const makeEngine = (store: GroupChatStore) =>
       return Effect.succeed(handle);
     };
 
-    /** A thread that was in the group before comes back as the same member, with its mark and history. */
     const addThreadMember = (
       tx: Tx,
       groupId: GroupChatGroupId,
@@ -1038,7 +1089,7 @@ export const makeEngine = (store: GroupChatStore) =>
             const refusal = retryRefusal(d, member, discussion);
             if (refusal !== null) return yield* new GroupChatRefused({ reason: refusal });
             const delivery =
-              d.state === "failed"
+              d.state === "failed" || d.dispatch === "unknown"
                 ? yield* tx.updateDelivery(d.id, {
                     state: "pending",
                     dispatch: "unsent",
@@ -1055,6 +1106,7 @@ export const makeEngine = (store: GroupChatStore) =>
           }),
         );
         resends.delete(deliveryId);
+        stalled.delete(deliveryId);
         yield* releaseLane(threadId);
         yield* kick(threadId);
         return delivery;

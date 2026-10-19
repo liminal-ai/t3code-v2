@@ -61,7 +61,6 @@ const make = Effect.gen(function* () {
   return GroupChat.of({ store: Effect.succeed(opened.value), engine: Effect.succeed(engine) });
 }).pipe(Effect.withSpan("groupChat.boot"));
 
-/** The module over a given thread port. Tests pass a fake port; the server passes the real one. */
 export const layer = Layer.effect(GroupChat, make);
 
 const layerForServer = layer.pipe(Layer.provide(ThreadPort.layer));
@@ -73,7 +72,6 @@ export const layerHttpApi = withModule(Http.makeLayer);
 
 export const routeLayer = withModule(Events.makeRouteLayer);
 
-/** Boot recovery runs parked, so a thread port that never answers cannot hold the server's start. */
 export const layerEngineStart = Layer.effectDiscard(
   Effect.flatMap(Effect.service(GroupChat), (groupChat) =>
     groupChat.engine.pipe(

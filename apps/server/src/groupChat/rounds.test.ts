@@ -17,10 +17,22 @@ describe("group chat rounds", () => {
     expect(decideRound({ ...base, deliveries: [d("a", "replied"), d("b", "queued")] })).toEqual({
       action: "wait",
     });
+    expect(
+      decideRound({
+        ...base,
+        deliveries: [d("a", "replied"), { ...d("b", "failed"), paused: true }],
+      }),
+    ).toEqual({ action: "wait" });
     expect(decideRound({ ...base, deliveries: [d("a", "replied"), d("b", "running")] })).toEqual({
       action: "wait",
     });
     expect(decideRound({ ...base, deliveries: [] })).toEqual({ action: "wait" });
+    expect(
+      decideRound({
+        ...base,
+        deliveries: [d("a", "replied"), { ...d("b", "failed"), paused: true }],
+      }),
+    ).toEqual({ action: "wait" });
     expect(
       decideRound({ ...base, deliveries: [d("a", "replied", true), d("b", "replied", true)] }),
     ).toEqual({
@@ -40,7 +52,6 @@ describe("group chat rounds", () => {
         }) as { reason: string }
       ).reason,
     ).toBe("reached 3 rounds");
-    // A removed member's open delivery holds nothing.
     expect(
       decideRound({
         ...base,
@@ -54,7 +65,6 @@ describe("group chat rounds", () => {
     expect(
       (decideRound({ ...base, stillIn: [], deliveries: [] }) as { reason: string }).reason,
     ).toBe("no participants left (all were removed)");
-    // A sign-off from an earlier round does not count for this one.
     expect(
       decideRound({
         ...base,
