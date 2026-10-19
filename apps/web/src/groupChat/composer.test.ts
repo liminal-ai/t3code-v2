@@ -8,6 +8,7 @@ import {
   saveRecipients,
   sendCommand,
   suggestions,
+  textAfterSend,
   tickedAfterTyping,
 } from "./composer";
 
@@ -67,6 +68,13 @@ describe("composer", () => {
         gone,
       ]).recipients,
     ).toEqual(["mem_bravo"]);
+  });
+
+  it("a draft typed during a send survives it, and a failed send comes back only to an empty box", () => {
+    expect(textAfterSend("next thought", "first message", true)).toBe("next thought");
+    expect(textAfterSend("", "first message", true)).toBe("");
+    expect(textAfterSend("next thought", "first message", false)).toBe("next thought");
+    expect(textAfterSend("", "first message", false)).toBe("first message");
   });
 
   it("recipients are kept per group", () => {

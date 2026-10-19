@@ -15,6 +15,7 @@ import {
   saveRecipients,
   sendCommand,
   suggestions,
+  textAfterSend,
   tickedAfterTyping,
 } from "./composer";
 import { MemberDot, memberColor } from "./MemberChip";
@@ -99,15 +100,16 @@ export function Composer({
 
   const send = async () => {
     if (text.trim() === "" || sending) return;
+    const submitted = text;
     setSending(true);
-    const result = await attempt(() =>
-      dispatchGroupChat(sendCommand(groupId, text, tickedActive, members)),
-    );
-    setSending(false);
-    if (result === undefined) return;
-    if (result._tag === "message") noteMessage(result.message);
     setText("");
     setCaret(0);
+    const result = await attempt(() =>
+      dispatchGroupChat(sendCommand(groupId, submitted, tickedActive, members)),
+    );
+    setSending(false);
+    if (result?._tag === "message") noteMessage(result.message);
+    setText((draftNow) => textAfterSend(draftNow, submitted, result !== undefined));
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
