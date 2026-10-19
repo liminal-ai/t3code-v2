@@ -236,7 +236,8 @@ describe("discussion view", () => {
   });
 
   it("a reply after Stop is marked not counted", () => {
-    const late = reply(3, m2, 1, { late: true });
+    const later = "2026-10-19T00:05:00.000Z";
+    const late = reply(3, m2, 1, { late: true, createdAt: later });
     const stopped = discussion({ state: "ended", endReason: "stopped by operator", endedAt: at });
     expect(lateLabel(late, stopped)).toBe("arrived after Stop, not counted");
     const limit = discussion({ state: "ended", endReason: "reached 3 rounds", endedAt: at });
@@ -244,6 +245,16 @@ describe("discussion view", () => {
     expect(lateLabel(late, discussion())).toBe("arrived after the round, not counted");
     expect(lateLabel(reply(3, m2, 1), stopped)).toBeNull();
     expect(lateLabel(message(4, { kind: "reply", late: true }), undefined)).toBe("late reply");
+  });
+
+  it("a reply withdrawn before Stop keeps its own label after the discussion ends", () => {
+    const withdrawnEarlier = reply(3, m2, 1, { late: true, createdAt: at });
+    const stopped = discussion({
+      state: "ended",
+      endReason: "stopped by operator",
+      endedAt: "2026-10-19T00:05:00.000Z",
+    });
+    expect(lateLabel(withdrawnEarlier, stopped)).toBe("arrived after the round, not counted");
   });
 
   it("a reply after Stop shows as late in the panel, never as replied", () => {

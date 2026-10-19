@@ -122,7 +122,12 @@ export function lateLabel(
 ): string | null {
   if (!message.late) return null;
   if (message.kind !== "discussion_reply") return "late reply";
-  if (discussion === undefined || discussion.state === "running") {
+  // A reply dated before the end was withdrawn or its member removed while the discussion ran.
+  if (
+    discussion === undefined ||
+    discussion.endedAt === null ||
+    message.createdAt <= discussion.endedAt
+  ) {
     return "arrived after the round, not counted";
   }
   return discussion.endReason === STOPPED_BY_OPERATOR
