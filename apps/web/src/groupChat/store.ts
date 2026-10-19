@@ -3,6 +3,7 @@ import type {
   GroupChatDelivery,
   GroupChatDeliveryHead,
   GroupChatDeliveryId,
+  GroupChatPageDelivery,
   GroupChatDiscussion,
   GroupChatDiscussionId,
   GroupChatGroup,
@@ -24,7 +25,7 @@ export interface GroupView {
   readonly members: ReadonlyMap<GroupChatMemberId, GroupChatMember>;
   readonly discussions: ReadonlyMap<GroupChatDiscussionId, GroupChatDiscussion>;
   readonly messages: ReadonlyMap<GroupChatMessageId, GroupChatMessage>;
-  readonly deliveries: ReadonlyMap<GroupChatDeliveryId, GroupChatDeliveryHead>;
+  readonly deliveries: ReadonlyMap<GroupChatDeliveryId, GroupChatPageDelivery>;
   readonly lowSeq: number;
   readonly highSeq: number;
   readonly olderBefore: number | null;
@@ -69,19 +70,43 @@ const withGroup = (
 };
 
 const newerDelivery = (
-  existing: GroupChatDeliveryHead | undefined,
-  incoming: GroupChatDeliveryHead,
-): GroupChatDeliveryHead =>
+  existing: GroupChatPageDelivery | undefined,
+  incoming: GroupChatPageDelivery,
+): GroupChatPageDelivery =>
   existing !== undefined && existing.updatedAt > incoming.updatedAt ? existing : incoming;
 
 const mergeDeliveries = (
-  existing: ReadonlyMap<GroupChatDeliveryId, GroupChatDeliveryHead>,
-  incoming: ReadonlyArray<GroupChatDeliveryHead>,
+  existing: ReadonlyMap<GroupChatDeliveryId, GroupChatPageDelivery>,
+  incoming: ReadonlyArray<GroupChatPageDelivery>,
 ) => {
   const merged = new Map(existing);
   for (const d of incoming) merged.set(d.id, newerDelivery(existing.get(d.id), d));
   return merged;
 };
+
+/**
+ * A stream head names a question by its request id only. The text stays when the store already
+ * holds it for that request; otherwise the delivery waits with no questions until a page read.
+ */
+const fromHead = (
+  existing: GroupChatPageDelivery | undefined,
+  head: GroupChatDeliveryHead,
+): GroupChatPageDelivery => {
+  if (head.wait?._tag !== "waiting_on_question") return { ...head, wait: head.wait };
+  const known = existing?.wait;
+  return {
+    ...head,
+    wait:
+      known?._tag === "waiting_on_question" && known.requestId === head.wait.requestId
+        ? known
+        : { _tag: "waiting_on_question", requestId: head.wait.requestId, questions: [] },
+  };
+};
+
+const wantsQuestionText = (view: GroupView) =>
+  [...view.deliveries.values()].some(
+    (d) => d.wait?._tag === "waiting_on_question" && d.wait.questions.length === 0,
+  );
 
 const fromPage = (page: GroupChatGroupPage, deliveries: GroupView["deliveries"]): GroupView => ({
   group: page.group,
@@ -132,8 +157,11 @@ export function applyPage(
 export function followUpRead(state: StoreState, groupId: GroupChatGroupId): Applied {
   const none: Applied = { state, fetches: [], snapshotChanged: false };
   const current = state.groups.get(groupId);
-  if (current === undefined || current.awaitedSeq <= current.highSeq) return none;
-  return readSince(state, current, none, current.awaitedSeq);
+  if (current === undefined) return none;
+  if (current.awaitedSeq > current.highSeq)
+    return readSince(state, current, none, current.awaitedSeq);
+  if (wantsQuestionText(current)) return readSince(state, current, none, current.highSeq);
+  return none;
 }
 
 /**
@@ -269,13 +297,17 @@ function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
     case "delivery": {
       const current = state.groups.get(event.delivery.groupId);
       if (current === undefined) return none;
-      return {
-        ...none,
-        state: withGroup(state, event.delivery.groupId, {
-          ...current,
-          deliveries: mergeDeliveries(current.deliveries, [event.delivery]),
-        }),
+      const merged: GroupView = {
+        ...current,
+        deliveries: mergeDeliveries(current.deliveries, [
+          fromHead(current.deliveries.get(event.delivery.id), event.delivery),
+        ]),
       };
+      const next = withGroup(state, event.delivery.groupId, merged);
+      // A question's text rides the page, so a head that names one asks for a page read.
+      return wantsQuestionText(merged)
+        ? readSince(next, merged, { ...none, state: next }, merged.highSeq)
+        : { ...none, state: next };
     }
     case "discussion": {
       const current = state.groups.get(event.discussion.groupId);
@@ -294,18 +326,18 @@ function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
 
 export type TimelineRow =
   | { readonly kind: "message"; readonly id: string; readonly message: GroupChatMessage }
-  | { readonly kind: "pending"; readonly id: string; readonly delivery: GroupChatDeliveryHead };
+  | { readonly kind: "pending"; readonly id: string; readonly delivery: GroupChatPageDelivery };
 
-const OPEN_STATES: ReadonlySet<GroupChatDeliveryHead["state"]> = new Set([
+const OPEN_STATES: ReadonlySet<GroupChatPageDelivery["state"]> = new Set([
   "pending",
   "queued",
   "running",
 ]);
 
-const isOpenDelivery = (d: GroupChatDeliveryHead) => OPEN_STATES.has(d.state);
+const isOpenDelivery = (d: GroupChatPageDelivery) => OPEN_STATES.has(d.state);
 
 /** A delivery still worth a row: open, or failed where Retry would do something. */
-const needsRow = (d: GroupChatDeliveryHead) =>
+const needsRow = (d: GroupChatPageDelivery) =>
   isOpenDelivery(d) || (d.state === "failed" && d.retryable);
 
 /**
@@ -316,8 +348,8 @@ export function timelineRows(view: GroupView): ReadonlyArray<TimelineRow> {
   const messages = [...view.messages.values()].sort((a, b) => a.seq - b.seq);
   const lastOfTurn = new Map<string, number>();
   messages.forEach((m, i) => lastOfTurn.set(m.turnKey, i));
-  const byTurn = new Map<string, GroupChatDeliveryHead[]>();
-  const unplaced: GroupChatDeliveryHead[] = [];
+  const byTurn = new Map<string, GroupChatPageDelivery[]>();
+  const unplaced: GroupChatPageDelivery[] = [];
   for (const d of [...view.deliveries.values()].sort((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   )) {
@@ -331,7 +363,7 @@ export function timelineRows(view: GroupView): ReadonlyArray<TimelineRow> {
     byTurn.set(d.turnKey, list);
   }
   const rows: TimelineRow[] = [];
-  const pending = (delivery: GroupChatDeliveryHead): TimelineRow => ({
+  const pending = (delivery: GroupChatPageDelivery): TimelineRow => ({
     kind: "pending",
     id: `pending:${delivery.id}`,
     delivery,
@@ -373,7 +405,7 @@ export function turnsOf(view: GroupView): ReadonlyMap<string, TurnInfo> {
 }
 
 export function deliveriesByTrigger(view: GroupView) {
-  const map = new Map<GroupChatMessageId, GroupChatDeliveryHead[]>();
+  const map = new Map<GroupChatMessageId, GroupChatPageDelivery[]>();
   for (const d of [...view.deliveries.values()].sort((a, b) =>
     a.createdAt.localeCompare(b.createdAt),
   )) {
@@ -385,7 +417,7 @@ export function deliveriesByTrigger(view: GroupView) {
 }
 
 export function openDeliveryByMember(view: GroupView) {
-  const map = new Map<GroupChatMemberId, GroupChatDeliveryHead>();
+  const map = new Map<GroupChatMemberId, GroupChatPageDelivery>();
   for (const d of view.deliveries.values()) {
     if (!isOpenDelivery(d)) continue;
     const existing = map.get(d.memberId);

@@ -14,7 +14,8 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
-import { attempt, dispatchGroupChat } from "./api";
+import { dispatchGroupChat } from "./api";
+import { Refusal, useRefusal } from "./refusal";
 import { ThreadPicker } from "./ThreadPicker";
 
 const NO_EXCLUSIONS: ReadonlySet<ThreadId> = new Set();
@@ -24,11 +25,12 @@ export function CreateGroupDialog({ onClose }: { onClose: () => void }) {
   const [title, setTitle] = useState("");
   const [selected, setSelected] = useState<ReadonlySet<ThreadId>>(new Set());
   const [busy, setBusy] = useState(false);
+  const { refusal, run } = useRefusal();
 
   const create = async () => {
     if (busy || selected.size === 0) return;
     setBusy(true);
-    const result = await attempt(() =>
+    const result = await run(() =>
       dispatchGroupChat({
         _tag: "group.create",
         title: title.trim() === "" ? "Group chat" : title.trim(),
@@ -71,6 +73,7 @@ export function CreateGroupDialog({ onClose }: { onClose: () => void }) {
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="Group chat"
               />
+              <Refusal text={refusal} />
             </div>
             <ThreadPicker
               selected={selected}

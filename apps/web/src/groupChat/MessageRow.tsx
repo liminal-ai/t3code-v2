@@ -1,4 +1,4 @@
-import type { GroupChatDeliveryHead, GroupChatMember, GroupChatMessage } from "@t3tools/contracts";
+import type { GroupChatPageDelivery, GroupChatMember, GroupChatMessage } from "@t3tools/contracts";
 import { type ReactNode, useRef, useState } from "react";
 
 import ChatMarkdown from "../components/ChatMarkdown";
@@ -45,7 +45,7 @@ export function OperatorMessage({
 }: {
   message: GroupChatMessage;
   members: ReadonlyMap<string, GroupChatMember>;
-  deliveries: ReadonlyArray<GroupChatDeliveryHead>;
+  deliveries: ReadonlyArray<GroupChatPageDelivery>;
 }) {
   return (
     <div
@@ -173,7 +173,7 @@ export function SystemDivider({
 }: {
   message: GroupChatMessage;
   members: ReadonlyMap<string, GroupChatMember>;
-  deliveries: ReadonlyArray<GroupChatDeliveryHead>;
+  deliveries: ReadonlyArray<GroupChatPageDelivery>;
 }) {
   return (
     <div

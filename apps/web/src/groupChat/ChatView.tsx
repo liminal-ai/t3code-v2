@@ -1,6 +1,6 @@
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import type {
-  GroupChatDeliveryHead,
+  GroupChatPageDelivery,
   GroupChatGroupId,
   GroupChatMember,
   GroupChatMessage,
@@ -49,7 +49,7 @@ interface RowContext {
   readonly members: ReadonlyMap<string, GroupChatMember>;
   readonly messages: ReadonlyMap<GroupChatMessageId, GroupChatMessage>;
   readonly turns: ReadonlyMap<string, TurnInfo>;
-  readonly byTrigger: ReadonlyMap<GroupChatMessageId, ReadonlyArray<GroupChatDeliveryHead>>;
+  readonly byTrigger: ReadonlyMap<GroupChatMessageId, ReadonlyArray<GroupChatPageDelivery>>;
   readonly flashId: GroupChatMessageId | null;
   readonly jumpTo: (messageId: GroupChatMessageId) => Promise<void>;
 }

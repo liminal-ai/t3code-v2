@@ -1,6 +1,7 @@
 import type {
   GroupChatDeliveryHead,
   GroupChatGroupPage,
+  GroupChatPageDelivery,
   GroupChatMessage,
   GroupChatMessageHead,
   GroupChatStreamEvent,
@@ -57,9 +58,9 @@ const message = (seq: number, overrides: Partial<GroupChatMessage> = {}): GroupC
 const delivery = (
   id: string,
   seq: number,
-  state: GroupChatDeliveryHead["state"],
+  state: GroupChatPageDelivery["state"],
   updatedAt: string,
-): GroupChatDeliveryHead => ({
+): GroupChatPageDelivery => ({
   id: id as GroupChatDeliveryHead["id"],
   groupId,
   memberId,
@@ -261,5 +262,62 @@ describe("group chat store, heads and rows at the edges", () => {
     const state = loaded([1], { deliveries: [retryable, dead] });
     const rows = timelineRows(state.groups.get(groupId)!);
     expect(rows.map((row) => row.id)).toEqual(["msg_1", "pending:d-stop"]);
+  });
+});
+
+describe("group chat store, questions", () => {
+  const question = {
+    _tag: "waiting_on_question",
+    requestId: "req-1",
+    questions: [
+      { id: "q", header: null, question: "Red or blue?", options: [], multiSelect: false },
+    ],
+  } as const;
+  const questionHead: GroupChatDeliveryHead = {
+    ...delivery("d1", 1, "queued", "2026-10-19T00:02:00Z"),
+    wait: { _tag: "waiting_on_question", requestId: "req-1" as never },
+  };
+
+  it("a head that names a question reads the page for its text, then keeps it", () => {
+    const start = loaded([1]);
+    const asked = applyEvent(start, event(1, { _tag: "delivery", delivery: questionHead }));
+    expect(asked.fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
+    const waiting = asked.state.groups.get(groupId)!.deliveries.get("d1" as never)!.wait;
+    expect(waiting).toEqual({ _tag: "waiting_on_question", requestId: "req-1", questions: [] });
+    const read = applyPage(
+      asked.state,
+      groupId,
+      page([1], {
+        deliveries: [
+          { ...delivery("d1", 1, "queued", "2026-10-19T00:02:00Z"), wait: question as never },
+        ],
+      }),
+      "since",
+    );
+    expect(followUpRead(read, groupId).fetches).toEqual([]);
+    const again = applyEvent(
+      read,
+      event(2, {
+        _tag: "delivery",
+        delivery: { ...questionHead, updatedAt: "2026-10-19T00:03:00Z" },
+      }),
+    );
+    expect(again.fetches).toEqual([]);
+    const kept = again.state.groups.get(groupId)!.deliveries.get("d1" as never)!.wait;
+    expect(kept?._tag === "waiting_on_question" && kept.questions[0]!.question).toBe(
+      "Red or blue?",
+    );
+  });
+
+  it("a page that raced the question is read once more", () => {
+    const start = loaded([1]);
+    const asked = applyEvent(start, event(1, { _tag: "delivery", delivery: questionHead }));
+    const stale = applyPage(
+      asked.state,
+      groupId,
+      page([1], { deliveries: [delivery("d1", 1, "queued", "2026-10-19T00:01:00Z")] }),
+      "since",
+    );
+    expect(followUpRead(stale, groupId).fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
   });
 });

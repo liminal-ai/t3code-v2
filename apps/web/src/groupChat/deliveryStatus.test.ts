@@ -1,9 +1,9 @@
-import type { GroupChatDeliveryHead } from "@t3tools/contracts";
+import type { GroupChatPageDelivery } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import { describeDelivery } from "./DeliveryStatus";
 
-const head = (overrides: Partial<GroupChatDeliveryHead>): GroupChatDeliveryHead =>
+const head = (overrides: Partial<GroupChatPageDelivery>): GroupChatPageDelivery =>
   ({
     id: "d1",
     groupId: "g1",
@@ -27,7 +27,7 @@ const head = (overrides: Partial<GroupChatDeliveryHead>): GroupChatDeliveryHead 
     createdAt: "2026-10-19T00:00:00.000Z",
     updatedAt: "2026-10-19T00:00:00.000Z",
     ...overrides,
-  }) as GroupChatDeliveryHead;
+  }) as GroupChatPageDelivery;
 
 const question = {
   _tag: "waiting_on_question",

@@ -1,4 +1,4 @@
-import type { GroupChatDelivery, GroupChatDeliveryHead, GroupChatMember } from "@t3tools/contracts";
+import type { GroupChatDelivery, GroupChatPageDelivery, GroupChatMember } from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
 import { Badge } from "../components/ui/badge";
@@ -26,7 +26,7 @@ export interface DeliveryView {
   readonly answerable: boolean;
 }
 
-const WAIT_LABEL: Record<NonNullable<GroupChatDeliveryHead["wait"]>["_tag"], string> = {
+const WAIT_LABEL: Record<NonNullable<GroupChatPageDelivery["wait"]>["_tag"], string> = {
   lane_busy: "waiting for its earlier envelope",
   busy_with_own_run: "busy with its own run",
   queue_held: "queue held in T3",
@@ -35,7 +35,7 @@ const WAIT_LABEL: Record<NonNullable<GroupChatDeliveryHead["wait"]>["_tag"], str
   stopped_in_t3: "stopped in T3",
 };
 
-const DISPATCH_LABEL: Record<GroupChatDeliveryHead["dispatch"], string> = {
+const DISPATCH_LABEL: Record<GroupChatPageDelivery["dispatch"], string> = {
   unsent: "waiting to send",
   sending: "sending",
   unknown: "sent, outcome unknown",
@@ -47,7 +47,7 @@ const DISPATCH_LABEL: Record<GroupChatDeliveryHead["dispatch"], string> = {
  * What a delivery shows. A wait reason names the row whatever the run state, since a member can
  * ask a question mid-run, and every wait but the lane's own points at the member's thread.
  */
-export function describeDelivery(d: GroupChatDeliveryHead): DeliveryView {
+export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
   const wait = d.wait;
   const retry = d.retryable && (d.state === "failed" || wait?._tag === "stopped_in_t3");
   if (wait !== null && (d.state === "pending" || d.state === "queued" || d.state === "running")) {
@@ -131,10 +131,10 @@ const TONE_BADGE: Record<DeliveryTone, "outline" | "info" | "warning" | "error" 
   success: "success",
 };
 
-const retryDelivery = (d: GroupChatDeliveryHead) =>
+const retryDelivery = (d: GroupChatPageDelivery) =>
   attempt(() => dispatchGroupChat({ _tag: "delivery.retry", deliveryId: d.id }));
 
-function RetryButton({ delivery }: { delivery: GroupChatDeliveryHead }) {
+function RetryButton({ delivery }: { delivery: GroupChatPageDelivery }) {
   return (
     <Button size="xs" variant="outline" onClick={() => void retryDelivery(delivery)}>
       Retry
@@ -146,7 +146,7 @@ export function DeliveryChip({
   delivery,
   member,
 }: {
-  delivery: GroupChatDeliveryHead;
+  delivery: GroupChatPageDelivery;
   member: GroupChatMember | undefined;
 }) {
   const [open, setOpen] = useState(false);
@@ -174,7 +174,7 @@ export function PendingReply({
   delivery,
   member,
 }: {
-  delivery: GroupChatDeliveryHead;
+  delivery: GroupChatPageDelivery;
   member: GroupChatMember | undefined;
 }) {
   const view = describeDelivery(delivery);
@@ -211,7 +211,11 @@ export function PendingReply({
       )}
       {view.answerable && member !== undefined && wait?._tag === "waiting_on_question" ? (
         <div className="pl-4">
-          <AnswerBox member={member} wait={wait} />
+          {wait.questions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Reading the question…</p>
+          ) : (
+            <AnswerBox member={member} wait={wait} />
+          )}
         </div>
       ) : null}
     </div>
@@ -223,7 +227,7 @@ function EnvelopeDialog({
   member,
   onClose,
 }: {
-  delivery: GroupChatDeliveryHead;
+  delivery: GroupChatPageDelivery;
   member: GroupChatMember | undefined;
   onClose: () => void;
 }) {
