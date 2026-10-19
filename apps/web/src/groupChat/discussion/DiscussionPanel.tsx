@@ -95,20 +95,19 @@ function WaitLine({ row }: { row: ParticipantRow }) {
   }
   if (status._tag !== "open") return null;
   const wait = status.delivery.wait;
+  const asksQuestion = wait?._tag === "waiting_on_question" && wait.questions.length > 0;
   return (
-    <div
-      className="flex flex-col gap-1.5"
-      data-testid="discussion-wait"
-      data-handle={member.handle}
-    >
-      <div className="flex flex-wrap items-center gap-2 text-2xs text-muted-foreground">
-        <span>
-          {handle} · {describeDelivery(status.delivery).label}
-        </span>
-        <ThreadLink member={member} className="text-2xs">
-          Open the thread
-        </ThreadLink>
-      </div>
+    <div className="contents" data-testid="discussion-wait" data-handle={member.handle}>
+      {asksQuestion ? null : (
+        <div className="flex flex-wrap items-center gap-2 text-2xs text-muted-foreground">
+          <span>
+            {handle} · {describeDelivery(status.delivery).label}
+          </span>
+          <ThreadLink member={member} className="text-2xs">
+            Open the thread
+          </ThreadLink>
+        </div>
+      )}
       {wait?._tag === "waiting_on_question" ? (
         <PendingQuestion member={member} wait={wait} />
       ) : null}
@@ -153,7 +152,7 @@ export function DiscussionPanel({
   return (
     <div
       className={cn(
-        "mx-auto mb-2 flex max-h-[50dvh] w-full max-w-(--chat-content-max-width) flex-col gap-1.5 rounded-2xl border px-4 py-2.5 text-xs",
+        "mx-auto mb-2 flex min-h-0 w-full max-w-(--chat-content-max-width) flex-col gap-1 overflow-y-auto rounded-2xl border px-4 py-2.5 text-xs",
         running ? "border-info/24 bg-info/8" : "bg-muted",
       )}
       data-testid="discussion-panel"
@@ -210,13 +209,6 @@ export function DiscussionPanel({
           <ParticipantChip key={row.memberId} row={row} />
         ))}
       </div>
-      {waitLines.length === 0 ? null : (
-        <div className="flex min-h-0 flex-col gap-1 overflow-y-auto" data-testid="discussion-waits">
-          {waitLines.map((row) => (
-            <WaitLine key={row.memberId} row={row} />
-          ))}
-        </div>
-      )}
       <div className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-2xs">
         <span className="text-muted-foreground">participants</span>
         <span>
@@ -249,6 +241,13 @@ export function DiscussionPanel({
           participants see them in their next round.
         </p>
       ) : null}
+      {waitLines.length === 0 ? null : (
+        <div className="flex min-h-0 flex-col gap-1" data-testid="discussion-waits">
+          {waitLines.map((row) => (
+            <WaitLine key={row.memberId} row={row} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -267,10 +267,12 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
         onStartReached={loadOlderPage}
         onStartReachedThreshold={0.5}
         ListHeaderComponent={<ListHeader view={view} />}
-        className="h-full min-h-0 overflow-x-hidden overscroll-y-contain [overflow-anchor:none]"
+        // LegendList cannot pin a zero-height list to its end, so a list that regrows from zero
+        // would not be at the end.
+        className="min-h-1 flex-1 overflow-x-hidden overscroll-y-contain [overflow-anchor:none]"
         data-testid="group-chat-timeline"
       />
-      <div className="shrink-0 px-5 pt-1 pb-4">
+      <div className="flex min-h-0 flex-col px-5 pt-1 pb-4">
         {panel === null ? null : (
           <DiscussionPanel view={view} discussion={panel} onDismiss={dismissPanel} />
         )}
