@@ -62,6 +62,16 @@ When a participant's reply stops in T3, the round waits. **Retry** on that parti
 
 A discussion runs on the server. Closing the page does not stop it, and a server restart resumes it where it was.
 
+## Swim lanes
+
+**Lanes** in the group header shows the same log as columns. Your messages are in the first column and each member has a column of its own, with its cards in time order. Read down a column for one member's replies, or across a row to compare what every member said to the same prompt. **Chat** switches back and lands where you were in the conversation. The choice is kept per group.
+
+Click a card to select its turn. The prompt that started the turn gets the accent, a line runs from it to the first reply, and a line in each member's colour runs on to the next reply. Cards outside the turn fade back. `j` and `k`, or the arrow keys, move to the next or previous turn and scroll it into view. Esc clears the selection. **Line up on select** moves the columns so the selected turn's cards start on one line. **Packed** keeps every column as tight as it can be.
+
+A discussion is a section with a divider per round. Select a reply from round 2 on to see what it responded to. A solid line comes from each earlier reply it names with `@`, a dashed line from one it only saw, and the toolbar counts them, such as "names 1 of the 2 round 1 replies it saw".
+
+A card over 4,000 characters collapses to a preview with **Show all**. Scroll to the top to read older messages.
+
 ## Settle, manage, and delete
 
 **Settle** moves a group to the **Settled** section of the group sidebar. Sending into a settled group brings it back. **Manage** renames the group, edits handles, adds and removes members, and settles or unsettles each member's thread. A thread that refuses to settle, because it has an open workflow for example, shows its reason as T3 gave it.
