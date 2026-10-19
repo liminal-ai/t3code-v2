@@ -38,6 +38,7 @@ const LIGHT_STEP_MS = 120;
 const LINK_STEP_MS = 120;
 const HEADER_PX = 40;
 const OLDER_THRESHOLD_PX = 240;
+const END_SLACK_PX = 2;
 const MARKDOWN_ROOT_MARGIN = "200% 0px";
 const OPERATOR_LANE_MIN_PX = 150;
 const MEMBER_LANE_MIN_PX = 176;
@@ -457,6 +458,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     setDrawn,
     setLightBaseMs,
   };
+  const followingEnd = useRef(true);
   const olderAnchor = useRef<{
     readonly lowSeq: number;
     readonly scrollHeight: number;
@@ -483,10 +485,10 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   const step = useStableCallback((delta: 1 | -1) => {
     setSelected(stepSelection(model, selection, delta));
   });
-  const clearSelection = useStableCallback((event: KeyboardEvent) => {
-    if (selection === null) return;
-    event.preventDefault();
+  const clearSelection = useStableCallback(() => {
+    if (selection === null) return false;
     setSelected(null);
+    return true;
   });
   const relayoutGeometry = useStableCallback((resized: boolean) => {
     const state = layoutState.current!;
@@ -509,24 +511,22 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     localStorage.setItem(MODE_KEY, next);
   };
 
+  // Captured, so the chat mounted underneath never sees a key the lanes took.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || isCommandPaletteOpen()) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
       if (isEditableFocused(event.target)) return;
       if (event.target instanceof Element && event.target.closest("[role=dialog]") !== null) return;
-      if (event.key === "j" || event.key === "ArrowDown") {
-        event.preventDefault();
-        step(1);
-      } else if (event.key === "k" || event.key === "ArrowUp") {
-        event.preventDefault();
-        step(-1);
-      } else if (event.key === "Escape") {
-        clearSelection(event);
-      }
+      if (event.key === "j" || event.key === "ArrowDown") step(1);
+      else if (event.key === "k" || event.key === "ArrowUp") step(-1);
+      else if (event.key === "Escape" && !clearSelection()) return;
+      else if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
     };
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    document.addEventListener("keydown", onKeyDown, { capture: true });
+    return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [step, clearSelection]);
 
   useEffect(() => {
@@ -619,8 +619,19 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   });
   const onScroll = () => {
     const element = scroller.current;
-    if (element !== null && element.scrollTop < OLDER_THRESHOLD_PX) requestOlder();
+    if (element === null) return;
+    followingEnd.current =
+      element.scrollTop + element.clientHeight >= element.scrollHeight - END_SLACK_PX;
+    if (element.scrollTop < OLDER_THRESHOLD_PX) requestOlder();
   };
+
+  const followedSeq = useRef(view.highSeq);
+  useLayoutEffect(() => {
+    const element = scroller.current;
+    const newer = view.highSeq > followedSeq.current;
+    followedSeq.current = view.highSeq;
+    if (element !== null && newer && followingEnd.current) element.scrollTop = element.scrollHeight;
+  }, [view.highSeq]);
 
   useLayoutEffect(() => {
     const element = scroller.current;

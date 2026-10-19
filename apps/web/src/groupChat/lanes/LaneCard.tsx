@@ -20,7 +20,7 @@ import type { Emphasis } from "./model";
 export const ACCENT = "var(--primary)";
 
 const CARD =
-  "relative w-full cursor-pointer rounded-lg border border-border bg-card px-2.5 pt-2 pb-2.25 text-left text-xs leading-snug text-foreground transition-[box-shadow,background-color,border-color] duration-300 ease-out [overflow-wrap:anywhere]";
+  "relative w-full cursor-pointer rounded-lg border border-border bg-card px-2.5 pt-2 pb-2.25 text-left text-xs leading-snug text-foreground outline-none transition-[box-shadow,background-color,border-color] duration-300 ease-out focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset [overflow-wrap:anywhere]";
 
 const EMPHASIS_CLASS: Record<Emphasis, string> = {
   anchor:
@@ -105,12 +105,19 @@ export const LaneCard = memo(function LaneCard({
   return (
     <div
       role="button"
-      tabIndex={-1}
+      tabIndex={0}
       data-testid="lane-message"
       data-message-id={message.id}
       data-turn={message.turnKey}
       data-highlighted={emphasis}
       onClick={(event) => {
+        event.stopPropagation();
+        onSelect(message);
+      }}
+      onKeyDown={(event) => {
+        if (event.target !== event.currentTarget) return;
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
         event.stopPropagation();
         onSelect(message);
       }}
