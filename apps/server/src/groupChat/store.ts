@@ -330,11 +330,6 @@ export type DiscussionPatch = Partial<
   Pick<GroupChatDiscussion, "round" | "state" | "endReason" | "signedOff">
 >;
 
-/**
- * A queued envelope group chat must take back out of a thread, by its run id, or by the derived
- * id of the message a dispatch was still sending. The row outlives the delivery, so a group
- * deleted or a Stop pressed just before a crash still gets its envelope cancelled at the next boot.
- */
 const CancelRow = Schema.Struct({
   id: Schema.String,
   threadId: ThreadId,

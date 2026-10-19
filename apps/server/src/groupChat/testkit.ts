@@ -80,7 +80,6 @@ export interface FakeThread {
   readonly faults: SendFault[];
   /** Reads of the thread's runs that fail before one succeeds, as a transient store fault would. */
   readFaults: number;
-  /** Reads of the thread itself that fail before one succeeds. */
   threadReadFaults: number;
   /** Queued-run cancels that fail before one succeeds. */
   cancelFaults: number;

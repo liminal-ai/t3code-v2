@@ -260,7 +260,7 @@ export const GroupChatGroupSnapshot = Schema.Struct({
 export type GroupChatGroupSnapshot = typeof GroupChatGroupSnapshot.Type;
 
 const GROUP_CHAT_MAX_ROUNDS = 20;
-/** A group's title travels on every group head, so it stays short. */
+/** The title rides on every group head, and a stream event stays under 4 KiB. */
 export const GROUP_CHAT_TITLE_MAX_LENGTH = 200;
 
 export const GroupChatCommand = Schema.Union([

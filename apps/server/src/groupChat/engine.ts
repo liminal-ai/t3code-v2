@@ -76,6 +76,10 @@ const TERMINAL = new Set<PortRun["status"]>([
 ]);
 
 const MAX_RESENDS = 1;
+type CancelOutcome = "settled" | "retry";
+/** An open delivery whose dispatch left without a run id, so only its derived message id can find it. */
+const dispatchUnresolved = (d: DeliveryRow) =>
+  OPEN.has(d.state) && d.runId === null && d.messageId !== null;
 const QUEUE_HELD_NOTE =
   "T3 is holding this thread's queue after a Stop. Resume thread in T3 releases the whole queue, this envelope included, in the order it was queued.";
 
@@ -135,6 +139,7 @@ export const makeEngine = (store: GroupChatStore) =>
     const retryDelay = yield* RetryDelay;
     const scope = yield* Effect.scope;
     const lanes = new Map<ThreadId, Lane>();
+    const cancels = yield* Queue.make<void>({ capacity: 1, strategy: "sliding" });
     const resends = new Map<GroupChatDeliveryId, number>();
     /** Deliveries whose dispatch outcome stayed unknown this boot. Retry or the next boot looks again. */
     const stalled = new Set<GroupChatDeliveryId>();
@@ -437,35 +442,26 @@ export const makeEngine = (store: GroupChatStore) =>
         resends.delete(d.id);
       });
 
-    /**
-     * Records a send's outcome. When the row is gone with its group, or Stop withdrew the envelope
-     * while the send was in flight and T3 took it, nobody else will take it back out of the
-     * thread's queue, so the outcome is recorded as a cancel instead.
-     */
     const record = (
       deliveryId: GroupChatDeliveryId,
       patch: Parameters<Tx["updateDelivery"]>[1],
       cancel: NewCancel,
     ): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
-        const unwanted = yield* store.transaction((tx) =>
+        const cancelled = yield* store.transaction((tx) =>
           Effect.gen(function* () {
             const current = yield* tx.delivery(deliveryId);
             if (current !== null) yield* tx.updateDelivery(deliveryId, patch);
-            const unwanted =
-              current === null || (current.withdrawn !== null && patch.dispatch === "accepted");
-            if (unwanted) yield* tx.insertCancel(cancel);
-            return unwanted;
+            const orphaned = current === null;
+            const withdrawnMeanwhile =
+              current !== null && current.withdrawn !== null && patch.dispatch === "accepted";
+            if (orphaned || withdrawnMeanwhile) yield* tx.insertCancel(cancel);
+            return orphaned || withdrawnMeanwhile;
           }),
         );
-        if (unwanted) yield* kickCancels;
+        if (cancelled) yield* kickCancels;
       });
 
-    /**
-     * Records that T3 holds the envelope the row sent, unless the row moved on since it was
-     * read: a Retry that bumped the attempt in between must not inherit the older run. An
-     * envelope Stop withdrew while its outcome was unknown must leave the queue it turned up in.
-     */
     const adopt = (
       d: DeliveryRow,
       threadId: ThreadId,
@@ -475,9 +471,9 @@ export const makeEngine = (store: GroupChatStore) =>
         const withdrawn = yield* store.transaction((tx) =>
           Effect.gen(function* () {
             const current = yield* tx.delivery(d.id);
-            if (current === null || current.messageId !== d.messageId || !OPEN.has(current.state)) {
-              return false;
-            }
+            const unchanged =
+              current !== null && current.messageId === d.messageId && OPEN.has(current.state);
+            if (!unchanged) return false;
             yield* tx.updateDelivery(d.id, {
               dispatch: "accepted",
               runId,
@@ -860,10 +856,6 @@ export const makeEngine = (store: GroupChatStore) =>
         if (member !== null) yield* kick(member.thread.threadId);
       });
 
-    /**
-     * Takes the envelope back in the transaction that records why, as a cancel row when T3
-     * still queues it. The caller kicks the cancel drain once the transaction commits.
-     */
     const withdraw = (tx: Tx, d: DeliveryRow, reason: string): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         if (!OPEN.has(d.state)) {
@@ -889,63 +881,39 @@ export const makeEngine = (store: GroupChatStore) =>
         }
       });
 
-    /**
-     * Every envelope the store says must leave a thread's queue is asked back out of T3 until
-     * T3 answers. A command asks once before it returns, so a Stop comes back after the queue was
-     * told; what T3 did not answer goes to one drain fiber that keeps asking, and the rows outlive
-     * a crash, so a boot asks again. A cancel that never lands would let a stopped envelope run
-     * once the thread frees up.
-     */
-    let cancels: Queue.Queue<void> | null = null;
-    const wakeCancels: Effect.Effect<void> = Effect.gen(function* () {
-      if (cancels === null) {
-        const signal = yield* Queue.make<void>({ capacity: 1, strategy: "sliding" });
-        if (cancels === null) {
-          cancels = signal;
-          yield* Effect.forkIn(drainCancels(signal), scope);
-        }
-      }
-      yield* Queue.offer(cancels, undefined);
-    });
-
-    /** True when nothing is left pending, false when T3 or the store must be asked again later. */
-    const settlePending: Effect.Effect<boolean> = store.pendingCancels.pipe(
+    const settlePending: Effect.Effect<CancelOutcome> = store.pendingCancels.pipe(
       Effect.flatMap((rows) => Effect.forEach(rows, settleCancel)),
-      Effect.map((answered) => answered.every((done) => done)),
+      Effect.map((outcomes) => (outcomes.every((o) => o === "settled") ? "settled" : "retry")),
       Effect.catchCause((cause) =>
         Cause.hasInterrupts(cause)
           ? Effect.interrupt
           : Effect.logError("group chat could not read its pending cancels", { cause }).pipe(
-              Effect.as(false),
+              Effect.as("retry" as const),
             ),
       ),
     );
 
-    const kickCancels: Effect.Effect<void> = Effect.flatMap(settlePending, (settled) =>
-      settled ? Effect.void : wakeCancels,
+    const kickCancels: Effect.Effect<void> = Effect.flatMap(settlePending, (outcome) =>
+      outcome === "settled" ? Effect.void : Effect.asVoid(Queue.offer(cancels, undefined)),
     );
 
-    const drainCancels = (signal: Queue.Queue<void>): Effect.Effect<never> =>
-      Effect.gen(function* () {
-        for (;;) {
-          if (yield* settlePending) yield* Queue.take(signal);
-          else yield* Effect.sleep(retryDelay);
-        }
-      });
+    const drainCancels: Effect.Effect<never> = Effect.gen(function* () {
+      for (;;) {
+        if ((yield* settlePending) === "settled") yield* Queue.take(cancels);
+        else yield* Effect.sleep(retryDelay);
+      }
+    });
 
-    /** True once T3 answered or there is nothing left to ask; false means ask again later. */
-    const settleCancel = (row: CancelRow): Effect.Effect<boolean> =>
+    const settleCancel = (row: CancelRow): Effect.Effect<CancelOutcome> =>
       Effect.gen(function* () {
         const found =
           row.messageId === null
             ? null
             : yield* port.findMessage({ threadId: row.threadId, messageId: row.messageId });
         const runId = row.runId ?? found?.runId ?? null;
-        // No message means T3 never accepted that dispatch: it was rejected, or the crash that
-        // left this row behind cut it short. A send that lands later records its own cancel.
         if (runId !== null) yield* port.cancelQueued({ threadId: row.threadId, runId });
         yield* store.transaction((tx) => tx.deleteCancel(row.id));
-        return true;
+        return "settled" as const;
       }).pipe(
         Effect.catchCause((cause) =>
           Cause.hasInterrupts(cause)
@@ -956,13 +924,13 @@ export const makeEngine = (store: GroupChatStore) =>
                   yield* store
                     .transaction((tx) => tx.deleteCancel(row.id))
                     .pipe(Effect.ignoreCause({ log: true }));
-                  return true;
+                  return "settled" as const;
                 }
                 yield* Effect.logWarning("group chat cancel did not reach T3; trying again", {
                   ...row,
                   cause,
                 });
-                return false;
+                return "retry" as const;
               }),
         ),
       );
@@ -1292,9 +1260,6 @@ export const makeEngine = (store: GroupChatStore) =>
         const refusal = retryRefusal(d, member, discussion);
         if (refusal !== null) return yield* new GroupChatRefused({ reason: refusal });
         const threadId = member!.thread.threadId;
-        // A send whose outcome stayed unknown may have been accepted, so Retry looks for its
-        // envelope first. A new attempt goes out only once the old one is proven absent, or the
-        // thread could run both.
         if (d.dispatch === "unknown" && d.messageId !== null) {
           const found = yield* port.findMessage({ threadId, messageId: d.messageId });
           if (found !== null && found.runId !== null) {
@@ -1542,10 +1507,8 @@ export const makeEngine = (store: GroupChatStore) =>
                 );
                 for (const d of yield* tx.deliveriesOfGroup(command.groupId)) {
                   yield* withdraw(tx, d, "group deleted");
-                  // The rows go with the group, so a dispatch still in flight or unresolved
-                  // leaves its envelope to a cancel row, found later by the derived message id.
                   const threadId = threadOf.get(d.memberId);
-                  if (OPEN.has(d.state) && d.runId === null && d.messageId !== null && threadId) {
+                  if (dispatchUnresolved(d) && d.messageId !== null && threadId !== undefined) {
                     yield* tx.insertCancel({ threadId, messageId: d.messageId });
                   }
                 }
@@ -1693,7 +1656,7 @@ export const makeEngine = (store: GroupChatStore) =>
     );
 
     const recover = Effect.gen(function* () {
-      yield* wakeCancels;
+      yield* Effect.forkIn(drainCancels, scope);
       const open = yield* store.openDeliveries;
       const threads = new Set<ThreadId>();
       for (const d of open) {
