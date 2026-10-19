@@ -141,7 +141,7 @@ function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
       </Empty>
     );
   }
-  return <ChatView groupId={groupId} view={view} />;
+  return <ChatView key={groupId} groupId={groupId} view={view} />;
 }
 
 export function GroupChatPage({ groupId }: { readonly groupId?: string }) {

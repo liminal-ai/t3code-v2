@@ -427,4 +427,42 @@ describe("discussion view", () => {
       ["bo", "thr_bo"],
     ]);
   });
+
+  it("a participant removed after the end keeps its final-round outcome", () => {
+    const signed = reply(2, m1, 1, { signOff: true });
+    const ended = discussion({
+      state: "ended",
+      endReason: "all signed off in round 1",
+      endedAt: "2026-10-19T00:05:00.000Z",
+      signedOff: { [m1]: 1 as never, [m2]: 1 as never },
+    });
+    const gone = { ...member(m1, "ana"), removedAt: "2026-10-19T00:06:00.000Z" };
+    const state = loaded({
+      members: [gone, member(m2, "bo")],
+      discussions: [ended],
+      messages: [prompt, signed],
+      deliveries: [delivery(m1, 1, { state: "replied", replyMessageId: signed.id })],
+    });
+    const view = discussionView(viewOf(state), discussionId)!;
+    expect(view.participants[0]?.status._tag).toBe("signed_off");
+    expect(handles(view.signedOff)).toEqual(["ana", "bo"]);
+  });
+
+  it("a participant removed while the discussion ran shows as removed after it ends", () => {
+    const ended = discussion({
+      state: "ended",
+      endReason: "fewer than two participants left after removals",
+      endedAt: "2026-10-19T00:05:00.000Z",
+    });
+    const gone = { ...member(m1, "ana"), removedAt: "2026-10-19T00:04:00.000Z" };
+    const state = loaded({
+      members: [gone, member(m2, "bo")],
+      discussions: [ended],
+      deliveries: [delivery(m1, 1, { state: "replied", replyMessageId: "msg_2" as never })],
+      messages: [prompt, reply(2, m1, 1)],
+    });
+    const view = discussionView(viewOf(state), discussionId)!;
+    expect(view.participants[0]?.status._tag).toBe("removed");
+    expect(handles(view.replied)).toEqual([]);
+  });
 });

@@ -50,7 +50,7 @@ function statusOf(
   delivery: GroupChatPageDelivery | undefined,
   messages: GroupView["messages"],
 ): ParticipantStatus {
-  if (member === undefined || member.removedAt !== null) return { _tag: "removed" };
+  if (member === undefined || leftBeforeEnd(member, discussion)) return { _tag: "removed" };
   const replyId = delivery?.replyMessageId ?? null;
   const reply = replyId === null ? undefined : messages.get(replyId);
   if (reply?.signOff === true || discussion.signedOff[memberId] === discussion.round) {
@@ -73,6 +73,10 @@ function statusOf(
       return { _tag: "open", delivery };
   }
 }
+
+const leftBeforeEnd = (member: GroupChatMember, discussion: GroupChatDiscussion) =>
+  member.removedAt !== null &&
+  (discussion.endedAt === null || member.removedAt <= discussion.endedAt);
 
 const stoppedInT3 = (delivery: GroupChatPageDelivery) =>
   delivery.wait?._tag === "stopped_in_t3" &&
