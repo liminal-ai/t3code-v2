@@ -13,13 +13,10 @@ export type ParticipantStatus =
   | { readonly _tag: "removed" }
   | { readonly _tag: "signed_off" }
   | { readonly _tag: "replied" }
-  /** Pending, queued or running this round; `describeDelivery` says which. */
   | { readonly _tag: "open"; readonly delivery: GroupChatPageDelivery }
-  /** Stopped in T3: the round waits until Retry on it or Stop on the discussion. */
   | { readonly _tag: "paused"; readonly delivery: GroupChatPageDelivery }
   | { readonly _tag: "failed"; readonly delivery: GroupChatPageDelivery }
   | { readonly _tag: "cancelled"; readonly delivery: GroupChatPageDelivery }
-  /** The round's delivery head has not reached the store yet. */
   | { readonly _tag: "no_delivery" };
 
 export interface ParticipantRow {
@@ -135,23 +132,24 @@ export function runningDiscussion(view: GroupView): GroupChatDiscussion | null {
   return null;
 }
 
-/**
- * The running discussion, else the ended one the conversation still belongs to, late replies
- * included, until the operator dismisses it or a message outside it arrives.
- */
+function discussionOfLastMessage(view: GroupView): GroupChatDiscussion | undefined {
+  let last: GroupChatMessage | undefined;
+  for (const m of view.messages.values()) if (last === undefined || m.seq > last.seq) last = m;
+  return last === undefined || last.discussionId === null
+    ? undefined
+    : view.discussions.get(last.discussionId);
+}
+
 export function panelDiscussion(
   view: GroupView,
   dismissedId: string | null,
 ): GroupChatDiscussion | null {
   const running = runningDiscussion(view);
   if (running !== null) return running;
-  let last: GroupChatMessage | undefined;
-  for (const m of view.messages.values()) if (last === undefined || m.seq > last.seq) last = m;
-  if (last === undefined || last.discussionId === null || last.discussionId === dismissedId) {
-    return null;
-  }
-  const ended = view.discussions.get(last.discussionId);
-  return ended?.state === "ended" ? ended : null;
+  const recent = discussionOfLastMessage(view);
+  return recent !== undefined && recent.state === "ended" && recent.id !== dismissedId
+    ? recent
+    : null;
 }
 
 export type RoundDivider =
@@ -168,11 +166,6 @@ const roundCaption = (round: number) =>
     ? "each participant sees the topic"
     : `each participant sees the others' round ${round - 1} replies`;
 
-/**
- * The prompt is round 1's marker and the engine writes a system message for each later round and
- * for the end. The end line is the engine's only system message that opens this way, so its
- * prefix is the cheapest tell.
- */
 export function roundDivider(
   message: GroupChatMessage,
   discussion: GroupChatDiscussion | undefined,

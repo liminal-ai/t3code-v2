@@ -40,7 +40,6 @@ function describeStatus(status: ParticipantStatus): {
   }
 }
 
-/** A row the operator can act on from the panel: a paused reply, or an open one whose wait points at the thread. */
 const needsWaitLine = (row: ParticipantRow) =>
   row.member !== undefined &&
   (row.status._tag === "paused" ||

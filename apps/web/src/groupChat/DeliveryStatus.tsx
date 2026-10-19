@@ -245,7 +245,6 @@ export function PendingReply({
   );
 }
 
-/** The question's text rides the page, so a head that names one shows a wait until the page lands. */
 export function PendingQuestion({
   member,
   wait,

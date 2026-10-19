@@ -25,7 +25,6 @@ import { memberColor } from "../MemberChip";
 import { Refusal, useRefusal } from "../refusal";
 import type { GroupView } from "../store";
 
-/** The server's marker from apps/server/src/groupChat/text.ts; each envelope tells the member the same. */
 const SIGN_OFF_MARKER = "[[SIGN-OFF]]";
 const MIN_ROUNDS = 1;
 const MAX_ROUNDS = 20;
