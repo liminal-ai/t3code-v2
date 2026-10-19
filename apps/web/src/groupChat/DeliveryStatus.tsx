@@ -29,7 +29,10 @@ export interface DeliveryView {
   readonly retry: boolean;
   readonly threadLink: boolean;
   readonly answerable: boolean;
-  /** Stop withdraws an envelope that has not replied yet: the way back out of a send. */
+  /**
+   * Stop withdraws an envelope that has not replied yet, or abandons one that T3 stopped so a
+   * discussion round moves on. It is the way back out of a send.
+   */
   readonly stoppable: boolean;
 }
 
@@ -56,9 +59,10 @@ const DISPATCH_LABEL: Record<GroupChatPageDelivery["dispatch"], string> = {
  */
 export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
   const wait = d.wait;
+  const open = d.state === "pending" || d.state === "queued" || d.state === "running";
   const retry = d.retryable && (d.state === "failed" || wait?._tag === "stopped_in_t3");
-  const stoppable = d.state === "pending" || d.state === "queued" || d.state === "running";
-  if (wait !== null && stoppable) {
+  const stoppable = open || (d.state === "failed" && wait?._tag === "stopped_in_t3");
+  if (wait !== null && open) {
     return {
       stoppable,
       label: WAIT_LABEL[wait._tag],
@@ -259,6 +263,41 @@ export function PendingQuestion({
   );
 }
 
+interface EnvelopeRead {
+  /** The delivery's `updatedAt` the read was for. A body shows for its own head only. */
+  readonly head: string;
+  readonly body: GroupChatDelivery | null;
+  readonly failure: string | null;
+}
+
+/**
+ * The envelope is built at send and the text that ran is stored when the run starts, so a head
+ * that moved while the dialog is open means the body may have too, and is read again.
+ */
+export function useEnvelope(delivery: GroupChatPageDelivery) {
+  const [read, setRead] = useState<EnvelopeRead | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const head = delivery.updatedAt;
+    fetchDelivery(delivery.id)
+      .then((fetched) => {
+        // A read that raced an older head is not the body this head describes.
+        if (alive && fetched.updatedAt >= head) setRead({ head, body: fetched, failure: null });
+      })
+      .catch((error: unknown) => {
+        if (alive) {
+          const failure = error instanceof Error ? error.message : String(error);
+          setRead({ head, body: null, failure });
+        }
+      });
+    return () => {
+      alive = false;
+    };
+  }, [delivery.id, delivery.updatedAt]);
+  const current = read?.head === delivery.updatedAt ? read : null;
+  return { body: current?.body ?? null, failure: current?.failure ?? null };
+}
+
 function EnvelopeDialog({
   delivery,
   member,
@@ -268,24 +307,7 @@ function EnvelopeDialog({
   member: GroupChatMember | undefined;
   onClose: () => void;
 }) {
-  const [body, setBody] = useState<GroupChatDelivery | null>(null);
-  const [failure, setFailure] = useState<string | null>(null);
-  // The envelope is built at send and the text that ran is stored when the run starts, so a
-  // head that moved while the dialog is open means the body may have too.
-  useEffect(() => {
-    let alive = true;
-    fetchDelivery(delivery.id)
-      .then((fetched) => {
-        // A read that raced an older head is not the body this head describes.
-        if (alive && fetched.updatedAt >= delivery.updatedAt) setBody(fetched);
-      })
-      .catch((error: unknown) => {
-        if (alive) setFailure(error instanceof Error ? error.message : String(error));
-      });
-    return () => {
-      alive = false;
-    };
-  }, [delivery.id, delivery.updatedAt]);
+  const { body, failure } = useEnvelope(delivery);
   const view = describeDelivery(delivery);
   const edited = body !== null && body.sentText !== null;
   return (

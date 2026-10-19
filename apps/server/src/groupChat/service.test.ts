@@ -1322,6 +1322,46 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "a group deleted before T3 takes its send has the envelope cancelled once T3 takes it",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "delete before T3 takes it", [alpha]);
+        const thread = yield* fake.thread(alpha);
+        yield* fake.startOwnRun(alpha);
+        thread.commitGate = yield* Deferred.make<void>();
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        yield* awaitDelivery(app, member(alpha).id, (d) => d.dispatch === "sending");
+        yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+        assert.isUndefined(
+          thread.runs.find((r) => r.own),
+          "T3 had not taken the envelope yet",
+        );
+        assert.strictEqual(
+          (yield* app.store.pendingCancels).length,
+          1,
+          "the cancel waits on the send",
+        );
+        yield* Deferred.succeed(thread.commitGate, undefined);
+        const envelope = thread.sends[0]!;
+        const envelopeRun = () => thread.runs.find((r) => r.messageId === envelope.messageId);
+        for (let looks = 0; looks < 200 && envelopeRun()?.status !== "cancelled"; looks++) {
+          yield* Effect.yieldNow;
+        }
+        assert.strictEqual(envelopeRun()?.status, "cancelled", "nobody is left to want this run");
+        assert.strictEqual(thread.sends.length, 1);
+        for (let looks = 0; looks < 200 && (yield* app.store.pendingCancels).length > 0; looks++) {
+          yield* Effect.yieldNow;
+        }
+        assert.deepStrictEqual(
+          yield* app.store.pendingCancels,
+          [],
+          "the cancel settled with the send",
+        );
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("deleting a group wakes the lanes its deliveries were blocking", () =>
     Effect.gen(function* () {
       const { fake, app } = yield* setup;
@@ -1584,6 +1624,41 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         yield* Deferred.await(thread.sendReached);
         thread.cancelFaults = 1;
         yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+        yield* app.shutdown;
+        const envelope = thread.sends[0]!;
+        const run = thread.runs.find((r) => r.messageId === envelope.messageId)!;
+        assert.strictEqual(run.status, "queued", "T3 took the envelope before the crash");
+        yield* boot(fake, baseDir);
+        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 millis");
+        }
+        assert.strictEqual(run.status, "cancelled");
+        yield* fake.complete(alpha, own.id, "own finished");
+        assert.isUndefined(thread.runs.find((r) => r.own && r.started));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a group deleted during a send T3 has not yet taken, which a crash then cuts short, has its envelope cancelled at the next boot",
+    () =>
+      Effect.gen(function* () {
+        const { fake, baseDir, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "deleted before T3 took it", [alpha]);
+        const own = yield* fake.startOwnRun(alpha);
+        const thread = yield* fake.thread(alpha);
+        thread.commitGate = yield* Deferred.make<void>();
+        thread.sendReached = yield* Deferred.make<void>();
+        thread.sendGate = yield* Deferred.make<void>();
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        yield* awaitDelivery(app, member(alpha).id, (d) => d.dispatch === "sending");
+        yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+        assert.isUndefined(
+          thread.runs.find((r) => r.own),
+          "T3 had not taken the envelope when the group was deleted",
+        );
+        yield* Deferred.succeed(thread.commitGate, undefined);
+        yield* Deferred.await(thread.sendReached);
         yield* app.shutdown;
         const envelope = thread.sends[0]!;
         const run = thread.runs.find((r) => r.messageId === envelope.messageId)!;

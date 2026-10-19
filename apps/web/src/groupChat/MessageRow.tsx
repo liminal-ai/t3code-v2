@@ -115,7 +115,7 @@ function ReplyContext({
       data-testid="reply-context"
     >
       <span className="truncate">
-        ↳ {turn.label} ·{" "}
+        ↳ {turn.label === null ? "" : `${turn.label} · `}
         {prompt === undefined ? "earlier message" : plainSnippet(prompt.displayText)}
       </span>
     </Button>

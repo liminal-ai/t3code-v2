@@ -25,7 +25,13 @@ import { StartDiscussionDialog } from "./discussion/StartDiscussionDialog";
 import { useGroupChatEvents } from "./events";
 import { ManageGroupDialog } from "./ManageGroupDialog";
 import { MemberChip } from "./MemberChip";
-import { type GroupView, loadGroup, openDeliveryByMember, useGroupView } from "./store";
+import {
+  type GroupView,
+  openDeliveryByMember,
+  readGroup,
+  stopGroupRetries,
+  useGroupView,
+} from "./store";
 
 function notice(snapshot: GroupChatSnapshotState, groupId: string | undefined): string | null {
   switch (snapshot.status) {
@@ -114,13 +120,14 @@ function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
   const failure = failed?.groupId === groupId ? failed.message : null;
   useEffect(() => {
     let alive = true;
-    loadGroup(groupId).catch((error: unknown) => {
+    readGroup(groupId).catch((error: unknown) => {
       if (alive) {
         setFailed({ groupId, message: error instanceof Error ? error.message : String(error) });
       }
     });
     return () => {
       alive = false;
+      stopGroupRetries(groupId);
     };
   }, [groupId]);
   if (view === null) {
@@ -133,6 +140,7 @@ function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
             <>
               <EmptyTitle>Could not load this group chat</EmptyTitle>
               <EmptyDescription>{failure}</EmptyDescription>
+              <EmptyDescription>Trying again…</EmptyDescription>
             </>
           )}
         </EmptyHeader>

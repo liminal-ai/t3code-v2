@@ -70,6 +70,8 @@ export interface FakeThread {
   settleRefusal: string | null;
   pending: GroupChatPendingInput | null;
   held: boolean;
+  /** Holds a send before T3 takes it, so a test can act while the envelope is in flight but not yet committed. */
+  commitGate: Deferred.Deferred<void> | null;
   sendReached: Deferred.Deferred<void> | null;
   sendGate: Deferred.Deferred<void> | null;
   readGate: Deferred.Deferred<void> | null;
@@ -164,6 +166,7 @@ export const makeFakeThreads = Effect.sync(() => {
         settleRefusal: null,
         pending: null,
         held: false,
+        commitGate: null,
         sendReached: null,
         sendGate: null,
         readGate: null,
@@ -309,6 +312,7 @@ export const makeFakeThreads = Effect.sync(() => {
         if (fault?.type === "lose") {
           return yield* new PortUnknown({ threadId: t.id, cause: "lost" });
         }
+        if (t.commitGate !== null) yield* Deferred.await(t.commitGate);
         const run = yield* commit(t, input.commandId, input.messageId, input.text);
         if (t.sendReached !== null) yield* Deferred.succeed(t.sendReached, undefined);
         if (t.sendGate !== null) yield* Deferred.await(t.sendGate);
