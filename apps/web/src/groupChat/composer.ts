@@ -73,14 +73,11 @@ export interface Draft {
   readonly text: string;
 }
 
-/**
- * The box is cleared when a send leaves, so what the operator types while the request is out is
- * theirs to keep. A failed send puts its text back only into its own group's box, and only when
- * nothing new was typed.
- */
-export function draftAfterSend(draftNow: Draft, submitted: Draft, sent: boolean): Draft {
-  if (sent || draftNow.groupId !== submitted.groupId || draftNow.text !== "") return draftNow;
-  return submitted;
+export type Drafts = ReadonlyMap<GroupChatGroupId, string>;
+
+export function draftAfterSend(drafts: Drafts, submitted: Draft, sent: boolean): Drafts {
+  if (sent || (drafts.get(submitted.groupId) ?? "") !== "") return drafts;
+  return new Map(drafts).set(submitted.groupId, submitted.text);
 }
 
 const recipientsKey = (groupId: GroupChatGroupId) => `t3code:group-chat:recipients:${groupId}`;
