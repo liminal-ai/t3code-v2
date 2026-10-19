@@ -1,4 +1,9 @@
-import type { GroupChatPageDelivery, GroupChatMember, GroupChatMessage } from "@t3tools/contracts";
+import type {
+  GroupChatDiscussion,
+  GroupChatPageDelivery,
+  GroupChatMember,
+  GroupChatMessage,
+} from "@t3tools/contracts";
 import { type ReactNode, useRef, useState } from "react";
 
 import ChatMarkdown from "../components/ChatMarkdown";
@@ -7,6 +12,7 @@ import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
 import { formatTimestamp } from "../timestampFormat";
 import { DeliveryChip } from "./DeliveryStatus";
+import { lateLabel, type RoundDivider, roundDivider } from "./discussion/discussionView";
 import { MemberLabel } from "./MemberChip";
 import { LONG_MESSAGE_CHARS, plainSnippet, previewOf } from "./messageText";
 import type { TurnInfo } from "./store";
@@ -42,11 +48,14 @@ export function OperatorMessage({
   message,
   members,
   deliveries,
+  discussion,
 }: {
   message: GroupChatMessage;
   members: ReadonlyMap<string, GroupChatMember>;
   deliveries: ReadonlyArray<GroupChatPageDelivery>;
+  discussion: GroupChatDiscussion | undefined;
 }) {
+  const divider = roundDivider(message, discussion);
   return (
     <div
       className="flex flex-col items-end gap-1"
@@ -57,6 +66,7 @@ export function OperatorMessage({
       {message.kind === "discussion_prompt" ? (
         <p className="me-1 text-2xs text-info-foreground">
           Discussion topic · {message.recipients.length} participants
+          {discussion === undefined ? "" : ` · up to ${discussion.maxRounds} rounds`}
         </p>
       ) : null}
       <div className="max-w-[85%] rounded-2xl bg-message p-3 text-foreground" data-bubble>
@@ -77,6 +87,7 @@ export function OperatorMessage({
         )}
         <span className="ms-1 tabular-nums opacity-70">{clock(message.createdAt)}</span>
       </div>
+      {divider?._tag === "round" ? <RoundDividerLine divider={divider} /> : null}
     </div>
   );
 }
@@ -116,16 +127,17 @@ export function MemberMessage({
   member,
   turn,
   prompt,
+  discussion,
   onJump,
 }: {
   message: GroupChatMessage;
   member: GroupChatMember | undefined;
   turn: TurnInfo | undefined;
   prompt: GroupChatMessage | undefined;
+  discussion: GroupChatDiscussion | undefined;
   onJump: (messageId: GroupChatMessage["id"]) => Promise<void>;
 }) {
-  const lateLabel =
-    message.kind === "discussion_reply" ? "arrived after the round · not counted" : "late reply";
+  const late = lateLabel(message, discussion);
   return (
     <div
       className="flex flex-col gap-1 px-1 py-0.5"
@@ -146,11 +158,11 @@ export function MemberMessage({
             signed off
           </Badge>
         ) : null}
-        {message.late ? (
+        {late === null ? null : (
           <Badge variant="outline" size="sm" data-testid="late-reply">
-            {lateLabel}
+            {late}
           </Badge>
-        ) : null}
+        )}
         <span className="text-2xs tabular-nums text-muted-foreground/70">
           {clock(message.createdAt)}
         </span>
@@ -166,14 +178,59 @@ export function MemberMessage({
   );
 }
 
+function RoundDividerLine({ divider }: { divider: Extract<RoundDivider, { _tag: "round" }> }) {
+  return (
+    <div
+      className="flex w-full items-center gap-3 text-xs text-muted-foreground"
+      data-testid="round-divider"
+      data-round={divider.round}
+    >
+      <span className="h-px flex-1 bg-border" />
+      <Badge variant="info" size="sm">
+        Round {divider.round} of {divider.maxRounds}
+      </Badge>
+      <span className="max-w-[70%] truncate">{divider.caption}</span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function DividerText({
+  message,
+  divider,
+}: {
+  message: GroupChatMessage;
+  divider: RoundDivider | null;
+}) {
+  if (divider?._tag === "round") return <RoundDividerLine divider={divider} />;
+  const ended = divider?._tag === "ended";
+  return (
+    <div className="flex w-full items-center gap-3 text-xs text-muted-foreground">
+      <span className="h-px flex-1 bg-border" />
+      <span
+        className={cn("flex max-w-[80%] flex-col text-center", ended && "gap-0.5")}
+        data-testid={ended ? "discussion-ended" : undefined}
+      >
+        <span className={cn(ended && "font-medium text-foreground/75")}>
+          {ended ? divider.endSentence : message.displayText}
+        </span>
+        {ended && divider.note !== null ? <span>{divider.note}</span> : null}
+      </span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
 export function SystemDivider({
   message,
   members,
   deliveries,
+  divider,
 }: {
   message: GroupChatMessage;
   members: ReadonlyMap<string, GroupChatMember>;
   deliveries: ReadonlyArray<GroupChatPageDelivery>;
+  divider: RoundDivider | null;
 }) {
   return (
     <div
@@ -181,18 +238,7 @@ export function SystemDivider({
       data-testid="system-message"
       data-message-id={message.id}
     >
-      <div className="flex w-full items-center gap-3 text-xs text-muted-foreground">
-        <span className="h-px flex-1 bg-border" />
-        <span
-          className={cn(
-            "max-w-[80%] text-center",
-            message.displayText.startsWith("Discussion ended") && "font-medium text-foreground/75",
-          )}
-        >
-          {message.displayText}
-        </span>
-        <span className="h-px flex-1 bg-border" />
-      </div>
+      <DividerText message={message} divider={divider} />
       {deliveries.length === 0 ? null : (
         <div className="flex flex-wrap justify-center gap-1">
           {deliveries.map((d) => (
