@@ -30,6 +30,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
+import * as Semaphore from "effect/Semaphore";
 import * as Schema from "effect/Schema";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -764,18 +765,23 @@ export const open = Effect.fn("groupChat.store.open")(function* (file: string) {
   const changes = yield* PubSub.unbounded<StoreEvent>();
   const seq = yield* Ref.make(0);
   const reads = makeReads(sql);
+  // The commit and the publication of its changes happen under one lock, so `seq` follows commit
+  // order and a client applying events by `seq` never sees an older row after a newer one.
+  const writer = yield* Semaphore.make(1);
 
   const transaction: GroupChatStore["transaction"] = (body) =>
-    Effect.gen(function* () {
-      const pending: StoreChange[] = [];
-      const tx: Tx = { ...reads, ...makeWrites(sql, reads, (change) => pending.push(change)) };
-      const result = yield* sql.withTransaction(body(tx));
-      for (const change of pending) {
-        const n = yield* Ref.updateAndGet(seq, (value) => value + 1);
-        yield* PubSub.publish(changes, { seq: n, change });
-      }
-      return result;
-    });
+    writer.withPermits(1)(
+      Effect.gen(function* () {
+        const pending: StoreChange[] = [];
+        const tx: Tx = { ...reads, ...makeWrites(sql, reads, (change) => pending.push(change)) };
+        const result = yield* sql.withTransaction(body(tx));
+        for (const change of pending) {
+          const n = yield* Ref.updateAndGet(seq, (value) => value + 1);
+          yield* PubSub.publish(changes, { seq: n, change });
+        }
+        return result;
+      }),
+    );
 
   return { ...reads, transaction, changes } satisfies GroupChatStore;
 });
