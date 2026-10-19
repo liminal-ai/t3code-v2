@@ -11,7 +11,7 @@ import { formatHostForUrl, isLoopbackHost, isWildcardHost } from "../startupAcce
 export class GroupChatReach extends Context.Service<
   GroupChatReach,
   {
-    /** True on a non-loopback `--host`, or while the environment is linked to T3 Connect. */
+    /** True on a non-loopback `--host`, behind Tailscale Serve, or while the environment is linked to T3 Connect. */
     readonly exposed: Effect.Effect<boolean>;
     /** The origin the server knows itself by, used in hook URLs when a member sets none. */
     readonly origin: string;
@@ -30,10 +30,19 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => true),
   );
   return GroupChatReach.of({
-    exposed: loopback ? linkedOrUnreadable : Effect.succeed(true),
+    exposed: loopback && !config.tailscaleServeEnabled ? linkedOrUnreadable : Effect.succeed(true),
     origin: `http://${host}:${config.port}`,
   });
 });
+
+/** A callback origin that is not this machine's loopback says agents reach the server from elsewhere. */
+export const isRemoteOrigin = (origin: string): boolean => {
+  try {
+    return !isLoopbackHost(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+};
 
 export const layer = Layer.effect(GroupChatReach, make).pipe(
   Layer.provide(ServerSecretStore.layer),

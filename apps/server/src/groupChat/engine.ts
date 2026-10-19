@@ -49,7 +49,7 @@ import * as Stream from "effect/Stream";
 import { forkParked } from "../serverActivation.ts";
 import { newId, randomHex } from "./domain.ts";
 import { deriveHandle, nextColor, renderEnvelope } from "./envelope.ts";
-import { GroupChatReach } from "./reach.ts";
+import { GroupChatReach, isRemoteOrigin } from "./reach.ts";
 import { countsAsSignOff, decideRound, gateSend, onWithdraw } from "./rounds.ts";
 import {
   type CancelRow,
@@ -1528,11 +1528,19 @@ export const makeEngine = (store: GroupChatStore) =>
             reason: "the callback origin must be a http(s) origin with no path, query or fragment",
           });
         }
-        if (config.secret === "" && (yield* reach.exposed)) {
-          return yield* new GroupChatRefused({
-            reason:
-              "this server is reachable beyond this machine, so an external member needs a secret: without one its hook URLs would accept unsigned posts",
-          });
+        if (config.secret === "") {
+          if (yield* reach.exposed) {
+            return yield* new GroupChatRefused({
+              reason:
+                "this server is reachable beyond this machine, so an external member needs a secret: without one its hook URLs would accept unsigned posts",
+            });
+          }
+          if (callbackOrigin !== "" && isRemoteOrigin(callbackOrigin)) {
+            return yield* new GroupChatRefused({
+              reason:
+                "the callback origin points beyond this machine, so an external member needs a secret: without one its hook URLs would accept unsigned posts",
+            });
+          }
         }
         return yield* store.transaction((tx) =>
           Effect.gen(function* () {

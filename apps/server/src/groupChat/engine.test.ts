@@ -490,6 +490,25 @@ it.layer(NodeServices.layer)("group chat engine, external members", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a callback origin on another machine needs a secret even on a loopback server", () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const add = (callbackOrigin: string, secret: string) =>
+        app.dispatch({
+          _tag: "member.addExternal",
+          groupId: group.id,
+          handle: "",
+          kind: "webhook",
+          config: { ...externalConfig("http://127.0.0.1:1/x", secret), callbackOrigin },
+        });
+      const refused = yield* add("https://agent.example", "").pipe(Effect.flip);
+      assert.strictEqual(refused._tag, "GroupChatRefused");
+      assert.match(refused.message, /callback origin points beyond this machine.*needs a secret/);
+      assert.strictEqual((yield* add("http://127.0.0.1:9", ""))._tag, "member");
+      assert.strictEqual((yield* add("https://agent.example", "s3cret"))._tag, "member");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("a callback origin is a bare http(s) origin", () =>
     Effect.gen(function* () {
       const { app, group } = yield* setup([alpha]);
@@ -499,7 +518,7 @@ it.layer(NodeServices.layer)("group chat engine, external members", (it) => {
           groupId: group.id,
           handle: "",
           kind: "webhook",
-          config: { ...externalConfig("http://127.0.0.1:1/x"), callbackOrigin },
+          config: { ...externalConfig("http://127.0.0.1:1/x", "s3cret"), callbackOrigin },
         });
       for (const bad of [
         "https://agent.example?base=1",
