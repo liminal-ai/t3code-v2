@@ -640,6 +640,42 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("Stop on a reply the operator stopped in T3 lets the round move on without it", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "abandon", [alpha, bravo]);
+      const started = yield* app.dispatch({
+        _tag: "discussion.start",
+        groupId: group.id,
+        participants: [member(alpha).id, member(bravo).id],
+        topic: "t",
+        maxRounds: 2,
+      });
+      const discussion =
+        started._tag === "discussion" ? started.discussion : assert.fail("discussion");
+      yield* awaitState(app, member(alpha).id, "running");
+      const b = yield* awaitState(app, member(bravo).id, "running");
+      yield* reply(fake, alpha, "A-R1");
+      yield* fake.interrupt(bravo, b.runId!);
+      const stopped = yield* awaitState(app, member(bravo).id, "failed");
+      assert.strictEqual(stopped.wait?._tag, "stopped_in_t3");
+      assert.strictEqual((yield* app.store.discussion(discussion.id))!.round, 1);
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: stopped.id });
+      yield* app.until(app.store.discussion(discussion.id), (d) => d?.round === 2);
+      const abandoned = (yield* app.store.delivery(stopped.id))!;
+      assert.isNull(abandoned.wait);
+      assert.strictEqual(abandoned.withdrawn, "stopped by operator");
+      const next = yield* awaitDelivery(app, member(bravo).id, (d) => d.round === 2);
+      assert.strictEqual(next.wait?._tag, "stopped_in_t3", "the lane itself stays paused");
+      assert.strictEqual((yield* fake.sends(bravo)).length, 1);
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: next.id });
+      yield* app.until(app.store.delivery(next.id), (d) => d?.state === "cancelled");
+      yield* awaitDelivery(app, member(alpha).id, (d) => d.round === 2 && d.state === "running");
+      yield* reply(fake, alpha, "A-R2");
+      yield* app.until(app.store.discussion(discussion.id), (d) => d?.state === "ended");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("a claim that finds its delivery already sent leaves it alone", () =>
     Effect.gen(function* () {
       const { fake, app } = yield* setup;

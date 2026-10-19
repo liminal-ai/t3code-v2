@@ -824,7 +824,14 @@ export const makeEngine = (store: GroupChatStore) =>
       reason: string,
     ): Effect.Effect<{ readonly threadId: ThreadId; readonly runId: RunId } | null, StoreError> =>
       Effect.gen(function* () {
-        if (!OPEN.has(d.state)) return null;
+        if (!OPEN.has(d.state)) {
+          // A reply the operator stopped in T3 holds its round until Retry. Stop here abandons
+          // it instead, so the round moves on without this member's reply.
+          if (d.state === "failed" && d.wait?._tag === "stopped_in_t3") {
+            yield* tx.updateDelivery(d.id, { wait: null, withdrawn: reason });
+          }
+          return null;
+        }
         const action = onWithdraw({ state: d.state, dispatch: d.dispatch });
         if (action === "cancel" || stalled.has(d.id)) {
           stalled.delete(d.id);

@@ -274,9 +274,14 @@ const make = Effect.gen(function* () {
   const readError = (threadId: ThreadId) => (cause: unknown) =>
     new PortReadError({ threadId, cause });
 
-  const commandId = (operation: string, threadId: ThreadId) =>
+  // The orchestrator replays the receipt of a command id it has seen, so two commands in the
+  // same millisecond must differ by what they act on, or the second would report the first's
+  // outcome.
+  const commandId = (operation: string, threadId: ThreadId, target = "") =>
     Effect.map(DateTime.now, (now) =>
-      CommandId.make(`group-chat:${operation}:${threadId}:${DateTime.toEpochMillis(now)}`),
+      CommandId.make(
+        `group-chat:${operation}:${threadId}:${target}:${DateTime.toEpochMillis(now)}`,
+      ),
     );
 
   const records = <K extends Parameters<typeof threads.getThreadRecords>[1][number]>(
@@ -472,7 +477,7 @@ const make = Effect.gen(function* () {
 
   const cancelQueued: GroupChatThreadPort["Service"]["cancelQueued"] = (input) =>
     Effect.gen(function* () {
-      const id = yield* commandId("cancel", input.threadId);
+      const id = yield* commandId("cancel", input.threadId, input.runId);
       return yield* threads
         .dispatch({
           type: "queued-run.cancel",
@@ -511,7 +516,7 @@ const make = Effect.gen(function* () {
 
   const respond: GroupChatThreadPort["Service"]["respond"] = (input) =>
     Effect.gen(function* () {
-      const id = yield* commandId("respond", input.threadId);
+      const id = yield* commandId("respond", input.threadId, input.requestId);
       yield* dispatch(
         input.threadId,
         "answer",
