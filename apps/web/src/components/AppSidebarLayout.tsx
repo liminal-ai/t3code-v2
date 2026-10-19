@@ -35,6 +35,7 @@ import LegacyThreadSidebar from "./LegacySidebar";
 import { useThreadVisitedMigration } from "../hooks/useThreadVisitedMigration";
 import ThreadSidebar from "./Sidebar";
 import { SettingsSidebarNav } from "./settings/SettingsSidebarNav";
+import { GroupChatSidebar } from "../groupChat/GroupChatSidebar";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
 import { MainAppLocationTracker } from "./sidebar/mainAppLocation";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
@@ -228,6 +229,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
   const isOnSettings = pathname === "/settings" || pathname.startsWith("/settings/");
+  const isOnGroupChat = pathname === "/group-chat" || pathname.startsWith("/group-chat/");
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // Subscribed rather than read once: the clamp must track live window size,
@@ -314,7 +316,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
           collapsible="offcanvas"
           data-app-sidebar=""
           role="navigation"
-          aria-label={isOnSettings ? "Settings" : "Threads"}
+          aria-label={isOnSettings ? "Settings" : isOnGroupChat ? "Group chat" : "Threads"}
           resizable={{
             maxWidth: sidebarMaximumWidth,
             minWidth: sidebarMinimumWidth,
@@ -330,6 +332,11 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
             <>
               <SidebarChromeHeader isElectron={isElectron} />
               <SettingsSidebarNav pathname={pathname} />
+            </>
+          ) : isOnGroupChat ? (
+            <>
+              <SidebarChromeHeader isElectron={isElectron} />
+              <GroupChatSidebar />
             </>
           ) : legacySidebarEnabled ? (
             <LegacyThreadSidebar />

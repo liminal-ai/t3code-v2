@@ -10,6 +10,7 @@ import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchRea
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as HeldQueueResumer from "./fork/HeldQueueResumer.ts";
 import * as ThreadWorkflow from "./threadWorkflow/layer.ts";
+import * as GroupChat from "./groupChat/layer.ts";
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 
@@ -577,6 +578,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   ThreadWorkflow.layerIdleReactorStart,
   HeldQueueResumer.layerStart,
+  GroupChat.layerEngineStart,
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,
   ReplayMarkers.layer,
@@ -677,6 +679,7 @@ const layerMakeRoutes = Layer.mergeAll(
       Layer.provide(OrchestrationHttp.layer),
       Layer.provide(PullRequestHttp.layer),
       Layer.provide(ProjectHttp.layer),
+      Layer.provide(GroupChat.layerHttpApi),
       Layer.provide(ServerHttp.layerServerEnvironmentHttpApi),
       Layer.provide(WebhookRoute.layer.pipe(Layer.provide(RelayDeliveryProof.layer))),
       Layer.provide(AuthHttp.layerAuthenticatedAuth),
@@ -686,6 +689,7 @@ const layerMakeRoutes = Layer.mergeAll(
     ServerHttp.layerAttachmentUploadRoute,
     DeviceHubProxy.layer,
     ServerBrowserStream.routeLayer,
+    GroupChat.routeLayer,
     ServerHttp.layerStaticAndDevRoute,
     Ws.layer,
   ),

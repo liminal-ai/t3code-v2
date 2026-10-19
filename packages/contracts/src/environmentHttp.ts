@@ -56,6 +56,13 @@ import {
   OrchestrationV2ThreadHistoryPage,
   OrchestrationV2ThreadTranscript,
 } from "./orchestrationV2.ts";
+import {
+  GroupChatCommand,
+  GroupChatGroupParams,
+  GroupChatGroupSnapshot,
+  GroupChatSnapshot,
+  GroupChatUnavailable,
+} from "./groupChat.ts";
 import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
 import {
   PullRequestDiffInput,
@@ -72,6 +79,8 @@ import {
   RelayEnvironmentMintResponse,
   RelayLinkProofRequest,
 } from "./relay.ts";
+
+export * from "./groupChat.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -750,6 +759,36 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
   .add(HttpApiEndpoint.patch("webhookPatch", WEBHOOK_PATH, webhookEndpoint))
   .add(HttpApiEndpoint.get("webhookGet", WEBHOOK_PATH, webhookEndpoint)) {}
 
+const GroupChatErrors = [
+  GroupChatUnavailable,
+  EnvironmentScopeRequiredError,
+  EnvironmentInternalError,
+] as const;
+
+class EnvironmentGroupChatHttpApi extends HttpApiGroup.make("groupChat")
+  .add(
+    HttpApiEndpoint.get("snapshot", "/api/group-chat/snapshot", {
+      headers: OptionalBearerHeaders,
+      success: GroupChatSnapshot,
+      error: GroupChatErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("group", "/api/group-chat/groups/:groupId", {
+      headers: OptionalBearerHeaders,
+      params: GroupChatGroupParams,
+      success: GroupChatGroupSnapshot,
+      error: GroupChatErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.post("dispatch", "/api/group-chat/dispatch", {
+      headers: OptionalBearerHeaders,
+      payload: GroupChatCommand,
+      error: GroupChatErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  ) {}
+
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
@@ -758,4 +797,5 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentPullRequestsHttpApi)
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentWebhooksHttpApi) {}
+  .add(EnvironmentWebhooksHttpApi)
+  .add(EnvironmentGroupChatHttpApi) {}
