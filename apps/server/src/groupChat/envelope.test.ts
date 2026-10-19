@@ -366,6 +366,33 @@ describe("group chat envelope and text", () => {
     expect(text).toMatch(/1 long message was shortened/);
   });
 
+  it("sixty participants with long replies still fit the next-round envelope", () => {
+    const members = Array.from({ length: 60 }, (_, i) =>
+      member(`m${i}`, `member${i}`, { introduced: true }),
+    );
+    const me = members[0]!;
+    const replies = members.slice(1).map((m, i) => ({
+      ...msg(
+        i + 1,
+        { _tag: "member", memberId: m.id },
+        `R${i}-HEAD\n${"r".repeat(6_000)}\nR${i}-TAIL`,
+      ),
+      kind: "discussion_reply" as const,
+      round: 1,
+    }));
+    const text = renderEnvelope({
+      group,
+      member: me,
+      members,
+      unseen: [...replies, msg(99, { _tag: "system" }, "Discussion round 2 of 2.")],
+      required: new Set(replies.map((m) => m.id)),
+      expectedRepliers: [me.id],
+      footer: "",
+    });
+    expect(text.length).toBeLessThan(50_000);
+    for (let i = 0; i < 59; i++) expect(text).toContain(`| R${i}-HEAD`);
+  });
+
   it("required replies from many participants share the budget instead of breaking it", () => {
     const members = Array.from({ length: 10 }, (_, i) =>
       member(`m${i}`, `member${i}`, { introduced: true }),

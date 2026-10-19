@@ -81,7 +81,8 @@ export interface EnvelopeInput {
 
 const SECTION_MAX = 6_000;
 const LAST_SECTION_MAX = 40_000;
-const MIN_SHARED_SECTION = 1_000;
+/** Enough for a head and a tail; a discussion with dozens of participants still fits the budget. */
+const MIN_SHARED_SECTION = 200;
 /** Room for the shortening note and the quote prefixes of a three-line shortened message. */
 const NOTE_ALLOWANCE = 140;
 
@@ -159,10 +160,18 @@ export function renderEnvelope(input: EnvelopeInput): string {
       sections.filter((m) => !shared.includes(m)),
       baseCap,
     );
+    const room = Math.max(0, MAX_CHARS - rest);
     requiredCap = Math.max(
       MIN_SHARED_SECTION,
-      Math.min(SECTION_MAX, Math.floor((MAX_CHARS - rest) / shared.length) - 60),
+      Math.min(SECTION_MAX, Math.floor(room / shared.length) - 60),
     );
+    // The shortening note and the quote prefixes sit outside the cap, so the shares are measured
+    // as rendered and cut again until they fit the room.
+    for (let rounds = 0; rounds < 3 && requiredCap > MIN_SHARED_SECTION; rounds++) {
+      const measured = sizeWith(shared, () => requiredCap);
+      if (measured <= room) break;
+      requiredCap = Math.max(MIN_SHARED_SECTION, Math.floor((requiredCap * room) / measured));
+    }
   }
   const cap = (m: GroupChatMessage) =>
     m.id === last ? LAST_SECTION_MAX : shared.includes(m) ? requiredCap : SECTION_MAX;

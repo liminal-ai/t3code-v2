@@ -1117,6 +1117,29 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a group deleted while its send is in flight leaves no envelope in the queue", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "delete mid-send", [alpha]);
+      const thread = yield* fake.thread(alpha);
+      yield* fake.startOwnRun(alpha);
+      thread.sendReached = yield* Deferred.make<void>();
+      thread.sendGate = yield* Deferred.make<void>();
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      yield* Deferred.await(thread.sendReached);
+      yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+      yield* Deferred.succeed(thread.sendGate, undefined);
+      const envelope = thread.sends[0]!;
+      const envelopeRun = () => thread.runs.find((r) => r.messageId === envelope.messageId);
+      for (let looks = 0; looks < 200 && envelopeRun()?.status !== "cancelled"; looks++) {
+        yield* Effect.yieldNow;
+      }
+      assert.strictEqual(envelopeRun()?.status, "cancelled", "nobody is left to want this run");
+      assert.strictEqual(thread.sends.length, 1);
+      assert.isNull(yield* app.store.group(group.id));
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("deleting a group wakes the lanes its deliveries were blocking", () =>
     Effect.gen(function* () {
       const { fake, app } = yield* setup;

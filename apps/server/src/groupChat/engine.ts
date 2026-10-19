@@ -19,6 +19,7 @@ import {
   type GroupChatStreamEvent,
   GroupChatThreadRefused,
   type GroupChatWait,
+  type MessageId,
   type ProjectId,
   type RunId,
   type ThreadId,
@@ -421,21 +422,42 @@ export const makeEngine = (store: GroupChatStore) =>
             yield* onTerminal(d.id);
             return;
           }
-          yield* store.transaction((tx) =>
-            tx.updateDelivery(d.id, { dispatch: "unknown", error: error.message }),
-          );
+          const kept = yield* record(d.id, { dispatch: "unknown", error: error.message });
+          if (!kept) yield* dropOrphan(threadId, claimed.ids.messageId);
           return;
         }
-        yield* store.transaction((tx) =>
-          tx.updateDelivery(d.id, {
-            dispatch: "accepted",
-            runId: sent.success.runId,
-            state: "queued",
-            error: null,
-          }),
-        );
+        const kept = yield* record(d.id, {
+          dispatch: "accepted",
+          runId: sent.success.runId,
+          state: "queued",
+          error: null,
+        });
+        if (!kept) yield* cancelQueued([{ threadId, runId: sent.success.runId }]);
         resends.delete(d.id);
       });
+
+    /** Records a send's outcome, or reports that the row is gone because its group was deleted. */
+    const record = (
+      deliveryId: GroupChatDeliveryId,
+      patch: Parameters<Tx["updateDelivery"]>[1],
+    ): Effect.Effect<boolean, StoreError> =>
+      store.transaction((tx) =>
+        Effect.flatMap(tx.delivery(deliveryId), (current) =>
+          current === null
+            ? Effect.succeed(false)
+            : Effect.as(tx.updateDelivery(deliveryId, patch), true),
+        ),
+      );
+
+    // A group deleted while its send was in flight leaves nobody to follow or cancel the run, so
+    // the envelope is looked up by its derived id and taken out of the queue if it is still there.
+    const dropOrphan = (threadId: ThreadId, messageId: MessageId): Effect.Effect<void> =>
+      port.findMessage({ threadId, messageId }).pipe(
+        Effect.flatMap((found) =>
+          found?.runId == null ? Effect.void : cancelQueued([{ threadId, runId: found.runId }]),
+        ),
+        Effect.ignoreCause({ log: true }),
+      );
 
     const resolve = (d: DeliveryRow): Effect.Effect<void, StoreError | PortReadError> =>
       Effect.gen(function* () {
