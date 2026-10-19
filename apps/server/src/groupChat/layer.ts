@@ -10,17 +10,24 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
+import * as Engine from "./engine.ts";
 import * as Events from "./events.ts";
 import * as Http from "./http.ts";
 import * as Store from "./store.ts";
+import * as ThreadPort from "./threadPort.ts";
 
 export class GroupChat extends Context.Service<
   GroupChat,
-  { readonly store: Effect.Effect<Store.GroupChatStore, GroupChatUnavailable> }
+  {
+    readonly store: Effect.Effect<Store.GroupChatStore, GroupChatUnavailable>;
+    readonly engine: Effect.Effect<Engine.GroupChatEngine["Service"], GroupChatUnavailable>;
+  }
 >()("t3/groupChat/layer/GroupChat") {}
 
-const off = (reason: GroupChatUnavailable["reason"]) =>
-  GroupChat.of({ store: Effect.fail(new GroupChatUnavailable({ reason })) });
+const off = (reason: GroupChatUnavailable["reason"]) => {
+  const unavailable = Effect.fail(new GroupChatUnavailable({ reason }));
+  return GroupChat.of({ store: unavailable, engine: unavailable });
+};
 
 const make = Effect.gen(function* () {
   const disabled = yield* Config.String("T3CODE_GROUP_CHAT").pipe(
@@ -50,18 +57,26 @@ const make = Effect.gen(function* () {
     file,
     durationMs: (yield* Clock.currentTimeMillis) - startedAt,
   });
-  return GroupChat.of({ store: Effect.succeed(opened.value) });
+  const engine = yield* Engine.makeEngine(opened.value);
+  return GroupChat.of({ store: Effect.succeed(opened.value), engine: Effect.succeed(engine) });
 }).pipe(Effect.withSpan("groupChat.boot"));
 
 export const layer = Layer.effect(GroupChat, make);
 
+const layerForServer = layer.pipe(Layer.provide(ThreadPort.layer));
+
 const withModule = <A, E, R>(build: (groupChat: GroupChat["Service"]) => Layer.Layer<A, E, R>) =>
-  Layer.unwrap(Effect.map(Effect.service(GroupChat), build)).pipe(Layer.provide(layer));
+  Layer.unwrap(Effect.map(Effect.service(GroupChat), build)).pipe(Layer.provide(layerForServer));
 
 export const layerHttpApi = withModule(Http.makeLayer);
 
 export const routeLayer = withModule(Events.makeRouteLayer);
 
-export const layerEngineStart = Layer.effectDiscard(Effect.service(GroupChat)).pipe(
-  Layer.provide(layer),
-);
+export const layerEngineStart = Layer.effectDiscard(
+  Effect.flatMap(Effect.service(GroupChat), (groupChat) =>
+    groupChat.engine.pipe(
+      Effect.flatMap((engine) => engine.start),
+      Effect.catchTags({ GroupChatUnavailable: () => Effect.void }),
+    ),
+  ),
+).pipe(Layer.provide(layerForServer));

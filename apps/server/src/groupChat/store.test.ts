@@ -1,6 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { GroupChatUnavailable } from "@t3tools/contracts";
+import { EnvironmentId, GroupChatUnavailable, ThreadId } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -8,11 +8,14 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as PubSub from "effect/PubSub";
+import * as Scheduler from "effect/Scheduler";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as ServerConfig from "../config.ts";
 import { GroupChat, layer as groupChatLayer } from "./layer.ts";
-import { MIGRATIONS_TABLE, open, storeFile } from "./store.ts";
+import { MIGRATIONS_TABLE, open, type StoreEvent, storeFile } from "./store.ts";
+import { layerNeverPort } from "./testkit.ts";
 
 const setup = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -41,6 +44,7 @@ const openModule = (baseDir: string) =>
   Effect.flatMap(Effect.service(GroupChat), (groupChat) => Effect.flip(groupChat.store)).pipe(
     Effect.provide(
       groupChatLayer.pipe(
+        Layer.provide(layerNeverPort),
         Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
       ),
@@ -60,8 +64,58 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
       assert.strictEqual(mode?.journal_mode, "wal");
       assert.deepStrictEqual(
         (yield* recordedMigrations(file)).map((row) => `${row.migration_id}_${row.name}`),
-        ["1_groups"],
+        [
+          "1_groups",
+          "2_members_messages_deliveries_discussions",
+          "3_lanes",
+          "4_cancels",
+          "5_cancel_in_flight",
+        ],
       );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("two concurrent commands on one row publish in commit order", () =>
+    Effect.gen(function* () {
+      const { file } = yield* setup;
+      const store = yield* open(file);
+      const member = yield* store.transaction((tx) =>
+        Effect.flatMap(tx.createGroup("ordered"), (group) =>
+          tx.addMember({
+            groupId: group.id,
+            handle: "alpha",
+            color: 0,
+            thread: {
+              environmentId: EnvironmentId.make("env"),
+              threadId: ThreadId.make("alpha"),
+              title: "Alpha",
+            },
+          }),
+        ),
+      );
+      const subscription = yield* PubSub.subscribe(store.changes);
+      // Frequent yields let a transaction that has committed but is still publishing be overtaken
+      // by the one waiting behind it, which commits and publishes in between.
+      yield* Effect.all(
+        [
+          store.transaction((tx) =>
+            Effect.forEach(Array.from({ length: 200 }), () => tx.touchMember(member.id), {
+              discard: true,
+            }),
+          ),
+          store.transaction((tx) => tx.updateMember(member.id, { handle: "renamed" })),
+        ],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.provideService(Scheduler.MaxOpsBeforeYield, 16));
+      const events: StoreEvent[] = [];
+      while (events.length < 201) events.push(yield* PubSub.take(subscription));
+      const members = events.flatMap((e) => (e.change._tag === "member" ? [e] : []));
+      const renamed = members.findIndex(
+        (e) => e.change._tag === "member" && e.change.member.handle === "renamed",
+      );
+      assert.strictEqual(members.length, 201);
+      assert.strictEqual(renamed, 200, "the rename committed last, so it is published last");
+      assert.isTrue(members.every((e, i) => i === 0 || e.seq > members[i - 1]!.seq));
     }).pipe(Effect.scoped),
   );
 
@@ -85,7 +139,7 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
           ["older", null],
         ],
       );
-      assert.strictEqual((yield* recordedMigrations(file)).length, 1);
+      assert.strictEqual((yield* recordedMigrations(file)).length, 5);
     }).pipe(Effect.scoped),
   );
 
