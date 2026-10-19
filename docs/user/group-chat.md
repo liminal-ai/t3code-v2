@@ -8,7 +8,7 @@ Group chat lives on the T3 server that serves the page. The hosted client at app
 
 Pick **New group chat**, give it a title, and choose one or more threads. A group of one is a plain catch-up channel to that thread. A discussion needs two. The picker finds a thread by its title, by its full id, or by the first six or more characters of its id. Subagent threads stay hidden until you turn **Show subagents** on. Archived threads never appear, because a message to one can never be delivered.
 
-Each member gets a handle made from its thread title, such as `@alpha`. A handle is 1 to 16 characters of lower-case letters, digits, `-` and `_`. Change it in **Manage**. Words the app uses for other things, such as `operator`, `everyone` and `system`, are refused.
+Each member gets a handle made from its thread title, such as `@alpha`. A handle is 1 to 16 characters of lower-case letters, digits, `-` and `_`, and starts with a letter or digit. Change it in **Manage**. Words the app uses for other things, such as `operator`, `everyone` and `system`, are refused.
 
 A thread can be in several groups. Each group keeps its own handles and its own log.
 
@@ -30,16 +30,16 @@ Replies render as Markdown. A reply over 4,000 characters is cut to a preview wi
 
 ## Delivery states
 
-Each addressed member gets a chip under your message, and a row in the chat while its reply is on the way. The chip reads **queued in the thread** while the envelope waits behind a run, **responding** once it runs, and **replied** when the reply is in the group. **Failed** shows the reason and offers **Retry**, which sends the same envelope again. **Stop** on a waiting row withdraws the envelope if it has not started yet.
+Each addressed member gets a chip under your message, and a row in the chat while its reply is on the way. The chip reads **queued in the thread** once the thread has accepted the envelope and nothing holds it, **responding** once it runs, and **replied** when the reply is in the group. **Failed** shows the reason and offers **Retry**, which sends the same envelope again. **Stop** on a waiting row withdraws the envelope if it has not started yet.
 
 A delivery that waits shows why, with a link to the thread:
 
 - **busy with its own run**. The thread is in a turn of its own. The envelope runs next.
 - **waiting for its earlier envelope**. An earlier group message to this member has not finished. One envelope at a time goes to each thread.
-- **queue held in T3**. You pressed **Stop** in that thread, and T3 holds its queue. **Resume thread** in the thread releases the whole queue, this envelope included, in the order it was queued.
+- **queue held in T3**. T3 holds that thread's queue. **Stop** in the thread does that, and so does a run that failed, a worktree that is missing, or a provider that is turned off. **Resume thread** in the thread releases the whole queue, this envelope included, in the order it was queued.
 - **waiting on a question**. The member asked you something. Answer it in the group chat, under the member's row, or in the thread.
 - **waiting on an approval in T3**. Give the approval in the thread.
-- **stopped in T3**. You pressed **Stop** on the reply itself. What the member wrote before the stop shows in the group as a note that counts for nothing. **Retry** asks again. Until then, nothing else goes to that member.
+- **stopped in T3**. You pressed **Stop** on the reply itself. What the member wrote before the stop shows in the group as a note that counts for nothing. **Retry** asks again. A new message you address to that member goes out as usual; the stopped envelope waits for **Retry**.
 
 If you delete the envelope from the thread's queue in T3, the delivery reads **removed from the thread's queue in T3**. If you edit it there, the envelope dialog shows the text that ran, marked **edited in T3**.
 
@@ -66,7 +66,7 @@ A discussion runs on the server. Closing the page does not stop it, and a server
 
 **Settle** moves a group to the **Settled** section of the group sidebar. Sending into a settled group brings it back. **Manage** renames the group, edits handles, adds and removes members, and settles or unsettles each member's thread. A thread that refuses to settle, because it has an open workflow for example, shows its reason as T3 gave it.
 
-Removing a member keeps its messages in the log. Add the same thread back and it keeps its handle, its place in the history, and the envelope that catches it up on what it missed.
+Removing a member keeps its messages in the log. Add the same thread back and it keeps its place in the history and gets an envelope that catches it up on what it missed. It keeps its handle too, unless another member has taken that handle meanwhile; then it gets a new one.
 
 **Delete** removes the group and its log after you confirm. The member threads are never deleted, archived or changed.
 
