@@ -201,6 +201,46 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
   );
 
   it.effect(
+    "an operator Retry on an unknown outcome finds the envelope T3 holds and never sends it again",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "unknown retry", [alpha]);
+        const thread = yield* fake.thread(alpha);
+        thread.faults.push({ type: "commit-silently" });
+        thread.sendReached = yield* Deferred.make<void>();
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        yield* Deferred.await(thread.sendReached);
+        thread.threadReadFaults = 1;
+        const unknown = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.dispatch === "unknown",
+        );
+        const refused = yield* app
+          .dispatch({ _tag: "delivery.retry", deliveryId: unknown.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused._tag, "GroupChatRefused");
+        for (
+          let looks = 0;
+          looks < 50 && (yield* latestDelivery(app, member(alpha).id))!.state !== "running";
+          looks++
+        ) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 millis");
+        }
+        const running = yield* awaitState(app, member(alpha).id, "running");
+        assert.strictEqual(running.attempt, 1);
+        assert.strictEqual(running.runId, thread.runs[0]!.id);
+        assert.strictEqual(
+          (yield* fake.sends(alpha)).length,
+          1,
+          "attempt 1 is followed, not resent",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "an in-flight dispatch finishes and is then followed, and a lost one is resent once",
     () =>
       Effect.gen(function* () {

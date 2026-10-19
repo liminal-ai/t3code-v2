@@ -461,6 +461,26 @@ export const makeEngine = (store: GroupChatStore) =>
         Effect.ignoreCause({ log: true }),
       );
 
+    /**
+     * Records that T3 holds the envelope the row sent, unless the row moved on since it was
+     * read: a Retry that bumped the attempt in between must not inherit the older run.
+     */
+    const adopt = (d: DeliveryRow, runId: RunId): Effect.Effect<void, StoreError> =>
+      store.transaction((tx) =>
+        Effect.gen(function* () {
+          const current = yield* tx.delivery(d.id);
+          if (current === null || current.messageId !== d.messageId || !OPEN.has(current.state)) {
+            return;
+          }
+          yield* tx.updateDelivery(d.id, {
+            dispatch: "accepted",
+            runId,
+            state: current.state === "pending" ? "queued" : current.state,
+            error: null,
+          });
+        }),
+      );
+
     const resolve = (d: DeliveryRow): Effect.Effect<void, StoreError | PortReadError> =>
       Effect.gen(function* () {
         const member = yield* store.member(d.memberId);
@@ -477,14 +497,7 @@ export const makeEngine = (store: GroupChatStore) =>
           messageId: d.messageId,
         });
         if (found !== null && found.runId !== null) {
-          yield* store.transaction((tx) =>
-            tx.updateDelivery(d.id, {
-              dispatch: "accepted",
-              runId: found.runId,
-              state: d.state === "pending" ? "queued" : d.state,
-              error: null,
-            }),
-          );
+          yield* adopt(d, found.runId);
           return;
         }
         const count = resends.get(d.id) ?? 0;
@@ -1201,32 +1214,59 @@ export const makeEngine = (store: GroupChatStore) =>
 
     const retryDelivery = (
       deliveryId: GroupChatDeliveryId,
-    ): Effect.Effect<DeliveryRow, GroupChatNotFound | GroupChatRefused | StoreError> =>
+    ): Effect.Effect<
+      DeliveryRow,
+      GroupChatNotFound | GroupChatRefused | StoreError | PortReadError
+    > =>
       Effect.gen(function* () {
-        const { delivery, threadId } = yield* store.transaction((tx) =>
+        const d = yield* store.delivery(deliveryId);
+        if (d === null) return yield* notFound("delivery", deliveryId);
+        const member = yield* store.member(d.memberId);
+        const discussion = d.discussionId === null ? null : yield* store.discussion(d.discussionId);
+        const refusal = retryRefusal(d, member, discussion);
+        if (refusal !== null) return yield* new GroupChatRefused({ reason: refusal });
+        const threadId = member!.thread.threadId;
+        // A send whose outcome stayed unknown may have been accepted, so Retry looks for its
+        // envelope first. A new attempt goes out only once the old one is proven absent, or the
+        // thread could run both.
+        if (d.dispatch === "unknown" && d.messageId !== null) {
+          const found = yield* port.findMessage({ threadId, messageId: d.messageId });
+          if (found !== null && found.runId !== null) {
+            yield* adopt(d, found.runId);
+            stalled.delete(deliveryId);
+            yield* kick(threadId);
+            return yield* new GroupChatRefused({
+              reason:
+                "the thread already has this envelope, so it is followed instead of sent again",
+            });
+          }
+        }
+        const delivery = yield* store.transaction((tx) =>
           Effect.gen(function* () {
-            const d = yield* tx.delivery(deliveryId);
-            if (d === null) return yield* notFound("delivery", deliveryId);
-            const member = yield* tx.member(d.memberId);
-            const discussion =
-              d.discussionId === null ? null : yield* tx.discussion(d.discussionId);
-            const refusal = retryRefusal(d, member, discussion);
-            if (refusal !== null) return yield* new GroupChatRefused({ reason: refusal });
-            const delivery =
-              d.state === "failed" || d.dispatch === "unknown"
-                ? yield* tx.updateDelivery(d.id, {
-                    state: "pending",
-                    dispatch: "unsent",
-                    attempt: d.attempt + 1,
-                    runId: null,
-                    messageId: null,
-                    sentText: null,
-                    error: null,
-                    wait: null,
-                    withdrawn: null,
-                  })
-                : d;
-            return { delivery, threadId: member!.thread.threadId };
+            const current = yield* tx.delivery(deliveryId);
+            if (current === null) return yield* notFound("delivery", deliveryId);
+            if (
+              current.state !== d.state ||
+              current.dispatch !== d.dispatch ||
+              current.messageId !== d.messageId
+            ) {
+              return yield* new GroupChatRefused({
+                reason: "this envelope changed while Retry looked at it; look again",
+              });
+            }
+            return current.state === "failed" || current.dispatch === "unknown"
+              ? yield* tx.updateDelivery(current.id, {
+                  state: "pending",
+                  dispatch: "unsent",
+                  attempt: current.attempt + 1,
+                  runId: null,
+                  messageId: null,
+                  sentText: null,
+                  error: null,
+                  wait: null,
+                  withdrawn: null,
+                })
+              : current;
           }),
         );
         resends.delete(deliveryId);
