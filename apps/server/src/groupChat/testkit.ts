@@ -637,6 +637,8 @@ export interface AgentAnswer {
   readonly status: number;
   readonly body: string;
   readonly headers?: Readonly<Record<string, string>>;
+  /** Milliseconds to hold the whole answer back, so a test can act while the request is open. */
+  readonly delayMs?: number;
   /** `hang` sends the headers and one byte and never ends; `chunked` sends the body without a content-length. */
   readonly mode?: "hang" | "chunked";
 }
@@ -657,7 +659,7 @@ export const fakeAgent = (
       const server = NodeHttp.createServer((request, response) => {
         const chunks: Array<Buffer> = [];
         request.on("data", (chunk: Buffer) => chunks.push(chunk));
-        request.on("end", () => {
+        request.on("end", async () => {
           const call: AgentCall = {
             url: request.url ?? "/",
             headers: request.headers,
@@ -665,6 +667,10 @@ export const fakeAgent = (
           };
           calls.push(call);
           const answered = agent.answer(call);
+          if (answered.delayMs !== undefined) {
+            // @effect-diagnostics-next-line globalTimers:off -- the agent is plain node:http outside Effect.
+            await new Promise((resolve) => setTimeout(resolve, answered.delayMs));
+          }
           response.writeHead(answered.status, {
             "content-type": "application/json",
             ...answered.headers,

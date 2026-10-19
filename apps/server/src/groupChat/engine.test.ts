@@ -7,6 +7,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as PubSub from "effect/PubSub";
 import * as Tracer from "effect/Tracer";
 
 import type { DeliveryRow } from "./store.ts";
@@ -834,4 +835,79 @@ it.live(
       }
       assert.include(failed.error!, "<redacted>");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "a webhook callback that beats its own acknowledgement still moves the member's seen mark",
+  () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeThreads;
+      const app = yield* boot(fake, yield* tempBaseDir, {
+        external: { webhookPostTimeout: "5 seconds" },
+      });
+      const created = yield* app.dispatch({
+        _tag: "group.create",
+        title: "Crew",
+        threadIds: [alpha],
+      });
+      const group = created._tag === "group" ? created.group : assert.fail("group");
+      const agent = yield* fakeAgent(() => ({ status: 202, body: "{}", delayMs: 700 }));
+      const hook = yield* addExternal(app, group.id, "hook", "webhook", agent.url);
+      yield* send(app, group.id, "hi", [hook.id]);
+      const inFlight = yield* deliveryOf(
+        app,
+        hook.id,
+        (d) => d.dispatch === "sending" && d.external?.callbackToken !== null,
+      );
+      assert.strictEqual(yield* app.engine.landReply(inFlight.id, "fast answer"), "landed");
+      yield* send(app, group.id, "again", [hook.id]);
+      yield* deliveryOf(
+        app,
+        hook.id,
+        (d) => d.triggerMessageId !== inFlight.triggerMessageId && d.dispatch === "accepted",
+      );
+      const second = JSON.parse(agent.calls[1]!.body).text as string;
+      assert.notInclude(second, "ABOUT THIS GROUP CHAT", "the intro is not repeated");
+      assert.notInclude(second, "| hi\n", "the old message is not repeated");
+      assert.include(second, "| again");
+      const first = (yield* app.store.deliveriesOfMember(hook.id)).find(
+        (d) => d.id === inFlight.id,
+      )!;
+      assert.strictEqual(first.dispatch, "accepted");
+      assert.strictEqual(first.state, "replied");
+      const member = (yield* app.store.member(hook.id))!;
+      assert.strictEqual(member.seenSeq, 3);
+      assert.isTrue(member.introduced);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("a REST reply is stored in the same transaction as its acceptance", () =>
+  Effect.gen(function* () {
+    const { app, group } = yield* setup([alpha]);
+    const agent = yield* fakeAgent(() => ({ status: 200, body: '{"reply":"at once"}' }));
+    const rest = yield* addExternal(app, group.id, "rest", "rest", agent.url);
+    const changes = yield* PubSub.subscribe(app.store.changes);
+    const seen: Array<string> = [];
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.map(PubSub.take(changes), ({ change }) => {
+          if (change._tag === "delivery") {
+            seen.push(
+              `${change.delivery.memberId} ${change.delivery.state}/${change.delivery.dispatch}`,
+            );
+          }
+        }),
+      ),
+    );
+    yield* send(app, group.id, "hi", [rest.id]);
+    yield* deliveryOf(app, rest.id, (d) => d.state === "replied");
+    yield* Effect.sleep("100 millis");
+    const states = seen.filter((s) => s.startsWith(rest.id)).map((s) => s.split(" ")[1]!);
+    assert.notInclude(
+      states,
+      "running/accepted",
+      `accepted without its reply was published: ${states.join(", ")}`,
+    );
+    assert.include(states, "replied/accepted");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

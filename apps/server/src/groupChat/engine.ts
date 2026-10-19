@@ -53,6 +53,7 @@ import { GroupChatReach, isRemoteOrigin } from "./reach.ts";
 import { countsAsSignOff, decideRound, gateSend, onWithdraw } from "./rounds.ts";
 import {
   type CancelRow,
+  type DeliveryPatch,
   type DeliveryRow,
   type ExternalDelivery,
   type GroupChatStore,
@@ -597,26 +598,43 @@ export const makeEngine = (store: GroupChatStore) =>
           return;
         }
         const acceptedAt = DateTime.formatIso(yield* DateTime.now);
-        yield* store.transaction((tx) =>
+        const outcome = sent.success;
+        // Acceptance, the seen mark and a REST reply commit together, so a crash between them
+        // cannot lose the reply. A webhook callback can land before the acknowledgement returns,
+        // so the bookkeeping runs whenever it has not run yet and only an open delivery moves on.
+        const landed = yield* store.transaction((tx) =>
           Effect.gen(function* () {
             const current = yield* tx.delivery(d.id);
-            if (current === null || !OPEN.has(current.state)) return;
-            yield* tx.updateDelivery(d.id, {
-              dispatch: "accepted",
-              state: "running",
-              error: null,
-              wait: null,
-              external: { ...(current.external ?? EXTERNAL_START), acceptedAt },
-            });
-            yield* tx.updateMember(current.memberId, {
-              seenSeq: current.toSeq,
-              introduced: true,
-              ...(current.roster === null ? {} : { toldRoster: current.roster }),
-            });
+            if (current === null) return "not_found" as const;
+            const unrecorded = current.dispatch === "sending";
+            const acceptance: DeliveryPatch = unrecorded
+              ? {
+                  dispatch: "accepted",
+                  external: { ...(current.external ?? EXTERNAL_START), acceptedAt },
+                }
+              : {};
+            if (unrecorded) {
+              yield* tx.updateMember(current.memberId, {
+                seenSeq: current.toSeq,
+                introduced: true,
+                ...(current.roster === null ? {} : { toldRoster: current.roster }),
+              });
+            }
+            if (outcome._tag === "replied") {
+              const stored = yield* ingestReplyIn(tx, d.id, capUntrusted(outcome.text), acceptance);
+              if (stored === "duplicate" && unrecorded) yield* tx.updateDelivery(d.id, acceptance);
+              return stored;
+            }
+            if (unrecorded) {
+              yield* tx.updateDelivery(d.id, {
+                ...acceptance,
+                ...(OPEN.has(current.state) ? { state: "running", error: null, wait: null } : {}),
+              });
+            }
+            return "accepted" as const;
           }),
         );
-        if (sent.success._tag === "replied")
-          yield* ingestReply(d.id, capUntrusted(sent.success.text));
+        if (landed === "landed") yield* onTerminal(d.id);
       });
 
     /**
@@ -1134,56 +1152,59 @@ export const makeEngine = (store: GroupChatStore) =>
       raw: string,
     ): Effect.Effect<"landed" | "duplicate" | "not_found", StoreError> =>
       Effect.gen(function* () {
-        const stored = yield* store.transaction((tx) =>
-          Effect.gen(function* () {
-            const d = yield* tx.delivery(deliveryId);
-            if (d === null) return "not_found" as const;
-            if (d.replyMessageId !== null || d.state === "replied") return "duplicate" as const;
-            const member = yield* tx.member(d.memberId);
-            const discussion =
-              d.discussionId === null ? null : yield* tx.discussion(d.discussionId);
-            const memberRemoved = member === null || member.removedAt !== null;
-            const signOff = countsAsSignOff({
-              discussion,
-              replyRound: d.round,
-              memberRemoved,
-              withdrawn: d.withdrawn !== null,
-              text: raw,
-            });
-            const late =
-              d.withdrawn !== null ||
-              memberRemoved ||
-              (discussion !== null &&
-                (discussion.state !== "running" || discussion.round !== d.round));
-            const stripped =
-              member === null
-                ? raw
-                : stripLeadingHandle(raw, [member.handle, ...member.handleHistory]);
-            const reply = yield* tx.appendMessage({
-              groupId: d.groupId,
-              author: { _tag: "member", memberId: d.memberId },
-              kind: d.discussionId === null ? "reply" : "discussion_reply",
-              text: raw,
-              displayText: signOff ? withoutSignOffLine(stripped) : stripped,
-              turnKey: d.turnKey,
-              triggerMessageId: d.triggerMessageId,
-              discussionId: d.discussionId,
-              round: d.round,
-              signOff,
-              late,
-            });
-            yield* tx.updateDelivery(d.id, {
-              state: "replied",
-              replyMessageId: reply.id,
-              error: null,
-              wait: null,
-            });
-            yield* tx.touchMember(d.memberId);
-            return "landed" as const;
-          }),
-        );
+        const stored = yield* store.transaction((tx) => ingestReplyIn(tx, deliveryId, raw));
         if (stored === "landed") yield* onTerminal(deliveryId);
         return stored;
+      });
+
+    const ingestReplyIn = (
+      tx: Tx,
+      deliveryId: GroupChatDeliveryId,
+      raw: string,
+      alongside: DeliveryPatch = {},
+    ): Effect.Effect<"landed" | "duplicate" | "not_found", StoreError> =>
+      Effect.gen(function* () {
+        const d = yield* tx.delivery(deliveryId);
+        if (d === null) return "not_found" as const;
+        if (d.replyMessageId !== null || d.state === "replied") return "duplicate" as const;
+        const member = yield* tx.member(d.memberId);
+        const discussion = d.discussionId === null ? null : yield* tx.discussion(d.discussionId);
+        const memberRemoved = member === null || member.removedAt !== null;
+        const signOff = countsAsSignOff({
+          discussion,
+          replyRound: d.round,
+          memberRemoved,
+          withdrawn: d.withdrawn !== null,
+          text: raw,
+        });
+        const late =
+          d.withdrawn !== null ||
+          memberRemoved ||
+          (discussion !== null && (discussion.state !== "running" || discussion.round !== d.round));
+        const stripped =
+          member === null ? raw : stripLeadingHandle(raw, [member.handle, ...member.handleHistory]);
+        const reply = yield* tx.appendMessage({
+          groupId: d.groupId,
+          author: { _tag: "member", memberId: d.memberId },
+          kind: d.discussionId === null ? "reply" : "discussion_reply",
+          text: raw,
+          displayText: signOff ? withoutSignOffLine(stripped) : stripped,
+          turnKey: d.turnKey,
+          triggerMessageId: d.triggerMessageId,
+          discussionId: d.discussionId,
+          round: d.round,
+          signOff,
+          late,
+        });
+        yield* tx.updateDelivery(d.id, {
+          ...alongside,
+          state: "replied",
+          replyMessageId: reply.id,
+          error: null,
+          wait: null,
+        });
+        yield* tx.touchMember(d.memberId);
+        return "landed" as const;
       });
 
     const postInbound: GroupChatEngine["Service"]["postInbound"] = (memberId, raw) =>
