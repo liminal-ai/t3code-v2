@@ -366,9 +366,26 @@ export interface Reads {
     groupId: GroupChatGroupId,
     afterSeq?: number,
   ) => Effect.Effect<ReadonlyArray<GroupChatMessage>, StoreError>;
+  /**
+   * The newest `limit` messages whose seq lies in (`after`, `before`), rising by seq. `hasOlder`
+   * says more lie in that range below the first one returned.
+   */
+  readonly messagePage: (
+    groupId: GroupChatGroupId,
+    query: { readonly before?: number; readonly after?: number; readonly limit: number },
+  ) => Effect.Effect<
+    { readonly messages: ReadonlyArray<GroupChatMessage>; readonly hasOlder: boolean },
+    StoreError
+  >;
   readonly message: (id: GroupChatMessageId) => Effect.Effect<GroupChatMessage | null, StoreError>;
   readonly delivery: (id: GroupChatDeliveryId) => Effect.Effect<DeliveryRow | null, StoreError>;
   readonly deliveriesOfGroup: (
+    groupId: GroupChatGroupId,
+  ) => Effect.Effect<ReadonlyArray<DeliveryRow>, StoreError>;
+  readonly deliveriesOfMessages: (
+    messageIds: ReadonlyArray<GroupChatMessageId>,
+  ) => Effect.Effect<ReadonlyArray<DeliveryRow>, StoreError>;
+  readonly openDeliveriesOfGroup: (
     groupId: GroupChatGroupId,
   ) => Effect.Effect<ReadonlyArray<DeliveryRow>, StoreError>;
   readonly deliveriesOfMember: (
@@ -508,6 +525,20 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
       ORDER BY seq
     `,
   });
+  const newestMessageRows = SqlSchema.findAll({
+    Request: Schema.Struct({ where: Schema.Any, limit: Schema.Int }),
+    Result: MessageRow,
+    execute: ({ where, limit }) => sql`
+      SELECT id, group_id AS "groupId", seq, author_json AS author, kind, text,
+        display_text AS "displayText", recipients_json AS recipients, turn_key AS "turnKey",
+        trigger_message_id AS "triggerMessageId", discussion_id AS "discussionId", round,
+        sign_off AS "signOff", late, created_at AS "createdAt"
+      FROM messages
+      WHERE ${where as Statement.Fragment}
+      ORDER BY seq DESC
+      LIMIT ${limit}
+    `,
+  });
   const deliveryRows = SqlSchema.findAll({
     Request: Schema.Struct({ where: Schema.Any }),
     Result: DeliveryRow,
@@ -562,9 +593,28 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
       members(sql`group_id = ${groupId} AND thread_id = ${threadId}`),
     messages: (groupId, afterSeq = 0) =>
       messageRows({ where: sql`group_id = ${groupId} AND seq > ${afterSeq}` }),
+    messagePage: (groupId, { before, after, limit }) =>
+      Effect.map(
+        newestMessageRows({
+          where: sql`group_id = ${groupId}
+            ${before === undefined ? sql`` : sql`AND seq < ${before}`}
+            ${after === undefined ? sql`` : sql`AND seq > ${after}`}`,
+          limit: limit + 1,
+        }),
+        (newestFirst) => ({
+          messages: newestFirst.slice(0, limit).toReversed(),
+          hasOlder: newestFirst.length > limit,
+        }),
+      ),
     message: (id) => Effect.map(messageRows({ where: sql`id = ${id}` }), first),
     delivery: (id) => Effect.map(deliveries(sql`id = ${id}`), first),
     deliveriesOfGroup: (groupId) => deliveries(sql`group_id = ${groupId}`),
+    deliveriesOfMessages: (messageIds) =>
+      messageIds.length === 0
+        ? Effect.succeed([])
+        : deliveries(sql`trigger_message_id IN ${sql.in(messageIds)}`),
+    openDeliveriesOfGroup: (groupId) =>
+      deliveries(sql`group_id = ${groupId} AND state IN ${sql.in(OPEN_STATES)}`),
     deliveriesOfMember: (memberId) => deliveries(sql`member_id = ${memberId}`),
     deliveriesOfThread: (threadId) =>
       deliveries(sql`member_id IN (SELECT id FROM members WHERE thread_id = ${threadId})`),

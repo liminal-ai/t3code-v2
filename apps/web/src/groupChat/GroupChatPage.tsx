@@ -1,4 +1,8 @@
-import { Empty, EmptyHeader, EmptyTitle } from "../components/ui/empty";
+import type { GroupChatGroupId } from "@t3tools/contracts";
+import { useEffect, useState } from "react";
+
+import { Button } from "../components/ui/button";
+import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { SidebarInset } from "../components/ui/sidebar";
 import {
   WorkspaceBreadcrumb,
@@ -9,8 +13,17 @@ import {
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
 import { useEscapeToGoBack } from "../hooks/useNavigateBack";
-import { type GroupChatSnapshotState, useGroupChatSnapshot } from "./api";
+import {
+  attempt,
+  dispatchGroupChat,
+  type GroupChatSnapshotState,
+  useGroupChatSnapshot,
+} from "./api";
+import { ChatView } from "./ChatView";
 import { useGroupChatEvents } from "./events";
+import { ManageGroupDialog } from "./ManageGroupDialog";
+import { MemberChip } from "./MemberChip";
+import { type GroupView, leaveGroup, openDeliveryByMember, showGroup, useGroupView } from "./store";
 
 function notice(snapshot: GroupChatSnapshotState, groupId: string | undefined): string | null {
   switch (snapshot.status) {
@@ -38,12 +51,88 @@ function notice(snapshot: GroupChatSnapshotState, groupId: string | undefined): 
   }
 }
 
+function GroupHeaderActions({ view }: { view: GroupView }) {
+  const [manageOpen, setManageOpen] = useState(false);
+  const members = [...view.members.values()]
+    .filter((m) => m.removedAt === null)
+    .sort((a, b) => a.addedAt.localeCompare(b.addedAt));
+  const open = openDeliveryByMember(view);
+  const settled = view.group.settledAt !== null;
+  return (
+    <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+      <div className="hidden min-w-0 flex-wrap items-center gap-1 sm:flex">
+        {members.map((member) => (
+          <MemberChip key={member.id} member={member} wait={open.get(member.id)?.wait ?? null} />
+        ))}
+      </div>
+      <Button
+        size="xs"
+        variant="ghost-muted"
+        onClick={() =>
+          void attempt(() =>
+            dispatchGroupChat({
+              _tag: settled ? "group.unsettle" : "group.settle",
+              groupId: view.group.id,
+            }),
+          )
+        }
+      >
+        {settled ? "Unsettle" : "Settle"}
+      </Button>
+      <Button size="xs" variant="outline" onClick={() => setManageOpen(true)}>
+        Manage
+      </Button>
+      {manageOpen ? <ManageGroupDialog view={view} onClose={() => setManageOpen(false)} /> : null}
+    </div>
+  );
+}
+
+function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
+  const view = useGroupView(groupId);
+  const [failed, setFailed] = useState<{
+    readonly groupId: GroupChatGroupId;
+    readonly message: string;
+  } | null>(null);
+  const failure = failed?.groupId === groupId ? failed.message : null;
+  useEffect(() => {
+    let alive = true;
+    showGroup(groupId).catch((error: unknown) => {
+      if (alive) {
+        setFailed({ groupId, message: error instanceof Error ? error.message : String(error) });
+      }
+    });
+    return () => {
+      alive = false;
+      leaveGroup(groupId);
+    };
+  }, [groupId]);
+  if (view === null) {
+    return (
+      <Empty className="flex-1">
+        <EmptyHeader>
+          {failure === null ? (
+            <EmptyTitle>Reading this group chat…</EmptyTitle>
+          ) : (
+            <>
+              <EmptyTitle>Could not load this group chat</EmptyTitle>
+              <EmptyDescription>{failure}</EmptyDescription>
+              <EmptyDescription>Trying again…</EmptyDescription>
+            </>
+          )}
+        </EmptyHeader>
+      </Empty>
+    );
+  }
+  return <ChatView groupId={groupId} view={view} />;
+}
+
 export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
   useEscapeToGoBack();
   const snapshot = useGroupChatSnapshot();
   useGroupChatEvents(snapshot.status === "ready");
   const group =
     snapshot.status === "ready" ? snapshot.groups.find((entry) => entry.id === groupId) : undefined;
+  const view = useGroupView((groupId ?? "") as GroupChatGroupId);
   const shown = notice(snapshot, groupId);
   return (
     <SidebarInset className="h-dvh min-h-0 overflow-hidden overscroll-y-none isolate">
@@ -57,18 +146,23 @@ export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
               <>
                 <WorkspaceBreadcrumbSeparator />
                 <WorkspaceBreadcrumbItem current className="min-w-10">
-                  <WorkspaceBreadcrumbText>{group.title}</WorkspaceBreadcrumbText>
+                  <WorkspaceBreadcrumbText data-testid="group-title">
+                    {group.title}
+                  </WorkspaceBreadcrumbText>
                 </WorkspaceBreadcrumbItem>
               </>
             )}
           </WorkspaceBreadcrumb>
+          {group !== undefined && view !== null ? <GroupHeaderActions view={view} /> : null}
         </WorkspacePageHeader>
-        {shown === null ? null : (
+        {shown !== null ? (
           <Empty className="flex-1">
             <EmptyHeader>
               <EmptyTitle>{shown}</EmptyTitle>
             </EmptyHeader>
           </Empty>
+        ) : group === undefined ? null : (
+          <GroupBody groupId={group.id} />
         )}
       </div>
     </SidebarInset>

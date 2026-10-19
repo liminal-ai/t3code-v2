@@ -34,7 +34,21 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
             yield* annotateEnvironmentRequest(args.endpoint.name);
             yield* requireEnvironmentScope(AuthOrchestrationReadScope);
             const engine = yield* groupChat.engine;
-            return yield* engine.groupPage(args.params.groupId).pipe(
+            return yield* engine.groupPage(args.params.groupId, args.query).pipe(
+              Effect.catchTags({
+                SqlError: internal,
+                SchemaError: internal,
+              }),
+            );
+          }),
+        )
+        .handle(
+          "delivery",
+          Effect.fn("environment.groupChat.delivery")(function* (args) {
+            yield* annotateEnvironmentRequest(args.endpoint.name);
+            yield* requireEnvironmentScope(AuthOrchestrationReadScope);
+            const engine = yield* groupChat.engine;
+            return yield* engine.delivery(args.params.deliveryId).pipe(
               Effect.catchTags({
                 SqlError: internal,
                 SchemaError: internal,

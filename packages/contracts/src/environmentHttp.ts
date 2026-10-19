@@ -58,9 +58,12 @@ import {
 } from "./orchestrationV2.ts";
 import {
   GroupChatCommand,
+  GroupChatDelivery,
+  GroupChatDeliveryParams,
   GroupChatDispatchResult,
+  GroupChatGroupPage,
   GroupChatGroupParams,
-  GroupChatGroupSnapshot,
+  GroupChatGroupQuery,
   GroupChatInvalid,
   GroupChatNotFound,
   GroupChatRefused,
@@ -786,7 +789,16 @@ class EnvironmentGroupChatHttpApi extends HttpApiGroup.make("groupChat")
     HttpApiEndpoint.get("group", "/api/group-chat/groups/:groupId", {
       headers: OptionalBearerHeaders,
       params: GroupChatGroupParams,
-      success: GroupChatGroupSnapshot,
+      query: GroupChatGroupQuery,
+      success: GroupChatGroupPage,
+      error: GroupChatErrors,
+    }).middleware(EnvironmentAuthenticatedAuth),
+  )
+  .add(
+    HttpApiEndpoint.get("delivery", "/api/group-chat/deliveries/:deliveryId", {
+      headers: OptionalBearerHeaders,
+      params: GroupChatDeliveryParams,
+      success: GroupChatDelivery,
       error: GroupChatErrors,
     }).middleware(EnvironmentAuthenticatedAuth),
   )

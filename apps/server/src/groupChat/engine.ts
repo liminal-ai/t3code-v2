@@ -1,13 +1,17 @@
 import {
+  GROUP_CHAT_PAGE_SIZE,
   type GroupChatCommand,
   type GroupChatCommandError,
   type GroupChatDelivery,
+  type GroupChatDeliveryHead,
   type GroupChatDeliveryId,
   type GroupChatDiscussion,
   GroupChatDiscussionId,
   type GroupChatDispatchResult,
   type GroupChatGroupId,
-  type GroupChatGroupSnapshot,
+  type GroupChatGroupPage,
+  type GroupChatGroupQuery,
+  type GroupChatPageDelivery,
   GroupChatInvalid,
   type GroupChatMember,
   type GroupChatMemberId,
@@ -57,7 +61,11 @@ export class GroupChatEngine extends Context.Service<
     readonly snapshot: Effect.Effect<GroupChatSnapshot, StoreError>;
     readonly groupPage: (
       groupId: GroupChatGroupId,
-    ) => Effect.Effect<GroupChatGroupSnapshot, GroupChatNotFound | StoreError>;
+      query: GroupChatGroupQuery,
+    ) => Effect.Effect<GroupChatGroupPage, GroupChatNotFound | StoreError>;
+    readonly delivery: (
+      deliveryId: GroupChatDeliveryId,
+    ) => Effect.Effect<GroupChatDelivery, GroupChatNotFound | StoreError>;
     readonly dispatch: (
       command: GroupChatCommand,
     ) => Effect.Effect<GroupChatDispatchResult, EngineError>;
@@ -154,6 +162,23 @@ export const makeEngine = (store: GroupChatStore) =>
     ): GroupChatDelivery => {
       const { roster: _roster, ...rest } = delivery;
       return { ...rest, retryable: retryRefusal(delivery, member, discussion) === null };
+    };
+
+    const waitHead = (wait: GroupChatWait | null): GroupChatWaitHead | null =>
+      wait?._tag === "waiting_on_question"
+        ? { _tag: "waiting_on_question", requestId: wait.requestId }
+        : wait;
+
+    /** The delivery as the group page carries it: no envelope, but the question's text. */
+    const onPage = (decorated: GroupChatDelivery): GroupChatPageDelivery => {
+      const { envelope: _envelope, sentText: _sentText, ...rest } = decorated;
+      return rest;
+    };
+
+    /** The delivery as the stream carries it: no bodies at all. */
+    const head = (decorated: GroupChatDelivery): GroupChatDeliveryHead => {
+      const { wait, ...rest } = onPage(decorated);
+      return { ...rest, wait: waitHead(wait) };
     };
 
     const decorateRead = (delivery: DeliveryRow): Effect.Effect<GroupChatDelivery, StoreError> =>
@@ -1619,7 +1644,7 @@ export const makeEngine = (store: GroupChatStore) =>
       return { groups, members };
     });
 
-    const groupPage: GroupChatEngine["Service"]["groupPage"] = (groupId) =>
+    const groupPage: GroupChatEngine["Service"]["groupPage"] = (groupId, query) =>
       Effect.gen(function* () {
         const group = yield* store.group(groupId);
         if (group === null) return yield* notFound("group", groupId);
@@ -1627,35 +1652,49 @@ export const makeEngine = (store: GroupChatStore) =>
         const discussions = yield* store.discussionsOfGroup(groupId);
         const byMember = new Map(members.map((m) => [m.id, m]));
         const byDiscussion = new Map(discussions.map((d) => [d.id, d]));
-        const deliveries = (yield* store.deliveriesOfGroup(groupId)).map((d) =>
-          decorate(
-            d,
-            byMember.get(d.memberId) ?? null,
-            d.discussionId === null ? null : (byDiscussion.get(d.discussionId) ?? null),
+        const { messages, hasOlder } = yield* store.messagePage(groupId, {
+          ...query,
+          limit: GROUP_CHAT_PAGE_SIZE,
+        });
+        const ofPage = yield* store.deliveriesOfMessages(messages.map((m) => m.id));
+        const open = query.before === undefined ? yield* store.openDeliveriesOfGroup(groupId) : [];
+        const rows = new Map<GroupChatDeliveryId, DeliveryRow>();
+        for (const d of [...ofPage, ...open]) rows.set(d.id, d);
+        const deliveries = [...rows.values()].map((d) =>
+          onPage(
+            decorate(
+              d,
+              byMember.get(d.memberId) ?? null,
+              d.discussionId === null ? null : (byDiscussion.get(d.discussionId) ?? null),
+            ),
           ),
         );
         return {
           group,
           members,
-          messages: yield* store.messages(groupId),
-          deliveries,
           discussions,
+          messages,
+          deliveries,
+          olderBefore: hasOlder ? messages[0]!.seq : null,
         };
       });
 
-    const waitHead = (wait: GroupChatWait | null): GroupChatWaitHead | null =>
-      wait?._tag === "waiting_on_question"
-        ? { _tag: "waiting_on_question", requestId: wait.requestId }
-        : wait;
+    const delivery: GroupChatEngine["Service"]["delivery"] = (deliveryId) =>
+      Effect.gen(function* () {
+        const row = yield* store.delivery(deliveryId);
+        if (row === null) return yield* notFound("delivery", deliveryId);
+        return yield* decorateRead(row);
+      });
 
     const events: GroupChatEngine["Service"]["events"] = Stream.fromPubSub(store.changes).pipe(
       Stream.mapEffect(({ seq, change }): Effect.Effect<GroupChatStreamEvent, StoreError> => {
         switch (change._tag) {
           case "delivery":
-            return Effect.map(decorateRead(change.delivery), (decorated) => {
-              const { envelope: _envelope, sentText: _sentText, wait, ...delivery } = decorated;
-              return { _tag: "delivery", seq, delivery: { ...delivery, wait: waitHead(wait) } };
-            });
+            return Effect.map(decorateRead(change.delivery), (decorated) => ({
+              _tag: "delivery",
+              seq,
+              delivery: head(decorated),
+            }));
           case "group":
             return Effect.succeed({ _tag: "group", seq, group: change.group });
           case "group.deleted":
@@ -1699,5 +1738,5 @@ export const makeEngine = (store: GroupChatStore) =>
 
     const start: GroupChatEngine["Service"]["start"] = forkParked(recover);
 
-    return GroupChatEngine.of({ snapshot, groupPage, dispatch, events, start });
+    return GroupChatEngine.of({ snapshot, groupPage, delivery, dispatch, events, start });
   });
