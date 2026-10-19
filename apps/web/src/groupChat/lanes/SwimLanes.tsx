@@ -812,7 +812,9 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
         ref={scroller}
         className="relative min-h-0 flex-1 overflow-auto [overflow-anchor:none]"
         onScroll={onScroll}
-        onClick={() => setSelected(null)}
+        onClick={(event) => {
+          if (!onControl(event.target)) setSelected(null);
+        }}
       >
         <div className="px-4 pb-10" style={{ minWidth }}>
           <div

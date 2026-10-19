@@ -183,7 +183,15 @@ const makeRenderItem =
     );
   };
 
-export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: GroupView }) {
+export function ChatView({
+  groupId,
+  view,
+  paused = false,
+}: {
+  groupId: GroupChatGroupId;
+  view: GroupView;
+  paused?: boolean;
+}) {
   const listRef = useRef<LegendListRef>(null);
   const follow = useFollowEnd(listRef);
   const [flashId, setFlashId] = useState<GroupChatMessageId | null>(null);
@@ -225,7 +233,7 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
   });
 
   const loadOlderPage = useStableCallback(() => {
-    if (view.olderBefore !== null && !view.loadingOlder) void loadOlder(groupId);
+    if (!paused && view.olderBefore !== null && !view.loadingOlder) void loadOlder(groupId);
   });
 
   const dismissPanel = () => {

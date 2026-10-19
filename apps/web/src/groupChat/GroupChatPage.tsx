@@ -209,7 +209,7 @@ function GroupBody({ groupId, viewKind }: { groupId: GroupChatGroupId; viewKind:
         className={cn("absolute inset-0 flex min-h-0 min-w-0 flex-col", lanes && "invisible")}
         inert={lanes || undefined}
       >
-        <ChatView key={groupId} groupId={groupId} view={view} />
+        <ChatView key={groupId} groupId={groupId} view={view} paused={lanes} />
       </div>
       {lanes ? (
         <div className="absolute inset-0 flex min-h-0 min-w-0 flex-col">
