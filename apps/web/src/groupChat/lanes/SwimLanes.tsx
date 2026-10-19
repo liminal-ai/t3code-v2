@@ -16,6 +16,7 @@ import { cn } from "../../lib/utils";
 import { followAfter, type FollowEvent, geometryOf, keyTowardStart } from "../followEnd";
 import { memberColor } from "../MemberChip";
 import { type GroupView, loadOlder } from "../store";
+import { onControl } from "./keys";
 import { ACCENT, LaneCard, PendingCard } from "./LaneCard";
 import {
   idleOlderPage,
@@ -550,7 +551,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || isCommandPaletteOpen()) return;
       if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-      if (isEditableFocused(event.target)) return;
+      if (isEditableFocused(event.target) || onControl(event.target)) return;
       if (event.target instanceof Element && event.target.closest("[role=dialog]") !== null) return;
       if (event.key === "j" || event.key === "ArrowDown") step(1);
       else if (event.key === "k" || event.key === "ArrowUp") step(-1);
