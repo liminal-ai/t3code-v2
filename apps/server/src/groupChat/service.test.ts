@@ -1117,6 +1117,34 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("deleting a group wakes the lanes its deliveries were blocking", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const first = yield* createGroup(app, "stalled group", [alpha]);
+      const second = yield* createGroup(app, "waiting group", [alpha]);
+      (yield* fake.thread(alpha)).faults.push({ type: "lose" }, { type: "lose" });
+      yield* send(app, first.group.id, "first", [first.member(alpha).id]);
+      yield* awaitDelivery(
+        app,
+        first.member(alpha).id,
+        (d) => d.dispatch === "unknown" && (d.error ?? "").includes("wait behind it"),
+      );
+      yield* send(app, second.group.id, "second", [second.member(alpha).id]);
+      const waiting = yield* awaitDelivery(
+        app,
+        second.member(alpha).id,
+        (d) => d.wait?._tag === "lane_busy",
+      );
+      yield* app.dispatch({ _tag: "group.delete", groupId: first.group.id });
+      yield* awaitDelivery(
+        app,
+        second.member(alpha).id,
+        (d) => d.id === waiting.id && d.state === "running",
+      );
+      assert.strictEqual((yield* fake.sends(alpha)).length, 3);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("Stop on a stalled send cancels it and releases its lane", () =>
     Effect.gen(function* () {
       const { fake, app } = yield* setup;

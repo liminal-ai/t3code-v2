@@ -1407,18 +1407,23 @@ export const makeEngine = (store: GroupChatStore) =>
             .pipe(Effect.map((group) => ({ _tag: "group", group })));
         case "group.delete":
           return Effect.gen(function* () {
-            const cancels = yield* store.transaction((tx) =>
+            const { cancels, threads } = yield* store.transaction((tx) =>
               Effect.gen(function* () {
                 yield* requireGroup(tx, command.groupId);
+                const threads = (yield* tx.members(command.groupId, true)).map(
+                  (m) => m.thread.threadId,
+                );
                 const cancels = yield* Effect.forEach(
                   yield* tx.deliveriesOfGroup(command.groupId),
                   (d) => withdraw(tx, d, "group deleted"),
                 );
                 yield* tx.deleteGroup(command.groupId);
-                return cancels;
+                return { cancels, threads };
               }),
             );
             yield* cancelQueued(cancels);
+            // A deleted delivery may have been what another group's envelope waited behind.
+            yield* Effect.forEach(threads, kick, { discard: true });
             return { _tag: "done" } as const;
           });
         case "member.add":
