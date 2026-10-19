@@ -676,6 +676,38 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a reply cut short by Stop never reaches the next round's envelopes", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "late excluded", [alpha, bravo]);
+      const started = yield* app.dispatch({
+        _tag: "discussion.start",
+        groupId: group.id,
+        participants: [member(alpha).id, member(bravo).id],
+        topic: "t",
+        maxRounds: 2,
+      });
+      const discussion =
+        started._tag === "discussion" ? started.discussion : assert.fail("discussion");
+      yield* awaitState(app, member(alpha).id, "running");
+      const b = yield* awaitState(app, member(bravo).id, "running");
+      yield* reply(fake, alpha, "A-R1");
+      yield* fake.interrupt(bravo, b.runId!, "B-R1, cut");
+      yield* app.until(app.store.delivery(b.id), (d) => d?.state === "failed");
+      yield* app.dispatch({ _tag: "delivery.retry", deliveryId: b.id });
+      yield* awaitDelivery(app, member(bravo).id, (d) => d.state === "running" && d.attempt === 2);
+      yield* reply(fake, bravo, "B-R1 again");
+      yield* app.until(app.store.discussion(discussion.id), (d) => d?.round === 2);
+      const next = yield* awaitDelivery(
+        app,
+        member(alpha).id,
+        (d) => d.round === 2 && d.envelope !== "",
+      );
+      assert.include(next.envelope, "B-R1 again");
+      assert.notInclude(next.envelope, "B-R1, cut", "a note that counts for nothing is not shown");
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("a claim that finds its delivery already sent leaves it alone", () =>
     Effect.gen(function* () {
       const { fake, app } = yield* setup;

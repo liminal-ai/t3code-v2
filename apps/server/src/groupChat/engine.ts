@@ -286,8 +286,10 @@ export const makeEngine = (store: GroupChatStore) =>
         const trigger = yield* tx.message(d.triggerMessageId);
         if (member === null || group === null || trigger === null) return null;
         const all = yield* tx.members(d.groupId, true);
-        const own = (m: GroupChatMessage) =>
-          m.author._tag === "member" && m.author.memberId === member.id;
+        // A late message is one the group no longer counts, such as the text of a reply the
+        // operator stopped; it stays on the page but is never put in front of another member.
+        const shown = (m: GroupChatMessage) =>
+          !m.late && !(m.author._tag === "member" && m.author.memberId === member.id);
         const discussion = d.discussionId === null ? null : yield* tx.discussion(d.discussionId);
         const previous =
           discussion !== null && d.round !== null && d.round > 1
@@ -296,11 +298,11 @@ export const makeEngine = (store: GroupChatStore) =>
                   m.discussionId === discussion.id &&
                   m.kind === "discussion_reply" &&
                   m.round === d.round! - 1 &&
-                  !own(m),
+                  shown(m),
               )
             : [];
         const after = (yield* tx.messages(d.groupId, member.seenSeq)).filter(
-          (m) => m.seq <= d.toSeq && !own(m),
+          (m) => m.seq <= d.toSeq && shown(m),
         );
         const repeated = previous.filter((m) => m.seq <= member.seenSeq);
         const unseen = [...repeated, ...after].sort((a, b) => a.seq - b.seq);
