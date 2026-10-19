@@ -946,6 +946,60 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a group title longer than 200 characters is refused at create and rename", () =>
+    Effect.gen(function* () {
+      const { app } = yield* setup;
+      const tooLong = yield* app
+        .dispatch({ _tag: "group.create", title: "t".repeat(201), threadIds: [alpha] })
+        .pipe(Effect.flip);
+      assert.strictEqual(tooLong._tag, "GroupChatInvalid");
+      const { group } = yield* createGroup(app, "t".repeat(200), [alpha]);
+      const renamed = yield* app
+        .dispatch({ _tag: "group.rename", groupId: group.id, title: "t".repeat(201) })
+        .pipe(Effect.flip);
+      assert.strictEqual(renamed._tag, "GroupChatInvalid");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a long pending question stays off the delivery head and comes from the group page",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "long question", [alpha]);
+        const seen: GroupChatStreamEvent[] = [];
+        yield* app.engine.events.pipe(
+          Stream.runForEach((event) => Effect.sync(() => void seen.push(event))),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* fake.startOwnRun(alpha);
+        const question = "Which colour should the banner be? ".repeat(300);
+        yield* fake.ask(alpha, "q-long", question, ["red", "blue"]);
+        yield* send(app, group.id, "pick one", [member(alpha).id]);
+        const queued = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.wait?._tag === "waiting_on_question",
+        );
+        const encode = Schema.encodeEffect(Schema.fromJsonString(GroupChatStreamEvent));
+        const heads = seen.filter(
+          (e) => e._tag === "delivery" && e.delivery.wait?._tag === "waiting_on_question",
+        );
+        assert.isAbove(heads.length, 0);
+        for (const event of heads) {
+          assert.isBelow(Buffer.byteLength(yield* encode(event)), 4096, "a question head");
+        }
+        const page = yield* app.engine.groupPage(group.id);
+        const full = page.deliveries.find((d) => d.id === queued.id)!;
+        assert.strictEqual(full.wait?._tag, "waiting_on_question");
+        if (full.wait?._tag === "waiting_on_question") {
+          assert.strictEqual(full.wait.requestId, "q-long");
+          assert.strictEqual(full.wait.questions[0]!.question, question);
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "a turn the thread starts on its own holds the envelope back, its question can be answered, and its text is never the reply",
     () =>

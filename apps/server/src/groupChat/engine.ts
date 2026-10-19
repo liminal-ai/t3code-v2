@@ -19,6 +19,8 @@ import {
   type GroupChatStreamEvent,
   GroupChatThreadRefused,
   type GroupChatWait,
+  type GroupChatWaitHead,
+  GROUP_CHAT_TITLE_MAX_LENGTH,
   type MessageId,
   type ProjectId,
   type RunId,
@@ -1125,10 +1127,22 @@ export const makeEngine = (store: GroupChatStore) =>
         member === null ? notFound("member", memberId) : Effect.succeed(member),
       );
 
-    const createGroup = (title: string, threadIds: ReadonlyArray<ThreadId>) =>
+    const validTitle = (input: string) => {
+      const title = input.trim();
+      if (title === "") return Effect.fail(new GroupChatInvalid({ reason: "title is required" }));
+      if (title.length > GROUP_CHAT_TITLE_MAX_LENGTH) {
+        return Effect.fail(
+          new GroupChatInvalid({
+            reason: `title is longer than ${GROUP_CHAT_TITLE_MAX_LENGTH} characters`,
+          }),
+        );
+      }
+      return Effect.succeed(title);
+    };
+
+    const createGroup = (input: string, threadIds: ReadonlyArray<ThreadId>) =>
       Effect.gen(function* () {
-        if (title.trim() === "")
-          return yield* new GroupChatInvalid({ reason: "title is required" });
+        const title = yield* validTitle(input);
         const unique = [...new Set(threadIds)];
         if (unique.length === 0) {
           return yield* new GroupChatInvalid({ reason: "pick at least one thread" });
@@ -1136,7 +1150,7 @@ export const makeEngine = (store: GroupChatStore) =>
         const threads = yield* Effect.forEach(unique, threadOf);
         return yield* store.transaction((tx) =>
           Effect.gen(function* () {
-            const group = yield* tx.createGroup(title.trim());
+            const group = yield* tx.createGroup(title);
             const titles = threads.map((t) => t.title);
             yield* Effect.forEach(
               threads,
@@ -1450,10 +1464,8 @@ export const makeEngine = (store: GroupChatStore) =>
             .transaction((tx) =>
               Effect.gen(function* () {
                 yield* requireGroup(tx, command.groupId);
-                if (command.title.trim() === "") {
-                  return yield* new GroupChatInvalid({ reason: "title is required" });
-                }
-                return yield* tx.updateGroup(command.groupId, { title: command.title.trim() });
+                const title = yield* validTitle(command.title);
+                return yield* tx.updateGroup(command.groupId, { title });
               }),
             )
             .pipe(Effect.map((group) => ({ _tag: "group", group })));
@@ -1593,13 +1605,18 @@ export const makeEngine = (store: GroupChatStore) =>
         };
       });
 
+    const waitHead = (wait: GroupChatWait | null): GroupChatWaitHead | null =>
+      wait?._tag === "waiting_on_question"
+        ? { _tag: "waiting_on_question", requestId: wait.requestId }
+        : wait;
+
     const events: GroupChatEngine["Service"]["events"] = Stream.fromPubSub(store.changes).pipe(
       Stream.mapEffect(({ seq, change }): Effect.Effect<GroupChatStreamEvent, StoreError> => {
         switch (change._tag) {
           case "delivery":
             return Effect.map(decorateRead(change.delivery), (decorated) => {
-              const { envelope: _envelope, sentText: _sentText, ...delivery } = decorated;
-              return { _tag: "delivery", seq, delivery };
+              const { envelope: _envelope, sentText: _sentText, wait, ...delivery } = decorated;
+              return { _tag: "delivery", seq, delivery: { ...delivery, wait: waitHead(wait) } };
             });
           case "group":
             return Effect.succeed({ _tag: "group", seq, group: change.group });
