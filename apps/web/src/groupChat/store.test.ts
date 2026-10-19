@@ -404,10 +404,21 @@ describe("group chat store, questions", () => {
     const start = loaded([1]);
     const asked = applyEvent(start, event(1, { _tag: "message", message: messageHead(2) }));
     expect(asked.fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
-    const failed = readFailed(asked.state, groupId);
+    const failed = readFailed(asked.state, groupId, 1);
     expect(followUpRead(failed, groupId).fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
     const landed = applyPage(failed, groupId, page([2]), "since");
     expect(followUpRead(landed, groupId).fetches).toEqual([]);
+  });
+
+  it("a catch-up read that fails after a newer one started leaves the newer one in flight", () => {
+    const start = loaded([1]);
+    const asked = applyEvent(start, event(1, { _tag: "message", message: messageHead(2) }));
+    const resynced = applyPage(asked.state, groupId, page([1, 2]), "latest");
+    const again = applyEvent(resynced, event(2, { _tag: "message", message: messageHead(3) }));
+    expect(again.fetches).toEqual([{ _tag: "since", groupId, seq: 2 }]);
+    expect(readFailed(again.state, groupId, 1)).toBe(again.state);
+    const ahead = applyEvent(again.state, event(3, { _tag: "message", message: messageHead(4) }));
+    expect(ahead.fetches).toEqual([]);
   });
 
   it("a head that arrives during a question's page read is still read after an empty page", () => {
@@ -661,6 +672,30 @@ describe("group chat store, read retries", () => {
     await vi.advanceTimersByTimeAsync(60_000);
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(4);
     expect(readGroupView(id)?.highSeq).toBe(4);
+  });
+
+  it("a failed question read whose retry finds nothing new stops reading", async () => {
+    const id = groupNamed("grp_question_retry");
+    let reads = 0;
+    api.fetchGroupPage.mockImplementation(() => {
+      reads += 1;
+      return reads > 20 ? new Promise(() => undefined) : Promise.resolve(pageFor(id, []));
+    });
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    api.fetchGroupPage.mockRejectedValueOnce(new Error("tunnel"));
+    applyStreamEvent(
+      event(1, {
+        _tag: "delivery",
+        delivery: {
+          ...delivery("d1", 1, "queued", "2026-10-19T00:02:00Z"),
+          groupId: id,
+          wait: { _tag: "waiting_on_question", requestId: "req-1" as never },
+        },
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
   });
 
   it("an older page read before the stream closed does not overwrite the reopen's page", async () => {

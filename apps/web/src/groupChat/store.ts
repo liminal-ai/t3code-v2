@@ -103,10 +103,10 @@ const fromHead = (
   };
 };
 
-const wantsQuestionText = (view: GroupView) =>
-  [...view.deliveries.values()].some(
-    (d) => d.wait?._tag === "waiting_on_question" && d.wait.questions.length === 0,
-  );
+const wantsText = (d: GroupChatPageDelivery) =>
+  d.wait?._tag === "waiting_on_question" && d.wait.questions.length === 0;
+
+const wantsQuestionText = (view: GroupView) => [...view.deliveries.values()].some(wantsText);
 
 const fromPage = (page: GroupChatGroupPage, deliveries: GroupView["deliveries"]): GroupView => ({
   group: page.group,
@@ -168,16 +168,29 @@ export function applyPage(
   return withGroup(state, groupId, view);
 }
 
-/** A since read that failed leaves nothing in flight, so the next follow-up reads again. */
-export function readFailed(state: StoreState, groupId: GroupChatGroupId): StoreState {
+export function readFailed(state: StoreState, groupId: GroupChatGroupId, seq: number): StoreState {
   const current = state.groups.get(groupId);
-  return current === undefined
+  return current === undefined || current.fetchingAfter !== seq
     ? state
-    : withGroup(state, groupId, {
-        ...current,
-        fetchingAfter: null,
-        awaitedSeq: Math.max(current.awaitedSeq, current.highSeq + 1),
-      });
+    : withGroup(state, groupId, { ...current, fetchingAfter: null });
+}
+
+interface OpenAsks {
+  readonly awaitedSeq: number;
+  readonly questionsWithoutText: ReadonlySet<GroupChatDeliveryId>;
+}
+
+const questionsWithoutText = (view: GroupView | null) =>
+  new Set(view === null ? [] : [...view.deliveries.values()].filter(wantsText).map((d) => d.id));
+
+function openAsks(view: GroupView | null): OpenAsks {
+  return { awaitedSeq: view?.awaitedSeq ?? 0, questionsWithoutText: questionsWithoutText(view) };
+}
+
+function changedSinceAsked(view: GroupView | null, readAfter: number, asked: OpenAsks): boolean {
+  if (view === null) return false;
+  if (view.highSeq > readAfter || view.awaitedSeq > asked.awaitedSeq) return true;
+  return [...questionsWithoutText(view)].some((id) => !asked.questionsWithoutText.has(id));
 }
 
 /** After a since page lands, the read a head asked for while it was out. */
@@ -577,15 +590,17 @@ const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
       continue;
     }
     const started = generation;
+    const asked = openAsks(readGroupView(fetch.groupId));
     void fetchGroupPage(fetch.groupId, { after: fetch.seq })
       .then((page) => {
         if (!isCurrent(started)) return;
         update((state) => applyPage(state, fetch.groupId, page, "since"));
-        if (stillWanted(started, fetch.groupId)) runFollowUp(fetch.groupId);
+        const changed = changedSinceAsked(readGroupView(fetch.groupId), fetch.seq, asked);
+        if (changed && stillWanted(started, fetch.groupId)) runFollowUp(fetch.groupId);
       })
       .catch(() => {
         if (!isCurrent(started)) return;
-        update((state) => readFailed(state, fetch.groupId));
+        update((state) => readFailed(state, fetch.groupId, fetch.seq));
         retryLater(started, "since", fetch.groupId, READ_RETRY_DELAY_MS, () =>
           runFollowUp(fetch.groupId),
         );
