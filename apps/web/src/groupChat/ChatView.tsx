@@ -1,5 +1,7 @@
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
 import type {
+  GroupChatDiscussion,
+  GroupChatDiscussionId,
   GroupChatPageDelivery,
   GroupChatGroupId,
   GroupChatMember,
@@ -8,10 +10,18 @@ import type {
 } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  TYPE_TO_FOCUS_EDITABLE_SELECTOR,
+  TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR,
+} from "../components/chat/composerFocusRedirect";
+import { isTimelineScrollTarget } from "../components/chat/timelineScrollTarget";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { cn } from "../lib/utils";
 import { Composer } from "./Composer";
 import { PendingReply } from "./DeliveryStatus";
+import { DiscussionPanel } from "./discussion/DiscussionPanel";
+import { panelDiscussion, roundDivider } from "./discussion/discussionView";
+import { followAfter, type FollowEvent, geometryOf, keyTowardStart } from "./followEnd";
 import { MemberMessage, OperatorMessage, SystemDivider } from "./MessageRow";
 import {
   deliveriesByTrigger,
@@ -45,9 +55,72 @@ function ListHeader({ view }: { view: GroupView }) {
   );
 }
 
+const plainKey = (event: KeyboardEvent) =>
+  !event.defaultPrevented && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+
+const keyLandsOnList = (target: EventTarget | null, node: HTMLElement) =>
+  target instanceof Node &&
+  (node.contains(target) || target === document.body || target === document.documentElement) &&
+  !(target instanceof Element && target.closest(TYPE_TO_FOCUS_EDITABLE_SELECTOR)) &&
+  document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR) === null;
+
+function useFollowEnd(listRef: React.RefObject<LegendListRef | null>) {
+  const [following, setFollowing] = useState(true);
+  const followingRef = useRef(true);
+  const update = useStableCallback((next: boolean) => {
+    if (followingRef.current === next) return;
+    followingRef.current = next;
+    setFollowing(next);
+  });
+  const apply = useStableCallback((event: FollowEvent) => {
+    const node = listRef.current?.getScrollableNode();
+    if (node) update(followAfter(followingRef.current, event, geometryOf(node)));
+  });
+  const onScroll = useStableCallback(() => apply({ kind: "scroll" }));
+  const leave = useStableCallback(() => update(false));
+
+  useEffect(() => {
+    const node = listRef.current?.getScrollableNode();
+    if (!node) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || !isTimelineScrollTarget(event.target, node, event.deltaY)) return;
+      apply({ kind: "wheel", deltaY: event.deltaY });
+    };
+    const onTouchMove = () => apply({ kind: "touch" });
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target === node) apply({ kind: "scrollbar" });
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (keyTowardStart(event.key) && plainKey(event) && keyLandsOnList(event.target, node)) {
+        apply({ kind: "key", key: event.key });
+      }
+    };
+    node.addEventListener("wheel", onWheel, { passive: true });
+    node.addEventListener("touchmove", onTouchMove, { passive: true });
+    node.addEventListener("pointerdown", onPointerDown, { passive: true });
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      node.removeEventListener("wheel", onWheel);
+      node.removeEventListener("touchmove", onTouchMove);
+      node.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [listRef, apply]);
+
+  return { following, onScroll, leave };
+}
+
+const dismissedKey = (groupId: GroupChatGroupId) => `t3.groupChat.dismissedDiscussion.${groupId}`;
+
+const readDismissed = (groupId: GroupChatGroupId) => ({
+  groupId,
+  id: sessionStorage.getItem(dismissedKey(groupId)),
+});
+
 interface RowContext {
   readonly members: ReadonlyMap<string, GroupChatMember>;
   readonly messages: ReadonlyMap<GroupChatMessageId, GroupChatMessage>;
+  readonly discussions: ReadonlyMap<GroupChatDiscussionId, GroupChatDiscussion>;
   readonly turns: ReadonlyMap<string, TurnInfo>;
   readonly byTrigger: ReadonlyMap<GroupChatMessageId, ReadonlyArray<GroupChatPageDelivery>>;
   readonly flashId: GroupChatMessageId | null;
@@ -69,12 +142,15 @@ const makeRenderItem =
     const message = item.message;
     const turn = ctx.turns.get(message.turnKey);
     const promptId = turn?.promptId ?? null;
+    const discussion =
+      message.discussionId === null ? undefined : ctx.discussions.get(message.discussionId);
     const body =
       message.author._tag === "operator" ? (
         <OperatorMessage
           message={message}
           members={ctx.members}
           deliveries={ctx.byTrigger.get(message.id) ?? []}
+          discussion={discussion}
         />
       ) : message.author._tag === "member" ? (
         <MemberMessage
@@ -82,6 +158,7 @@ const makeRenderItem =
           member={ctx.members.get(message.author.memberId)}
           turn={turn}
           prompt={promptId === null ? undefined : ctx.messages.get(promptId)}
+          discussion={discussion}
           onJump={ctx.jumpTo}
         />
       ) : (
@@ -89,6 +166,7 @@ const makeRenderItem =
           message={message}
           members={ctx.members}
           deliveries={ctx.byTrigger.get(message.id) ?? []}
+          divider={roundDivider(message, discussion)}
         />
       );
     return (
@@ -107,7 +185,11 @@ const makeRenderItem =
 
 export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: GroupView }) {
   const listRef = useRef<LegendListRef>(null);
+  const follow = useFollowEnd(listRef);
   const [flashId, setFlashId] = useState<GroupChatMessageId | null>(null);
+  const [dismissed, setDismissed] = useState(() => readDismissed(groupId));
+  if (dismissed.groupId !== groupId) setDismissed(readDismissed(groupId));
+  const panel = panelDiscussion(view, dismissed.id);
   const rows = useMemo(() => timelineRows(view), [view]);
   const turns = useMemo(() => turnsOf(view), [view]);
   const byTrigger = useMemo(() => deliveriesByTrigger(view), [view]);
@@ -133,6 +215,7 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
         (row) => row.kind === "message" && row.message.id === messageId,
       );
       if (index !== -1) {
+        follow.leave();
         await listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.4 });
         setFlashId(messageId);
         return;
@@ -145,17 +228,24 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
     if (view.olderBefore !== null && !view.loadingOlder) void loadOlder(groupId);
   });
 
+  const dismissPanel = () => {
+    if (panel === null) return;
+    sessionStorage.setItem(dismissedKey(groupId), panel.id);
+    setDismissed({ groupId, id: panel.id });
+  };
+
   const renderItem = useMemo(
     () =>
       makeRenderItem({
         members: view.members,
         messages: view.messages,
+        discussions: view.discussions,
         turns,
         byTrigger,
         flashId,
         jumpTo,
       }),
-    [view.members, view.messages, turns, byTrigger, flashId, jumpTo],
+    [view.members, view.messages, view.discussions, turns, byTrigger, flashId, jumpTo],
   );
 
   return (
@@ -169,16 +259,23 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
         renderItem={renderItem}
         estimatedItemSize={ESTIMATED_ROW_HEIGHT}
         initialScrollAtEnd
-        maintainScrollAtEnd
-        maintainScrollAtEndThreshold={0.15}
+        maintainScrollAtEnd={follow.following}
+        // LegendList re-pins only while the end is within threshold x viewport of the scroll offset.
+        maintainScrollAtEndThreshold={1}
         maintainVisibleContentPosition
+        onScroll={follow.onScroll}
         onStartReached={loadOlderPage}
         onStartReachedThreshold={0.5}
         ListHeaderComponent={<ListHeader view={view} />}
-        className="h-full min-h-0 overflow-x-hidden overscroll-y-contain [overflow-anchor:none]"
+        // LegendList cannot pin a zero-height list to its end, so a list that regrows from zero
+        // would not be at the end.
+        className="min-h-1 flex-1 overflow-x-hidden overscroll-y-contain [overflow-anchor:none]"
         data-testid="group-chat-timeline"
       />
-      <div className="shrink-0 px-5 pt-1 pb-4">
+      <div className="flex min-h-0 flex-col px-5 pt-1 pb-4">
+        {panel === null ? null : (
+          <DiscussionPanel view={view} discussion={panel} onDismiss={dismissPanel} />
+        )}
         <Composer groupId={groupId} members={activeMembers} view={view} />
       </div>
     </div>

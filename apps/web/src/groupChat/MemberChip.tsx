@@ -6,7 +6,7 @@ import type {
   ScopedThreadRef,
 } from "@t3tools/contracts";
 import { ExternalLinkIcon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useId, useState } from "react";
 
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -157,6 +157,7 @@ export function AnswerBox({
   const [picked, setPicked] = useState<Record<string, ReadonlyArray<string>>>({});
   const [free, setFree] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
+  const labelId = useId();
   const answers = Object.fromEntries(
     wait.questions.map((q) => [q.id, answerFor(q, picked[q.id] ?? [], free[q.id] ?? "")]),
   );
@@ -192,7 +193,7 @@ export function AnswerBox({
 
   return (
     <form
-      className="flex max-w-xl flex-col gap-3 rounded-lg border border-warning/32 bg-warning-surface p-3 text-sm"
+      className="flex min-h-40 max-w-xl flex-col gap-2 overflow-y-auto rounded-lg border border-warning/32 bg-warning-surface p-3 text-sm"
       data-testid="answer-box"
       data-request-id={wait.requestId}
       onSubmit={(event) => {
@@ -220,20 +221,23 @@ export function AnswerBox({
           { value: OTHER, label: "Other", description: "Type your own answer" },
         ];
         const showText = question.options.length === 0 || chosen.includes(OTHER);
+        const textId = labelId + question.id;
         return (
-          <fieldset
-            key={question.id}
-            className="flex flex-col gap-2"
-            data-testid="pending-question"
-          >
+          <Fragment key={question.id}>
             {question.header === null ? null : (
               <span className="text-2xs font-medium uppercase tracking-wide text-muted-foreground">
                 {question.header}
               </span>
             )}
-            <legend className="whitespace-pre-wrap text-foreground">{question.question}</legend>
+            <p
+              id={textId}
+              className="max-h-[10lh] min-h-[1lh] overflow-y-auto whitespace-pre-wrap text-foreground"
+              data-testid="pending-question"
+            >
+              {question.question}
+            </p>
             {question.options.length === 0 ? null : question.multiSelect ? (
-              <div className="flex flex-col gap-1.5">
+              <div role="group" aria-labelledby={textId} className="flex flex-col gap-1.5">
                 {options.map((option) => (
                   <label key={option.value} className={OPTION_ROW}>
                     <Checkbox
@@ -252,6 +256,7 @@ export function AnswerBox({
               </div>
             ) : (
               <RadioGroup
+                aria-labelledby={textId}
                 value={chosen[0] ?? ""}
                 onValueChange={(value) => toggle(question, String(value))}
               >
@@ -285,7 +290,7 @@ export function AnswerBox({
                 }}
               />
             ) : null}
-          </fieldset>
+          </Fragment>
         );
       })}
       <div className="flex items-center gap-2">

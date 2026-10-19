@@ -20,6 +20,8 @@ import {
   useGroupChatSnapshot,
 } from "./api";
 import { ChatView } from "./ChatView";
+import { runningDiscussion } from "./discussion/discussionView";
+import { StartDiscussionDialog } from "./discussion/StartDiscussionDialog";
 import { useGroupChatEvents } from "./events";
 import { ManageGroupDialog } from "./ManageGroupDialog";
 import { MemberChip } from "./MemberChip";
@@ -53,35 +55,51 @@ function notice(snapshot: GroupChatSnapshotState, groupId: string | undefined): 
 
 function GroupHeaderActions({ view }: { view: GroupView }) {
   const [manageOpen, setManageOpen] = useState(false);
+  const [discussOpen, setDiscussOpen] = useState(false);
   const members = [...view.members.values()]
     .filter((m) => m.removedAt === null)
     .sort((a, b) => a.addedAt.localeCompare(b.addedAt));
   const open = openDeliveryByMember(view);
   const settled = view.group.settledAt !== null;
+  const canDiscuss = members.length >= 2 && runningDiscussion(view) === null;
   return (
-    <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+    <div className="flex flex-1 items-center justify-end gap-2">
       <div className="hidden min-w-0 flex-wrap items-center gap-1 sm:flex">
         {members.map((member) => (
           <MemberChip key={member.id} member={member} wait={open.get(member.id)?.wait ?? null} />
         ))}
       </div>
-      <Button
-        size="xs"
-        variant="ghost-muted"
-        onClick={() =>
-          void attempt(() =>
-            dispatchGroupChat({
-              _tag: settled ? "group.unsettle" : "group.settle",
-              groupId: view.group.id,
-            }),
-          )
-        }
-      >
-        {settled ? "Unsettle" : "Settle"}
-      </Button>
-      <Button size="xs" variant="outline" onClick={() => setManageOpen(true)}>
-        Manage
-      </Button>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          onClick={() =>
+            void attempt(() =>
+              dispatchGroupChat({
+                _tag: settled ? "group.unsettle" : "group.settle",
+                groupId: view.group.id,
+              }),
+            )
+          }
+        >
+          {settled ? "Unsettle" : "Settle"}
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={!canDiscuss}
+          onClick={() => setDiscussOpen(true)}
+          data-testid="discuss"
+        >
+          Discuss
+        </Button>
+        <Button size="xs" variant="outline" onClick={() => setManageOpen(true)}>
+          Manage
+        </Button>
+      </div>
+      {discussOpen ? (
+        <StartDiscussionDialog view={view} onClose={() => setDiscussOpen(false)} />
+      ) : null}
       {manageOpen ? <ManageGroupDialog view={view} onClose={() => setManageOpen(false)} /> : null}
     </div>
   );
@@ -123,7 +141,7 @@ function GroupBody({ groupId }: { groupId: GroupChatGroupId }) {
       </Empty>
     );
   }
-  return <ChatView groupId={groupId} view={view} />;
+  return <ChatView key={groupId} groupId={groupId} view={view} />;
 }
 
 export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
