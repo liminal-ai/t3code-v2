@@ -20,7 +20,14 @@ import { useThreadShell } from "../state/entities";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { useGroupChatSnapshot } from "./api";
 import { CreateGroupDialog } from "./CreateGroupDialog";
-import { MemberDot, memberColor, memberThreadRef, runtimeLabel } from "./MemberChip";
+import {
+  isExternalMember,
+  MemberDot,
+  memberColor,
+  memberSubtitle,
+  memberThreadRef,
+  runtimeLabel,
+} from "./MemberChip";
 
 function MemberStatusRow({ member }: { member: GroupChatMember }) {
   const shell = useThreadShell(memberThreadRef(member));
@@ -31,10 +38,10 @@ function MemberStatusRow({ member }: { member: GroupChatMember }) {
         <span className="font-medium" style={{ color: memberColor(member.color) }}>
           @{member.handle}
         </span>
-        <span className="text-muted-foreground"> · {shell?.title ?? member.thread.title}</span>
+        <span className="text-muted-foreground"> · {memberSubtitle(member, shell?.title)}</span>
       </span>
       <Badge variant="outline" size="sm">
-        {runtimeLabel(shell?.runtime?.status)}
+        {isExternalMember(member) ? "external" : runtimeLabel(shell?.runtime?.status)}
       </Badge>
       {shell?.settledAt ? (
         <Badge variant="outline" size="sm">

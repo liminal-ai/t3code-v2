@@ -10,6 +10,10 @@ import {
   RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a throwaway agent on loopback is plain node:http.
+import * as NodeHttp from "node:http";
+import type * as NodeNet from "node:net";
+
 import type * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -24,7 +28,12 @@ import * as Stream from "effect/Stream";
 import { FetchHttpClient } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
-import { ExternalDeliveryConfig, type GroupChatEngine, RetryDelay } from "./engine.ts";
+import {
+  ExternalDeliveryConfig,
+  type ExternalDeliverySettings,
+  type GroupChatEngine,
+  RetryDelay,
+} from "./engine.ts";
 import * as GroupChatLayer from "./layer.ts";
 import * as Reach from "./reach.ts";
 import type { GroupChatStore, StoreError } from "./store.ts";
@@ -560,22 +569,31 @@ export interface App {
   readonly dispatch: GroupChatEngine["Service"]["dispatch"];
 }
 
+export const FAKE_ORIGIN = "http://127.0.0.1:1";
+
+/** Fast enough for a test, long enough to act while a delivery waits to retry. */
+const FAST_EXTERNAL: ExternalDeliverySettings = {
+  maxAttempts: 3,
+  backoffBase: "10 millis",
+  callbackTimeout: "300 millis",
+};
+
 export const boot = (
   fake: FakeThreads,
   baseDir: string,
+  options: {
+    readonly external?: Partial<ExternalDeliverySettings>;
+    readonly exposed?: boolean;
+  } = {},
 ): Effect.Effect<App, never, Scope.Scope | NodeServices.NodeServices> =>
   Effect.gen(function* () {
     const layer = GroupChatLayer.layer.pipe(
       Layer.provide(layerFakePort(fake)),
       Layer.provide(Layer.succeed(RetryDelay, "10 millis")),
       Layer.provide(
-        Layer.succeed(ExternalDeliveryConfig, {
-          maxAttempts: 3,
-          backoffBase: "10 millis",
-          callbackTimeout: "300 millis",
-        }),
+        Layer.succeed(ExternalDeliveryConfig, { ...FAST_EXTERNAL, ...options.external }),
       ),
-      Layer.provide(Reach.layerFixed({ exposed: false, origin: "http://127.0.0.1:1" })),
+      Layer.provide(Reach.layerFixed({ exposed: options.exposed ?? false, origin: FAKE_ORIGIN })),
       Layer.provide(FetchHttpClient.layer),
       Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
@@ -608,3 +626,62 @@ export const boot = (
 export const tempBaseDir = Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
   fileSystem.makeTempDirectoryScoped({ prefix: "t3-group-chat-" }),
 );
+
+export interface AgentCall {
+  readonly url: string;
+  readonly headers: NodeHttp.IncomingHttpHeaders;
+  readonly body: string;
+}
+
+export interface AgentAnswer {
+  readonly status: number;
+  readonly body: string;
+}
+
+/** An external agent on loopback that records every request and answers as the test decides. */
+export interface FakeAgent {
+  readonly url: string;
+  readonly calls: Array<AgentCall>;
+  answer: (call: AgentCall) => AgentAnswer;
+}
+
+export const fakeAgent = (
+  answer: (call: AgentCall) => AgentAnswer,
+): Effect.Effect<FakeAgent, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.callback<FakeAgent>((resume) => {
+      const calls: Array<AgentCall> = [];
+      const agent: FakeAgent = { url: "", calls, answer };
+      const server = NodeHttp.createServer((request, response) => {
+        const chunks: Array<Buffer> = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", () => {
+          const call: AgentCall = {
+            url: request.url ?? "/",
+            headers: request.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          };
+          calls.push(call);
+          const answered = agent.answer(call);
+          response.writeHead(answered.status, { "content-type": "application/json" });
+          response.end(answered.body);
+        });
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address() as NodeNet.AddressInfo;
+        resume(
+          Effect.succeed(
+            Object.assign(agent, {
+              url: `http://127.0.0.1:${address.port}/agent`,
+              close: () =>
+                new Promise<void>((resolve) => {
+                  server.closeAllConnections();
+                  server.close(() => resolve());
+                }),
+            }),
+          ),
+        );
+      });
+    }),
+    (agent) => Effect.promise(() => (agent as FakeAgent & { close: () => Promise<void> }).close()),
+  );

@@ -23,7 +23,7 @@ import {
   draftAfterSend,
   tickedAfterTyping,
 } from "./composer";
-import { MemberDot, memberColor } from "./MemberChip";
+import { MemberDot, memberColor, memberSubtitle } from "./MemberChip";
 import { type GroupView, noteMessage, openDeliveryByMember } from "./store";
 
 interface BoxesByGroup {
@@ -207,7 +207,7 @@ export function Composer({
                     @{member.handle}
                   </span>
                   <span className="truncate text-xs text-muted-foreground">
-                    {member.thread.title}
+                    {memberSubtitle(member)}
                   </span>
                 </button>
               </li>

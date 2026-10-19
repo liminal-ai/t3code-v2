@@ -13,6 +13,8 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { deriveHandle, renderEnvelope } from "./envelope.ts";
 import { handleProblem, isSignOff, stripLeadingHandle, withoutSignOffLine } from "./text.ts";
+import { extractText, readPath, renderTemplate } from "./transports/http.ts";
+import { sign, verifySignature } from "./transports/webhook.ts";
 
 const groupId = "g1" as GroupChatGroupId;
 const group: GroupChatGroup = {
@@ -426,5 +428,36 @@ describe("group chat envelope and text", () => {
       expect(text).toContain(`| R${i}-TAIL`);
     }
     expect(text).toMatch(/9 long messages were shortened/);
+  });
+
+  it("body templates escape values into JSON", () => {
+    const out = renderTemplate(
+      '{"text": "{{envelope}}", "h": "@{{handle}}", "keep": "{{unknown}}", "key": "{{idempotencyKey}}"}',
+      { envelope: 'say "hi"\nnow', handle: "mock", idempotencyKey: "dlv_1" },
+    );
+    expect(JSON.parse(out)).toEqual({
+      text: 'say "hi"\nnow',
+      h: "@mock",
+      keep: "{{unknown}}",
+      key: "dlv_1",
+    });
+    expect(readPath({ a: { b: [{ c: "x" }] } }, "a.b.0.c")).toBe("x");
+    expect(
+      extractText('{"choices":[{"message":{"content":"deep"}}]}', "choices.0.message.content"),
+    ).toBe("deep");
+    expect(extractText('{"text":"fallback"}', "reply")).toBe("fallback");
+    expect(extractText("plain words", "reply")).toBe("plain words");
+    expect(extractText('{"other":1}', "reply")).toBeNull();
+  });
+
+  it("HMAC signatures verify and reject tampering", () => {
+    const raw = '{"text":"hello"}';
+    expect(verifySignature("s3cret", raw, sign("s3cret", raw))).toBe(true);
+    expect(verifySignature("s3cret", raw, sign("s3cret", new TextEncoder().encode(raw)))).toBe(
+      true,
+    );
+    expect(verifySignature("s3cret", raw, sign("other", raw))).toBe(false);
+    expect(verifySignature("s3cret", `${raw} `, sign("s3cret", raw))).toBe(false);
+    expect(verifySignature("s3cret", raw, undefined)).toBe(false);
   });
 });

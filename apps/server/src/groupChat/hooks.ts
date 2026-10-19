@@ -11,6 +11,8 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- the capped reader pauses Node's request instead of destroying it.
+import * as NodeHttp from "node:http";
 
 import type { GroupChat } from "./layer.ts";
 import { GroupChatReach } from "./reach.ts";
@@ -77,14 +79,57 @@ export const checkSignature = (input: {
   return input.exposed ? "signature_required" : "ok";
 };
 
-const json = (status: number, body: Record<string, unknown>) =>
-  HttpServerResponse.jsonUnsafe(body, { status });
+const json = (status: number, body: Record<string, unknown>, headers?: Record<string, string>) =>
+  HttpServerResponse.jsonUnsafe(body, { status, headers });
 const refused = (status: number, error: string) => json(status, { error });
+/** `connection: close` makes Node flush the answer and then drop the socket, so the rest of the body is never read. */
+const tooLarge = json(413, { error: "body_too_large" }, { connection: "close" });
 
 /**
- * Reads the body under the cap. The content-length check answers a declared oversize post at
- * once; the capped reader stops a chunked one as soon as it crosses the cap, before the rest
- * is buffered.
+ * Collects Node's request body up to the cap. The platform reader destroys the request when its
+ * cap trips, which takes the socket with it and the 413 can never be written; pausing the
+ * request instead leaves the socket to carry the answer.
+ */
+const collectCapped = (
+  source: NodeHttp.IncomingMessage,
+  max: number,
+): Effect.Effect<Uint8Array | "too_large"> =>
+  Effect.callback((resume) => {
+    const chunks: Array<Buffer> = [];
+    let total = 0;
+    const cleanup = () => {
+      source.off("data", onData);
+      source.off("end", onEnd);
+      source.off("error", onError);
+    };
+    const onData = (chunk: Buffer) => {
+      total += chunk.length;
+      if (total > max) {
+        cleanup();
+        source.pause();
+        resume(Effect.succeed("too_large" as const));
+        return;
+      }
+      chunks.push(chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      resume(Effect.succeed(new Uint8Array(Buffer.concat(chunks))));
+    };
+    const onError = () => {
+      cleanup();
+      resume(Effect.succeed("too_large" as const));
+    };
+    source.on("data", onData);
+    source.once("end", onEnd);
+    source.once("error", onError);
+    return Effect.sync(cleanup);
+  });
+
+/**
+ * Reads the body under the cap. The content-length check answers a declared oversize post on
+ * the headers alone; a chunked one is refused as soon as it crosses the cap, before the rest is
+ * buffered.
  */
 const readBody = (
   request: HttpServerRequest.HttpServerRequest,
@@ -92,6 +137,9 @@ const readBody = (
   Effect.gen(function* () {
     const declared = Number(request.headers["content-length"] ?? "0");
     if (!Number.isFinite(declared) || declared > HOOK_MAX_BODY_BYTES) return "too_large" as const;
+    if (request.source instanceof NodeHttp.IncomingMessage) {
+      return yield* collectCapped(request.source, HOOK_MAX_BODY_BYTES);
+    }
     const body = yield* request.arrayBuffer.pipe(
       Effect.map((buffer) => new Uint8Array(buffer)),
       Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(HOOK_MAX_BODY_BYTES)),
@@ -124,9 +172,7 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
             return { _tag: "refused", response: refused(429, "rate_limited") } as const;
           }
           const body = yield* readBody(input.request);
-          if (body === "too_large") {
-            return { _tag: "refused", response: refused(413, "body_too_large") } as const;
-          }
+          if (body === "too_large") return { _tag: "refused", response: tooLarge } as const;
           const signature = checkSignature({
             external: input.external,
             body,

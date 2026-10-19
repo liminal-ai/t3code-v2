@@ -14,7 +14,14 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import type { DeliveryRow, GroupChatStore } from "./store.ts";
-import { type App, boot, type FakeThreads, makeFakeThreads, tempBaseDir } from "./testkit.ts";
+import {
+  type App,
+  boot,
+  fakeAgent,
+  type FakeThreads,
+  makeFakeThreads,
+  tempBaseDir,
+} from "./testkit.ts";
 
 const alpha = ThreadId.make("alpha");
 const bravo = ThreadId.make("bravo");
@@ -1748,5 +1755,141 @@ it.live("a read failure while following keeps the envelope and the lane", () =>
     assert.strictEqual(replied.attempt, 1);
     assert.strictEqual((yield* fake.sends(alpha)).length, 1);
     assert.strictEqual((yield* fake.thread(alpha)).readFaults, 0, "the lane looked again");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+const externalConfig = (url: string) => ({
+  url,
+  headers: {},
+  bodyTemplate: "",
+  replyPath: "",
+  secret: "",
+  callbackOrigin: "",
+});
+
+const addRest = (app: App, groupId: GroupChatGroupId, handle: string, url: string) =>
+  Effect.map(
+    app.dispatch({
+      _tag: "member.addExternal",
+      groupId,
+      handle,
+      kind: "rest",
+      config: externalConfig(url),
+    }),
+    (result) => (result._tag === "member" ? result.member : assert.fail("member")),
+  );
+
+const chatDelivery = (
+  app: App,
+  memberId: GroupChatMemberId,
+  predicate: (d: DeliveryRow) => boolean,
+) =>
+  Effect.map(
+    app.until(app.store.deliveriesOfMember(memberId), (rows) =>
+      rows.some((d) => d.discussionId === null && predicate(d)),
+    ),
+    (rows) => rows.find((d) => d.discussionId === null && predicate(d))!,
+  );
+
+it.live(
+  "a dead endpoint fails after bounded attempts with one Idempotency-Key, and blocks nobody",
+  () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      let status = 503;
+      const agent = yield* fakeAgent(() => ({
+        status,
+        body: JSON.stringify(status < 300 ? { reply: "ext reply" } : { error: "down" }),
+      }));
+      const { group, member } = yield* createGroup(app, "dead endpoint", [alpha]);
+      const dead = yield* addRest(app, group.id, "dead", agent.url);
+      yield* send(app, group.id, "both of you", [member(alpha).id, dead.id]);
+      const failed = yield* chatDelivery(app, dead.id, (d) => d.state === "failed");
+      yield* awaitState(app, member(alpha).id, "running");
+      yield* reply(fake, alpha, "t3 reply");
+      yield* awaitState(app, member(alpha).id, "replied");
+      assert.strictEqual(agent.calls.length, 3, "bounded: maxAttempts requests");
+      assert.deepStrictEqual(
+        agent.calls.map((c) => c.headers["x-gchat-attempt"]),
+        ["1", "2", "3"],
+      );
+      assert.strictEqual(new Set(agent.calls.map((c) => c.headers["idempotency-key"])).size, 1);
+      assert.strictEqual(agent.calls[0]!.headers["idempotency-key"], failed.id);
+      assert.match(failed.error!, /Gave up after 3 attempts/);
+      assert.strictEqual(failed.attempt, 1);
+      assert.strictEqual((yield* app.store.member(dead.id))!.seenSeq, 0, "nothing was received");
+
+      const started = yield* app.dispatch({
+        _tag: "discussion.start",
+        groupId: group.id,
+        participants: [member(alpha).id, dead.id],
+        topic: "t",
+        maxRounds: 2,
+      });
+      const discussion =
+        started._tag === "discussion" ? started.discussion : assert.fail("discussion");
+      assert.strictEqual(discussion.state, "running");
+      yield* app.dispatch({ _tag: "discussion.stop", discussionId: discussion.id });
+
+      status = 200;
+      const before = agent.calls.length;
+      yield* app.dispatch({ _tag: "delivery.retry", deliveryId: failed.id });
+      const replied = yield* chatDelivery(app, dead.id, (d) => d.state === "replied");
+      assert.strictEqual(replied.attempt, 2);
+      const last = agent.calls.at(-1)!;
+      assert.strictEqual(agent.calls.length, before + 1);
+      assert.strictEqual(last.headers["idempotency-key"], failed.id, "Retry keeps the one key");
+      assert.strictEqual(last.headers["x-gchat-attempt"], String(before + 1));
+      assert.strictEqual((yield* app.store.message(replied.replyMessageId!))!.text, "ext reply");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("Stop and removal cancel deliveries waiting to retry, and a restart resends nothing", () =>
+  Effect.gen(function* () {
+    const fake = yield* makeFakeThreads;
+    const baseDir = yield* tempBaseDir;
+    const external = { backoffBase: "300 millis", maxAttempts: 5 } as const;
+    const app = yield* boot(fake, baseDir, { external });
+    const agent = yield* fakeAgent(() => ({ status: 503, body: '{"error":"down"}' }));
+    const { group, member } = yield* createGroup(app, "cancel pending", [alpha]);
+    const x = yield* addRest(app, group.id, "xray", agent.url);
+    const y = yield* addRest(app, group.id, "yank", agent.url);
+    const started = yield* app.dispatch({
+      _tag: "discussion.start",
+      groupId: group.id,
+      participants: [member(alpha).id, x.id],
+      topic: "t",
+      maxRounds: 2,
+    });
+    const discussion =
+      started._tag === "discussion" ? started.discussion : assert.fail("discussion");
+    const waiting = yield* awaitDelivery(app, x.id, (d) => d.wait?._tag === "retrying");
+    assert.strictEqual(waiting.state, "pending");
+    assert.match(waiting.error!, /HTTP 503/);
+    yield* app.dispatch({ _tag: "discussion.stop", discussionId: discussion.id });
+    assert.strictEqual((yield* latestDelivery(app, x.id))!.state, "cancelled");
+
+    yield* send(app, group.id, "to yank", [y.id]);
+    yield* awaitDelivery(app, y.id, (d) => d.wait?._tag === "retrying");
+    yield* app.dispatch({ _tag: "member.remove", memberId: y.id });
+    assert.strictEqual((yield* latestDelivery(app, y.id))!.state, "cancelled");
+
+    const sent = agent.calls.length;
+    yield* app.shutdown;
+    const again = yield* boot(fake, baseDir, { external });
+    yield* Effect.sleep("700 millis");
+    assert.strictEqual(agent.calls.length, sent, "nothing resent after Stop, removal or restart");
+    const open = yield* again.store.openDeliveriesOfGroup(group.id);
+    assert.deepStrictEqual(
+      open.filter((d) => d.state === "pending"),
+      [],
+      "no external envelope waits to go out",
+    );
+    assert.isTrue(
+      open.every((d) => d.memberId === member(alpha).id),
+      "only alpha's own run stays open",
+    );
+    yield* again.dispatch({ _tag: "group.delete", groupId: group.id });
+    assert.isNull(yield* again.store.group(group.id));
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

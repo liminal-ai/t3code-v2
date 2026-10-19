@@ -24,7 +24,15 @@ import {
 import { Input } from "../components/ui/input";
 import { useThreadShell } from "../state/entities";
 import { dispatchGroupChat } from "./api";
-import { MemberDot, memberColor, memberThreadRef, runtimeLabel } from "./MemberChip";
+import { ExternalMemberForm, fetchInboundUrl, InboundUrl } from "./external/ExternalMemberForm";
+import {
+  isExternalMember,
+  MemberDot,
+  memberColor,
+  memberSubtitle,
+  memberThreadRef,
+  runtimeLabel,
+} from "./MemberChip";
 import { Refusal, useRefusal } from "./refusal";
 import { forgetGroup, type GroupView } from "./store";
 import { ThreadPicker } from "./ThreadPicker";
@@ -117,9 +125,19 @@ function MemberRow({
   confirm: (request: Confirmation) => void;
 }) {
   const shell = useThreadShell(memberThreadRef(member));
+  const external = isExternalMember(member);
   const settled = shell?.settledAt !== null && shell?.settledAt !== undefined;
   const [busy, setBusy] = useState(false);
+  const [inboundUrl, setInboundUrl] = useState<string | null>(null);
   const { refusal, run } = useRefusal();
+  const showInboundUrl = async () => {
+    if (inboundUrl !== null) {
+      setInboundUrl(null);
+      return;
+    }
+    const url = await run(() => fetchInboundUrl(member.id));
+    if (url !== undefined) setInboundUrl(url);
+  };
   const settleThread = async () => {
     setBusy(true);
     await run(() =>
@@ -140,34 +158,43 @@ function MemberRow({
       <div className="min-w-0 flex-1">
         <HandleEditor member={member} />
         <p className="mt-0.5 truncate text-2xs text-muted-foreground">
-          {shell?.title ?? member.thread.title}
+          {memberSubtitle(member, shell?.title)}
         </p>
         <Refusal text={refusal} />
+        {inboundUrl === null ? null : <InboundUrl url={inboundUrl} />}
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <Badge variant="outline" size="sm">
-          {runtimeLabel(shell?.runtime?.status)}
+          {external ? member.kind._tag : runtimeLabel(shell?.runtime?.status)}
         </Badge>
         {settled ? (
           <Badge variant="outline" size="sm">
             settled
           </Badge>
         ) : null}
-        <Button
-          size="xs"
-          variant="outline"
-          disabled={busy || shell === null}
-          onClick={() => void settleThread()}
-        >
-          {settled ? "Unsettle thread" : "Settle thread"}
-        </Button>
+        {external ? (
+          <Button size="xs" variant="outline" onClick={() => void showInboundUrl()}>
+            {inboundUrl === null ? "Inbound URL" : "Hide URL"}
+          </Button>
+        ) : (
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={busy || shell === null}
+            onClick={() => void settleThread()}
+          >
+            {settled ? "Unsettle thread" : "Settle thread"}
+          </Button>
+        )}
         <Button
           size="xs"
           variant="ghost-destructive"
           onClick={() =>
             confirm({
               title: `Remove @${member.handle}?`,
-              body: "The member leaves this group. Its past messages stay in the log, and its T3 thread is not changed.",
+              body: external
+                ? "The member leaves this group. Its past messages stay in the log, and its hook URLs stop working."
+                : "The member leaves this group. Its past messages stay in the log, and its T3 thread is not changed.",
               action: "Remove member",
               run: async () => {
                 await dispatchGroupChat({ _tag: "member.remove", memberId: member.id });
@@ -192,10 +219,13 @@ export function ManageGroupDialog({ view, onClose }: { view: GroupView; onClose:
   const [title, setTitle] = useState(group.title);
   const [adding, setAdding] = useState<ReadonlySet<ThreadId>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [externalOpen, setExternalOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const { refusal, run } = useRefusal();
   const settled = group.settledAt !== null;
-  const memberThreadIds: ReadonlySet<ThreadId> = new Set(members.map((m) => m.thread.threadId));
+  const memberThreadIds: ReadonlySet<ThreadId> = new Set(
+    members.flatMap((m) => (m.kind._tag === "t3" ? [m.kind.thread.threadId] : [])),
+  );
 
   const addSelected = async () => {
     for (const threadId of adding) {
@@ -263,15 +293,38 @@ export function ManageGroupDialog({ view, onClose }: { view: GroupView; onClose:
           <section className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-muted-foreground">Members</span>
-              <Button size="xs" variant="outline" onClick={() => setPickerOpen((open) => !open)}>
-                {pickerOpen ? "Cancel" : "Add members"}
-              </Button>
+              <div className="flex items-center gap-1.5">
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    setExternalOpen((open) => !open);
+                    setPickerOpen(false);
+                  }}
+                  data-testid="add-external-member"
+                >
+                  {externalOpen ? "Cancel" : "Add external member"}
+                </Button>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  onClick={() => {
+                    setPickerOpen((open) => !open);
+                    setExternalOpen(false);
+                  }}
+                >
+                  {pickerOpen ? "Cancel" : "Add members"}
+                </Button>
+              </div>
             </div>
             <ul className="rounded-lg border">
               {members.map((member) => (
                 <MemberRow key={member.id} member={member} confirm={setConfirmation} />
               ))}
             </ul>
+            {externalOpen ? (
+              <ExternalMemberForm groupId={group.id} onClose={() => setExternalOpen(false)} />
+            ) : null}
             {pickerOpen ? (
               <div className="flex flex-col gap-2">
                 <ThreadPicker

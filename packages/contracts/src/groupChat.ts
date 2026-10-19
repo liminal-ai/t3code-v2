@@ -399,12 +399,13 @@ export const GroupChatDispatchResult = Schema.Union([
 export type GroupChatDispatchResult = typeof GroupChatDispatchResult.Type;
 
 /**
- * The hook endpoints external agents post to. The token rides in the query string, because the
- * server's request log and trace record a URL's path and never its query. An agent whose member
- * has a secret signs the raw body with `X-Signature: sha256=<hex HMAC-SHA256>`.
+ * The hook endpoints external agents post to. They live under the webhook prefix `/api/hooks`,
+ * which the server never traces, and the token rides in the query string, which the request log
+ * strips, so a token reaches neither file. An agent whose member has a secret signs the raw body
+ * with `X-Signature: sha256=<hex HMAC-SHA256>`.
  */
-export const GROUP_CHAT_HOOK_REPLY_PATH = "/api/group-chat/hooks/reply/:deliveryId";
-export const GROUP_CHAT_HOOK_INBOUND_PATH = "/api/group-chat/hooks/inbound/:memberId";
+export const GROUP_CHAT_HOOK_REPLY_PATH = "/api/hooks/group-chat/reply/:deliveryId";
+export const GROUP_CHAT_HOOK_INBOUND_PATH = "/api/hooks/group-chat/inbound/:memberId";
 export const GROUP_CHAT_HOOK_SIGNATURE_HEADER = "x-signature";
 
 export const GroupChatHookReplyParams = Schema.Struct({ deliveryId: GroupChatDeliveryId });

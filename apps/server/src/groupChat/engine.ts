@@ -108,20 +108,25 @@ export class GroupChatEngine extends Context.Service<
 >()("t3/groupChat/engine/GroupChatEngine") {}
 
 /** The attempt budget and the waits for REST and webhook members. Tests shorten them. */
-export class ExternalDeliveryConfig extends Context.Reference<{
+export interface ExternalDeliverySettings {
   /** Requests per operator attempt before the delivery fails with Retry. */
   readonly maxAttempts: number;
   /** The wait before the second request; it doubles each time up to 30 seconds. */
   readonly backoffBase: Duration.Input;
   /** How long a webhook member may take to call back before its delivery fails. */
   readonly callbackTimeout: Duration.Input;
-}>("t3/groupChat/engine/ExternalDeliveryConfig", {
-  defaultValue: () => ({
-    maxAttempts: 5,
-    backoffBase: "1 second",
-    callbackTimeout: "90 seconds",
-  }),
-}) {}
+}
+
+export class ExternalDeliveryConfig extends Context.Reference<ExternalDeliverySettings>(
+  "t3/groupChat/engine/ExternalDeliveryConfig",
+  {
+    defaultValue: () => ({
+      maxAttempts: 5,
+      backoffBase: "1 second",
+      callbackTimeout: "90 seconds",
+    }),
+  },
+) {}
 
 const BACKOFF_MAX_MS = 30_000;
 const backoffMs = (tries: number, baseMs: number) =>
