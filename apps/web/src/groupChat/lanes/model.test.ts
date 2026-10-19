@@ -137,7 +137,7 @@ describe("lanes model", () => {
       [1, 2, 4],
       [3, 5],
     ]);
-    expect(model.turns[0]!.promptId).toBe(msgId("msg_1"));
+    expect(model.turns[0]!.prompt).toBe(msgId("msg_1"));
     const focus = focusFor(model, { turnKey: "msg_1", messageId: msgId("msg_4") }, () => "c", "a");
     expect(focus.emphasis.get(msgId("msg_1"))).toBe("anchor");
     expect(focus.emphasis.get(msgId("msg_2"))).toBe("in");
@@ -232,10 +232,25 @@ describe("lanes model", () => {
     expect(focus.links).toEqual([
       { from: "msg_3", to: "msg_5", style: "named", color: `colour-${beta.id}` },
     ]);
-    expect(focus.summary).toBe("names 1 of the 1 round 1 reply it saw");
+    expect(focus.statusLine).toBe("names 1 of the 1 round 1 reply it saw");
     const seen = focusFor(model, { turnKey: "dsc_1:r2", messageId: msgId("msg_6") }, colorOf, "a");
     expect(seen.links.map((l) => l.style)).toEqual(["seen"]);
-    expect(seen.summary).toBe("names 0 of the 1 round 1 reply it saw");
+    expect(seen.statusLine).toBe("names 0 of the 1 round 1 reply it saw");
+    // A reply the engine left out of the envelopes, because it arrived late, is not a source.
+    const lateView = viewOf({
+      discussions: [discussion],
+      messages: [...view.messages.values()].map((m) =>
+        m.id === "msg_2" ? { ...m, late: true } : m,
+      ),
+    });
+    const withLate = focusFor(
+      buildModel(lateView),
+      { turnKey: "dsc_1:r2", messageId: msgId("msg_6") },
+      colorOf,
+      "a",
+    );
+    expect(withLate.links).toEqual([]);
+    expect(withLate.statusLine).toBe("round 2 reply");
     expect(stepSelection(model, { turnKey: "dsc_1:r1", messageId: null }, 1)).toEqual({
       turnKey: "dsc_1:r2",
       messageId: "msg_5",
@@ -267,25 +282,11 @@ describe("lanes model", () => {
         [beta.id]: [100, 60],
       }),
       turnKey: "msg_4",
-      focusMessageId: null,
-      strategy: "lowest",
     });
-    // Turn 2 starts at 50 in the operator lane, 210 in alpha's and 110 in beta's, so the line is 210.
     expect(spacers).toEqual([
-      { lane: OPERATOR_LANE, before: 1, height: 160 },
-      { lane: beta.id, before: 1, height: 100 },
+      { lane: OPERATOR_LANE, beforeIndex: 1, height: 160 },
+      { lane: beta.id, beforeIndex: 1, height: 100 },
     ]);
-    const leastTravel = alignTurn({
-      lanesItems: lanesItems({
-        [OPERATOR_LANE]: [40, 40],
-        [alpha.id]: [200, 60],
-        [beta.id]: [100, 60],
-      }),
-      turnKey: "msg_4",
-      focusMessageId: msgId("msg_6"),
-      strategy: "least-travel",
-    });
-    expect(leastTravel).toEqual([{ lane: OPERATOR_LANE, before: 1, height: 60 }]);
   });
 
   it("a collapsed card's measured height feeds the layout", () => {
@@ -293,8 +294,6 @@ describe("lanes model", () => {
       messages: [prompt(1), reply(2, alpha, 1), prompt(3), reply(4, beta, 3), reply(5, alpha, 3)],
     });
     const items = packedItems(view);
-    // Alpha's first reply is the long card. Its measured height decides where alpha's turn-2 reply
-    // starts, and so where the other lanes line up.
     const align = (longCardHeight: number) =>
       alignTurn({
         lanesItems: ([OPERATOR_LANE, alpha.id, beta.id] as const).map((lane) => ({
@@ -303,16 +302,14 @@ describe("lanes model", () => {
           heights: lane === alpha.id ? [longCardHeight, 50] : lane === beta.id ? [50] : [30, 30],
         })),
         turnKey: "msg_3",
-        focusMessageId: null,
-        strategy: "lowest",
       });
     expect(align(3_000)).toEqual([
-      { lane: OPERATOR_LANE, before: 1, height: 3_000 + CARD_GAP - (30 + CARD_GAP) },
-      { lane: beta.id, before: 0, height: 3_000 + CARD_GAP },
+      { lane: OPERATOR_LANE, beforeIndex: 1, height: 3_000 + CARD_GAP - (30 + CARD_GAP) },
+      { lane: beta.id, beforeIndex: 0, height: 3_000 + CARD_GAP },
     ]);
     expect(align(400)).toEqual([
-      { lane: OPERATOR_LANE, before: 1, height: 400 + CARD_GAP - (30 + CARD_GAP) },
-      { lane: beta.id, before: 0, height: 400 + CARD_GAP },
+      { lane: OPERATOR_LANE, beforeIndex: 1, height: 400 + CARD_GAP - (30 + CARD_GAP) },
+      { lane: beta.id, beforeIndex: 0, height: 400 + CARD_GAP },
     ]);
   });
 

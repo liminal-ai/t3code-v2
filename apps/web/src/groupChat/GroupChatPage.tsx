@@ -66,10 +66,6 @@ const readViewKind = (groupId: GroupChatGroupId) => ({
   kind: (localStorage.getItem(viewKindKey(groupId)) === "lanes" ? "lanes" : "chat") as ViewKind,
 });
 
-/**
- * A segmented toggle, or on a phone one button that flips the view. Settle hides on a phone too,
- * since Manage offers it, so the title keeps its room beside the controls.
- */
 function ViewToggle({ kind, onChange }: { kind: ViewKind; onChange: (kind: ViewKind) => void }) {
   const lanes = kind === "lanes";
   return (
@@ -207,7 +203,6 @@ function GroupBody({ groupId, viewKind }: { groupId: GroupChatGroupId; viewKind:
     );
   }
   const lanes = viewKind === "lanes";
-  // The chat stays mounted under the lanes, so switching back lands where the reader was.
   return (
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div

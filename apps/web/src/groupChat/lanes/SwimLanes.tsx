@@ -21,8 +21,8 @@ import {
   alignTurn,
   type Block,
   buildModel,
-  firstReplyOfLaterRound,
   type Focus,
+  focalOf,
   focusFor,
   type Lane,
   type Link,
@@ -38,8 +38,11 @@ const LIGHT_STEP_MS = 120;
 const LINK_STEP_MS = 120;
 const HEADER_PX = 40;
 const OLDER_THRESHOLD_PX = 240;
-/** How far past the viewport a card still renders as Markdown, in viewport heights. */
-const NEAR_MARGIN = "200% 0px";
+const MARKDOWN_ROOT_MARGIN = "200% 0px";
+const OPERATOR_LANE_MIN_PX = 150;
+const MEMBER_LANE_MIN_PX = 176;
+const LANE_GAP_PX = 16;
+const FIELD_PADDING_PX = 32;
 const MODE_KEY = "t3.groupChat.lanes.mode";
 
 const readMode = (): AlignMode => (localStorage.getItem(MODE_KEY) === "line" ? "line" : "packed");
@@ -52,8 +55,7 @@ interface Box {
   readonly t: number;
   readonly b: number;
   readonly cx: number;
-  /** The label line, where ordinary links attach. */
-  readonly y: number;
+  readonly labelY: number;
 }
 
 interface DrawnLink extends Link {
@@ -88,17 +90,13 @@ function bezierLength(
   return length;
 }
 
-/**
- * An ordinary link runs from the right edge of one card to the left edge of the next at the label
- * line. A discussion link runs from the bottom of a previous-round reply down into the reply it fed.
- */
 function pathFor(link: Link, a: Box, z: Box) {
   if (link.style === "primary" || link.style === "chain") {
     const dx = Math.max(18, (z.l - a.r) * 0.5);
     return {
-      d: `M${a.r},${a.y} C${a.r + dx},${a.y} ${z.l - dx},${z.y} ${z.l},${z.y}`,
-      length: bezierLength(a.r, a.y, a.r + dx, a.y, z.l - dx, z.y, z.l, z.y),
-      start: { x: a.r, y: a.y },
+      d: `M${a.r},${a.labelY} C${a.r + dx},${a.labelY} ${z.l - dx},${z.labelY} ${z.l},${z.labelY}`,
+      length: bezierLength(a.r, a.labelY, a.r + dx, a.labelY, z.l - dx, z.labelY, z.l, z.labelY),
+      start: { x: a.r, y: a.labelY },
     };
   }
   const leftward = a.cx > z.cx;
@@ -121,7 +119,7 @@ const boxOf = (element: HTMLElement | undefined, base: DOMRect): Box | null => {
     t: r.top - base.top,
     b: r.bottom - base.top,
     cx: (r.left + r.right) / 2 - base.left,
-    y: r.top - base.top + Math.min(22, r.height / 2),
+    labelY: r.top - base.top + Math.min(22, r.height / 2),
   };
 };
 
@@ -143,8 +141,7 @@ function drawLinks(links: ReadonlyArray<Link>, box: (id: GroupChatMessageId) => 
   return drawn;
 }
 
-/** Draws a link outward once, when it mounts. A silent redraw keeps the element and only moves it. */
-function animateLink(element: SVGPathElement | null) {
+function drawLinkOnMount(element: SVGPathElement | null) {
   if (element === null || reduceMotion()) return;
   const delay = Number(element.dataset.delay);
   if (element.dataset.style === "seen") {
@@ -165,7 +162,7 @@ function animateLink(element: SVGPathElement | null) {
   });
 }
 
-function animateDot(element: SVGCircleElement | null) {
+function popDotOnMount(element: SVGCircleElement | null) {
   if (element === null || reduceMotion()) return;
   element.animate(
     [
@@ -195,7 +192,7 @@ const sameSpacers = (
       spacers.some(
         (s, i) =>
           s.lane !== other[i]!.lane ||
-          s.before !== other[i]!.before ||
+          s.beforeIndex !== other[i]!.beforeIndex ||
           Math.abs(s.height - other[i]!.height) > 0.5,
       )
     ) {
@@ -205,7 +202,6 @@ const sameSpacers = (
   return true;
 };
 
-/** The packed block the selection sits in: the focused card's, else the first with the turn. */
 function blockOfSelection(model: Model, selection: Selection) {
   const packed = model.blocks.filter(
     (b): b is Extract<Block, { kind: "packed" }> => b.kind === "packed",
@@ -224,7 +220,7 @@ function blockOfSelection(model: Model, selection: Selection) {
 type Spacers = ReadonlyMap<string, ReadonlyArray<Spacer>>;
 
 interface Drawn {
-  readonly gen: number;
+  readonly drawId: number;
   readonly links: ReadonlyArray<DrawnLink>;
 }
 
@@ -235,39 +231,41 @@ interface LayoutInputs {
   readonly focus: Focus;
 }
 
-/** What the layout keeps between runs. Refs and setters, never read during render. */
-interface LayoutContext {
+interface LayoutState {
   readonly cardEls: Map<string, HTMLElement>;
   readonly field: RefObject<HTMLDivElement | null>;
   readonly scroller: RefObject<HTMLDivElement | null>;
   token: number;
-  laidOut: string;
-  resized: boolean;
-  generation: number;
-  drawnSignature: string;
+  laidOut: Pick<LayoutInputs, "selection" | "mode">;
   spacers: Spacers;
-  timer: ReturnType<typeof setTimeout> | undefined;
+  sliding: boolean;
+  /** A draw waits for the commit that applies new spacers or ends a slide. */
+  drawPending: boolean;
+  drawId: number;
+  drawnSignature: string;
+  /** The scroll the next draw owes the reader: smooth after a selection, instant after a resize. */
+  scrollPending: ScrollBehavior | null;
   readonly setSpacers: (spacers: Spacers) => void;
   readonly setSliding: (sliding: boolean) => void;
   readonly setDrawn: (update: (current: Drawn) => Drawn) => void;
   readonly setLightBaseMs: (ms: number) => void;
 }
 
-/** Keeps the turn in view: all of it when it fits, otherwise its focal card near the top. */
-function keepInView(ctx: LayoutContext, inputs: LayoutInputs, behavior: ScrollBehavior) {
-  const element = ctx.scroller.current;
+function keepInView(state: LayoutState, inputs: LayoutInputs, behavior: ScrollBehavior) {
+  const element = state.scroller.current;
   const { selection, focus, model } = inputs;
   if (element === null || selection === null) return;
   const rects = [...focus.emphasis.keys()]
-    .map((id) => ctx.cardEls.get(id)?.getBoundingClientRect())
+    .map((id) => state.cardEls.get(id)?.getBoundingClientRect())
     .filter((rect): rect is DOMRect => rect !== undefined);
   if (rects.length === 0) return;
   const viewport = element.getBoundingClientRect();
   const top = Math.min(...rects.map((rect) => rect.top));
   const bottom = Math.max(...rects.map((rect) => rect.bottom));
-  const focalId = selection.messageId ?? model.turnByKey.get(selection.turnKey)?.promptId ?? null;
+  const focalId = selection.messageId ?? model.turnByKey.get(selection.turnKey)?.prompt ?? null;
   const focal =
-    (focalId === null ? undefined : ctx.cardEls.get(focalId)?.getBoundingClientRect()) ?? rects[0]!;
+    (focalId === null ? undefined : state.cardEls.get(focalId)?.getBoundingClientRect()) ??
+    rects[0]!;
   if (bottom - top <= viewport.height - HEADER_PX - 24) {
     if (top < viewport.top + HEADER_PX + 8) {
       element.scrollBy({ top: top - viewport.top - HEADER_PX - 12, behavior });
@@ -279,20 +277,8 @@ function keepInView(ctx: LayoutContext, inputs: LayoutInputs, behavior: ScrollBe
   }
 }
 
-/**
- * Line mode slides lanes by spacers before the selected turn, then the links are drawn once the
- * slide has settled. A geometry change (a reply landing, a card expanding, a resize) repositions
- * at once and redraws silently, and a resize also brings the selection back into view.
- */
-function relayout(ctx: LayoutContext, inputs: LayoutInputs) {
-  const { selection, mode, model, focus } = inputs;
-  const my = ++ctx.token;
-  clearTimeout(ctx.timer);
-  const cause =
-    selection === null ? "" : `${selection.turnKey}|${selection.messageId ?? ""}|${mode}`;
-  const userChange = cause !== ctx.laidOut;
-  ctx.laidOut = cause;
-
+function placeSpacers(state: LayoutState, inputs: LayoutInputs): boolean {
+  const { selection, mode, model } = inputs;
   const next = new Map<string, ReadonlyArray<Spacer>>();
   if (mode === "line" && selection !== null) {
     const block = blockOfSelection(model, selection);
@@ -302,55 +288,87 @@ function relayout(ctx: LayoutContext, inputs: LayoutInputs) {
         return {
           lane: lane.id,
           items,
-          heights: items.map((item) => ctx.cardEls.get(item.id)?.offsetHeight ?? 0),
+          heights: items.map((item) => state.cardEls.get(item.id)?.offsetHeight ?? 0),
         };
       });
-      next.set(
-        block.key,
-        alignTurn({
-          lanesItems,
-          turnKey: selection.turnKey,
-          focusMessageId: selection.messageId,
-          strategy: "lowest",
-        }),
-      );
+      next.set(block.key, alignTurn({ lanesItems, turnKey: selection.turnKey }));
     }
   }
-  const moved = !sameSpacers(next, ctx.spacers);
+  const moved = !sameSpacers(next, state.spacers);
   if (moved) {
-    ctx.spacers = next;
-    ctx.setSpacers(next);
+    state.spacers = next;
+    state.setSpacers(next);
   }
-  const slide = moved && userChange && !reduceMotion();
-  ctx.setSliding(slide);
+  return moved;
+}
 
-  if (selection === null) {
-    ctx.drawnSignature = "";
-    ctx.setDrawn((current) => (current.links.length === 0 ? current : { ...current, links: [] }));
-    ctx.setLightBaseMs(0);
+function setSliding(state: LayoutState, sliding: boolean): boolean {
+  const changed = sliding !== state.sliding;
+  state.sliding = sliding;
+  state.setSliding(sliding);
+  return changed;
+}
+
+/** Measures the cards as they stand and draws the links, then pays the scroll the reader is owed. */
+function draw(state: LayoutState, inputs: LayoutInputs) {
+  const base = state.field.current?.getBoundingClientRect();
+  if (base === undefined) return;
+  const links = drawLinks(inputs.focus.links, (id) => boxOf(state.cardEls.get(id), base));
+  const signature = `${state.drawId}:${links.map((link) => link.d).join("|")}`;
+  if (signature !== state.drawnSignature) {
+    state.drawnSignature = signature;
+    state.setDrawn(() => ({ drawId: state.drawId, links }));
+  }
+  if (state.scrollPending !== null) {
+    keepInView(state, inputs, state.scrollPending);
+    state.scrollPending = null;
+  }
+}
+
+function clearFocus(state: LayoutState) {
+  state.drawnSignature = "";
+  state.drawPending = false;
+  state.scrollPending = null;
+  state.setDrawn((current) => (current.links.length === 0 ? current : { ...current, links: [] }));
+  state.setLightBaseMs(0);
+}
+
+/** A change of selection or mode: lanes that move slide, and the links follow once the slide ends. */
+function layoutSelection(state: LayoutState, inputs: LayoutInputs) {
+  state.token += 1;
+  const moved = placeSpacers(state, inputs);
+  const slide = moved && !reduceMotion();
+  const slidingChanged = setSliding(state, slide);
+  if (inputs.selection === null) {
+    clearFocus(state);
     return;
   }
-  if (userChange) ctx.generation += 1;
-  const delay = slide ? SLIDE_MS : 0;
-  ctx.setLightBaseMs(delay);
-  const draw = () => {
-    if (my !== ctx.token) return;
-    const base = ctx.field.current?.getBoundingClientRect();
-    if (base === undefined) return;
-    const links = drawLinks(focus.links, (id) => boxOf(ctx.cardEls.get(id), base));
-    const signature = `${ctx.generation}:${links.map((link) => link.d).join("|")}`;
-    if (signature !== ctx.drawnSignature) {
-      ctx.drawnSignature = signature;
-      ctx.setDrawn(() => ({ gen: ctx.generation, links }));
-    }
-    if (userChange) keepInView(ctx, inputs, "smooth");
-    else if (ctx.resized) {
-      ctx.resized = false;
-      keepInView(ctx, inputs, "auto");
-    }
-  };
-  if (delay === 0) draw();
-  else ctx.timer = setTimeout(draw, delay + 40);
+  state.drawId += 1;
+  state.setLightBaseMs(slide ? SLIDE_MS : 0);
+  state.scrollPending = "smooth";
+  if (moved || slidingChanged) state.drawPending = true;
+  else draw(state, inputs);
+}
+
+/** Cards moved or changed size: reposition at once, and redraw in place once the commit shows it. */
+function layoutGeometry(state: LayoutState, inputs: LayoutInputs) {
+  state.token += 1;
+  const moved = placeSpacers(state, inputs);
+  const slidingChanged = setSliding(state, false);
+  if (inputs.selection === null) {
+    clearFocus(state);
+    return;
+  }
+  if (moved || slidingChanged) state.drawPending = true;
+  else draw(state, inputs);
+}
+
+function layout(state: LayoutState, inputs: LayoutInputs) {
+  const changed =
+    inputs.selection !== state.laidOut.selection || inputs.mode !== state.laidOut.mode;
+  state.laidOut = { selection: inputs.selection, mode: inputs.mode };
+  if (changed) layoutSelection(state, inputs);
+  else layoutGeometry(state, inputs);
 }
 
 const laneTitle = (lane: Lane) =>
@@ -415,24 +433,25 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   const [selected, setSelected] = useState<Selection | null>(null);
   const [spacers, setSpacers] = useState<Spacers>(new Map());
   const [sliding, setSliding] = useState(false);
-  const [drawn, setDrawn] = useState<Drawn>({ gen: 0, links: [] });
+  const [drawn, setDrawn] = useState<Drawn>({ drawId: 0, links: [] });
   const [lightBaseMs, setLightBaseMs] = useState(0);
-  const [near, setNear] = useState<ReadonlySet<string>>(() => new Set());
+  const [markdownIds, setMarkdownIds] = useState<ReadonlySet<string>>(() => new Set());
   const field = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
-  const nearObserver = useRef<IntersectionObserver | null>(null);
-  const layout = useRef<LayoutContext>(null);
-  layout.current ??= {
+  const markdownObserver = useRef<IntersectionObserver | null>(null);
+  const layoutState = useRef<LayoutState>(null);
+  layoutState.current ??= {
     cardEls: new Map(),
     field,
     scroller,
     token: 0,
-    laidOut: "",
-    resized: false,
-    generation: 0,
-    drawnSignature: "",
+    laidOut: { selection: null, mode: "packed" },
     spacers: new Map(),
-    timer: undefined,
+    sliding: false,
+    drawPending: false,
+    drawId: 0,
+    drawnSignature: "",
+    scrollPending: null,
     setSpacers,
     setSliding,
     setDrawn,
@@ -453,9 +472,9 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     };
     return focusFor(model, selection, colorOf, ACCENT);
   }, [model, selection, view.members]);
-  const lightOrder = useMemo(
-    () => new Map(focus.order.map((id, index) => [id, index] as const)),
-    [focus.order],
+  const lightIndex = useMemo(
+    () => new Map(focus.lightOrder.map((id, index) => [id, index] as const)),
+    [focus.lightOrder],
   );
 
   const selectMessage = useStableCallback((message: GroupChatMessage) => {
@@ -464,20 +483,25 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   const step = useStableCallback((delta: 1 | -1) => {
     setSelected(stepSelection(model, selection, delta));
   });
-  const relayoutLatest = useStableCallback(() => {
-    relayout(layout.current!, { selection, mode, model, focus });
+  const clearSelection = useStableCallback((event: KeyboardEvent) => {
+    if (selection === null) return;
+    event.preventDefault();
+    setSelected(null);
+  });
+  const relayoutGeometry = useStableCallback((resized: boolean) => {
+    const state = layoutState.current!;
+    if (resized) state.scrollPending ??= "auto";
+    layoutGeometry(state, { selection, mode, model, focus });
   });
   const registerSlot = useStableCallback((element: HTMLDivElement | null) => {
     if (element === null) return;
-    const ctx = layout.current!;
+    const state = layoutState.current!;
     const id = element.dataset.itemId!;
-    ctx.cardEls.set(id, element);
-    const stop = observeResize(element, relayoutLatest);
-    nearObserver.current?.observe(element);
+    state.cardEls.set(id, element);
+    markdownObserver.current?.observe(element);
     return () => {
-      stop();
-      nearObserver.current?.unobserve(element);
-      if (ctx.cardEls.get(id) === element) ctx.cardEls.delete(id);
+      markdownObserver.current?.unobserve(element);
+      if (state.cardEls.get(id) === element) state.cardEls.delete(id);
     };
   });
   const switchMode = (next: AlignMode) => {
@@ -498,34 +522,40 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
         event.preventDefault();
         step(-1);
       } else if (event.key === "Escape") {
-        setSelected((current) => {
-          if (current !== null) event.preventDefault();
-          return null;
-        });
+        clearSelection(event);
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [step]);
+  }, [step, clearSelection]);
 
   useEffect(() => {
     const element = scroller.current;
     if (element === null) return;
-    let width = element.clientWidth;
+    let size = `${element.clientWidth}x${element.clientHeight}`;
     return observeResize(element, () => {
-      const next = element.clientWidth;
-      if (next === width) return;
-      width = next;
-      layout.current!.resized = true;
-      relayoutLatest();
+      const next = `${element.clientWidth}x${element.clientHeight}`;
+      if (next === size) return;
+      size = next;
+      relayoutGeometry(true);
     });
-  }, [relayoutLatest]);
+  }, [relayoutGeometry]);
+
+  // One subscription for every card, so a delivery with many resized cards lays out once.
+  useLayoutEffect(() => {
+    const state = layoutState.current!;
+    const slots = model.blocks.flatMap((block) =>
+      block.kind === "packed"
+        ? block.items.flatMap((item) => state.cardEls.get(item.id) ?? [])
+        : [],
+    );
+    return observeResize(slots, () => relayoutGeometry(false));
+  }, [model, relayoutGeometry]);
 
   useLayoutEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, []);
 
-  // A card renders its Markdown once it comes within reach of the viewport, and stays rendered.
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -533,33 +563,46 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
           .filter((entry) => entry.isIntersecting)
           .map((entry) => (entry.target as HTMLElement).dataset.itemId!);
         if (ids.length === 0) return;
-        setNear((current) => {
+        setMarkdownIds((current) => {
           if (ids.every((id) => current.has(id))) return current;
           return new Set([...current, ...ids]);
         });
       },
-      { root: scroller.current, rootMargin: NEAR_MARGIN },
+      { root: scroller.current, rootMargin: MARKDOWN_ROOT_MARGIN },
     );
-    nearObserver.current = observer;
-    for (const element of layout.current!.cardEls.values()) observer.observe(element);
+    markdownObserver.current = observer;
+    for (const element of layoutState.current!.cardEls.values()) observer.observe(element);
     return () => {
       observer.disconnect();
-      nearObserver.current = null;
+      markdownObserver.current = null;
     };
   }, []);
 
   useLayoutEffect(() => {
-    const ctx = layout.current!;
-    relayout(ctx, { selection, mode, model, focus });
-    return () => clearTimeout(ctx.timer);
+    layout(layoutState.current!, { selection, mode, model, focus });
   }, [selection, mode, model, focus]);
 
-  const onScroll = () => {
-    const element = scroller.current;
-    if (element === null || olderAnchor.current !== null) return;
-    if (element.scrollTop >= OLDER_THRESHOLD_PX || view.olderBefore === null || view.loadingOlder) {
+  // The commit that applied new spacers, or ended a slide, is the one to measure.
+  useLayoutEffect(() => {
+    const state = layoutState.current!;
+    if (!state.drawPending || spacers !== state.spacers || sliding !== state.sliding) return;
+    state.drawPending = false;
+    const inputs = { selection, mode, model, focus };
+    if (!sliding) {
+      draw(state, inputs);
       return;
     }
+    const my = state.token;
+    const timer = setTimeout(() => {
+      if (my === state.token) draw(state, inputs);
+    }, SLIDE_MS + 40);
+    return () => clearTimeout(timer);
+  }, [spacers, sliding, selection, mode, model, focus]);
+
+  const requestOlder = useStableCallback(() => {
+    const element = scroller.current;
+    if (element === null || olderAnchor.current !== null) return;
+    if (view.olderBefore === null || view.loadingOlder) return;
     olderAnchor.current = {
       lowSeq: view.lowSeq,
       scrollHeight: element.scrollHeight,
@@ -573,37 +616,44 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
         olderAnchor.current = null;
       },
     );
+  });
+  const onScroll = () => {
+    const element = scroller.current;
+    if (element !== null && element.scrollTop < OLDER_THRESHOLD_PX) requestOlder();
   };
 
-  // An older page lands above everything loaded, so the view is moved by what it added.
   useLayoutEffect(() => {
     const element = scroller.current;
     const anchor = olderAnchor.current;
-    if (element === null || anchor === null || anchor.lowSeq === view.lowSeq) return;
-    element.scrollTop = anchor.scrollTop + (element.scrollHeight - anchor.scrollHeight);
-    olderAnchor.current = null;
-  }, [view.lowSeq]);
+    if (element === null) return;
+    if (anchor !== null && anchor.lowSeq !== view.lowSeq) {
+      element.scrollTop = anchor.scrollTop + (element.scrollHeight - anchor.scrollHeight);
+      olderAnchor.current = null;
+    }
+    if (view.olderBefore === null || view.loadingOlder) return;
+    if (element.scrollHeight - element.clientHeight < OLDER_THRESHOLD_PX) requestOlder();
+  }, [view.lowSeq, view.olderBefore, view.loadingOlder, requestOlder]);
 
   const spacerFor = (blockKey: string, lane: string, index: number) =>
-    spacers.get(blockKey)?.find((s) => s.lane === lane && s.before === index)?.height ?? 0;
+    spacers.get(blockKey)?.find((s) => s.lane === lane && s.beforeIndex === index)?.height ?? 0;
 
   const lightDelayFor = (id: GroupChatMessageId) => {
     const emphasis = focus.emphasis.get(id);
-    const index = lightOrder.get(id) ?? 0;
+    const index = lightIndex.get(id) ?? 0;
     return emphasis !== undefined && index > 0 && emphasis !== "selected" && emphasis !== "anchor"
       ? lightBaseMs + LIGHT_LEAD_MS + (index - 1) * LIGHT_STEP_MS
       : 0;
   };
 
-  const laneCount = model.lanes.length;
-  // Three members fit a 1024-wide window beside the sidebar; more lanes scroll sideways.
-  const columns = `minmax(150px, 1fr) repeat(${laneCount - 1}, minmax(176px, 1fr))`;
-  const minWidth = 150 + (laneCount - 1) * 176 + (laneCount - 1) * 16 + 32;
+  const memberLanes = model.lanes.length - 1;
+  const columns = `minmax(${OPERATOR_LANE_MIN_PX}px, 1fr) repeat(${memberLanes}, minmax(${MEMBER_LANE_MIN_PX}px, 1fr))`;
+  const minWidth =
+    OPERATOR_LANE_MIN_PX + memberLanes * (MEMBER_LANE_MIN_PX + LANE_GAP_PX) + FIELD_PADDING_PX;
   const position =
     turn === null
       ? `${model.turns.length} ${model.turns.length === 1 ? "turn" : "turns"}`
       : `${turn.label === "Turn" ? "Turn" : `${turn.label} · turn`} ${turn.index + 1} of ${model.turns.length}${
-          focus.summary === null ? "" : ` · ${focus.summary}`
+          focus.statusLine === null ? "" : ` · ${focus.statusLine}`
         }`;
 
   return (
@@ -692,9 +742,9 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
               aria-hidden="true"
             >
               {drawn.links.map((link) => (
-                <g key={`${drawn.gen}-${link.from}-${link.to}`}>
+                <g key={`${drawn.drawId}-${link.from}-${link.to}`}>
                   <path
-                    ref={animateLink}
+                    ref={drawLinkOnMount}
                     d={link.d}
                     fill="none"
                     data-testid="lane-link"
@@ -716,7 +766,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
                   />
                   {link.dot === null ? null : (
                     <circle
-                      ref={animateDot}
+                      ref={popDotOnMount}
                       cx={link.dot.x}
                       cy={link.dot.y}
                       r={3.2}
@@ -740,7 +790,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
                     const target = model.turnByKey.get(block.turnKey);
                     setSelected({
                       turnKey: block.turnKey,
-                      messageId: target === undefined ? null : firstReplyOfLaterRound(target),
+                      messageId: target === undefined ? null : focalOf(target),
                     });
                   }}
                 />
@@ -788,7 +838,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
                                 emphasis={focus.emphasis.get(item.message.id)}
                                 dimmed={selection !== null && !focus.emphasis.has(item.message.id)}
                                 lightDelayMs={lightDelayFor(item.message.id)}
-                                near={near.has(item.id)}
+                                markdown={markdownIds.has(item.id)}
                                 onSelect={selectMessage}
                               />
                             ) : (

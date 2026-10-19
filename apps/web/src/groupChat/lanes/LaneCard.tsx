@@ -22,7 +22,6 @@ export const ACCENT = "var(--primary)";
 const CARD =
   "relative w-full cursor-pointer rounded-lg border border-border bg-card px-2.5 pt-2 pb-2.25 text-left text-xs leading-snug text-foreground transition-[box-shadow,background-color,border-color] duration-300 ease-out [overflow-wrap:anywhere]";
 
-/** The ring each emphasis draws. `--lc` is the member's colour, or the accent on the prompt. */
 const EMPHASIS_CLASS: Record<Emphasis, string> = {
   anchor:
     "border-transparent bg-[color-mix(in_srgb,var(--primary)_22%,var(--card))] shadow-[0_0_0_2px_var(--primary),0_10px_30px_-12px_var(--primary)]",
@@ -83,12 +82,9 @@ export interface LaneCardProps {
   readonly recipients: ReadonlyArray<GroupChatMember | undefined>;
   readonly discussion: GroupChatDiscussion | undefined;
   readonly emphasis: Emphasis | undefined;
-  /** A selection is on and this card is outside it. */
   readonly dimmed: boolean;
-  /** How long after the selection this card's ring arrives, following the links. */
   readonly lightDelayMs: number;
-  /** Near the viewport, so a reply renders as Markdown. Far cards show their text as is. */
-  readonly near: boolean;
+  readonly markdown: boolean;
   readonly onSelect: (message: GroupChatMessage) => void;
 }
 
@@ -100,7 +96,7 @@ export const LaneCard = memo(function LaneCard({
   emphasis,
   dimmed,
   lightDelayMs,
-  near,
+  markdown,
   onSelect,
 }: LaneCardProps) {
   const operator = message.author._tag === "operator";
@@ -174,7 +170,7 @@ export const LaneCard = memo(function LaneCard({
             {clock(message.createdAt)}
           </span>
         </div>
-        <Collapsible text={message.displayText} markdown={!operator && near} />
+        <Collapsible text={message.displayText} markdown={!operator && markdown} />
       </div>
     </div>
   );
