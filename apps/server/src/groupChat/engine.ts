@@ -1151,7 +1151,7 @@ export const makeEngine = (store: GroupChatStore) =>
               withdraw(tx, d, "discussion stopped"),
             );
             const inFlight = (yield* tx.deliveriesOfRound(discussionId, current.round)).filter(
-              (d) => OPEN.has(d.state),
+              (d) => d.state === "running" || d.dispatch === "sending" || d.dispatch === "unknown",
             ).length;
             const note =
               inFlight > 0
