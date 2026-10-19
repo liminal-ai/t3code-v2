@@ -236,14 +236,44 @@ export const GroupChatGroupParams = Schema.Struct({
   groupId: GroupChatGroupId,
 });
 
-export const GroupChatGroupSnapshot = Schema.Struct({
+export const GroupChatDeliveryParams = Schema.Struct({
+  deliveryId: GroupChatDeliveryId,
+});
+
+/** How many messages one group page holds. */
+export const GROUP_CHAT_PAGE_SIZE = 200;
+
+const SeqFromQuery = Schema.FiniteFromString.check(
+  Schema.isInt(),
+  Schema.isGreaterThanOrEqualTo(0),
+);
+
+/**
+ * Which page of a group's messages to read. Neither key reads the latest page. `before` reads the
+ * page of older messages below that seq. `after` reads what arrived past that seq, so a client that
+ * holds everything up to a seq can fetch the bodies behind new stream heads.
+ */
+export const GroupChatGroupQuery = Schema.Struct({
+  before: Schema.optionalKey(SeqFromQuery),
+  after: Schema.optionalKey(SeqFromQuery),
+});
+export type GroupChatGroupQuery = typeof GroupChatGroupQuery.Type;
+
+/**
+ * One page of a group. `messages` rise by seq and hold at most `GROUP_CHAT_PAGE_SIZE`. `deliveries`
+ * are the heads for those messages, plus every open delivery when the page was not read with
+ * `before`, so a client always sees what is still in flight. A delivery's envelope comes from the
+ * delivery read. `olderBefore` is the `before` for the next older page, or null at the first message.
+ */
+export const GroupChatGroupPage = Schema.Struct({
   group: GroupChatGroup,
   members: Schema.Array(GroupChatMember),
-  messages: Schema.Array(GroupChatMessage),
-  deliveries: Schema.Array(GroupChatDelivery),
   discussions: Schema.Array(GroupChatDiscussion),
+  messages: Schema.Array(GroupChatMessage),
+  deliveries: Schema.Array(GroupChatDeliveryHead),
+  olderBefore: Schema.NullOr(PositiveInt),
 });
-export type GroupChatGroupSnapshot = typeof GroupChatGroupSnapshot.Type;
+export type GroupChatGroupPage = typeof GroupChatGroupPage.Type;
 
 const GROUP_CHAT_MAX_ROUNDS = 20;
 

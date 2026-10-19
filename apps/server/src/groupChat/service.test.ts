@@ -1073,6 +1073,62 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a group with 1,000 messages pages 200 at a time behind a working cursor", () =>
+    Effect.gen(function* () {
+      const { app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "long", [alpha]);
+      const first = yield* send(app, group.id, "message 1", [member(alpha).id]);
+      yield* awaitState(app, member(alpha).id, "running");
+      yield* app.store.transaction((tx) =>
+        Effect.forEach(
+          Array.from({ length: 999 }, (_, i) => i + 2),
+          (n) =>
+            tx.appendMessage({
+              groupId: group.id,
+              author: { _tag: "operator" },
+              kind: "chat",
+              text: `message ${n}`,
+              displayText: `message ${n}`,
+            }),
+          { discard: true },
+        ),
+      );
+      const seqs = (page: { messages: ReadonlyArray<{ seq: number }> }) =>
+        page.messages.map((m) => m.seq);
+      const latest = yield* app.engine.groupPage(group.id, {});
+      assert.strictEqual(latest.messages.length, 200);
+      assert.deepStrictEqual([seqs(latest)[0], seqs(latest).at(-1)], [801, 1000]);
+      assert.strictEqual(latest.olderBefore, 801);
+      assert.strictEqual(latest.deliveries.length, 1, "an open delivery rides the latest page");
+      assert.isFalse("envelope" in latest.deliveries[0]!);
+      let before = latest.olderBefore;
+      const pages: Array<ReadonlyArray<number>> = [];
+      while (before !== null) {
+        const older = yield* app.engine.groupPage(group.id, { before });
+        pages.push(seqs(older));
+        before = older.olderBefore;
+      }
+      assert.deepStrictEqual(
+        pages.map((p) => [p[0], p.at(-1), p.length]),
+        [
+          [601, 800, 200],
+          [401, 600, 200],
+          [201, 400, 200],
+          [1, 200, 200],
+        ],
+      );
+      const oldest = yield* app.engine.groupPage(group.id, { before: 201 });
+      assert.strictEqual(oldest.deliveries[0]?.triggerMessageId, first.id);
+      const sinceLast = yield* app.engine.groupPage(group.id, { after: 998 });
+      assert.deepStrictEqual(seqs(sinceLast), [999, 1000]);
+      assert.isNull(sinceLast.olderBefore);
+      const farBehind = yield* app.engine.groupPage(group.id, { after: 500 });
+      assert.deepStrictEqual([seqs(farBehind)[0], farBehind.olderBefore], [801, 801]);
+      const body = yield* app.engine.delivery(latest.deliveries[0]!.id);
+      assert.match(body.envelope, /message 1/);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("the group page decorates deliveries with whether Retry would do anything", () =>
     Effect.gen(function* () {
       const { fake, app } = yield* setup;
@@ -1080,7 +1136,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       (yield* fake.thread(alpha)).faults.push({ type: "reject", reason: "no" });
       yield* send(app, group.id, "hello", [member(alpha).id]);
       yield* awaitState(app, member(alpha).id, "failed");
-      const page = yield* app.engine.groupPage(group.id);
+      const page = yield* app.engine.groupPage(group.id, {});
       assert.strictEqual(page.deliveries.length, 1);
       assert.isTrue(page.deliveries[0]!.retryable);
       assert.strictEqual(page.messages[0]!.displayText, "hello");
@@ -1104,7 +1160,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
           (d) => d.dispatch === "unknown" && (d.error ?? "").includes("Retry sends it again"),
         );
         assert.strictEqual(stalled.attempt, 1);
-        assert.isTrue((yield* app.engine.groupPage(group.id)).deliveries[0]!.retryable);
+        assert.isTrue((yield* app.engine.groupPage(group.id, {})).deliveries[0]!.retryable);
         yield* app.dispatch({ _tag: "delivery.retry", deliveryId: stalled.id });
         const running = yield* awaitState(app, member(alpha).id, "running");
         assert.strictEqual(running.attempt, 2);
@@ -1362,7 +1418,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       yield* fake.complete(alpha, running.runId!, null);
       const failed = yield* awaitState(app, member(alpha).id, "failed");
       assert.strictEqual(failed.error, "the run ended without a text reply");
-      assert.isTrue((yield* app.engine.groupPage(group.id)).deliveries[0]!.retryable);
+      assert.isTrue((yield* app.engine.groupPage(group.id, {})).deliveries[0]!.retryable);
       assert.deepStrictEqual(yield* messageTexts(app, group.id), ["hello"]);
     }).pipe(Effect.scoped),
   );
