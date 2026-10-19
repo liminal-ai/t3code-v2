@@ -47,11 +47,6 @@ function describeStatus(status: ParticipantStatus): {
   }
 }
 
-const needsWaitLine = (row: ParticipantRow) =>
-  row.member !== undefined &&
-  (row.status._tag === "paused" ||
-    (row.status._tag === "open" && describeDelivery(row.status.delivery).threadLink));
-
 function ParticipantChip({ row }: { row: ParticipantRow }) {
   const { member, status } = row;
   const { word, className } = describeStatus(status);
@@ -153,12 +148,12 @@ export function DiscussionPanel({
   const failed = participants.filter(
     (row) => row.status._tag === "failed" || row.status._tag === "cancelled",
   );
-  const waits = participants.filter(needsWaitLine);
+  const { waits } = projected;
   const when = running ? "this round" : `in round ${round}`;
   return (
     <div
       className={cn(
-        "mx-auto mb-2 flex w-full max-w-(--chat-content-max-width) flex-col gap-1.5 rounded-2xl border px-4 py-2.5 text-xs",
+        "mx-auto mb-2 flex max-h-[50dvh] w-full max-w-(--chat-content-max-width) flex-col gap-1.5 rounded-2xl border px-4 py-2.5 text-xs",
         running ? "border-info/24 bg-info/8" : "bg-muted",
       )}
       data-testid="discussion-panel"
@@ -216,7 +211,7 @@ export function DiscussionPanel({
         ))}
       </div>
       {waits.length === 0 ? null : (
-        <div className="flex flex-col gap-1">
+        <div className="flex min-h-0 flex-col gap-1 overflow-y-auto" data-testid="discussion-waits">
           {waits.map((row) => (
             <WaitLine key={row.memberId} row={row} />
           ))}

@@ -348,6 +348,7 @@ describe("discussion view", () => {
     const marker = message(5, {
       author: { _tag: "system" },
       kind: "system",
+      triggerMessageId: prompt.id,
       discussionId,
       round: 2 as GroupChatMessage["round"],
       displayText: "Discussion round 2 of 3.",
@@ -374,5 +375,56 @@ describe("discussion view", () => {
     });
     expect(roundDivider(endLine, undefined)).toBeNull();
     expect(roundDivider(reply(7, m1, 2), running)).toBeNull();
+  });
+
+  it("a topic that starts with the end sentence still opens round 1", () => {
+    const topic = "Discussion ended early last time; how do we recover?";
+    const wordy = { ...prompt, text: topic, displayText: topic };
+    expect(roundDivider(wordy, discussion())?._tag).toBe("round");
+    const endLine = message(6, {
+      author: { _tag: "system" },
+      kind: "system",
+      discussionId,
+      round: 1 as GroupChatMessage["round"],
+      displayText: "Discussion ended: stopped by operator.",
+    });
+    const ended = discussion({ state: "ended", endReason: "stopped by operator", endedAt: at });
+    expect(roundDivider(endLine, ended)?._tag).toBe("ended");
+  });
+
+  it("a stopped lane holds the round while its delivery still waits behind the stopped reply", () => {
+    const state = loaded({
+      deliveries: [
+        delivery(m1, 1, { state: "replied", replyMessageId: "msg_2" as GroupChatMessageId }),
+        delivery(m2, 1, {
+          state: "pending",
+          dispatch: "unsent",
+          wait: { _tag: "stopped_in_t3" },
+          retryable: true,
+        }),
+      ],
+      messages: [prompt, reply(2, m1, 1)],
+    });
+    const view = discussionView(viewOf(state), discussionId)!;
+    expect(view.participants[1]?.status._tag).toBe("paused");
+    expect(handles(view.waits)).toEqual(["bo"]);
+    expect(handles(view.waitingOn)).toEqual(["bo"]);
+  });
+
+  it("a participant waiting on its earlier envelope gets a wait line with its thread", () => {
+    const state = loaded({
+      deliveries: [
+        delivery(m1, 1),
+        delivery(m2, 1, {
+          state: "pending",
+          dispatch: "unsent",
+          wait: { _tag: "lane_busy", deliveryId: "dlv_earlier" as never },
+        }),
+      ],
+    });
+    const view = discussionView(viewOf(state), discussionId)!;
+    expect(view.waits.map((row) => [row.member?.handle, row.member?.thread.threadId])).toEqual([
+      ["bo", "thr_bo"],
+    ]);
   });
 });
