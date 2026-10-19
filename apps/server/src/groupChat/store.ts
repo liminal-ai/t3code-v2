@@ -146,6 +146,15 @@ const migrations = Migrator.fromRecord({
       `;
     }),
   ),
+  "3_lanes": Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql`
+      CREATE TABLE lanes (
+        thread_id TEXT PRIMARY KEY,
+        paused_at TEXT NOT NULL
+      )
+    `,
+  ),
 });
 
 const runMigrations = Migrator.make({});
@@ -343,6 +352,7 @@ export interface Reads {
     round: number,
   ) => Effect.Effect<ReadonlyArray<DeliveryRow>, StoreError>;
   readonly openDeliveries: Effect.Effect<ReadonlyArray<DeliveryRow>, StoreError>;
+  readonly lanePaused: (threadId: ThreadId) => Effect.Effect<boolean, StoreError>;
   readonly discussion: (
     id: GroupChatDiscussionId,
   ) => Effect.Effect<GroupChatDiscussion | null, StoreError>;
@@ -370,6 +380,8 @@ export interface Writes {
     patch: MemberPatch,
   ) => Effect.Effect<GroupChatMember, StoreError>;
   readonly touchMember: (id: GroupChatMemberId) => Effect.Effect<void, StoreError>;
+  readonly pauseLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
+  readonly resumeLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
   readonly appendMessage: (input: NewMessage) => Effect.Effect<GroupChatMessage, StoreError>;
   readonly insertDelivery: (input: NewDelivery) => Effect.Effect<DeliveryRow, StoreError>;
   readonly updateDelivery: (
@@ -504,6 +516,11 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
     deliveriesOfRound: (discussionId, round) =>
       deliveries(sql`discussion_id = ${discussionId} AND round = ${round}`),
     openDeliveries: deliveries(sql`state IN ${sql.in(OPEN_STATES)}`),
+    lanePaused: (threadId) =>
+      Effect.map(
+        sql<{ readonly one: number }>`SELECT 1 AS one FROM lanes WHERE thread_id = ${threadId}`,
+        (rows) => rows.length > 0,
+      ),
     discussion: (id) => Effect.map(discussions(sql`id = ${id}`), first),
     discussionsOfGroup: (groupId) => discussions(sql`group_id = ${groupId}`),
     runningDiscussions: discussions(sql`state = 'running'`),
@@ -696,6 +713,15 @@ const makeWrites = (
         emit({ _tag: "discussion", discussion });
         return discussion;
       }),
+    pauseLane: (threadId) =>
+      Effect.gen(function* () {
+        const pausedAt = yield* now;
+        yield* sql`
+          INSERT INTO lanes (thread_id, paused_at) VALUES (${threadId}, ${pausedAt})
+          ON CONFLICT(thread_id) DO UPDATE SET paused_at = excluded.paused_at
+        `;
+      }),
+    resumeLane: (threadId) => Effect.asVoid(sql`DELETE FROM lanes WHERE thread_id = ${threadId}`),
     updateDiscussion: (id, patch) =>
       Effect.gen(function* () {
         const current = yield* stored("discussion", reads.discussion(id));

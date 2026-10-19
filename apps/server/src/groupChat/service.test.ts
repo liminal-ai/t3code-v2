@@ -863,6 +863,47 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect(
+    "a reply cut short by Stop still pauses the lane, so the next round waits for Retry",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "cut short", [alpha, bravo]);
+        const started = yield* app.dispatch({
+          _tag: "discussion.start",
+          groupId: group.id,
+          participants: [member(alpha).id, member(bravo).id],
+          topic: "t",
+          maxRounds: 2,
+        });
+        const discussion =
+          started._tag === "discussion" ? started.discussion : assert.fail("discussion");
+        yield* awaitState(app, member(alpha).id, "running");
+        const b = yield* awaitState(app, member(bravo).id, "running");
+        yield* reply(fake, alpha, "A-R1");
+        yield* awaitState(app, member(alpha).id, "replied");
+        yield* fake.interrupt(bravo, b.runId!, "B-R1, cut");
+        const cut = yield* app.until(app.store.delivery(b.id), (d) => d?.state === "replied");
+        assert.match((yield* app.store.message(cut!.replyMessageId!))!.text, /run interrupted/);
+        yield* app.until(app.store.discussion(discussion.id), (d) => d?.round === 2);
+        const held = yield* awaitDelivery(
+          app,
+          member(bravo).id,
+          (d) => d.round === 2 && d.wait?._tag === "stopped_in_t3",
+        );
+        assert.strictEqual(held.state, "pending");
+        yield* awaitDelivery(app, member(alpha).id, (d) => d.round === 2 && d.state === "running");
+        assert.strictEqual((yield* fake.sends(bravo)).length, 1, "Stop starts no new run on bravo");
+        yield* app.dispatch({ _tag: "delivery.retry", deliveryId: held.id });
+        yield* awaitDelivery(
+          app,
+          member(bravo).id,
+          (d) => d.id === held.id && d.state === "running",
+        );
+        assert.strictEqual((yield* fake.sends(bravo)).length, 2);
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("a run that started and ended before the engine looked still moves the seen mark", () =>
     Effect.gen(function* () {
       const { fake, baseDir, app } = yield* setup;

@@ -88,10 +88,6 @@ interface Lane {
   readonly signal: Queue.Queue<void>;
 }
 
-/** A lane is paused while any of its pending envelopes carries the `stopped_in_t3` mark. */
-const pausedIn = (deliveries: ReadonlyArray<DeliveryRow>) =>
-  deliveries.some((d) => d.state === "pending" && d.wait?._tag === "stopped_in_t3");
-
 type Work =
   | { readonly kind: "resolve"; readonly delivery: DeliveryRow }
   | { readonly kind: "follow"; readonly delivery: DeliveryRow }
@@ -237,9 +233,14 @@ export const makeEngine = (store: GroupChatStore) =>
       }
     };
 
-    /** Marks the thread's waiting envelopes, in the transaction that records why. */
+    /**
+     * Pauses the lane and marks its waiting envelopes, in the transaction that records why. The
+     * lane carries the pause too: a reply cut short by Stop can close the lane's last open
+     * delivery, and the next envelope must still see the stop.
+     */
     const markPaused = (tx: Tx, threadId: ThreadId): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
+        yield* tx.pauseLane(threadId);
         for (const d of yield* tx.deliveriesOfThread(threadId)) {
           if (d.state === "pending") {
             yield* tx.updateDelivery(d.id, { wait: { _tag: "stopped_in_t3" } });
@@ -251,6 +252,7 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         yield* store.transaction((tx) =>
           Effect.gen(function* () {
+            yield* tx.resumeLane(threadId);
             for (const d of yield* tx.deliveriesOfThread(threadId)) {
               if (d.state === "pending" && d.wait?._tag === "stopped_in_t3") {
                 yield* tx.updateDelivery(d.id, { wait: null });
@@ -795,7 +797,7 @@ export const makeEngine = (store: GroupChatStore) =>
         const outstanding = (yield* tx.deliveriesOfThread(member.thread.threadId)).find((d) =>
           OPEN.has(d.state),
         );
-        const paused = pausedIn(yield* tx.deliveriesOfThread(member.thread.threadId));
+        const paused = yield* tx.lanePaused(member.thread.threadId);
         return yield* tx.insertDelivery({
           groupId: member.groupId,
           memberId: member.id,
