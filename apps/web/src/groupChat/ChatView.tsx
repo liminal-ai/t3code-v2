@@ -1,8 +1,13 @@
 import { LegendList, type LegendListRef } from "@legendapp/list/react";
-import type { GroupChatGroupId, GroupChatMessageId } from "@t3tools/contracts";
+import type {
+  GroupChatDeliveryHead,
+  GroupChatGroupId,
+  GroupChatMember,
+  GroupChatMessage,
+  GroupChatMessageId,
+} from "@t3tools/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { Spinner } from "../components/ui/spinner";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { cn } from "../lib/utils";
 import { Composer } from "./Composer";
@@ -15,6 +20,7 @@ import {
   readGroupView,
   type TimelineRow,
   timelineRows,
+  type TurnInfo,
   turnsOf,
 } from "./store";
 
@@ -26,9 +32,7 @@ const MAX_PAGES_PER_JUMP = 10;
 function ListHeader({ view }: { view: GroupView }) {
   if (view.loadingOlder) {
     return (
-      <div className="flex justify-center py-3">
-        <Spinner size="sm" />
-      </div>
+      <p className="py-3 text-center text-2xs text-muted-foreground/70">Reading older messages…</p>
     );
   }
   if (view.olderBefore !== null) return <div className="h-3" />;
@@ -40,6 +44,66 @@ function ListHeader({ view }: { view: GroupView }) {
     </p>
   );
 }
+
+interface RowContext {
+  readonly members: ReadonlyMap<string, GroupChatMember>;
+  readonly messages: ReadonlyMap<GroupChatMessageId, GroupChatMessage>;
+  readonly turns: ReadonlyMap<string, TurnInfo>;
+  readonly byTrigger: ReadonlyMap<GroupChatMessageId, ReadonlyArray<GroupChatDeliveryHead>>;
+  readonly flashId: GroupChatMessageId | null;
+  readonly jumpTo: (messageId: GroupChatMessageId) => Promise<void>;
+}
+
+// LegendList calls this while rendering its rows, so it closes over the context alone and not
+// over the render that made it, per docs/internals/web-ui.md.
+const makeRenderItem =
+  (ctx: RowContext) =>
+  ({ item }: { item: TimelineRow }) => {
+    if (item.kind === "pending") {
+      return (
+        <div className="mx-auto w-full max-w-(--chat-content-max-width) px-5 py-2">
+          <PendingReply delivery={item.delivery} member={ctx.members.get(item.delivery.memberId)} />
+        </div>
+      );
+    }
+    const message = item.message;
+    const turn = ctx.turns.get(message.turnKey);
+    const promptId = turn?.promptId ?? null;
+    const body =
+      message.author._tag === "operator" ? (
+        <OperatorMessage
+          message={message}
+          members={ctx.members}
+          deliveries={ctx.byTrigger.get(message.id) ?? []}
+        />
+      ) : message.author._tag === "member" ? (
+        <MemberMessage
+          message={message}
+          member={ctx.members.get(message.author.memberId)}
+          turn={turn}
+          prompt={promptId === null ? undefined : ctx.messages.get(promptId)}
+          onJump={ctx.jumpTo}
+        />
+      ) : (
+        <SystemDivider
+          message={message}
+          members={ctx.members}
+          deliveries={ctx.byTrigger.get(message.id) ?? []}
+        />
+      );
+    return (
+      <div className="mx-auto w-full max-w-(--chat-content-max-width) px-5 py-1">
+        <div
+          className={cn(
+            "rounded-xl p-1 transition-colors duration-500",
+            ctx.flashId === message.id && "bg-accent",
+          )}
+        >
+          {body}
+        </div>
+      </div>
+    );
+  };
 
 export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: GroupView }) {
   const listRef = useRef<LegendListRef>(null);
@@ -81,61 +145,25 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
     if (view.olderBefore !== null && !view.loadingOlder) void loadOlder(groupId);
   });
 
-  const promptOf = (turnKey: string) => {
-    const promptId = turns.get(turnKey)?.promptId ?? null;
-    return promptId === null ? undefined : view.messages.get(promptId);
-  };
-
-  const renderItem = useStableCallback(({ item }: { item: TimelineRow }) => {
-    if (item.kind === "pending") {
-      return (
-        <div className="mx-auto w-full max-w-(--chat-content-max-width) px-5 py-2">
-          <PendingReply
-            delivery={item.delivery}
-            member={view.members.get(item.delivery.memberId)}
-          />
-        </div>
-      );
-    }
-    const message = item.message;
-    const flash = flashId === message.id;
-    const body =
-      message.author._tag === "operator" ? (
-        <OperatorMessage
-          message={message}
-          members={view.members}
-          deliveries={byTrigger.get(message.id) ?? []}
-        />
-      ) : message.author._tag === "member" ? (
-        <MemberMessage
-          message={message}
-          member={view.members.get(message.author.memberId)}
-          turn={turns.get(message.turnKey)}
-          prompt={promptOf(message.turnKey)}
-          onJump={jumpTo}
-        />
-      ) : (
-        <SystemDivider
-          message={message}
-          members={view.members}
-          deliveries={byTrigger.get(message.id) ?? []}
-        />
-      );
-    return (
-      <div className="mx-auto w-full max-w-(--chat-content-max-width) px-5 py-1">
-        <div className={cn("rounded-xl p-1 transition-colors duration-500", flash && "bg-accent")}>
-          {body}
-        </div>
-      </div>
-    );
-  });
+  const renderItem = useMemo(
+    () =>
+      makeRenderItem({
+        members: view.members,
+        messages: view.messages,
+        turns,
+        byTrigger,
+        flashId,
+        jumpTo,
+      }),
+    [view.members, view.messages, turns, byTrigger, flashId, jumpTo],
+  );
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <LegendList<TimelineRow>
         ref={listRef}
         data={rows}
-        extraData={`${flashId ?? ""}:${view.members.size}:${view.deliveries.size}`}
+        extraData={renderItem}
         keyExtractor={rowKey}
         getItemType={rowType}
         renderItem={renderItem}

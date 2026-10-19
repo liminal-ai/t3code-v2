@@ -7,7 +7,6 @@ import { Checkbox } from "../components/ui/checkbox";
 import { Textarea } from "../components/ui/textarea";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { cn } from "../lib/utils";
-import { useStableCallback } from "../hooks/useStableCallback";
 import { attempt, dispatchGroupChat } from "./api";
 import {
   completeMention,
@@ -98,7 +97,7 @@ export function Composer({
     });
   };
 
-  const send = useStableCallback(async () => {
+  const send = async () => {
     if (text.trim() === "" || sending) return;
     setSending(true);
     const result = await attempt(() =>
@@ -109,7 +108,7 @@ export function Composer({
     if (result._tag === "message") noteMessage(result.message);
     setText("");
     setCaret(0);
-  });
+  };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (menuOpen) {

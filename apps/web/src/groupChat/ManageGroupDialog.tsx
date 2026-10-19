@@ -23,20 +23,49 @@ import {
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
 import { useThreadShell } from "../state/entities";
-import { attempt, dispatchGroupChat } from "./api";
+import { dispatchGroupChat } from "./api";
 import { MemberDot, memberColor, memberThreadRef, runtimeLabel } from "./MemberChip";
 import { forgetGroup, type GroupView } from "./store";
 import { ThreadPicker } from "./ThreadPicker";
+
+/**
+ * A refusal must show where the operator acted. A toast would sit behind the dialog, so each
+ * action keeps its refusal's sentence, verbatim, next to the control that asked.
+ */
+function useRefusal() {
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const run = async <A,>(action: () => Promise<A>): Promise<A | undefined> => {
+    try {
+      const result = await action();
+      setRefusal(null);
+      return result;
+    } catch (error) {
+      setRefusal(error instanceof Error ? error.message : String(error));
+      return undefined;
+    }
+  };
+  return { refusal, run };
+}
+
+function Refusal({ text }: { text: string | null }) {
+  if (text === null) return null;
+  return (
+    <p className="text-xs text-destructive-foreground" data-testid="refusal">
+      {text}
+    </p>
+  );
+}
 
 interface Confirmation {
   readonly title: string;
   readonly body: string;
   readonly action: string;
-  readonly run: () => Promise<unknown>;
+  readonly run: () => Promise<boolean>;
 }
 
 function ConfirmDialog({ request, onClose }: { request: Confirmation; onClose: () => void }) {
   const [busy, setBusy] = useState(false);
+  const { refusal, run } = useRefusal();
   return (
     <AlertDialog
       open
@@ -48,6 +77,7 @@ function ConfirmDialog({ request, onClose }: { request: Confirmation; onClose: (
         <AlertDialogHeader>
           <AlertDialogTitle>{request.title}</AlertDialogTitle>
           <AlertDialogDescription data-testid="confirm-body">{request.body}</AlertDialogDescription>
+          <Refusal text={refusal} />
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogClose render={<Button variant="outline" />}>Cancel</AlertDialogClose>
@@ -56,9 +86,9 @@ function ConfirmDialog({ request, onClose }: { request: Confirmation; onClose: (
             disabled={busy}
             onClick={async () => {
               setBusy(true);
-              await request.run();
+              const done = await run(request.run);
               setBusy(false);
-              onClose();
+              if (done === true) onClose();
             }}
           >
             {request.action}
@@ -71,12 +101,12 @@ function ConfirmDialog({ request, onClose }: { request: Confirmation; onClose: (
 
 function HandleEditor({ member }: { member: GroupChatMember }) {
   const [value, setValue] = useState(member.handle);
+  const { refusal, run } = useRefusal();
   const dirty = value !== member.handle;
   const save = async () => {
-    const ok = await attempt(() =>
+    await run(() =>
       dispatchGroupChat({ _tag: "member.rename", memberId: member.id, handle: value }),
     );
-    if (ok === undefined) setValue(member.handle);
   };
   return (
     <form
@@ -101,6 +131,7 @@ function HandleEditor({ member }: { member: GroupChatMember }) {
           Save
         </Button>
       ) : null}
+      <Refusal text={refusal} />
     </form>
   );
 }
@@ -115,9 +146,10 @@ function MemberRow({
   const shell = useThreadShell(memberThreadRef(member));
   const settled = shell?.settledAt !== null && shell?.settledAt !== undefined;
   const [busy, setBusy] = useState(false);
+  const { refusal, run } = useRefusal();
   const settleThread = async () => {
     setBusy(true);
-    await attempt(() =>
+    await run(() =>
       dispatchGroupChat({
         _tag: settled ? "member.thread.unsettle" : "member.thread.settle",
         memberId: member.id,
@@ -137,6 +169,7 @@ function MemberRow({
         <p className="mt-0.5 truncate text-2xs text-muted-foreground">
           {shell?.title ?? member.thread.title}
         </p>
+        <Refusal text={refusal} />
       </div>
       <div className="flex shrink-0 items-center gap-1.5">
         <Badge variant="outline" size="sm">
@@ -163,8 +196,10 @@ function MemberRow({
               title: `Remove @${member.handle}?`,
               body: "The member leaves this group. Its past messages stay in the log, and its T3 thread is not changed.",
               action: "Remove member",
-              run: () =>
-                attempt(() => dispatchGroupChat({ _tag: "member.remove", memberId: member.id })),
+              run: async () => {
+                await dispatchGroupChat({ _tag: "member.remove", memberId: member.id });
+                return true;
+              },
             })
           }
         >
@@ -185,12 +220,16 @@ export function ManageGroupDialog({ view, onClose }: { view: GroupView; onClose:
   const [adding, setAdding] = useState<ReadonlySet<ThreadId>>(new Set());
   const [pickerOpen, setPickerOpen] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const { refusal, run } = useRefusal();
   const settled = group.settledAt !== null;
   const memberThreadIds: ReadonlySet<ThreadId> = new Set(members.map((m) => m.thread.threadId));
 
   const addSelected = async () => {
     for (const threadId of adding) {
-      await attempt(() => dispatchGroupChat({ _tag: "member.add", groupId: group.id, threadId }));
+      const added = await run(() =>
+        dispatchGroupChat({ _tag: "member.add", groupId: group.id, threadId }),
+      );
+      if (added === undefined) return;
     }
     setAdding(new Set());
     setPickerOpen(false);
@@ -213,7 +252,7 @@ export function ManageGroupDialog({ view, onClose }: { view: GroupView; onClose:
             className="flex items-center gap-2"
             onSubmit={(event) => {
               event.preventDefault();
-              void attempt(() =>
+              void run(() =>
                 dispatchGroupChat({ _tag: "group.rename", groupId: group.id, title: title.trim() }),
               );
             }}
@@ -235,7 +274,7 @@ export function ManageGroupDialog({ view, onClose }: { view: GroupView; onClose:
               variant="outline"
               type="button"
               onClick={() =>
-                void attempt(() =>
+                void run(() =>
                   dispatchGroupChat({
                     _tag: settled ? "group.unsettle" : "group.settle",
                     groupId: group.id,
@@ -246,6 +285,7 @@ export function ManageGroupDialog({ view, onClose }: { view: GroupView; onClose:
               {settled ? "Unsettle group" : "Settle group"}
             </Button>
           </form>
+          <Refusal text={refusal} />
 
           <section className="flex flex-col gap-2">
             <div className="flex items-center justify-between">
@@ -297,13 +337,11 @@ export function ManageGroupDialog({ view, onClose }: { view: GroupView; onClose:
                   body: "This deletes the group chat, its message log and its members. The T3 threads themselves are not deleted, archived or changed.",
                   action: "Delete group",
                   run: async () => {
-                    const ok = await attempt(() =>
-                      dispatchGroupChat({ _tag: "group.delete", groupId: group.id }),
-                    );
-                    if (ok === undefined) return;
+                    await dispatchGroupChat({ _tag: "group.delete", groupId: group.id });
                     forgetGroup(group.id);
                     onClose();
                     void navigate({ to: "/group-chat" });
+                    return true;
                   },
                 })
               }
