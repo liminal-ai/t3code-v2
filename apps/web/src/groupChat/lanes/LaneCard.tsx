@@ -56,7 +56,7 @@ function Collapsible({ text, markdown }: { readonly text: string; readonly markd
   if (text.length <= LONG_MESSAGE_CHARS) return body;
   return (
     <div ref={root}>
-      {body}
+      <div className={cn(!expanded && "max-h-72 overflow-hidden")}>{body}</div>
       <Button
         size="xs"
         variant="link"
@@ -87,6 +87,8 @@ export interface LaneCardProps {
   readonly dimmed: boolean;
   /** How long after the selection this card's ring arrives, following the links. */
   readonly lightDelayMs: number;
+  /** Near the viewport, so a reply renders as Markdown. Far cards show their text as is. */
+  readonly near: boolean;
   readonly onSelect: (message: GroupChatMessage) => void;
 }
 
@@ -98,6 +100,7 @@ export const LaneCard = memo(function LaneCard({
   emphasis,
   dimmed,
   lightDelayMs,
+  near,
   onSelect,
 }: LaneCardProps) {
   const operator = message.author._tag === "operator";
@@ -135,13 +138,7 @@ export const LaneCard = memo(function LaneCard({
               "max-w-full truncate",
               operator && emphasis !== "anchor" && "text-foreground/80",
             )}
-            style={{
-              color: operator
-                ? emphasis === "anchor"
-                  ? "color-mix(in srgb, var(--primary) 55%, white)"
-                  : undefined
-                : color,
-            }}
+            style={{ color: operator ? (emphasis === "anchor" ? ACCENT : undefined) : color }}
           >
             {member === undefined ? (operator ? "You" : "@removed") : `@${member.handle}`}
           </span>
@@ -177,7 +174,7 @@ export const LaneCard = memo(function LaneCard({
             {clock(message.createdAt)}
           </span>
         </div>
-        <Collapsible text={message.displayText} markdown={!operator} />
+        <Collapsible text={message.displayText} markdown={!operator && near} />
       </div>
     </div>
   );

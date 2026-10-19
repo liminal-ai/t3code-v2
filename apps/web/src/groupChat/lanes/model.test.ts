@@ -214,13 +214,15 @@ describe("lanes model", () => {
       ["dsc_1:r1", "Round 1", [1, 2, 3]],
       ["dsc_1:r2", "Round 2", [4, 5, 6, 7]],
     ]);
-    expect(model.blocks.map((b) => (b.kind === "divider" ? b.label : "packed"))).toEqual([
+    expect(
+      model.blocks.map((b) => (b.kind === "divider" ? [b.label, b.detail] : "packed")),
+    ).toEqual([
       "packed",
-      "Round 1 of 2",
+      ["Round 1 of 2", "each participant sees the topic"],
       "packed",
-      "Round 2 of 2",
+      ["Round 2 of 2", "each participant sees the others' round 1 replies"],
       "packed",
-      "Ended",
+      ["Ended", "reached 2 rounds"],
     ]);
     const colorOf = (memberId: GroupChatMemberId) => `colour-${memberId}`;
     const focus = focusFor(model, { turnKey: "dsc_1:r2", messageId: msgId("msg_5") }, colorOf, "a");

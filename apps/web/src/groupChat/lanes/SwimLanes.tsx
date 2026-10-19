@@ -38,6 +38,8 @@ const LIGHT_STEP_MS = 120;
 const LINK_STEP_MS = 120;
 const HEADER_PX = 40;
 const OLDER_THRESHOLD_PX = 240;
+/** How far past the viewport a card still renders as Markdown, in viewport heights. */
+const NEAR_MARGIN = "200% 0px";
 const MODE_KEY = "t3.groupChat.lanes.mode";
 
 const readMode = (): AlignMode => (localStorage.getItem(MODE_KEY) === "line" ? "line" : "packed");
@@ -415,8 +417,10 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   const [sliding, setSliding] = useState(false);
   const [drawn, setDrawn] = useState<Drawn>({ gen: 0, links: [] });
   const [lightBaseMs, setLightBaseMs] = useState(0);
+  const [near, setNear] = useState<ReadonlySet<string>>(() => new Set());
   const field = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  const nearObserver = useRef<IntersectionObserver | null>(null);
   const layout = useRef<LayoutContext>(null);
   layout.current ??= {
     cardEls: new Map(),
@@ -469,8 +473,10 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     const id = element.dataset.itemId!;
     ctx.cardEls.set(id, element);
     const stop = observeResize(element, relayoutLatest);
+    nearObserver.current?.observe(element);
     return () => {
       stop();
+      nearObserver.current?.unobserve(element);
       if (ctx.cardEls.get(id) === element) ctx.cardEls.delete(id);
     };
   });
@@ -517,6 +523,29 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
 
   useLayoutEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
+  }, []);
+
+  // A card renders its Markdown once it comes within reach of the viewport, and stays rendered.
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const ids = entries
+          .filter((entry) => entry.isIntersecting)
+          .map((entry) => (entry.target as HTMLElement).dataset.itemId!);
+        if (ids.length === 0) return;
+        setNear((current) => {
+          if (ids.every((id) => current.has(id))) return current;
+          return new Set([...current, ...ids]);
+        });
+      },
+      { root: scroller.current, rootMargin: NEAR_MARGIN },
+    );
+    nearObserver.current = observer;
+    for (const element of layout.current!.cardEls.values()) observer.observe(element);
+    return () => {
+      observer.disconnect();
+      nearObserver.current = null;
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -622,7 +651,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
         <span data-testid="turn-position" className="tabular-nums">
           {position}
         </span>
-        <span className="ms-auto hidden xl:inline">
+        <span className="ms-auto hidden 2xl:inline">
           Click a message to select its turn · j and k move between turns · Esc clears
         </span>
       </div>
@@ -759,6 +788,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
                                 emphasis={focus.emphasis.get(item.message.id)}
                                 dimmed={selection !== null && !focus.emphasis.has(item.message.id)}
                                 lightDelayMs={lightDelayFor(item.message.id)}
+                                near={near.has(item.id)}
                                 onSelect={selectMessage}
                               />
                             ) : (

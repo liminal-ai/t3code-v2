@@ -66,26 +66,42 @@ const readViewKind = (groupId: GroupChatGroupId) => ({
   kind: (localStorage.getItem(viewKindKey(groupId)) === "lanes" ? "lanes" : "chat") as ViewKind,
 });
 
+/** A segmented toggle, or on a phone one button that flips the view, so the title keeps its room. */
 function ViewToggle({ kind, onChange }: { kind: ViewKind; onChange: (kind: ViewKind) => void }) {
+  const lanes = kind === "lanes";
   return (
-    <ToggleGroup
-      aria-label="Group chat view"
-      variant="segmented"
-      value={[kind]}
-      onValueChange={(next) => {
-        const value = next[0];
-        if (value === "chat" || value === "lanes") onChange(value);
-      }}
-    >
-      <Toggle value="chat" aria-label="Chat" data-testid="view-chat">
-        <MessageSquareTextIcon className="size-3.5" />
-        <span className="hidden sm:inline">Chat</span>
-      </Toggle>
-      <Toggle value="lanes" aria-label="Lanes" data-testid="view-lanes">
-        <Columns3Icon className="size-3.5" />
-        <span className="hidden sm:inline">Lanes</span>
-      </Toggle>
-    </ToggleGroup>
+    <>
+      <Button
+        size="icon-xs"
+        variant="ghost-muted"
+        className="sm:hidden"
+        aria-label={lanes ? "Show chat" : "Show lanes"}
+        aria-pressed={lanes}
+        onClick={() => onChange(lanes ? "chat" : "lanes")}
+        data-testid="view-flip"
+      >
+        {lanes ? <MessageSquareTextIcon /> : <Columns3Icon />}
+      </Button>
+      <ToggleGroup
+        aria-label="Group chat view"
+        variant="segmented"
+        className="hidden sm:flex"
+        value={[kind]}
+        onValueChange={(next) => {
+          const value = next[0];
+          if (value === "chat" || value === "lanes") onChange(value);
+        }}
+      >
+        <Toggle value="chat" data-testid="view-chat">
+          <MessageSquareTextIcon className="size-3.5" />
+          Chat
+        </Toggle>
+        <Toggle value="lanes" data-testid="view-lanes">
+          <Columns3Icon className="size-3.5" />
+          Lanes
+        </Toggle>
+      </ToggleGroup>
+    </>
   );
 }
 

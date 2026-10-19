@@ -82,6 +82,7 @@ const promptOf = (
 function dividerOf(
   message: GroupChatMessage,
   divider: RoundDivider | null,
+  discussion: GroupChatDiscussion | undefined,
 ): Extract<Block, { kind: "divider" }> {
   const base = { kind: "divider", key: `d-${message.id}`, turnKey: message.turnKey } as const;
   if (divider?._tag === "round") {
@@ -93,7 +94,13 @@ function dividerOf(
     };
   }
   if (divider?._tag === "ended") {
-    return { ...base, label: "Ended", detail: divider.endSentence, tone: "ended" };
+    const reason = discussion?.endReason ?? divider.endSentence;
+    return {
+      ...base,
+      label: "Ended",
+      detail: divider.note === null ? reason : `${reason} · ${divider.note}`,
+      tone: "ended",
+    };
   }
   return { ...base, label: message.displayText, detail: null, tone: "note" };
 }
@@ -168,12 +175,12 @@ export function buildModel(view: GroupView): Model {
         lane: OPERATOR_LANE,
         turnKey: message.turnKey,
       });
-      blocks.push(dividerOf(message, divider));
+      blocks.push(dividerOf(message, divider, discussion));
       open();
       continue;
     }
     if (message.kind === "system") {
-      blocks.push(dividerOf(message, divider));
+      blocks.push(dividerOf(message, divider, discussion));
       open();
       continue;
     }
