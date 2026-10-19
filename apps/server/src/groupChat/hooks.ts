@@ -5,6 +5,8 @@ import {
 } from "@t3tools/contracts";
 import * as ByteSize from "effect/ByteSize";
 import * as Clock from "effect/Clock";
+import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -78,6 +80,13 @@ const json = (status: number, body: Record<string, unknown>, headers?: Record<st
 const refused = (status: number, error: string) => json(status, { error });
 // Node flushes the answer and drops the socket on `connection: close`, so the rest of the body is never read.
 const tooLarge = json(413, { error: "body_too_large" }, { connection: "close" });
+const tooSlow = json(408, { error: "body_read_timeout" }, { connection: "close" });
+
+/** How long a caller may take to finish sending a hook body. Tests shorten it. */
+export class HookBodyReadTimeout extends Context.Reference<Duration.Input>(
+  "t3/groupChat/hooks/HookBodyReadTimeout",
+  { defaultValue: () => "30 seconds" },
+) {}
 
 /**
  * Collects Node's request body up to the cap. The platform reader destroys the request when its
@@ -122,22 +131,32 @@ const collectCapped = (
 
 const readBody = (
   request: HttpServerRequest.HttpServerRequest,
-): Effect.Effect<Uint8Array | "too_large"> =>
+): Effect.Effect<Uint8Array | "too_large" | "timed_out"> =>
   Effect.gen(function* () {
     const declared = Number(request.headers["content-length"] ?? "0");
     if (!Number.isFinite(declared) || declared > HOOK_MAX_BODY_BYTES) return "too_large" as const;
-    if (request.source instanceof NodeHttp.IncomingMessage) {
-      return yield* collectCapped(request.source, HOOK_MAX_BODY_BYTES);
-    }
-    const body = yield* request.arrayBuffer.pipe(
-      Effect.map((buffer) => new Uint8Array(buffer)),
-      Effect.provideService(HttpIncomingMessage.MaxBodySize, ByteSize.bytes(HOOK_MAX_BODY_BYTES)),
-      Effect.option,
+    const collected =
+      request.source instanceof NodeHttp.IncomingMessage
+        ? collectCapped(request.source, HOOK_MAX_BODY_BYTES)
+        : request.arrayBuffer.pipe(
+            Effect.map((buffer) => new Uint8Array(buffer)),
+            Effect.provideService(
+              HttpIncomingMessage.MaxBodySize,
+              ByteSize.bytes(HOOK_MAX_BODY_BYTES),
+            ),
+            Effect.orElseSucceed(() => "too_large" as const),
+          );
+    // A caller holding the body open would otherwise hold the handler for Node's own 300 s.
+    const body = yield* collected.pipe(
+      Effect.timeoutOrElse({
+        duration: yield* HookBodyReadTimeout,
+        orElse: () => Effect.succeed("timed_out" as const),
+      }),
     );
-    if (Option.isNone(body) || body.value.byteLength > HOOK_MAX_BODY_BYTES) {
+    if (body !== "too_large" && body !== "timed_out" && body.byteLength > HOOK_MAX_BODY_BYTES) {
       return "too_large" as const;
     }
-    return body.value;
+    return body;
   });
 
 const decoder = new TextDecoder();
@@ -161,6 +180,7 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
           }
           const body = yield* readBody(input.request);
           if (body === "too_large") return { _tag: "refused", response: tooLarge } as const;
+          if (body === "timed_out") return { _tag: "refused", response: tooSlow } as const;
           const signature = checkSignature({
             external: input.external,
             body,

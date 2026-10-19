@@ -9,7 +9,9 @@ import {
   type GroupChatMemberId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -60,7 +62,11 @@ const setup = Effect.gen(function* () {
 const inboundPath = (memberId: GroupChatMemberId, token: string) =>
   `/api/hooks/group-chat/inbound/${memberId}?token=${encodeURIComponent(token)}`;
 
-const serveOnNodeSocket = (app: App, exposed: boolean) =>
+const serveOnNodeSocket = (
+  app: App,
+  exposed: boolean,
+  bodyReadTimeout: Duration.Input = "30 seconds",
+) =>
   Effect.gen(function* () {
     const groupChat = { store: Effect.succeed(app.store), engine: Effect.succeed(app.engine) };
     const services = yield* Layer.build(
@@ -69,6 +75,7 @@ const serveOnNodeSocket = (app: App, exposed: boolean) =>
           HttpApiBuilder.layer(HooksApi).pipe(
             Layer.provide(Hooks.makeLayer(groupChat)),
             Layer.provide(Reach.layerFixed({ exposed, origin: FAKE_ORIGIN })),
+            Layer.provide(Layer.succeed(Hooks.HookBodyReadTimeout, bodyReadTimeout)),
           ),
           { disableListenLog: true },
         ),
@@ -133,6 +140,37 @@ it.live("a body over 1 MB gets 413 before it is buffered", () =>
       pump();
     }).pipe(Effect.timeout("10 seconds"));
     assert.strictEqual(status, 413);
+    assert.strictEqual(yield* messageCount(app, group.id), 0);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("a body that never finishes is refused after the read deadline", () =>
+  Effect.gen(function* () {
+    const { app, group, external } = yield* setup;
+    const member = yield* external("s3cret");
+    const { port } = yield* serveOnNodeSocket(app, false, "300 millis");
+    const startedAt = yield* Clock.currentTimeMillis;
+    const status = yield* Effect.callback<number>((resume) => {
+      const request = NodeHttp.request(
+        {
+          host: "127.0.0.1",
+          port,
+          method: "POST",
+          path: inboundPath(member.id, member.token),
+          headers: { "content-type": "application/json", "transfer-encoding": "chunked" },
+        },
+        (response) => {
+          resume(Effect.succeed(response.statusCode ?? 0));
+          response.resume();
+          request.destroy();
+        },
+      );
+      request.on("error", () => undefined);
+      request.write('{"text": "I will never fin');
+    }).pipe(Effect.timeout("10 seconds"));
+    assert.strictEqual(status, 408);
+    const elapsed = (yield* Clock.currentTimeMillis) - startedAt;
+    assert.isBelow(elapsed, 5_000, "the deadline, not Node's own timeout, answered");
     assert.strictEqual(yield* messageCount(app, group.id), 0);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

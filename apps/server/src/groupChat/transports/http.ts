@@ -83,10 +83,14 @@ const readCapped = (
     Stream.mapError((error): SendFailure => ({ _tag: "transient", reason: redact(error.message) })),
     Stream.runFoldEffect(
       (): { chunks: Array<Uint8Array>; total: number } => ({ chunks: [], total: 0 }),
-      (acc, chunk): Effect.Effect<{ chunks: Array<Uint8Array>; total: number }, SendFailure> =>
-        acc.total + chunk.byteLength > RESPONSE_MAX_BYTES
-          ? Effect.fail(tooLarge(response.status))
-          : Effect.succeed({ chunks: [...acc.chunks, chunk], total: acc.total + chunk.byteLength }),
+      (acc, chunk): Effect.Effect<{ chunks: Array<Uint8Array>; total: number }, SendFailure> => {
+        if (acc.total + chunk.byteLength > RESPONSE_MAX_BYTES) {
+          return Effect.fail(tooLarge(response.status));
+        }
+        acc.chunks.push(chunk);
+        acc.total += chunk.byteLength;
+        return Effect.succeed(acc);
+      },
     ),
     Effect.map(({ chunks }) => new TextDecoder().decode(Buffer.concat(chunks))),
   );
