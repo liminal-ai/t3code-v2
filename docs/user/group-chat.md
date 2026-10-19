@@ -6,7 +6,7 @@ Group chat lives on the T3 server that serves the page. The hosted client at app
 
 ## Start a group
 
-Pick **New group chat**, give it a title, and choose two or more threads. The picker finds a thread by its title, by its full id, or by the first six or more characters of its id. Subagent threads stay hidden until you turn **Show subagents** on. Archived threads never appear, because a message to one can never be delivered.
+Pick **New group chat**, give it a title, and choose one or more threads. A group of one is a plain catch-up channel to that thread. A discussion needs two. The picker finds a thread by its title, by its full id, or by the first six or more characters of its id. Subagent threads stay hidden until you turn **Show subagents** on. Archived threads never appear, because a message to one can never be delivered.
 
 Each member gets a handle made from its thread title, such as `@alpha`. A handle is 1 to 16 characters of lower-case letters, digits, `-` and `_`. Change it in **Manage**. Words the app uses for other things, such as `operator`, `everyone` and `system`, are refused.
 
