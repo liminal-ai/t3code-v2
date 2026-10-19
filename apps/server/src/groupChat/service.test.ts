@@ -1461,6 +1461,88 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("Stop keeps cancelling until T3 answers, so a withdrawn envelope never starts", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "cancel outage", [alpha]);
+      const own = yield* fake.startOwnRun(alpha);
+      yield* send(app, group.id, "must never start after Stop", [member(alpha).id]);
+      const queued = yield* awaitState(app, member(alpha).id, "queued");
+      const thread = yield* fake.thread(alpha);
+      thread.cancelFaults = 12;
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: queued.id });
+      const envelopeRun = () => thread.runs.find((r) => r.id === queued.runId)!;
+      for (let looks = 0; looks < 100 && envelopeRun().status !== "cancelled"; looks++) {
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("10 millis");
+      }
+      assert.strictEqual(envelopeRun().status, "cancelled", "the cancel outlasted the outage");
+      yield* fake.complete(alpha, own.id, "own finished");
+      const ended = yield* app.until(
+        app.store.delivery(queued.id),
+        (d) => d?.state === "cancelled",
+      );
+      assert.strictEqual(ended!.error, "stopped by operator");
+      assert.isUndefined(thread.runs.find((r) => r.own && r.started));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a group deleted just before a crash has its queued envelope cancelled at the next boot",
+    () =>
+      Effect.gen(function* () {
+        const { fake, baseDir, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "deleted then crashed", [alpha]);
+        const own = yield* fake.startOwnRun(alpha);
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        const queued = yield* awaitState(app, member(alpha).id, "queued");
+        const thread = yield* fake.thread(alpha);
+        thread.cancelFaults = 1;
+        yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+        assert.isNull(yield* app.store.group(group.id));
+        const run = thread.runs.find((r) => r.id === queued.runId)!;
+        assert.strictEqual(run.status, "queued", "the cancel had not reached T3 at the crash");
+        yield* app.shutdown;
+        yield* boot(fake, baseDir);
+        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 millis");
+        }
+        assert.strictEqual(run.status, "cancelled");
+        yield* fake.complete(alpha, own.id, "own finished");
+        assert.isUndefined(thread.runs.find((r) => r.own && r.started));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a group deleted during a send that a crash then cuts short has its envelope cancelled at the next boot",
+    () =>
+      Effect.gen(function* () {
+        const { fake, baseDir, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "deleted mid-send then crashed", [alpha]);
+        const own = yield* fake.startOwnRun(alpha);
+        const thread = yield* fake.thread(alpha);
+        thread.sendReached = yield* Deferred.make<void>();
+        thread.sendGate = yield* Deferred.make<void>();
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        yield* Deferred.await(thread.sendReached);
+        thread.cancelFaults = 1;
+        yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+        yield* app.shutdown;
+        const envelope = thread.sends[0]!;
+        const run = thread.runs.find((r) => r.messageId === envelope.messageId)!;
+        assert.strictEqual(run.status, "queued", "T3 took the envelope before the crash");
+        yield* boot(fake, baseDir);
+        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 millis");
+        }
+        assert.strictEqual(run.status, "cancelled");
+        yield* fake.complete(alpha, own.id, "own finished");
+        assert.isUndefined(thread.runs.find((r) => r.own && r.started));
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("a Stop whose cancel never reached T3 is cancelled again at the next boot", () =>
     Effect.gen(function* () {
       const { fake, baseDir, app } = yield* setup;

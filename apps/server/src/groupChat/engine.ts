@@ -21,7 +21,6 @@ import {
   type GroupChatWait,
   type GroupChatWaitHead,
   GROUP_CHAT_TITLE_MAX_LENGTH,
-  type MessageId,
   type ProjectId,
   type RunId,
   type ThreadId,
@@ -34,7 +33,6 @@ import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import * as Schedule from "effect/Schedule";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 
@@ -42,7 +40,7 @@ import { forkParked } from "../serverActivation.ts";
 import { newId } from "./domain.ts";
 import { deriveHandle, nextColor, renderEnvelope } from "./envelope.ts";
 import { countsAsSignOff, decideRound, gateSend, onWithdraw } from "./rounds.ts";
-import type { DeliveryRow, GroupChatStore, StoreError, Tx } from "./store.ts";
+import type { CancelRow, DeliveryRow, GroupChatStore, NewCancel, StoreError, Tx } from "./store.ts";
 import { handleProblem, stripLeadingHandle, withoutSignOffLine } from "./text.ts";
 import {
   dispatchIds,
@@ -78,8 +76,6 @@ const TERMINAL = new Set<PortRun["status"]>([
 ]);
 
 const MAX_RESENDS = 1;
-/** A boot cancels a withdrawn queued envelope again, so the retries here only need to outlast a blip. */
-const CANCEL_RETRIES = 5;
 const QUEUE_HELD_NOTE =
   "T3 is holding this thread's queue after a Stop. Resume thread in T3 releases the whole queue, this envelope included, in the order it was queued.";
 
@@ -426,62 +422,74 @@ export const makeEngine = (store: GroupChatStore) =>
             yield* onTerminal(d.id);
             return;
           }
-          const kept = yield* record(d.id, { dispatch: "unknown", error: error.message });
-          if (!kept) yield* dropOrphan(threadId, claimed.ids.messageId);
+          yield* record(
+            d.id,
+            { dispatch: "unknown", error: error.message },
+            { threadId, messageId: claimed.ids.messageId },
+          );
           return;
         }
-        const kept = yield* record(d.id, {
-          dispatch: "accepted",
-          runId: sent.success.runId,
-          state: "queued",
-          error: null,
-        });
-        if (!kept) yield* cancelQueued([{ threadId, runId: sent.success.runId }]);
+        yield* record(
+          d.id,
+          { dispatch: "accepted", runId: sent.success.runId, state: "queued", error: null },
+          { threadId, runId: sent.success.runId },
+        );
         resends.delete(d.id);
       });
 
-    /** Records a send's outcome, or reports that the row is gone because its group was deleted. */
+    /**
+     * Records a send's outcome. When the row is gone with its group, or Stop withdrew the envelope
+     * while the send was in flight and T3 took it, nobody else will take it back out of the
+     * thread's queue, so the outcome is recorded as a cancel instead.
+     */
     const record = (
       deliveryId: GroupChatDeliveryId,
       patch: Parameters<Tx["updateDelivery"]>[1],
-    ): Effect.Effect<boolean, StoreError> =>
-      store.transaction((tx) =>
-        Effect.flatMap(tx.delivery(deliveryId), (current) =>
-          current === null
-            ? Effect.succeed(false)
-            : Effect.as(tx.updateDelivery(deliveryId, patch), true),
-        ),
-      );
-
-    // A group deleted while its send was in flight leaves nobody to follow or cancel the run, so
-    // the envelope is looked up by its derived id and taken out of the queue if it is still there.
-    const dropOrphan = (threadId: ThreadId, messageId: MessageId): Effect.Effect<void> =>
-      port.findMessage({ threadId, messageId }).pipe(
-        Effect.flatMap((found) =>
-          found?.runId == null ? Effect.void : cancelQueued([{ threadId, runId: found.runId }]),
-        ),
-        Effect.ignoreCause({ log: true }),
-      );
+      cancel: NewCancel,
+    ): Effect.Effect<void, StoreError> =>
+      Effect.gen(function* () {
+        const unwanted = yield* store.transaction((tx) =>
+          Effect.gen(function* () {
+            const current = yield* tx.delivery(deliveryId);
+            if (current !== null) yield* tx.updateDelivery(deliveryId, patch);
+            const unwanted =
+              current === null || (current.withdrawn !== null && patch.dispatch === "accepted");
+            if (unwanted) yield* tx.insertCancel(cancel);
+            return unwanted;
+          }),
+        );
+        if (unwanted) yield* kickCancels;
+      });
 
     /**
      * Records that T3 holds the envelope the row sent, unless the row moved on since it was
-     * read: a Retry that bumped the attempt in between must not inherit the older run.
+     * read: a Retry that bumped the attempt in between must not inherit the older run. An
+     * envelope Stop withdrew while its outcome was unknown must leave the queue it turned up in.
      */
-    const adopt = (d: DeliveryRow, runId: RunId): Effect.Effect<void, StoreError> =>
-      store.transaction((tx) =>
-        Effect.gen(function* () {
-          const current = yield* tx.delivery(d.id);
-          if (current === null || current.messageId !== d.messageId || !OPEN.has(current.state)) {
-            return;
-          }
-          yield* tx.updateDelivery(d.id, {
-            dispatch: "accepted",
-            runId,
-            state: current.state === "pending" ? "queued" : current.state,
-            error: null,
-          });
-        }),
-      );
+    const adopt = (
+      d: DeliveryRow,
+      threadId: ThreadId,
+      runId: RunId,
+    ): Effect.Effect<void, StoreError> =>
+      Effect.gen(function* () {
+        const withdrawn = yield* store.transaction((tx) =>
+          Effect.gen(function* () {
+            const current = yield* tx.delivery(d.id);
+            if (current === null || current.messageId !== d.messageId || !OPEN.has(current.state)) {
+              return false;
+            }
+            yield* tx.updateDelivery(d.id, {
+              dispatch: "accepted",
+              runId,
+              state: current.state === "pending" ? "queued" : current.state,
+              error: null,
+            });
+            if (current.withdrawn !== null) yield* tx.insertCancel({ threadId, runId });
+            return current.withdrawn !== null;
+          }),
+        );
+        if (withdrawn) yield* kickCancels;
+      });
 
     const resolve = (d: DeliveryRow): Effect.Effect<void, StoreError | PortReadError> =>
       Effect.gen(function* () {
@@ -499,7 +507,7 @@ export const makeEngine = (store: GroupChatStore) =>
           messageId: d.messageId,
         });
         if (found !== null && found.runId !== null) {
-          yield* adopt(d, found.runId);
+          yield* adopt(d, member.thread.threadId, found.runId);
           return;
         }
         const count = resends.get(d.id) ?? 0;
@@ -615,11 +623,6 @@ export const makeEngine = (store: GroupChatStore) =>
           return;
         }
         const changes = yield* port.changes(threadId);
-        // A Stop recorded before a crash may never have reached T3's queue. Cancelling again is
-        // safe: a refusal means the run started, and the follow below takes it from there.
-        if (d.withdrawn !== null && d.state === "queued") {
-          yield* port.cancelQueued({ threadId, runId: d.runId });
-        }
         const first = yield* step(d.id, threadId);
         if (first === "done") return;
         // The run's verdict comes from awaitRun below, so a refresh that fails must never end the
@@ -857,11 +860,11 @@ export const makeEngine = (store: GroupChatStore) =>
         if (member !== null) yield* kick(member.thread.threadId);
       });
 
-    const withdraw = (
-      tx: Tx,
-      d: DeliveryRow,
-      reason: string,
-    ): Effect.Effect<{ readonly threadId: ThreadId; readonly runId: RunId } | null, StoreError> =>
+    /**
+     * Takes the envelope back in the transaction that records why, as a cancel row when T3
+     * still queues it. The caller kicks the cancel drain once the transaction commits.
+     */
+    const withdraw = (tx: Tx, d: DeliveryRow, reason: string): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         if (!OPEN.has(d.state)) {
           // A reply the operator stopped in T3 holds its round until Retry. Stop here abandons
@@ -869,52 +872,99 @@ export const makeEngine = (store: GroupChatStore) =>
           if (d.state === "failed" && d.wait?._tag === "stopped_in_t3") {
             yield* tx.updateDelivery(d.id, { wait: null, withdrawn: reason });
           }
-          return null;
+          return;
         }
         const action = onWithdraw({ state: d.state, dispatch: d.dispatch });
         if (action === "cancel" || stalled.has(d.id)) {
           stalled.delete(d.id);
           yield* tx.updateDelivery(d.id, { state: "cancelled", error: reason, wait: null });
-          return null;
+          return;
         }
         yield* tx.updateDelivery(d.id, { withdrawn: reason });
         if (action === "cancel-queued" && d.runId !== null) {
           const member = yield* tx.member(d.memberId);
-          return member === null ? null : { threadId: member.thread.threadId, runId: d.runId };
+          if (member !== null) {
+            yield* tx.insertCancel({ threadId: member.thread.threadId, runId: d.runId });
+          }
         }
-        return null;
       });
 
-    const cancelQueued = (
-      targets: ReadonlyArray<{ readonly threadId: ThreadId; readonly runId: RunId } | null>,
-    ): Effect.Effect<void> =>
-      Effect.forEach(
-        targets.flatMap((t) => (t === null ? [] : [t])),
-        (target) =>
-          port.cancelQueued(target).pipe(
-            Effect.catchCause((cause) =>
-              Cause.hasInterrupts(cause)
-                ? Effect.interrupt
-                : // A cancel that never reached T3 would let a stopped envelope run once the
-                  // thread frees up, so it is tried again while the operator's Stop returns.
-                  Effect.logWarning("group chat cancel did not reach T3; retrying", {
-                    ...target,
-                    cause,
-                  }).pipe(
-                    Effect.andThen(
-                      port.cancelQueued(target).pipe(
-                        Effect.retry({
-                          times: CANCEL_RETRIES,
-                          schedule: Schedule.spaced(retryDelay),
-                        }),
-                        Effect.ignoreCause({ log: true }),
-                        Effect.forkIn(scope),
-                      ),
-                    ),
-                  ),
+    /**
+     * Every envelope the store says must leave a thread's queue is asked back out of T3 until
+     * T3 answers. A command asks once before it returns, so a Stop comes back after the queue was
+     * told; what T3 did not answer goes to one drain fiber that keeps asking, and the rows outlive
+     * a crash, so a boot asks again. A cancel that never lands would let a stopped envelope run
+     * once the thread frees up.
+     */
+    let cancels: Queue.Queue<void> | null = null;
+    const wakeCancels: Effect.Effect<void> = Effect.gen(function* () {
+      if (cancels === null) {
+        const signal = yield* Queue.make<void>({ capacity: 1, strategy: "sliding" });
+        if (cancels === null) {
+          cancels = signal;
+          yield* Effect.forkIn(drainCancels(signal), scope);
+        }
+      }
+      yield* Queue.offer(cancels, undefined);
+    });
+
+    /** True when nothing is left pending, false when T3 or the store must be asked again later. */
+    const settlePending: Effect.Effect<boolean> = store.pendingCancels.pipe(
+      Effect.flatMap((rows) => Effect.forEach(rows, settleCancel)),
+      Effect.map((answered) => answered.every((done) => done)),
+      Effect.catchCause((cause) =>
+        Cause.hasInterrupts(cause)
+          ? Effect.interrupt
+          : Effect.logError("group chat could not read its pending cancels", { cause }).pipe(
+              Effect.as(false),
             ),
-          ),
-        { discard: true },
+      ),
+    );
+
+    const kickCancels: Effect.Effect<void> = Effect.flatMap(settlePending, (settled) =>
+      settled ? Effect.void : wakeCancels,
+    );
+
+    const drainCancels = (signal: Queue.Queue<void>): Effect.Effect<never> =>
+      Effect.gen(function* () {
+        for (;;) {
+          if (yield* settlePending) yield* Queue.take(signal);
+          else yield* Effect.sleep(retryDelay);
+        }
+      });
+
+    /** True once T3 answered or there is nothing left to ask; false means ask again later. */
+    const settleCancel = (row: CancelRow): Effect.Effect<boolean> =>
+      Effect.gen(function* () {
+        const found =
+          row.messageId === null
+            ? null
+            : yield* port.findMessage({ threadId: row.threadId, messageId: row.messageId });
+        const runId = row.runId ?? found?.runId ?? null;
+        // No message means T3 never accepted that dispatch: it was rejected, or the crash that
+        // left this row behind cut it short. A send that lands later records its own cancel.
+        if (runId !== null) yield* port.cancelQueued({ threadId: row.threadId, runId });
+        yield* store.transaction((tx) => tx.deleteCancel(row.id));
+        return true;
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Cause.hasInterrupts(cause)
+            ? Effect.interrupt
+            : Effect.gen(function* () {
+                const thread = yield* Effect.result(port.thread(row.threadId));
+                if (Result.isSuccess(thread) && thread.success === null) {
+                  yield* store
+                    .transaction((tx) => tx.deleteCancel(row.id))
+                    .pipe(Effect.ignoreCause({ log: true }));
+                  return true;
+                }
+                yield* Effect.logWarning("group chat cancel did not reach T3; trying again", {
+                  ...row,
+                  cause,
+                });
+                return false;
+              }),
+        ),
       );
 
     const enqueueRound = (
@@ -1168,20 +1218,22 @@ export const makeEngine = (store: GroupChatStore) =>
       memberId: GroupChatMemberId,
     ): Effect.Effect<GroupChatMember, GroupChatNotFound | StoreError> =>
       Effect.gen(function* () {
-        const { member, cancels, discussions } = yield* store.transaction((tx) =>
+        const { member, discussions } = yield* store.transaction((tx) =>
           Effect.gen(function* () {
             const current = yield* requireMember(tx, memberId);
             const removed = yield* tx.updateMember(memberId, { removed: true });
-            const cancels = yield* Effect.forEach(yield* tx.deliveriesOfMember(memberId), (d) =>
-              withdraw(tx, d, "member removed"),
+            yield* Effect.forEach(
+              yield* tx.deliveriesOfMember(memberId),
+              (d) => withdraw(tx, d, "member removed"),
+              { discard: true },
             );
             const discussions = (yield* tx.runningDiscussions).filter(
               (x) => x.groupId === current.groupId && x.participants.includes(memberId),
             );
-            return { member: removed, cancels, discussions };
+            return { member: removed, discussions };
           }),
         );
-        yield* cancelQueued(cancels);
+        yield* kickCancels;
         yield* Effect.forEach(discussions, (x) => advanceDiscussion(x.id), { discard: true });
         yield* kick(member.thread.threadId);
         return member;
@@ -1246,7 +1298,7 @@ export const makeEngine = (store: GroupChatStore) =>
         if (d.dispatch === "unknown" && d.messageId !== null) {
           const found = yield* port.findMessage({ threadId, messageId: d.messageId });
           if (found !== null && found.runId !== null) {
-            yield* adopt(d, found.runId);
+            yield* adopt(d, threadId, found.runId);
             stalled.delete(deliveryId);
             yield* kick(threadId);
             return yield* new GroupChatRefused({
@@ -1294,15 +1346,15 @@ export const makeEngine = (store: GroupChatStore) =>
       deliveryId: GroupChatDeliveryId,
     ): Effect.Effect<DeliveryRow, GroupChatNotFound | StoreError> =>
       Effect.gen(function* () {
-        const { delivery, cancel } = yield* store.transaction((tx) =>
+        const delivery = yield* store.transaction((tx) =>
           Effect.gen(function* () {
             const d = yield* tx.delivery(deliveryId);
             if (d === null) return yield* notFound("delivery", deliveryId);
-            const cancel = yield* withdraw(tx, d, "stopped by operator");
-            return { delivery: (yield* tx.delivery(deliveryId))!, cancel };
+            yield* withdraw(tx, d, "stopped by operator");
+            return (yield* tx.delivery(deliveryId))!;
           }),
         );
-        yield* cancelQueued([cancel]);
+        yield* kickCancels;
         yield* onTerminal(deliveryId);
         return delivery;
       });
@@ -1374,15 +1426,15 @@ export const makeEngine = (store: GroupChatStore) =>
       discussionId: GroupChatDiscussionId,
     ): Effect.Effect<GroupChatDiscussion, GroupChatNotFound | StoreError> =>
       Effect.gen(function* () {
-        const { discussion, cancels } = yield* store.transaction((tx) =>
+        const discussion = yield* store.transaction((tx) =>
           Effect.gen(function* () {
             const current = yield* tx.discussion(discussionId);
             if (current === null) return yield* notFound("discussion", discussionId);
-            if (current.state !== "running") return { discussion: current, cancels: [] };
+            if (current.state !== "running") return current;
             const round = yield* tx.deliveriesOfRound(discussionId, current.round);
-            const cancels = yield* Effect.forEach(round, (d) =>
-              withdraw(tx, d, "discussion stopped"),
-            );
+            yield* Effect.forEach(round, (d) => withdraw(tx, d, "discussion stopped"), {
+              discard: true,
+            });
             const inFlight = (yield* tx.deliveriesOfRound(discussionId, current.round)).filter(
               (d) => d.state === "running" || d.dispatch === "sending" || d.dispatch === "unknown",
             ).length;
@@ -1390,11 +1442,10 @@ export const makeEngine = (store: GroupChatStore) =>
               inFlight > 0
                 ? `${inFlight} repl${inFlight === 1 ? "y was" : "ies were"} already in progress and may still arrive; no further rounds will start`
                 : null;
-            const discussion = yield* endDiscussion(tx, current, "stopped by operator", note);
-            return { discussion, cancels };
+            return yield* endDiscussion(tx, current, "stopped by operator", note);
           }),
         );
-        yield* cancelQueued(cancels);
+        yield* kickCancels;
         return discussion;
       });
 
@@ -1483,21 +1534,26 @@ export const makeEngine = (store: GroupChatStore) =>
             .pipe(Effect.map((group) => ({ _tag: "group", group })));
         case "group.delete":
           return Effect.gen(function* () {
-            const { cancels, threads } = yield* store.transaction((tx) =>
+            const threads = yield* store.transaction((tx) =>
               Effect.gen(function* () {
                 yield* requireGroup(tx, command.groupId);
-                const threads = (yield* tx.members(command.groupId, true)).map(
-                  (m) => m.thread.threadId,
+                const threadOf = new Map(
+                  (yield* tx.members(command.groupId, true)).map((m) => [m.id, m.thread.threadId]),
                 );
-                const cancels = yield* Effect.forEach(
-                  yield* tx.deliveriesOfGroup(command.groupId),
-                  (d) => withdraw(tx, d, "group deleted"),
-                );
+                for (const d of yield* tx.deliveriesOfGroup(command.groupId)) {
+                  yield* withdraw(tx, d, "group deleted");
+                  // The rows go with the group, so a dispatch still in flight or unresolved
+                  // leaves its envelope to a cancel row, found later by the derived message id.
+                  const threadId = threadOf.get(d.memberId);
+                  if (OPEN.has(d.state) && d.runId === null && d.messageId !== null && threadId) {
+                    yield* tx.insertCancel({ threadId, messageId: d.messageId });
+                  }
+                }
                 yield* tx.deleteGroup(command.groupId);
-                return { cancels, threads };
+                return [...new Set(threadOf.values())];
               }),
             );
-            yield* cancelQueued(cancels);
+            yield* kickCancels;
             // A deleted delivery may have been what another group's envelope waited behind.
             yield* Effect.forEach(threads, kick, { discard: true });
             return { _tag: "done" } as const;
@@ -1637,6 +1693,7 @@ export const makeEngine = (store: GroupChatStore) =>
     );
 
     const recover = Effect.gen(function* () {
+      yield* wakeCancels;
       const open = yield* store.openDeliveries;
       const threads = new Set<ThreadId>();
       for (const d of open) {

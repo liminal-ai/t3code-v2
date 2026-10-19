@@ -156,6 +156,18 @@ const migrations = Migrator.fromRecord({
       )
     `,
   ),
+  "4_cancels": Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql`
+      CREATE TABLE cancels (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL,
+        run_id TEXT,
+        message_id TEXT,
+        created_at TEXT NOT NULL
+      )
+    `,
+  ),
 });
 
 const runMigrations = Migrator.make({});
@@ -318,6 +330,23 @@ export type DiscussionPatch = Partial<
   Pick<GroupChatDiscussion, "round" | "state" | "endReason" | "signedOff">
 >;
 
+/**
+ * A queued envelope group chat must take back out of a thread, by its run id, or by the derived
+ * id of the message a dispatch was still sending. The row outlives the delivery, so a group
+ * deleted or a Stop pressed just before a crash still gets its envelope cancelled at the next boot.
+ */
+const CancelRow = Schema.Struct({
+  id: Schema.String,
+  threadId: ThreadId,
+  runId: Schema.NullOr(RunId),
+  messageId: Schema.NullOr(MessageId),
+});
+export type CancelRow = typeof CancelRow.Type;
+
+export type NewCancel =
+  | { readonly threadId: ThreadId; readonly runId: RunId }
+  | { readonly threadId: ThreadId; readonly messageId: MessageId };
+
 export type StoreError = SqlError | Schema.SchemaError;
 
 export interface Reads {
@@ -354,6 +383,7 @@ export interface Reads {
   ) => Effect.Effect<ReadonlyArray<DeliveryRow>, StoreError>;
   readonly openDeliveries: Effect.Effect<ReadonlyArray<DeliveryRow>, StoreError>;
   readonly lanePaused: (threadId: ThreadId) => Effect.Effect<boolean, StoreError>;
+  readonly pendingCancels: Effect.Effect<ReadonlyArray<CancelRow>, StoreError>;
   readonly discussion: (
     id: GroupChatDiscussionId,
   ) => Effect.Effect<GroupChatDiscussion | null, StoreError>;
@@ -383,6 +413,8 @@ export interface Writes {
   readonly touchMember: (id: GroupChatMemberId) => Effect.Effect<void, StoreError>;
   readonly pauseLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
   readonly resumeLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
+  readonly insertCancel: (input: NewCancel) => Effect.Effect<void, StoreError>;
+  readonly deleteCancel: (id: string) => Effect.Effect<void, StoreError>;
   readonly appendMessage: (input: NewMessage) => Effect.Effect<GroupChatMessage, StoreError>;
   readonly insertDelivery: (input: NewDelivery) => Effect.Effect<DeliveryRow, StoreError>;
   readonly updateDelivery: (
@@ -492,6 +524,15 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
       ORDER BY created_at, rowid
     `,
   });
+  const cancelRows = SqlSchema.findAll({
+    Request: Schema.Void,
+    Result: CancelRow,
+    execute: () => sql`
+      SELECT id, thread_id AS "threadId", run_id AS "runId", message_id AS "messageId"
+      FROM cancels
+      ORDER BY created_at, rowid
+    `,
+  });
   const first = <A>(rows: ReadonlyArray<A>): A | null => rows[0] ?? null;
   const members = (where: Statement.Fragment) =>
     Effect.map(memberRows({ where }), (rows) => rows.map(toMember));
@@ -522,6 +563,7 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
         sql<{ readonly one: number }>`SELECT 1 AS one FROM lanes WHERE thread_id = ${threadId}`,
         (rows) => rows.length > 0,
       ),
+    pendingCancels: cancelRows(),
     discussion: (id) => Effect.map(discussions(sql`id = ${id}`), first),
     discussionsOfGroup: (groupId) => discussions(sql`group_id = ${groupId}`),
     runningDiscussions: discussions(sql`state = 'running'`),
@@ -723,6 +765,18 @@ const makeWrites = (
         `;
       }),
     resumeLane: (threadId) => Effect.asVoid(sql`DELETE FROM lanes WHERE thread_id = ${threadId}`),
+    insertCancel: (input) =>
+      Effect.gen(function* () {
+        const runId = "runId" in input ? input.runId : null;
+        const messageId = "messageId" in input ? input.messageId : null;
+        const id = `${input.threadId}:${runId ?? `message:${messageId}`}`;
+        const at = yield* now;
+        yield* sql`
+          INSERT OR IGNORE INTO cancels (id, thread_id, run_id, message_id, created_at)
+          VALUES (${id}, ${input.threadId}, ${runId}, ${messageId}, ${at})
+        `;
+      }),
+    deleteCancel: (id) => Effect.asVoid(sql`DELETE FROM cancels WHERE id = ${id}`),
     updateDiscussion: (id, patch) =>
       Effect.gen(function* () {
         const current = yield* stored("discussion", reads.discussion(id));

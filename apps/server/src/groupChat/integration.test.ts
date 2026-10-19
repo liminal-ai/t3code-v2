@@ -109,15 +109,16 @@ const layerGatedPort = Layer.effect(
         (gates.thread === null ? Effect.void : Deferred.await(gates.thread)).pipe(
           Effect.andThen(port.thread(threadId)),
         ),
+      // The gates are taken when the send starts: a test clears them once `sent` fires, and the
+      // fiber may yield between the two taps, so reading them later would let the send through.
       send: (input) =>
-        port.send(input).pipe(
-          Effect.tap(() =>
-            gates.sent === null ? Effect.void : Deferred.succeed(gates.sent, undefined),
-          ),
-          Effect.tap(() =>
-            gates.afterSend === null ? Effect.void : Deferred.await(gates.afterSend),
-          ),
-        ),
+        Effect.suspend(() => {
+          const { sent, afterSend } = gates;
+          return port.send(input).pipe(
+            Effect.tap(() => (sent === null ? Effect.void : Deferred.succeed(sent, undefined))),
+            Effect.tap(() => (afterSend === null ? Effect.void : Deferred.await(afterSend))),
+          );
+        }),
       cancelQueued: (input) =>
         (gates.beforeCancel === null ? Effect.void : Deferred.await(gates.beforeCancel)).pipe(
           Effect.andThen(port.cancelQueued(input)),
