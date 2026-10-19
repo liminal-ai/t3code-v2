@@ -489,11 +489,12 @@ type ReadKind = FetchRequest["_tag"];
 /**
  * A read belongs to the stream that is up when it starts. The stream has no replay, so its reopen
  * reads every wanted group's latest page again, and a read from before the close has nothing left
- * to do: `generation` counts closes, a read's next step runs only under the generation it started
- * in, and the close clears every timer. Latest-page and catch-up retries wait apart, so a resync
- * after a gap is never dropped for a catch-up of the same group.
+ * to do: `generation` counts closes, a read's result and next step touch the store only under the
+ * generation it started in, and the close clears every timer. Latest-page and catch-up retries
+ * wait apart, so a resync after a gap is never dropped for a catch-up of the same group.
  */
 let generation = 0;
+const isCurrent = (started: number) => started === generation;
 const retryKey = (kind: ReadKind, groupId: GroupChatGroupId) => `${kind}:${groupId}` as const;
 const retryTimers = new Map<ReturnType<typeof retryKey>, Timer>();
 
@@ -505,7 +506,7 @@ const wantedGroups = (state: StoreState) => new Set([...shownGroups, ...state.gr
 
 /** Whether a read that started under `started` still has its stream and a group to serve. */
 const stillWanted = (started: number, groupId: GroupChatGroupId) =>
-  started === generation && wantedGroups(appAtomRegistry.get(storeAtom)).has(groupId);
+  isCurrent(started) && wantedGroups(appAtomRegistry.get(storeAtom)).has(groupId);
 
 const clearRetry = (key: ReturnType<typeof retryKey>) => {
   const timer = retryTimers.get(key);
@@ -547,7 +548,9 @@ function readLatest(groupId: GroupChatGroupId, failures: number): Promise<void> 
   const started = generation;
   clearRetry(retryKey("latest", groupId));
   return fetchGroupPage(groupId, {})
-    .then((page) => update((state) => applyPage(state, groupId, page, "latest")))
+    .then((page) => {
+      if (isCurrent(started)) update((state) => applyPage(state, groupId, page, "latest"));
+    })
     .catch((error: unknown) => {
       retryLater(started, "latest", groupId, retryDelayMs(failures + 1), () => {
         void readLatest(groupId, failures + 1).catch(ignore);
@@ -576,10 +579,12 @@ const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
     const started = generation;
     void fetchGroupPage(fetch.groupId, { after: fetch.seq })
       .then((page) => {
+        if (!isCurrent(started)) return;
         update((state) => applyPage(state, fetch.groupId, page, "since"));
         if (stillWanted(started, fetch.groupId)) runFollowUp(fetch.groupId);
       })
       .catch(() => {
+        if (!isCurrent(started)) return;
         update((state) => readFailed(state, fetch.groupId));
         retryLater(started, "since", fetch.groupId, READ_RETRY_DELAY_MS, () =>
           runFollowUp(fetch.groupId),
@@ -603,13 +608,14 @@ export function readGroupView(groupId: GroupChatGroupId): GroupView | null {
   return appAtomRegistry.get(storeAtom).groups.get(groupId) ?? null;
 }
 
-/** Resolves true when an older page was loaded, false when the group has no more. */
 export async function loadOlder(groupId: GroupChatGroupId): Promise<boolean> {
   const current = readGroupView(groupId);
   if (current === null || current.olderBefore === null || current.loadingOlder) return false;
+  const started = generation;
   update((state) => setLoadingOlder(state, groupId, true));
   try {
     const page = await fetchGroupPage(groupId, { before: current.olderBefore });
+    if (!isCurrent(started)) return false;
     update((state) => applyPage(state, groupId, page, "older"));
     return true;
   } finally {
