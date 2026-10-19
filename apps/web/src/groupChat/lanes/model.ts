@@ -354,6 +354,8 @@ export interface LaneItems {
 export function alignTurn(input: {
   readonly lanesItems: ReadonlyArray<LaneItems>;
   readonly turnKey: string;
+  /** Each turn's place in time, so a pending delivery sorts by the turn it answers. */
+  readonly turnIndex: ReadonlyMap<string, number>;
 }): Spacer[] {
   const perLane = input.lanesItems.map((lane) => ({
     ...lane,
@@ -372,6 +374,11 @@ export function alignTurn(input: {
       ),
     ),
   );
+  const selectedTurn = input.turnIndex.get(input.turnKey) ?? -1;
+  const later = (item: LaneItem) =>
+    item.kind === "message"
+      ? item.message.seq > lastSeq
+      : (input.turnIndex.get(item.turnKey) ?? Number.POSITIVE_INFINITY) > selectedTurn;
   const spacers: Spacer[] = [];
   for (const lane of perLane) {
     if (lane.first >= 0) {
@@ -379,9 +386,7 @@ export function alignTurn(input: {
       if (height > 0.5) spacers.push({ lane: lane.lane, beforeIndex: lane.first, height });
       continue;
     }
-    const next = lane.items.findIndex((item) =>
-      item.kind === "message" ? item.message.seq > lastSeq : true,
-    );
+    const next = lane.items.findIndex(later);
     if (next < 0) continue;
     const height = line + band - lane.tops[next]!;
     if (height > 0.5) spacers.push({ lane: lane.lane, beforeIndex: next, height });

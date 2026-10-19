@@ -103,6 +103,33 @@ const viewOf = (input: {
 const packedItems = (view: GroupView) =>
   buildModel(view).blocks.flatMap((b) => (b.kind === "packed" ? b.items : []));
 
+const turnIndexOf = (view: GroupView) =>
+  new Map(buildModel(view).turns.map((turn) => [turn.key, turn.index] as const));
+
+const pendingFor = (member: GroupChatMember, promptSeq: number): GroupChatPageDelivery => ({
+  id: `dlv_${member.handle}_${promptSeq}` as GroupChatPageDelivery["id"],
+  groupId,
+  memberId: member.id,
+  triggerMessageId: msgId(`msg_${promptSeq}`),
+  turnKey: `msg_${promptSeq}`,
+  discussionId: null,
+  round: null,
+  state: "running",
+  dispatch: "accepted",
+  attempt: 1 as GroupChatPageDelivery["attempt"],
+  fromSeq: 0 as GroupChatPageDelivery["fromSeq"],
+  toSeq: promptSeq as GroupChatPageDelivery["toSeq"],
+  runId: null,
+  messageId: null,
+  withdrawn: null,
+  replyMessageId: null,
+  error: null,
+  retryable: false,
+  wait: null,
+  createdAt: at(promptSeq),
+  updatedAt: at(promptSeq),
+});
+
 describe("lanes model", () => {
   it("packing keeps each lane in time order", () => {
     const view = viewOf({
@@ -269,6 +296,7 @@ describe("lanes model", () => {
       ],
     });
     const items = packedItems(view);
+    const turnIndex = turnIndexOf(view);
     const lanesItems = (heights: Record<string, number[]>): LaneItems[] =>
       ([OPERATOR_LANE, alpha.id, beta.id, gamma.id] as const).map((lane) => ({
         lane,
@@ -282,6 +310,7 @@ describe("lanes model", () => {
         [beta.id]: [100, 60],
       }),
       turnKey: "msg_4",
+      turnIndex,
     });
     expect(spacers).toEqual([
       { lane: OPERATOR_LANE, beforeIndex: 1, height: 160 },
@@ -302,6 +331,7 @@ describe("lanes model", () => {
           heights: lane === alpha.id ? [longCardHeight, 50] : lane === beta.id ? [50] : [30, 30],
         })),
         turnKey: "msg_3",
+        turnIndex: turnIndexOf(view),
       });
     expect(align(3_000)).toEqual([
       { lane: OPERATOR_LANE, beforeIndex: 1, height: 3_000 + CARD_GAP - (30 + CARD_GAP) },
@@ -311,6 +341,26 @@ describe("lanes model", () => {
       { lane: OPERATOR_LANE, beforeIndex: 1, height: 400 + CARD_GAP - (30 + CARD_GAP) },
       { lane: beta.id, beforeIndex: 0, height: 400 + CARD_GAP },
     ]);
+  });
+
+  it("line-up leaves a pending reply to an earlier turn above the selected band", () => {
+    // Beta is still answering turn 1 when turn 2 (prompt 3, alpha's reply 4) is selected.
+    const view = viewOf({
+      members: [alpha, beta],
+      messages: [prompt(1), reply(2, alpha, 1), prompt(3), reply(4, alpha, 3)],
+      deliveries: [pendingFor(beta, 1)],
+    });
+    const items = packedItems(view);
+    const spacers = alignTurn({
+      lanesItems: ([OPERATOR_LANE, alpha.id, beta.id] as const).map((lane) => ({
+        lane,
+        items: items.filter((item) => item.lane === lane),
+        heights: lane === beta.id ? [40] : [30, 30],
+      })),
+      turnKey: "msg_3",
+      turnIndex: turnIndexOf(view),
+    });
+    expect(spacers.find((s) => s.lane === beta.id)).toBeUndefined();
   });
 
   it("a removed member keeps a lane while its messages are loaded, and a pending delivery sits in its turn", () => {

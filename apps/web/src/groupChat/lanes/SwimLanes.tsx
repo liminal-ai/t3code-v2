@@ -290,6 +290,9 @@ function keepInView(state: LayoutState, inputs: LayoutInputs, behavior: ScrollBe
   }
 }
 
+const turnIndexOf = (model: Model) =>
+  new Map(model.turns.map((turn) => [turn.key, turn.index] as const));
+
 function placeSpacers(state: LayoutState, inputs: LayoutInputs): boolean {
   const { selection, mode, model } = inputs;
   const next = new Map<string, ReadonlyArray<Spacer>>();
@@ -304,7 +307,10 @@ function placeSpacers(state: LayoutState, inputs: LayoutInputs): boolean {
           heights: items.map((item) => state.cardEls.get(item.id)?.offsetHeight ?? 0),
         };
       });
-      next.set(block.key, alignTurn({ lanesItems, turnKey: selection.turnKey }));
+      next.set(
+        block.key,
+        alignTurn({ lanesItems, turnKey: selection.turnKey, turnIndex: turnIndexOf(model) }),
+      );
     }
   }
   const moved = !sameSpacers(next, state.spacers);
