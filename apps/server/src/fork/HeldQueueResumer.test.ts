@@ -321,6 +321,13 @@ const restartOneSecondLater = Effect.gen(function* () {
   yield* recovery.reconcile("startup");
 });
 
+/** A crash: no shutdown steps, so the startup pass cuts the turn and writes the continuation itself. */
+const crashAndRestartOneSecondLater = Effect.gen(function* () {
+  const recovery = yield* ProviderRuntimeRecoveryService.ProviderRuntimeRecoveryService;
+  yield* TestClock.adjust("1 second");
+  yield* recovery.reconcile("startup");
+});
+
 const finishTurn = (started: StartedTurn, status: "completed" | "interrupted" = "completed") =>
   Effect.gen(function* () {
     const now = yield* DateTime.now;
@@ -552,6 +559,33 @@ it.effect(
         assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
       }),
     ),
+);
+
+it.effect("resumes behind the continuation the startup pass wrote itself after a crash", () =>
+  withHarness("crash", ({ cwd }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:crash");
+      const { active, queued } = yield* busyThread({ threadId, cwd });
+      yield* crashAndRestartOneSecondLater;
+      const reconcileCommandId = yield* holdCommandId(threadId, queued[0]!.id);
+      const sql = yield* SqlClient.SqlClient;
+      const effects = yield* sql<{ readonly command_id: string }>`
+        SELECT command_id FROM orchestration_v2_effect_outbox
+        WHERE thread_id = ${threadId} AND effect_type = 'provider-runtime.continue'
+      `;
+      assert.deepEqual(
+        effects.map((row) => row.command_id),
+        [reconcileCommandId],
+      );
+      const scanning = yield* scan.pipe(Effect.forkScoped);
+      yield* drain;
+      yield* Fiber.join(scanning);
+      const runs = yield* runsOf(threadId);
+      assert.equal(continuationOf(runs, active.id)?.status, "running");
+      const resumed = runs.find((run) => run.id === queued[0]!.id);
+      assert.deepEqual([resumed?.status, resumed?.queueHeld], ["queued", false]);
+    }),
+  ),
 );
 
 it.effect("awaits the continuation of a second restart that cut the first continuation", () =>
