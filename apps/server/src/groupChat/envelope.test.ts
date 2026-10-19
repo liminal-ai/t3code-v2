@@ -352,6 +352,20 @@ describe("group chat envelope and text", () => {
     expect(block.length).toBeLessThan(7_000);
   });
 
+  it("the budget counts the rendered quote, so twenty thousand one-letter lines are cut to fit", () => {
+    const a = member("a", "alpha", { introduced: true });
+    const text = renderEnvelope({
+      group,
+      member: a,
+      members: [a],
+      unseen: [msg(1, operator, "x\n".repeat(20_000))],
+      expectedRepliers: ["a"],
+      footer: "",
+    });
+    expect(text.length).toBeLessThan(45_000);
+    expect(text).toMatch(/1 long message was shortened/);
+  });
+
   it("required replies from many participants share the budget instead of breaking it", () => {
     const members = Array.from({ length: 10 }, (_, i) =>
       member(`m${i}`, `member${i}`, { introduced: true }),

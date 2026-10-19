@@ -82,6 +82,8 @@ export interface EnvelopeInput {
 const SECTION_MAX = 6_000;
 const LAST_SECTION_MAX = 40_000;
 const MIN_SHARED_SECTION = 1_000;
+/** Room for the shortening note and the quote prefixes of a three-line shortened message. */
+const NOTE_ALLOWANCE = 140;
 
 const hhmm = (iso: string) => iso.slice(11, 16) + "Z";
 
@@ -98,17 +100,31 @@ export function shorten(text: string, max: number): string {
   return `${text.slice(0, head)}\n[shortened by the group-chat app: ${text.length - max} of ${text.length} characters left out here; the start and the end are shown]\n${text.slice(-tail)}`;
 }
 
-function quote(m: GroupChatMessage, byId: Map<string, GroupChatMember>, max: number): string {
+function quote(
+  m: GroupChatMessage,
+  byId: Map<string, GroupChatMember>,
+  max: number,
+): { readonly text: string; readonly shortened: boolean } {
   let text = m.text.trim();
   if (m.author._tag === "member") {
     const mem = byId.get(m.author.memberId);
     if (mem) text = stripLeadingHandle(text, [mem.handle, ...mem.handleHistory]);
   }
-  if (text.length > max) text = shorten(text, max);
-  return (text || "(empty)")
-    .split(/\r?\n/)
-    .map((l) => `| ${l}`)
-    .join("\n");
+  const render = (t: string) =>
+    (t || "(empty)")
+      .split(/\r?\n/)
+      .map((l) => `| ${l}`)
+      .join("\n");
+  let keep = Math.min(text.length, max);
+  let out = render(keep < text.length ? shorten(text, keep) : text);
+  // The quote prefix adds two characters to every line, so a message of many short lines renders
+  // far longer than its character count. The budget is on what the member reads, less the
+  // shortening note itself.
+  for (let rounds = 0; out.length > max + NOTE_ALLOWANCE && rounds < 4; rounds++) {
+    keep = Math.max(1, Math.floor((keep * max) / out.length));
+    out = render(shorten(text, keep));
+  }
+  return { text: out, shortened: keep < text.length };
 }
 
 const newNonce = () => randomHex(4);
@@ -125,7 +141,7 @@ export function renderEnvelope(input: EnvelopeInput): string {
   const keep = (m: GroupChatMessage) => m.id === last || required.has(m.id);
   const baseCap = (m: GroupChatMessage) => (m.id === last ? LAST_SECTION_MAX : SECTION_MAX);
   const sizeWith = (ms: ReadonlyArray<GroupChatMessage>, capOf: (m: GroupChatMessage) => number) =>
-    ms.reduce((n, m) => n + Math.min(m.text.length, capOf(m)) + 60, 0);
+    ms.reduce((n, m) => n + quote(m, byId, capOf(m)).text.length + 60, 0);
   let sections = input.unseen;
   let trimmed = 0;
   while (sections.length > MAX_SECTIONS || sizeWith(sections, baseCap) > MAX_CHARS) {
@@ -216,7 +232,8 @@ export function renderEnvelope(input: EnvelopeInput): string {
     notes.push(
       `${trimmed} older message${trimmed === 1 ? " was" : "s were"} left out to keep it short`,
     );
-  const cut = sections.filter((m) => m.text.trim().length > cap(m)).length;
+  const quoted = sections.map((m) => quote(m, byId, cap(m)));
+  const cut = quoted.filter((q) => q.shortened).length;
   if (cut > 0)
     notes.push(
       `${cut} long message${cut === 1 ? " was" : "s were"} shortened (marked inside the section)`,
@@ -242,7 +259,7 @@ export function renderEnvelope(input: EnvelopeInput): string {
     lines.push(
       mark(`MESSAGE ${n} from ${sender(m, byId)} | ${hhmm(m.createdAt)}${disc}${again}${newTag}`),
     );
-    lines.push(quote(m, byId, cap(m)));
+    lines.push(quoted[i]!.text);
     lines.push(mark(`END ${n}`));
     lines.push("");
   });
