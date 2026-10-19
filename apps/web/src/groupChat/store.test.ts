@@ -7,7 +7,14 @@ import type {
 } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { applyEvent, applyPage, emptyState, type StoreState, timelineRows } from "./store";
+import {
+  applyEvent,
+  applyPage,
+  emptyState,
+  followUpRead,
+  type StoreState,
+  timelineRows,
+} from "./store";
 
 const groupId = "grp_1" as GroupChatGroupPage["group"]["id"];
 const memberId = "mem_a" as GroupChatDeliveryHead["memberId"];
@@ -218,5 +225,41 @@ describe("group chat store", () => {
     });
     const rows = timelineRows(state.groups.get(groupId)!);
     expect(rows.map((row) => row.id)).toEqual(["msg_1", "msg_2", "msg_3", "pending:d2"]);
+  });
+});
+
+describe("group chat store, heads and rows at the edges", () => {
+  it("a head seen while a body read is out is read once that read lands", () => {
+    const start = loaded([1]);
+    const first = applyEvent(start, event(1, { _tag: "message", message: messageHead(2) }));
+    expect(first.fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
+    const second = applyEvent(first.state, event(2, { _tag: "message", message: messageHead(3) }));
+    expect(second.fetches).toEqual([]);
+    const landed = applyPage(second.state, groupId, page([2]), "since");
+    const next = followUpRead(landed, groupId);
+    expect(next.fetches).toEqual([{ _tag: "since", groupId, seq: 2 }]);
+    const settled = applyPage(next.state, groupId, page([3]), "since");
+    expect(followUpRead(settled, groupId).fetches).toEqual([]);
+    expect(seqsOf(settled)).toEqual([1, 2, 3]);
+  });
+
+  it("an open delivery whose turn is not loaded keeps a row at the end", () => {
+    const state = loaded([201, 202], {
+      olderBefore: 201 as never,
+      deliveries: [delivery("d-old", 5, "queued", "2026-10-19T00:05:00Z")],
+    });
+    const rows = timelineRows(state.groups.get(groupId)!);
+    expect(rows.map((row) => row.id)).toEqual(["msg_201", "msg_202", "pending:d-old"]);
+  });
+
+  it("a failed delivery that can be retried keeps a row, one that cannot does not", () => {
+    const retryable = {
+      ...delivery("d-stop", 1, "failed", "2026-10-19T00:06:00Z"),
+      retryable: true,
+    };
+    const dead = delivery("d-dead", 1, "failed", "2026-10-19T00:06:00Z");
+    const state = loaded([1], { deliveries: [retryable, dead] });
+    const rows = timelineRows(state.groups.get(groupId)!);
+    expect(rows.map((row) => row.id)).toEqual(["msg_1", "pending:d-stop"]);
   });
 });

@@ -30,6 +30,8 @@ export interface GroupView {
   readonly olderBefore: number | null;
   readonly loadingOlder: boolean;
   readonly fetchingAfter: number | null;
+  /** The highest seq a head announced while a read was already out, so the next read follows. */
+  readonly awaitedSeq: number;
 }
 
 export interface StoreState {
@@ -92,6 +94,7 @@ const fromPage = (page: GroupChatGroupPage, deliveries: GroupView["deliveries"])
   olderBefore: page.olderBefore,
   loadingOlder: false,
   fetchingAfter: null,
+  awaitedSeq: 0,
 });
 
 export function applyPage(
@@ -111,17 +114,26 @@ export function applyPage(
   }
   const messages = new Map(current.messages);
   for (const m of page.messages) messages.set(m.id, m);
+  const highSeq =
+    mode === "older" ? current.highSeq : Math.max(current.highSeq, page.messages.at(-1)?.seq ?? 0);
   const view: GroupView = {
     ...fromPage(page, mergeDeliveries(current.deliveries, page.deliveries)),
     messages,
     lowSeq: mode === "older" ? (first ?? current.lowSeq) : current.lowSeq,
-    highSeq:
-      mode === "older"
-        ? current.highSeq
-        : Math.max(current.highSeq, page.messages.at(-1)?.seq ?? 0),
+    highSeq,
     olderBefore: mode === "older" ? page.olderBefore : current.olderBefore,
+    fetchingAfter: mode === "older" ? current.fetchingAfter : null,
+    awaitedSeq: current.awaitedSeq > highSeq ? current.awaitedSeq : 0,
   };
   return withGroup(state, groupId, view);
+}
+
+/** After a since page lands, the read a head asked for while it was out. */
+export function followUpRead(state: StoreState, groupId: GroupChatGroupId): Applied {
+  const none: Applied = { state, fetches: [], snapshotChanged: false };
+  const current = state.groups.get(groupId);
+  if (current === undefined || current.awaitedSeq <= current.highSeq) return none;
+  return readSince(state, current, none, current.awaitedSeq);
 }
 
 /**
@@ -191,14 +203,26 @@ export function applyEvent(state: StoreState, event: GroupChatStreamEvent): Appl
   return { state: applied.state, fetches, snapshotChanged: true };
 }
 
-const readSince = (state: StoreState, current: GroupView, none: Applied): Applied =>
-  current.fetchingAfter !== null && current.fetchingAfter >= current.highSeq
-    ? none
-    : {
-        state: withGroup(state, current.group.id, { ...current, fetchingAfter: current.highSeq }),
-        fetches: [{ _tag: "since", groupId: current.group.id, seq: current.highSeq }],
-        snapshotChanged: false,
-      };
+const readSince = (
+  state: StoreState,
+  current: GroupView,
+  none: Applied,
+  announcedSeq: number,
+): Applied => {
+  const awaitedSeq = Math.max(current.awaitedSeq, announcedSeq);
+  if (current.fetchingAfter !== null && current.fetchingAfter >= current.highSeq) {
+    return { ...none, state: withGroup(state, current.group.id, { ...current, awaitedSeq }) };
+  }
+  return {
+    state: withGroup(state, current.group.id, {
+      ...current,
+      fetchingAfter: current.highSeq,
+      awaitedSeq,
+    }),
+    fetches: [{ _tag: "since", groupId: current.group.id, seq: current.highSeq }],
+    snapshotChanged: false,
+  };
+};
 
 function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
   const none = { state, fetches: [], snapshotChanged: false } as const;
@@ -240,7 +264,7 @@ function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
         };
       }
       if (event.message.seq <= current.highSeq) return none;
-      return readSince(state, current, none);
+      return readSince(state, current, none, event.message.seq);
     }
     case "delivery": {
       const current = state.groups.get(event.delivery.groupId);
@@ -257,7 +281,7 @@ function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
       const current = state.groups.get(event.discussion.groupId);
       if (current === undefined) return none;
       const known = current.discussions.get(event.discussion.id);
-      if (known === undefined) return readSince(state, current, none);
+      if (known === undefined) return readSince(state, current, none, current.highSeq + 1);
       const discussions = new Map(current.discussions);
       discussions.set(event.discussion.id, { ...known, ...event.discussion });
       return {
@@ -280,25 +304,44 @@ const OPEN_STATES: ReadonlySet<GroupChatDeliveryHead["state"]> = new Set([
 
 const isOpenDelivery = (d: GroupChatDeliveryHead) => OPEN_STATES.has(d.state);
 
+/** A delivery still worth a row: open, or failed where Retry would do something. */
+const needsRow = (d: GroupChatDeliveryHead) =>
+  isOpenDelivery(d) || (d.state === "failed" && d.retryable);
+
+/**
+ * Messages by seq, each unfinished delivery after the last message of its turn. A delivery whose
+ * turn lies on a page not loaded goes at the end, so its wait and Retry stay reachable.
+ */
 export function timelineRows(view: GroupView): ReadonlyArray<TimelineRow> {
   const messages = [...view.messages.values()].sort((a, b) => a.seq - b.seq);
   const lastOfTurn = new Map<string, number>();
   messages.forEach((m, i) => lastOfTurn.set(m.turnKey, i));
-  const openByTurn = new Map<string, GroupChatDeliveryHead[]>();
-  for (const d of view.deliveries.values()) {
-    if (!isOpenDelivery(d)) continue;
-    const list = openByTurn.get(d.turnKey) ?? [];
+  const byTurn = new Map<string, GroupChatDeliveryHead[]>();
+  const unplaced: GroupChatDeliveryHead[] = [];
+  for (const d of [...view.deliveries.values()].sort((a, b) =>
+    a.createdAt.localeCompare(b.createdAt),
+  )) {
+    if (!needsRow(d)) continue;
+    if (!lastOfTurn.has(d.turnKey)) {
+      unplaced.push(d);
+      continue;
+    }
+    const list = byTurn.get(d.turnKey) ?? [];
     list.push(d);
-    openByTurn.set(d.turnKey, list);
+    byTurn.set(d.turnKey, list);
   }
   const rows: TimelineRow[] = [];
+  const pending = (delivery: GroupChatDeliveryHead): TimelineRow => ({
+    kind: "pending",
+    id: `pending:${delivery.id}`,
+    delivery,
+  });
   messages.forEach((message, i) => {
     rows.push({ kind: "message", id: message.id, message });
     if (lastOfTurn.get(message.turnKey) !== i) return;
-    for (const delivery of openByTurn.get(message.turnKey) ?? []) {
-      rows.push({ kind: "pending", id: `pending:${delivery.id}`, delivery });
-    }
+    for (const delivery of byTurn.get(message.turnKey) ?? []) rows.push(pending(delivery));
   });
+  for (const delivery of unplaced) rows.push(pending(delivery));
   return rows;
 }
 
@@ -374,7 +417,12 @@ const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
     if (fetch._tag === "latest") void loadGroup(fetch.groupId);
     else {
       void fetchGroupPage(fetch.groupId, { after: fetch.seq })
-        .then((page) => update((state) => applyPage(state, fetch.groupId, page, "since")))
+        .then((page) => {
+          update((state) => applyPage(state, fetch.groupId, page, "since"));
+          const next = followUpRead(appAtomRegistry.get(storeAtom), fetch.groupId);
+          appAtomRegistry.set(storeAtom, next.state);
+          runFetches(next.fetches);
+        })
         .catch(() =>
           update((state) => {
             const current = state.groups.get(fetch.groupId);
