@@ -165,10 +165,12 @@ export function DiscussionPanel({
       data-state={discussion.state}
       data-round={round}
     >
-      <div className="flex items-center gap-2 text-sm">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm">
         {running ? <span className="size-1.5 rounded-full bg-info" /> : null}
-        <span className="font-medium">{running ? "Discussion" : "Discussion ended"}</span>
-        <span className="text-muted-foreground" data-testid="discussion-round">
+        <span className="font-medium whitespace-nowrap">
+          {running ? "Discussion" : "Discussion ended"}
+        </span>
+        <span className="text-muted-foreground whitespace-nowrap" data-testid="discussion-round">
           Round {round} of {maxRounds}
         </span>
         {running ? null : (
