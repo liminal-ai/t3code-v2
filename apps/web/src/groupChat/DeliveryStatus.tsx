@@ -43,7 +43,11 @@ const WAIT_LABEL: Record<NonNullable<GroupChatPageDelivery["wait"]>["_tag"], str
   waiting_on_question: "waiting on a question",
   waiting_on_approval: "waiting on an approval in T3",
   stopped_in_t3: "stopped in T3",
+  retrying: "endpoint failed, trying again",
 };
+
+const retryingDetail = (error: string | null, nextAttemptAt: string) =>
+  `${error ?? "The endpoint did not answer."} Next try at ${new Date(nextAttemptAt).toLocaleTimeString()}.`;
 
 const DISPATCH_LABEL: Record<GroupChatPageDelivery["dispatch"], string> = {
   unsent: "waiting to send",
@@ -67,14 +71,21 @@ export function describeDelivery(d: GroupChatPageDelivery): DeliveryView {
       stoppable,
       label: WAIT_LABEL[wait._tag],
       tone:
-        wait._tag === "stopped_in_t3" || wait._tag === "queue_held"
+        wait._tag === "stopped_in_t3" || wait._tag === "queue_held" || wait._tag === "retrying"
           ? "warning"
           : wait._tag === "waiting_on_question" || wait._tag === "waiting_on_approval"
             ? "info"
             : "muted",
-      detail: wait._tag === "queue_held" ? wait.note : d.state === "pending" ? d.error : null,
+      detail:
+        wait._tag === "queue_held"
+          ? wait.note
+          : wait._tag === "retrying"
+            ? retryingDetail(d.error, wait.nextAttemptAt)
+            : d.state === "pending"
+              ? d.error
+              : null,
       retry,
-      threadLink: wait._tag !== "lane_busy",
+      threadLink: wait._tag !== "lane_busy" && wait._tag !== "retrying",
       answerable: wait._tag === "waiting_on_question",
     };
   }

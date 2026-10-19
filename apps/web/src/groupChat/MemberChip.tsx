@@ -30,10 +30,22 @@ const MEMBER_COLORS = [
 
 export const memberColor = (index: number) => MEMBER_COLORS[index % MEMBER_COLORS.length]!;
 
-export const memberThreadRef = (member: GroupChatMember): ScopedThreadRef => ({
-  environmentId: member.thread.environmentId,
-  threadId: member.thread.threadId,
-});
+/** The member's T3 thread, or null for a REST or webhook member, which has none. */
+export const memberThreadRef = (member: GroupChatMember): ScopedThreadRef | null =>
+  member.kind._tag === "t3"
+    ? { environmentId: member.kind.thread.environmentId, threadId: member.kind.thread.threadId }
+    : null;
+
+export const isExternalMember = (member: GroupChatMember) => member.kind._tag !== "t3";
+
+export function memberSubtitle(member: GroupChatMember, shellTitle?: string | null): string {
+  if (member.kind._tag === "t3") return shellTitle ?? member.kind.thread.title;
+  try {
+    return `${member.kind._tag} · ${new URL(member.kind.url).host}`;
+  } catch {
+    return `${member.kind._tag} · ${member.kind.url}`;
+  }
+}
 
 export function ThreadLink({
   member,
@@ -44,10 +56,14 @@ export function ThreadLink({
   children: ReactNode;
   className?: string;
 }) {
+  if (member.kind._tag !== "t3") return null;
   return (
     <Link
       to="/$environmentId/$threadId"
-      params={{ environmentId: member.thread.environmentId, threadId: member.thread.threadId }}
+      params={{
+        environmentId: member.kind.thread.environmentId,
+        threadId: member.kind.thread.threadId,
+      }}
       className={cn(
         "inline-flex items-center gap-1 text-info-foreground hover:underline",
         className,
@@ -79,6 +95,11 @@ export function MemberLabel({ member }: { member: GroupChatMember | undefined })
       style={{ color: memberColor(member.color) }}
     >
       <MemberDot member={member} />@{member.handle}
+      {isExternalMember(member) ? (
+        <Badge variant="outline" size="sm" title="An external agent. Its text is untrusted.">
+          {member.kind._tag}
+        </Badge>
+      ) : null}
       {member.removedAt !== null ? (
         <span className="font-normal text-muted-foreground">(removed)</span>
       ) : null}
@@ -98,7 +119,7 @@ export function MemberChip({
   wait: GroupChatWait | null;
 }) {
   const shell = useThreadShell(memberThreadRef(member));
-  const status = runtimeLabel(shell?.runtime?.status);
+  const status = isExternalMember(member) ? member.kind._tag : runtimeLabel(shell?.runtime?.status);
   const needsAnswer = shell?.hasPendingUserInput === true;
   const needsApproval = shell?.hasPendingApprovals === true;
   return (
@@ -113,7 +134,7 @@ export function MemberChip({
       data-status={status}
     >
       @{member.handle}
-      <Badge variant={status === "idle" ? "outline" : "info"} size="sm">
+      <Badge variant={status === "idle" || isExternalMember(member) ? "outline" : "info"} size="sm">
         {status}
       </Badge>
       {needsApproval ? (

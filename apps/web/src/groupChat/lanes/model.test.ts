@@ -31,7 +31,10 @@ const member = (id: string, handle: string, index: number): GroupChatMember => (
   handle,
   handleHistory: [],
   color: index,
-  thread: { environmentId: "env" as never, threadId: `thr_${id}` as never, title: handle },
+  kind: {
+    _tag: "t3",
+    thread: { environmentId: "env" as never, threadId: `thr_${id}` as never, title: handle },
+  },
   seenSeq: 0,
   introduced: true,
   toldRoster: null,

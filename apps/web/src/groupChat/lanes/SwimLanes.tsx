@@ -14,7 +14,7 @@ import { isEditableFocused } from "../../lib/editableFocus";
 import { observeResize } from "../../lib/observeResize";
 import { cn } from "../../lib/utils";
 import { followAfter, type FollowEvent, geometryOf, keyTowardStart } from "../followEnd";
-import { memberColor } from "../MemberChip";
+import { memberColor, memberSubtitle } from "../MemberChip";
 import { type GroupView, loadOlder } from "../store";
 import { onControl } from "./keys";
 import { ACCENT, LaneCard, PendingCard } from "./LaneCard";
@@ -398,7 +398,7 @@ function layout(state: LayoutState, inputs: LayoutInputs) {
 const laneTitle = (lane: Lane) =>
   lane.member === null
     ? ""
-    : lane.member.thread.title + (lane.member.removedAt === null ? "" : " (removed)");
+    : memberSubtitle(lane.member) + (lane.member.removedAt === null ? "" : " (removed)");
 
 const laneDot = (lane: Lane) =>
   lane.member === null ? "var(--muted-foreground)" : memberColor(lane.member.color);

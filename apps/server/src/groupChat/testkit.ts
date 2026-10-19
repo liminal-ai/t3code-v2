@@ -10,6 +10,10 @@ import {
   RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- a throwaway agent on loopback is plain node:http.
+import * as NodeHttp from "node:http";
+import type * as NodeNet from "node:net";
+
 import type * as NodeServices from "@effect/platform-node/NodeServices";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
@@ -21,10 +25,17 @@ import * as PubSub from "effect/PubSub";
 import * as Scope from "effect/Scope";
 import * as Exit from "effect/Exit";
 import * as Stream from "effect/Stream";
+import { FetchHttpClient } from "effect/http";
 
 import * as ServerConfig from "../config.ts";
-import { type GroupChatEngine, RetryDelay } from "./engine.ts";
+import {
+  ExternalDeliveryConfig,
+  type ExternalDeliverySettings,
+  type GroupChatEngine,
+  RetryDelay,
+} from "./engine.ts";
 import * as GroupChatLayer from "./layer.ts";
+import * as Reach from "./reach.ts";
 import type { GroupChatStore, StoreError } from "./store.ts";
 import {
   GroupChatThreadPort,
@@ -538,7 +549,11 @@ const neverPort: GroupChatThreadPort["Service"] = {
   respond: () => Effect.never,
 };
 
-export const layerNeverPort = Layer.succeed(GroupChatThreadPort, neverPort);
+export const layerNeverPort = Layer.mergeAll(
+  Layer.succeed(GroupChatThreadPort, neverPort),
+  Reach.layerFixed({ exposed: false, origin: "http://127.0.0.1:1" }),
+  FetchHttpClient.layer,
+);
 
 const layerFakePort = (fake: FakeThreads) => Layer.succeed(GroupChatThreadPort, fake.port);
 
@@ -553,14 +568,33 @@ export interface App {
   readonly dispatch: GroupChatEngine["Service"]["dispatch"];
 }
 
+export const FAKE_ORIGIN = "http://127.0.0.1:1";
+
+const FAST_EXTERNAL: ExternalDeliverySettings = {
+  maxAttempts: 3,
+  backoffBase: "10 millis",
+  callbackTimeout: "300 millis",
+  restTimeout: "300 millis",
+  webhookPostTimeout: "300 millis",
+};
+
 export const boot = (
   fake: FakeThreads,
   baseDir: string,
+  options: {
+    readonly external?: Partial<ExternalDeliverySettings>;
+    readonly exposed?: boolean;
+  } = {},
 ): Effect.Effect<App, never, Scope.Scope | NodeServices.NodeServices> =>
   Effect.gen(function* () {
     const layer = GroupChatLayer.layer.pipe(
       Layer.provide(layerFakePort(fake)),
       Layer.provide(Layer.succeed(RetryDelay, "10 millis")),
+      Layer.provide(
+        Layer.succeed(ExternalDeliveryConfig, { ...FAST_EXTERNAL, ...options.external }),
+      ),
+      Layer.provide(Reach.layerFixed({ exposed: options.exposed ?? false, origin: FAKE_ORIGIN })),
+      Layer.provide(FetchHttpClient.layer),
       Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
       Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
     );
@@ -592,3 +626,84 @@ export const boot = (
 export const tempBaseDir = Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
   fileSystem.makeTempDirectoryScoped({ prefix: "t3-group-chat-" }),
 );
+
+export interface AgentCall {
+  readonly url: string;
+  readonly headers: NodeHttp.IncomingHttpHeaders;
+  readonly body: string;
+}
+
+export interface AgentAnswer {
+  readonly status: number;
+  readonly body: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  /** Milliseconds to hold the whole answer back, so a test can act while the request is open. */
+  readonly delayMs?: number;
+  /** `hang` sends the headers and one byte and never ends; `chunked` sends the body without a content-length. */
+  readonly mode?: "hang" | "chunked";
+}
+
+export interface FakeAgent {
+  readonly url: string;
+  readonly calls: Array<AgentCall>;
+  answer: (call: AgentCall) => AgentAnswer;
+}
+
+export const fakeAgent = (
+  answer: (call: AgentCall) => AgentAnswer,
+): Effect.Effect<FakeAgent, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.callback<FakeAgent>((resume) => {
+      const calls: Array<AgentCall> = [];
+      const agent: FakeAgent = { url: "", calls, answer };
+      const server = NodeHttp.createServer((request, response) => {
+        const chunks: Array<Buffer> = [];
+        request.on("data", (chunk: Buffer) => chunks.push(chunk));
+        request.on("end", async () => {
+          const call: AgentCall = {
+            url: request.url ?? "/",
+            headers: request.headers,
+            body: Buffer.concat(chunks).toString("utf8"),
+          };
+          calls.push(call);
+          const answered = agent.answer(call);
+          if (answered.delayMs !== undefined) {
+            // @effect-diagnostics-next-line globalTimers:off -- the agent is plain node:http outside Effect.
+            await new Promise((resolve) => setTimeout(resolve, answered.delayMs));
+          }
+          response.writeHead(answered.status, {
+            "content-type": "application/json",
+            ...answered.headers,
+          });
+          if (answered.mode === "hang") {
+            response.write(answered.body.slice(0, 1));
+            return;
+          }
+          if (answered.mode === "chunked") {
+            for (let at = 0; at < answered.body.length; at += 65_536) {
+              response.write(answered.body.slice(at, at + 65_536));
+            }
+            response.end();
+            return;
+          }
+          response.end(answered.body);
+        });
+      });
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address() as NodeNet.AddressInfo;
+        resume(
+          Effect.succeed(
+            Object.assign(agent, {
+              url: `http://127.0.0.1:${address.port}/agent`,
+              close: () =>
+                new Promise<void>((resolve) => {
+                  server.closeAllConnections();
+                  server.close(() => resolve());
+                }),
+            }),
+          ),
+        );
+      });
+    }),
+    (agent) => Effect.promise(() => (agent as FakeAgent & { close: () => Promise<void> }).close()),
+  );

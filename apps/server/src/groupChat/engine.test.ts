@@ -7,9 +7,18 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as PubSub from "effect/PubSub";
+import * as Tracer from "effect/Tracer";
 
 import type { DeliveryRow } from "./store.ts";
-import { type App, boot, type FakeThreads, makeFakeThreads, tempBaseDir } from "./testkit.ts";
+import {
+  type App,
+  boot,
+  fakeAgent,
+  type FakeThreads,
+  makeFakeThreads,
+  tempBaseDir,
+} from "./testkit.ts";
 
 const alpha = ThreadId.make("alpha");
 const bravo = ThreadId.make("bravo");
@@ -26,7 +35,8 @@ const setup = (threads: ReadonlyArray<ThreadId>) =>
     });
     const group = created._tag === "group" ? created.group : assert.fail("group");
     const members = yield* app.store.members(group.id, true);
-    const member = (threadId: ThreadId) => members.find((m) => m.thread.threadId === threadId)!;
+    const member = (threadId: ThreadId) =>
+      members.find((m) => m.kind._tag === "t3" && m.kind.thread.threadId === threadId)!;
     return { fake, app, group, member };
   });
 
@@ -417,3 +427,551 @@ it.layer(NodeServices.layer)("group chat engine rules", (it) => {
       }).pipe(Effect.scoped),
   );
 });
+
+const externalConfig = (url: string, secret = "") => ({
+  url,
+  headers: {},
+  bodyTemplate: "",
+  replyPath: "",
+  secret,
+  callbackOrigin: "",
+});
+
+const addExternal = (
+  app: App,
+  groupId: GroupChatGroupId,
+  handle: string,
+  kind: "rest" | "webhook",
+  url: string,
+) =>
+  Effect.map(
+    app.dispatch({
+      _tag: "member.addExternal",
+      groupId,
+      handle,
+      kind,
+      config: externalConfig(url),
+    }),
+    (result) => (result._tag === "member" ? result.member : assert.fail("member")),
+  );
+
+const deliveryOf = (
+  app: App,
+  memberId: GroupChatMemberId,
+  predicate: (d: DeliveryRow) => boolean,
+) =>
+  Effect.map(
+    app.until(app.store.deliveriesOfMember(memberId), (rows) => rows.some(predicate)),
+    (rows) => rows.find(predicate)!,
+  );
+
+it.layer(NodeServices.layer)("group chat engine, external members", (it) => {
+  it.effect("reserved handles are refused on external members", () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const add = (handle: string) =>
+        app.dispatch({
+          _tag: "member.addExternal",
+          groupId: group.id,
+          handle,
+          kind: "rest",
+          config: externalConfig("http://127.0.0.1:1/x"),
+        });
+      assert.match((yield* add("operator").pipe(Effect.flip)).message, /reserved/);
+      assert.match((yield* add("System").pipe(Effect.flip)).message, /reserved/);
+      const derived = yield* add("");
+      assert.strictEqual(derived._tag === "member" ? derived.member.handle : "", "rest");
+      assert.match(
+        yield* add("ok").pipe(
+          Effect.map(() => ""),
+          Effect.catch((e) => Effect.succeed(e.message)),
+        ),
+        /^$/,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a callback origin on another machine needs a secret even on a loopback server", () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const add = (callbackOrigin: string, secret: string) =>
+        app.dispatch({
+          _tag: "member.addExternal",
+          groupId: group.id,
+          handle: "",
+          kind: "webhook",
+          config: { ...externalConfig("http://127.0.0.1:1/x", secret), callbackOrigin },
+        });
+      const refused = yield* add("https://agent.example", "").pipe(Effect.flip);
+      assert.strictEqual(refused._tag, "GroupChatRefused");
+      assert.match(refused.message, /callback origin points beyond this machine.*needs a secret/);
+      assert.strictEqual((yield* add("http://127.0.0.1:9", ""))._tag, "member");
+      assert.strictEqual((yield* add("https://agent.example", "s3cret"))._tag, "member");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("a callback origin is a bare http(s) origin", () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const add = (callbackOrigin: string) =>
+        app.dispatch({
+          _tag: "member.addExternal",
+          groupId: group.id,
+          handle: "",
+          kind: "webhook",
+          config: { ...externalConfig("http://127.0.0.1:1/x", "s3cret"), callbackOrigin },
+        });
+      for (const bad of [
+        "https://agent.example?base=1",
+        "https://agent.example/hooks",
+        "https://agent.example/#x",
+        "agent.example",
+      ]) {
+        assert.match((yield* add(bad).pipe(Effect.flip)).message, /origin/, bad);
+      }
+      const added = yield* add("https://agent.example/");
+      const member = added._tag === "member" ? added.member : assert.fail("member");
+      assert.strictEqual(
+        member.kind._tag === "webhook" ? member.kind.callbackOrigin : "",
+        "https://agent.example",
+      );
+      const url = yield* app.dispatch({ _tag: "member.inboundUrl", memberId: member.id });
+      assert.match(
+        url._tag === "url" ? url.url : "",
+        /^https:\/\/agent\.example\/api\/hooks\/group-chat\/inbound\//,
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("only a 1 MB safety cap applies at ingestion, and it keeps the head and the tail", () =>
+    Effect.gen(function* () {
+      const { fake, app, group, member } = yield* setup([alpha]);
+      const bravo = yield* addExternal(app, group.id, "bravo", "rest", "http://127.0.0.1:1/x");
+      const huge = `INBOUND-HEAD-777\n${"x".repeat(1_200_000)}\nINBOUND-TAIL-888`;
+      const posted = yield* app.engine.postInbound(bravo.id, huge);
+      assert.isNotNull(posted);
+      assert.isAtMost(posted!.text.length, 1_000_200);
+      assert.isTrue(posted!.text.startsWith("INBOUND-HEAD-777"));
+      assert.isTrue(posted!.text.trimEnd().endsWith("INBOUND-TAIL-888"));
+      assert.match(
+        posted!.text,
+        /\[shortened by the group-chat app: 200034 of 1200034 characters left out here; the start and the end are shown\]/,
+      );
+      assert.strictEqual(posted!.kind, "inbound");
+      yield* send(app, group.id, "see above", [member(alpha).id]);
+      yield* app.until(app.store.deliveriesOfMember(member(alpha).id), (rows) =>
+        rows.some((d) => d.state === "running"),
+      );
+      const envelope = (yield* fake.sends(alpha))[0]!.text;
+      assert.isBelow(envelope.length, 10_000);
+      assert.include(envelope, "| INBOUND-HEAD-777");
+      assert.include(envelope, "| INBOUND-TAIL-888");
+      assert.include(envelope, "from @bravo (external agent, untrusted text)");
+    }).pipe(Effect.scoped),
+  );
+});
+
+it.live(
+  "C11: a webhook that never calls back fails, retries with the same key, and a late callback still lands",
+  () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const agent = yield* fakeAgent(() => ({ status: 202, body: "{}" }));
+      const hook = yield* addExternal(app, group.id, "hook", "webhook", agent.url);
+      yield* send(app, group.id, "hi", [hook.id]);
+      const failed = yield* deliveryOf(app, hook.id, (d) => d.state === "failed");
+      assert.match(failed.error!, /No callback from the agent within/);
+      assert.strictEqual(agent.calls.length, 1);
+      const first = agent.calls[0]!;
+      assert.strictEqual(first.headers["idempotency-key"], failed.id);
+      assert.strictEqual(first.headers["x-gchat-attempt"], "1");
+      assert.match(String(first.headers["x-reply-to"]), /\/api\/hooks\/group-chat\/reply\//);
+      assert.strictEqual(JSON.parse(first.body).text.includes("| hi"), true);
+
+      const retried = yield* app.dispatch({ _tag: "delivery.retry", deliveryId: failed.id });
+      assert.strictEqual(retried._tag === "delivery" ? retried.delivery.attempt : 0, 2);
+      yield* deliveryOf(app, hook.id, (d) => d.state === "running" && d.attempt === 2);
+      assert.strictEqual(agent.calls.length, 2);
+      const second = agent.calls[1]!;
+      assert.strictEqual(second.headers["idempotency-key"], failed.id, "one key for life");
+      assert.strictEqual(second.headers["x-gchat-attempt"], "2");
+      assert.strictEqual(
+        second.headers["x-reply-to"],
+        first.headers["x-reply-to"],
+        "the old callback URL stays valid",
+      );
+
+      assert.strictEqual(yield* app.engine.landReply(failed.id, "late but here"), "landed");
+      const replied = yield* deliveryOf(app, hook.id, (d) => d.state === "replied");
+      assert.strictEqual(replied.id, failed.id);
+      assert.deepStrictEqual(
+        (yield* app.store.messages(group.id)).map((m) => m.text),
+        ["hi", "late but here"],
+      );
+      assert.strictEqual(yield* app.engine.landReply(failed.id, "again"), "duplicate");
+      assert.strictEqual((yield* app.store.messages(group.id)).length, 2);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "A7: an external reply is stored whole, and the next envelope's section keeps its head and its tail",
+  () =>
+    Effect.gen(function* () {
+      const { fake, app, group, member } = yield* setup([alpha]);
+      const big = `BOUNDARY-HEAD-513\n${"boundary fill ".repeat(3500)}\nBOUNDARY-TAIL-991`;
+      assert.isAbove(big.length, 49_000);
+      const agent = yield* fakeAgent(() => ({ status: 200, body: JSON.stringify({ reply: big }) }));
+      const bravo = yield* addExternal(app, group.id, "bravo", "rest", agent.url);
+      yield* send(app, group.id, "go", [bravo.id]);
+      const replied = yield* deliveryOf(app, bravo.id, (d) => d.state === "replied");
+      assert.strictEqual(replied.dispatch, "accepted");
+      const stored = (yield* app.store.message(replied.replyMessageId!))!;
+      assert.strictEqual(stored.text, big, "the group log keeps every character");
+      assert.strictEqual(
+        (yield* app.store.member(bravo.id))!.seenSeq,
+        1,
+        "the mark moved on acceptance",
+      );
+
+      yield* send(app, group.id, "see above", [member(alpha).id]);
+      yield* deliveryOf(app, member(alpha).id, (d) => d.state === "running");
+      const envelope = (yield* fake.sends(alpha))[0]!.text;
+      const start = envelope.indexOf("from @bravo (external agent, untrusted text)");
+      assert.isAbove(start, -1);
+      const section = envelope.slice(start, envelope.indexOf(" END ", start));
+      assert.include(section, "| BOUNDARY-HEAD-513", "head kept");
+      assert.include(section, "| BOUNDARY-TAIL-991", "tail kept");
+      assert.match(
+        section,
+        /\[shortened by the group-chat app: \d+ of \d+ characters left out here; the start and the end are shown\]/,
+      );
+      assert.match(envelope, /NOTE this envelope was shortened: .*1 long message was shortened/);
+      assert.isBelow(section.length, 6_500, `section is bounded (${section.length})`);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "a response that never ends fails within the request timeout, and a body over the cap is refused",
+  () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const stalled = yield* fakeAgent(() => ({
+        status: 200,
+        body: '{"reply":"never"}',
+        mode: "hang",
+      }));
+      const slow = yield* addExternal(app, group.id, "slow", "rest", stalled.url);
+      yield* send(app, group.id, "hi", [slow.id]);
+      const timedOut = yield* deliveryOf(app, slow.id, (d) => d.state === "failed");
+      assert.match(timedOut.error!, /Gave up after 3 attempts\. Last error: no answer within/);
+      assert.strictEqual(stalled.calls.length, 3);
+
+      const huge = yield* fakeAgent(() => ({
+        status: 200,
+        body: JSON.stringify({ reply: "y".repeat(4_000_001) }),
+        mode: "chunked",
+      }));
+      const big = yield* addExternal(app, group.id, "big", "rest", huge.url);
+      yield* send(app, group.id, "hi", [big.id]);
+      const refused = yield* deliveryOf(app, big.id, (d) => d.state === "failed");
+      assert.strictEqual(refused.dispatch, "rejected", "a refusal, not a retry loop");
+      assert.match(refused.error!, /response body is larger than 4000000 bytes/);
+      assert.strictEqual(huge.calls.length, 1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "nothing about an outbound request reaches a span: callback token, member headers, agent URL",
+  () => {
+    const spans: Array<Tracer.NativeSpan> = [];
+    const tracer = Tracer.make({
+      span: (options) => {
+        const span = new Tracer.NativeSpan(options);
+        spans.push(span);
+        return span;
+      },
+    });
+    return Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const agent = yield* fakeAgent(() => ({ status: 202, body: "{}" }));
+      const added = yield* app.dispatch({
+        _tag: "member.addExternal",
+        groupId: group.id,
+        handle: "hook",
+        kind: "webhook",
+        config: {
+          ...externalConfig(`${agent.url}?key=agent-url-secret`, "member-shared-secret"),
+          headers: { "x-api-key": "agent-header-secret" },
+        },
+      });
+      const hook = added._tag === "member" ? added.member : assert.fail("member");
+      yield* send(app, group.id, "hi", [hook.id]);
+      const accepted = yield* deliveryOf(app, hook.id, (d) => d.state === "running");
+      const callbackToken = accepted.external?.callbackToken ?? assert.fail("callback token");
+      const inboundToken = (yield* app.store.member(hook.id))!.external!.inboundToken;
+      const sentHeaders = agent.calls[0]!.headers;
+      assert.include(
+        String(sentHeaders["x-reply-to"]),
+        callbackToken,
+        "the agent got the callback URL",
+      );
+      assert.strictEqual(sentHeaders["x-api-key"], "agent-header-secret");
+      assert.isString(sentHeaders["x-signature"]);
+      const recorded = spans.flatMap((span) => [
+        span.name,
+        ...[...span.attributes.entries()].map(([key, value]) => `${key}=${String(value)}`),
+      ]);
+      for (const secret of [
+        callbackToken,
+        inboundToken,
+        "agent-url-secret",
+        "agent-header-secret",
+        "member-shared-secret",
+        String(sentHeaders["x-signature"]),
+        "x-reply-to",
+        "x-api-key",
+      ]) {
+        assert.isFalse(
+          recorded.some((entry) => entry.includes(secret)),
+          `a span carries ${secret}: ${recorded.find((entry) => entry.includes(secret))}`,
+        );
+      }
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(Tracer.Tracer, tracer),
+      Effect.provide(NodeServices.layer),
+    );
+  },
+);
+
+it.live(
+  "a Stop during an external member's retry backoff makes its later callback a late reply",
+  () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeThreads;
+      const app = yield* boot(fake, yield* tempBaseDir, {
+        external: { backoffBase: "500 millis", maxAttempts: 5 },
+      });
+      const created = yield* app.dispatch({
+        _tag: "group.create",
+        title: "Crew",
+        threadIds: [alpha],
+      });
+      const group = created._tag === "group" ? created.group : assert.fail("group");
+      const members = yield* app.store.members(group.id, true);
+      const alphaMember = members.find((m) => m.kind._tag === "t3")!;
+      const agent = yield* fakeAgent(() => ({ status: 503, body: '{"error":"down"}' }));
+      const hook = yield* addExternal(app, group.id, "hook", "webhook", agent.url);
+      yield* send(app, group.id, "hi", [hook.id]);
+      const waiting = yield* deliveryOf(app, hook.id, (d) => d.wait?._tag === "retrying");
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: waiting.id });
+      const stopped = yield* deliveryOf(app, hook.id, (d) => d.state === "cancelled");
+      assert.strictEqual(stopped.withdrawn, "stopped by operator");
+
+      // The agent got the first request after all and calls back after the Stop.
+      assert.strictEqual(yield* app.engine.landReply(waiting.id, "late view"), "landed");
+      const messages = yield* app.store.messages(group.id);
+      const reply = messages.find((m) => m.text === "late view") ?? assert.fail("the reply landed");
+      assert.isTrue(reply.late, "a reply the operator stopped counts for nothing");
+
+      yield* send(app, group.id, "catch up", [alphaMember.id]);
+      yield* deliveryOf(app, alphaMember.id, (d) => d.state === "running");
+      const envelope = (yield* fake.sends(alpha))[0]!.text;
+      assert.notInclude(
+        envelope,
+        "late view",
+        "a stopped reply is never put in front of another member",
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "an outbound request never follows a redirect, and a failure message never repeats a secret",
+  () =>
+    Effect.gen(function* () {
+      const { app, group } = yield* setup([alpha]);
+      const elsewhere = yield* fakeAgent(() => ({ status: 200, body: '{"reply":"stolen"}' }));
+      const redirecting = yield* fakeAgent(() => ({
+        status: 307,
+        body: "",
+        headers: { location: elsewhere.url },
+      }));
+      const moved = yield* addExternal(app, group.id, "moved", "rest", redirecting.url);
+      yield* send(app, group.id, "hi", [moved.id]);
+      const refused = yield* deliveryOf(app, moved.id, (d) => d.state === "failed");
+      assert.strictEqual(refused.dispatch, "rejected");
+      assert.match(refused.error!, /HTTP 307: the endpoint redirects/);
+      assert.strictEqual(elsewhere.calls.length, 0, "nothing went to the redirect target");
+      assert.strictEqual(redirecting.calls.length, 1);
+
+      const echoing = yield* fakeAgent((call) => ({ status: 400, body: call.body }));
+      const added = yield* app.dispatch({
+        _tag: "member.addExternal",
+        groupId: group.id,
+        handle: "echo",
+        kind: "webhook",
+        config: {
+          ...externalConfig(`${echoing.url}?key=agent-url-secret`, "member-shared-secret"),
+          headers: { "x-api-key": "agent-header-secret" },
+          bodyTemplate:
+            '{"cb": "{{callbackUrl}}", "inbound": "{{inboundUrl}}", "key": "agent-header-secret", "text": "{{envelope}}"}',
+        },
+      });
+      const echo = added._tag === "member" ? added.member : assert.fail("member");
+      yield* send(app, group.id, "hi", [echo.id]);
+      const failed = yield* deliveryOf(app, echo.id, (d) => d.state === "failed");
+      const callbackToken = failed.external?.callbackToken ?? assert.fail("callback token");
+      const inboundToken = (yield* app.store.member(echo.id))!.external!.inboundToken;
+      assert.match(failed.error!, /^HTTP 400: /);
+      assert.include(echoing.calls[0]!.body, callbackToken, "the agent did get the callback URL");
+      for (const secret of [
+        callbackToken,
+        inboundToken,
+        "agent-url-secret",
+        "agent-header-secret",
+        "member-shared-secret",
+      ]) {
+        assert.notInclude(failed.error!, secret, `the stored error repeats ${secret}`);
+      }
+      assert.include(failed.error!, "<redacted>");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("a secret the agent echoes across the excerpt's end leaves no prefix in the error", () =>
+  Effect.gen(function* () {
+    const { app, group } = yield* setup([alpha]);
+    const key = "straddle-0123456789abcdef0123456789abcdef0123456789abcdef";
+    const echoing = yield* fakeAgent((call) => ({
+      status: 400,
+      body: `${"x".repeat(184)}${String(call.headers["x-api-key"])} rest of the error`,
+    }));
+    const added = yield* app.dispatch({
+      _tag: "member.addExternal",
+      groupId: group.id,
+      handle: "echo",
+      kind: "rest",
+      config: { ...externalConfig(echoing.url), headers: { "x-api-key": key } },
+    });
+    const echo = added._tag === "member" ? added.member : assert.fail("member");
+    yield* send(app, group.id, "hi", [echo.id]);
+    const failed = yield* deliveryOf(app, echo.id, (d) => d.state === "failed");
+    for (let length = 4; length <= key.length; length++) {
+      assert.notInclude(failed.error!, key.slice(0, length), "the stored error repeats the key");
+    }
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "a webhook callback that beats its own acknowledgement still moves the member's seen mark",
+  () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeThreads;
+      const app = yield* boot(fake, yield* tempBaseDir, {
+        external: { webhookPostTimeout: "5 seconds" },
+      });
+      const created = yield* app.dispatch({
+        _tag: "group.create",
+        title: "Crew",
+        threadIds: [alpha],
+      });
+      const group = created._tag === "group" ? created.group : assert.fail("group");
+      const agent = yield* fakeAgent(() => ({ status: 202, body: "{}", delayMs: 700 }));
+      const hook = yield* addExternal(app, group.id, "hook", "webhook", agent.url);
+      yield* send(app, group.id, "hi", [hook.id]);
+      const inFlight = yield* deliveryOf(
+        app,
+        hook.id,
+        (d) => d.dispatch === "sending" && d.external?.callbackToken !== null,
+      );
+      assert.strictEqual(yield* app.engine.landReply(inFlight.id, "fast answer"), "landed");
+      yield* send(app, group.id, "again", [hook.id]);
+      yield* deliveryOf(
+        app,
+        hook.id,
+        (d) => d.triggerMessageId !== inFlight.triggerMessageId && d.dispatch === "accepted",
+      );
+      const second = JSON.parse(agent.calls[1]!.body).text as string;
+      assert.notInclude(second, "ABOUT THIS GROUP CHAT", "the intro is not repeated");
+      assert.notInclude(second, "| hi\n", "the old message is not repeated");
+      assert.include(second, "| again");
+      const first = (yield* app.store.deliveriesOfMember(hook.id)).find(
+        (d) => d.id === inFlight.id,
+      )!;
+      assert.strictEqual(first.dispatch, "accepted");
+      assert.strictEqual(first.state, "replied");
+      const member = (yield* app.store.member(hook.id))!;
+      assert.strictEqual(member.seenSeq, 3);
+      assert.isTrue(member.introduced);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live(
+  "a webhook callback that lands after its acknowledgement timed out still moves the member's seen mark",
+  () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeThreads;
+      const app = yield* boot(fake, yield* tempBaseDir, {
+        external: { webhookPostTimeout: "300 millis", backoffBase: "1 minute" },
+      });
+      const created = yield* app.dispatch({
+        _tag: "group.create",
+        title: "Crew",
+        threadIds: [alpha],
+      });
+      const group = created._tag === "group" ? created.group : assert.fail("group");
+      let calls = 0;
+      const agent = yield* fakeAgent(() =>
+        calls++ === 0 ? { status: 202, body: "{}", delayMs: 1_500 } : { status: 202, body: "{}" },
+      );
+      const hook = yield* addExternal(app, group.id, "hook", "webhook", agent.url);
+      yield* send(app, group.id, "hi", [hook.id]);
+      const timedOut = yield* deliveryOf(app, hook.id, (d) => d.wait?._tag === "retrying");
+      assert.strictEqual(yield* app.engine.landReply(timedOut.id, "answer anyway"), "landed");
+      yield* send(app, group.id, "again", [hook.id]);
+      yield* deliveryOf(
+        app,
+        hook.id,
+        (d) => d.triggerMessageId !== timedOut.triggerMessageId && d.dispatch === "accepted",
+      );
+      const second = JSON.parse(agent.calls[1]!.body).text as string;
+      assert.notInclude(second, "ABOUT THIS GROUP CHAT", "the intro is not repeated");
+      assert.notInclude(second, "| hi\n", "the old message is not repeated");
+      assert.include(second, "| again");
+      const first = (yield* app.store.deliveriesOfMember(hook.id)).find(
+        (d) => d.id === timedOut.id,
+      )!;
+      assert.strictEqual(first.dispatch, "accepted");
+      assert.strictEqual(first.state, "replied");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.live("a REST reply is stored in the same transaction as its acceptance", () =>
+  Effect.gen(function* () {
+    const { app, group } = yield* setup([alpha]);
+    const agent = yield* fakeAgent(() => ({ status: 200, body: '{"reply":"at once"}' }));
+    const rest = yield* addExternal(app, group.id, "rest", "rest", agent.url);
+    const changes = yield* PubSub.subscribe(app.store.changes);
+    const seen: Array<string> = [];
+    yield* Effect.forkScoped(
+      Effect.forever(
+        Effect.map(PubSub.take(changes), ({ change }) => {
+          if (change._tag === "delivery") {
+            seen.push(
+              `${change.delivery.memberId} ${change.delivery.state}/${change.delivery.dispatch}`,
+            );
+          }
+        }),
+      ),
+    );
+    yield* send(app, group.id, "hi", [rest.id]);
+    yield* deliveryOf(app, rest.id, (d) => d.state === "replied");
+    yield* Effect.sleep("100 millis");
+    const states = seen.filter((s) => s.startsWith(rest.id)).map((s) => s.split(" ")[1]!);
+    assert.notInclude(
+      states,
+      "running/accepted",
+      `accepted without its reply was published: ${states.join(", ")}`,
+    );
+    assert.include(states, "replied/accepted");
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
