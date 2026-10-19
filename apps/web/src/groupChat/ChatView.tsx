@@ -10,12 +10,24 @@ import type {
 } from "@t3tools/contracts";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  TYPE_TO_FOCUS_EDITABLE_SELECTOR,
+  TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR,
+} from "../components/chat/composerFocusRedirect";
+import { isTimelineScrollTarget } from "../components/chat/timelineScrollTarget";
 import { useStableCallback } from "../hooks/useStableCallback";
 import { cn } from "../lib/utils";
 import { Composer } from "./Composer";
 import { PendingReply } from "./DeliveryStatus";
 import { DiscussionPanel } from "./discussion/DiscussionPanel";
 import { panelDiscussion, roundDivider } from "./discussion/discussionView";
+import {
+  followAfterScroll,
+  geometryOf,
+  gestureLeavesEnd,
+  keyTowardStart,
+  type ReaderGesture,
+} from "./followEnd";
 import { MemberMessage, OperatorMessage, SystemDivider } from "./MessageRow";
 import {
   deliveriesByTrigger,
@@ -47,6 +59,77 @@ function ListHeader({ view }: { view: GroupView }) {
         : "The start of this group chat"}
     </p>
   );
+}
+
+/**
+ * Keeps the list pinned to its end while the reader stays there, the way the thread timeline
+ * does. LegendList's own threshold band is too narrow: a reply measured taller than its pending
+ * row drifted the viewport past it in one step and nothing re-pinned. So the band is the whole
+ * viewport, and only a reader's gesture turns following off.
+ */
+function useFollowEnd(listRef: React.RefObject<LegendListRef | null>) {
+  const [following, setFollowing] = useState(true);
+  const followingRef = useRef(true);
+  const update = useStableCallback((next: boolean) => {
+    if (followingRef.current === next) return;
+    followingRef.current = next;
+    setFollowing(next);
+  });
+  const onScroll = useStableCallback(() => {
+    const node = listRef.current?.getScrollableNode();
+    if (node) update(followAfterScroll(followingRef.current, geometryOf(node)));
+  });
+  const leave = useStableCallback(() => update(false));
+
+  useEffect(() => {
+    const node = listRef.current?.getScrollableNode();
+    if (!node) return;
+    const onGesture = (gesture: ReaderGesture) => {
+      if (gestureLeavesEnd(gesture, geometryOf(node))) update(false);
+    };
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || !isTimelineScrollTarget(event.target, node, event.deltaY)) return;
+      onGesture({ kind: "wheel", deltaY: event.deltaY });
+    };
+    const onTouchMove = () => onGesture({ kind: "touch" });
+    // A scrollbar drag is the one pointerdown whose target is the scroll node itself.
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target === node) onGesture({ kind: "scrollbar" });
+    };
+    // A click on message text can leave focus on the body, so scroll keys are heard there too.
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (
+        !keyTowardStart(event.key) ||
+        !(event.target instanceof Node) ||
+        (!node.contains(event.target) &&
+          event.target !== document.body &&
+          event.target !== document.documentElement) ||
+        event.defaultPrevented ||
+        event.altKey ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        (event.target instanceof Element &&
+          event.target.closest(TYPE_TO_FOCUS_EDITABLE_SELECTOR)) ||
+        document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)
+      ) {
+        return;
+      }
+      onGesture({ kind: "key", key: event.key });
+    };
+    node.addEventListener("wheel", onWheel, { passive: true });
+    node.addEventListener("touchmove", onTouchMove, { passive: true });
+    node.addEventListener("pointerdown", onPointerDown, { passive: true });
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      node.removeEventListener("wheel", onWheel);
+      node.removeEventListener("touchmove", onTouchMove);
+      node.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [listRef, update]);
+
+  return { following, onScroll, leave };
 }
 
 const dismissedKey = (groupId: GroupChatGroupId) => `t3.groupChat.dismissedDiscussion.${groupId}`;
@@ -124,6 +207,7 @@ const makeRenderItem =
 
 export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: GroupView }) {
   const listRef = useRef<LegendListRef>(null);
+  const follow = useFollowEnd(listRef);
   const [flashId, setFlashId] = useState<GroupChatMessageId | null>(null);
   const [dismissed, setDismissed] = useState(() => readDismissed(groupId));
   if (dismissed.groupId !== groupId) setDismissed(readDismissed(groupId));
@@ -153,6 +237,7 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
         (row) => row.kind === "message" && row.message.id === messageId,
       );
       if (index !== -1) {
+        follow.leave();
         await listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.4 });
         setFlashId(messageId);
         return;
@@ -196,9 +281,10 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
         renderItem={renderItem}
         estimatedItemSize={ESTIMATED_ROW_HEIGHT}
         initialScrollAtEnd
-        maintainScrollAtEnd
-        maintainScrollAtEndThreshold={0.15}
+        maintainScrollAtEnd={follow.following}
+        maintainScrollAtEndThreshold={1}
         maintainVisibleContentPosition
+        onScroll={follow.onScroll}
         onStartReached={loadOlderPage}
         onStartReachedThreshold={0.5}
         ListHeaderComponent={<ListHeader view={view} />}
