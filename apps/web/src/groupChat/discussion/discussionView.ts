@@ -35,8 +35,7 @@ export interface DiscussionView {
   readonly replied: ReadonlyArray<ParticipantRow>;
   readonly signedOff: ReadonlyArray<ParticipantRow>;
   readonly waitingOn: ReadonlyArray<ParticipantRow>;
-  /** Participants the round waits on for a stated reason, each with its thread to open. */
-  readonly waits: ReadonlyArray<ParticipantRow>;
+  readonly waitLines: ReadonlyArray<ParticipantRow>;
   readonly endSentence: string | null;
 }
 
@@ -58,25 +57,27 @@ function statusOf(
     return { _tag: "signed_off" };
   }
   if (delivery === undefined) return { _tag: "no_delivery" };
+  if (stoppedInT3(delivery)) return { _tag: "paused", delivery };
   switch (delivery.state) {
     case "replied":
       return delivery.withdrawn === null && reply?.late !== true
         ? { _tag: "replied" }
         : { _tag: "late" };
+    case "failed":
+      return { _tag: "failed", delivery };
     case "cancelled":
       return { _tag: "cancelled", delivery };
-    case "failed":
     case "pending":
     case "queued":
     case "running":
-      // A lane T3 stopped is paused whether the stopped reply failed this delivery or this one
-      // waits behind it; both come back by Retry.
-      if (delivery.wait?._tag === "stopped_in_t3") return { _tag: "paused", delivery };
-      return delivery.state === "failed"
-        ? { _tag: "failed", delivery }
-        : { _tag: "open", delivery };
+      return { _tag: "open", delivery };
   }
 }
+
+const stoppedInT3 = (delivery: GroupChatPageDelivery) =>
+  delivery.wait?._tag === "stopped_in_t3" &&
+  delivery.state !== "replied" &&
+  delivery.state !== "cancelled";
 
 const hasWaitLine = (row: ParticipantRow) =>
   row.member !== undefined &&
@@ -117,7 +118,7 @@ export function discussionView(view: GroupView, id: GroupChatDiscussionId): Disc
     ),
     signedOff: participants.filter((p) => p.status._tag === "signed_off"),
     waitingOn: participants.filter((p) => WAITING.has(p.status._tag)),
-    waits: participants.filter(hasWaitLine),
+    waitLines: participants.filter(hasWaitLine),
     endSentence: endSentence(discussion),
   };
 }
@@ -192,9 +193,7 @@ export function roundDivider(
   if (discussion === undefined || message.round === null) return null;
   if (message.kind === "discussion_prompt") return roundOf(1, discussion);
   if (message.kind !== "system") return null;
-  // The engine ties each round marker to the prompt that started the discussion. The end marker
-  // is the one system message of a discussion without that trigger.
-  if (message.triggerMessageId !== null) return roundOf(message.round, discussion);
+  if (!isEndMarker(message)) return roundOf(message.round, discussion);
   const sentence = endSentence(discussion);
   if (sentence === null) return { _tag: "ended", endSentence: message.displayText, note: null };
   const own = `Discussion ended: ${discussion.endReason}.`;
@@ -203,6 +202,9 @@ export function roundDivider(
     : "";
   return { _tag: "ended", endSentence: sentence, note: note === "" ? null : note };
 }
+
+const isEndMarker = (message: GroupChatMessage) =>
+  message.kind === "system" && message.triggerMessageId === null;
 
 const roundOf = (round: number, discussion: GroupChatDiscussion): RoundDivider => ({
   _tag: "round",

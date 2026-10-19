@@ -21,13 +21,7 @@ import { Composer } from "./Composer";
 import { PendingReply } from "./DeliveryStatus";
 import { DiscussionPanel } from "./discussion/DiscussionPanel";
 import { panelDiscussion, roundDivider } from "./discussion/discussionView";
-import {
-  followAfterScroll,
-  geometryOf,
-  gestureLeavesEnd,
-  keyTowardStart,
-  type ReaderGesture,
-} from "./followEnd";
+import { followAfter, type FollowEvent, geometryOf, keyTowardStart } from "./followEnd";
 import { MemberMessage, OperatorMessage, SystemDivider } from "./MessageRow";
 import {
   deliveriesByTrigger,
@@ -61,12 +55,15 @@ function ListHeader({ view }: { view: GroupView }) {
   );
 }
 
-/**
- * Keeps the list pinned to its end while the reader stays there, the way the thread timeline
- * does. LegendList's own threshold band is too narrow: a reply measured taller than its pending
- * row drifted the viewport past it in one step and nothing re-pinned. So the band is the whole
- * viewport, and only a reader's gesture turns following off.
- */
+const plainKey = (event: KeyboardEvent) =>
+  !event.defaultPrevented && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
+
+const keyLandsOnList = (target: EventTarget | null, node: HTMLElement) =>
+  target instanceof Node &&
+  (node.contains(target) || target === document.body || target === document.documentElement) &&
+  !(target instanceof Element && target.closest(TYPE_TO_FOCUS_EDITABLE_SELECTOR)) &&
+  document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR) === null;
+
 function useFollowEnd(listRef: React.RefObject<LegendListRef | null>) {
   const [following, setFollowing] = useState(true);
   const followingRef = useRef(true);
@@ -75,47 +72,28 @@ function useFollowEnd(listRef: React.RefObject<LegendListRef | null>) {
     followingRef.current = next;
     setFollowing(next);
   });
-  const onScroll = useStableCallback(() => {
+  const apply = useStableCallback((event: FollowEvent) => {
     const node = listRef.current?.getScrollableNode();
-    if (node) update(followAfterScroll(followingRef.current, geometryOf(node)));
+    if (node) update(followAfter(followingRef.current, event, geometryOf(node)));
   });
+  const onScroll = useStableCallback(() => apply({ kind: "scroll" }));
   const leave = useStableCallback(() => update(false));
 
   useEffect(() => {
     const node = listRef.current?.getScrollableNode();
     if (!node) return;
-    const onGesture = (gesture: ReaderGesture) => {
-      if (gestureLeavesEnd(gesture, geometryOf(node))) update(false);
-    };
     const onWheel = (event: WheelEvent) => {
       if (event.ctrlKey || !isTimelineScrollTarget(event.target, node, event.deltaY)) return;
-      onGesture({ kind: "wheel", deltaY: event.deltaY });
+      apply({ kind: "wheel", deltaY: event.deltaY });
     };
-    const onTouchMove = () => onGesture({ kind: "touch" });
-    // A scrollbar drag is the one pointerdown whose target is the scroll node itself.
+    const onTouchMove = () => apply({ kind: "touch" });
     const onPointerDown = (event: PointerEvent) => {
-      if (event.target === node) onGesture({ kind: "scrollbar" });
+      if (event.target === node) apply({ kind: "scrollbar" });
     };
-    // A click on message text can leave focus on the body, so scroll keys are heard there too.
     const onKeyDown = (event: KeyboardEvent) => {
-      if (
-        !keyTowardStart(event.key) ||
-        !(event.target instanceof Node) ||
-        (!node.contains(event.target) &&
-          event.target !== document.body &&
-          event.target !== document.documentElement) ||
-        event.defaultPrevented ||
-        event.altKey ||
-        event.ctrlKey ||
-        event.metaKey ||
-        event.shiftKey ||
-        (event.target instanceof Element &&
-          event.target.closest(TYPE_TO_FOCUS_EDITABLE_SELECTOR)) ||
-        document.querySelector(TYPE_TO_FOCUS_FLOATING_LAYER_SELECTOR)
-      ) {
-        return;
+      if (keyTowardStart(event.key) && plainKey(event) && keyLandsOnList(event.target, node)) {
+        apply({ kind: "key", key: event.key });
       }
-      onGesture({ kind: "key", key: event.key });
     };
     node.addEventListener("wheel", onWheel, { passive: true });
     node.addEventListener("touchmove", onTouchMove, { passive: true });
@@ -127,7 +105,7 @@ function useFollowEnd(listRef: React.RefObject<LegendListRef | null>) {
       node.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [listRef, update]);
+  }, [listRef, apply]);
 
   return { following, onScroll, leave };
 }
@@ -282,6 +260,7 @@ export function ChatView({ groupId, view }: { groupId: GroupChatGroupId; view: G
         estimatedItemSize={ESTIMATED_ROW_HEIGHT}
         initialScrollAtEnd
         maintainScrollAtEnd={follow.following}
+        // LegendList re-pins only while the end is within threshold x viewport of the scroll offset.
         maintainScrollAtEndThreshold={1}
         maintainVisibleContentPosition
         onScroll={follow.onScroll}

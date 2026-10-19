@@ -407,7 +407,7 @@ describe("discussion view", () => {
     });
     const view = discussionView(viewOf(state), discussionId)!;
     expect(view.participants[1]?.status._tag).toBe("paused");
-    expect(handles(view.waits)).toEqual(["bo"]);
+    expect(handles(view.waitLines)).toEqual(["bo"]);
     expect(handles(view.waitingOn)).toEqual(["bo"]);
   });
 
@@ -423,7 +423,7 @@ describe("discussion view", () => {
       ],
     });
     const view = discussionView(viewOf(state), discussionId)!;
-    expect(view.waits.map((row) => [row.member?.handle, row.member?.thread.threadId])).toEqual([
+    expect(view.waitLines.map((row) => [row.member?.handle, row.member?.thread.threadId])).toEqual([
       ["bo", "thr_bo"],
     ]);
   });

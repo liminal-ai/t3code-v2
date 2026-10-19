@@ -148,7 +148,7 @@ export function DiscussionPanel({
   const failed = participants.filter(
     (row) => row.status._tag === "failed" || row.status._tag === "cancelled",
   );
-  const { waits } = projected;
+  const { waitLines } = projected;
   const when = running ? "this round" : `in round ${round}`;
   return (
     <div
@@ -210,9 +210,9 @@ export function DiscussionPanel({
           <ParticipantChip key={row.memberId} row={row} />
         ))}
       </div>
-      {waits.length === 0 ? null : (
+      {waitLines.length === 0 ? null : (
         <div className="flex min-h-0 flex-col gap-1 overflow-y-auto" data-testid="discussion-waits">
-          {waits.map((row) => (
+          {waitLines.map((row) => (
             <WaitLine key={row.memberId} row={row} />
           ))}
         </div>
