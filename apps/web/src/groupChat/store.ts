@@ -18,7 +18,7 @@ import type {
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { fetchGroupPage, refreshGroupChatSnapshot } from "./api";
+import { fetchGroupPage, GroupChatRequestError, refreshGroupChatSnapshot } from "./api";
 
 export interface GroupView {
   readonly group: GroupChatGroup;
@@ -39,10 +39,14 @@ export interface StoreState {
 
 export type PageMode = "latest" | "older" | "since";
 
-export interface Applied {
+interface Changed {
   readonly state: StoreState;
   readonly owedReads: ReadonlyArray<GroupChatGroupId>;
   readonly snapshotChanged: boolean;
+}
+
+export interface Applied extends Changed {
+  readonly gap: boolean;
 }
 
 export const emptyState: StoreState = { lastEventSeq: null, groups: new Map() };
@@ -110,6 +114,21 @@ const fromPage = (page: GroupChatGroupPage, deliveries: GroupView["deliveries"])
   loadingOlder: false,
 });
 
+const withOlder = (
+  current: GroupView,
+  page: Pick<GroupChatGroupPage, "messages" | "deliveries" | "olderBefore">,
+): GroupView => {
+  const messages = new Map(current.messages);
+  for (const m of page.messages) messages.set(m.id, m);
+  return {
+    ...current,
+    messages,
+    deliveries: mergeDeliveries(current.deliveries, page.deliveries),
+    lowSeq: page.messages[0]?.seq ?? current.lowSeq,
+    olderBefore: page.olderBefore,
+  };
+};
+
 export function applyPage(
   state: StoreState,
   groupId: GroupChatGroupId,
@@ -117,6 +136,9 @@ export function applyPage(
   mode: PageMode,
 ): StoreState {
   const current = state.groups.get(groupId);
+  if (mode === "older") {
+    return current === undefined ? state : withGroup(state, groupId, withOlder(current, page));
+  }
   const first = page.messages[0]?.seq ?? null;
   if (current !== undefined && first === null && current.highSeq > 0) {
     // A page with no messages still carries the group, its members, discussions and open
@@ -127,28 +149,24 @@ export function applyPage(
       members: byId(page.members),
       discussions: byId(page.discussions),
       deliveries: mergeDeliveries(current.deliveries, page.deliveries),
-      olderBefore: mode === "older" ? page.olderBefore : current.olderBefore,
     });
   }
   if (current === undefined || pageRelation(current, page, mode) === "replaces") {
     const deliveries =
-      current === undefined || mode === "older"
+      current === undefined
         ? byId(page.deliveries)
         : mergeDeliveries(current.deliveries, page.deliveries);
     return withGroup(state, groupId, fromPage(page, deliveries));
   }
   const messages = new Map(current.messages);
   for (const m of page.messages) messages.set(m.id, m);
-  const highSeq =
-    mode === "older" ? current.highSeq : Math.max(current.highSeq, page.messages.at(-1)?.seq ?? 0);
-  const view: GroupView = {
+  return withGroup(state, groupId, {
     ...fromPage(page, mergeDeliveries(current.deliveries, page.deliveries)),
     messages,
-    lowSeq: mode === "older" ? (first ?? current.lowSeq) : current.lowSeq,
-    highSeq,
-    olderBefore: mode === "older" ? page.olderBefore : current.olderBefore,
-  };
-  return withGroup(state, groupId, view);
+    lowSeq: current.lowSeq,
+    highSeq: Math.max(current.highSeq, page.messages.at(-1)?.seq ?? 0),
+    olderBefore: current.olderBefore,
+  });
 }
 
 const eventGroupId = (event: GroupChatStreamEvent): GroupChatGroupId => {
@@ -168,11 +186,6 @@ const eventGroupId = (event: GroupChatStreamEvent): GroupChatGroupId => {
   }
 };
 
-/**
- * A page joins what is loaded only when no unknown messages lie between them. An older page
- * joins below `lowSeq`; a latest or since page joins at or before `highSeq + 1`, unless the server
- * says more lie below it, which means the client fell more than a page behind.
- */
 function pageRelation(
   current: GroupView,
   page: GroupChatGroupPage,
@@ -180,8 +193,8 @@ function pageRelation(
 ): "joins" | "replaces" {
   const first = page.messages[0]?.seq;
   if (first === undefined || current.highSeq === 0) return "replaces";
-  if (mode === "older") return first < current.lowSeq ? "joins" : "replaces";
-  if (page.olderBefore !== null && mode === "since") return "replaces";
+  const fellAPageBehind = mode === "since" && page.olderBefore !== null;
+  if (fellAPageBehind) return "replaces";
   return first <= current.highSeq + 1 ? "joins" : "replaces";
 }
 
@@ -225,17 +238,13 @@ function eventRelation(
 
 export function applyEvent(state: StoreState, event: GroupChatStreamEvent): Applied {
   const relation = eventRelation(state.lastEventSeq, event.seq);
-  if (relation === "stale") return { state, owedReads: [], snapshotChanged: false };
+  if (relation === "stale") return { state, owedReads: [], snapshotChanged: false, gap: false };
   const applied = applyOne({ ...state, lastEventSeq: event.seq }, event);
-  if (relation !== "gap") return applied;
-  return {
-    state: applied.state,
-    owedReads: [...applied.state.groups.keys()],
-    snapshotChanged: true,
-  };
+  if (relation !== "gap") return { ...applied, gap: false };
+  return { state: applied.state, owedReads: [], snapshotChanged: true, gap: true };
 }
 
-function applyOne(state: StoreState, event: GroupChatStreamEvent): Applied {
+function applyOne(state: StoreState, event: GroupChatStreamEvent): Changed {
   const none = { state, owedReads: [], snapshotChanged: false } as const;
   switch (event._tag) {
     case "group": {
@@ -434,8 +443,6 @@ export function retryDelayMs(failures: number): number {
 type Timer = ReturnType<typeof setTimeout>;
 type ReadKind = "latest" | "since";
 
-let streamEpoch = 0;
-const isCurrent = (started: number) => started === streamEpoch;
 const retryKey = (kind: ReadKind, groupId: GroupChatGroupId) => `${kind}:${groupId}` as const;
 const retryTimers = new Map<ReturnType<typeof retryKey>, Timer>();
 
@@ -444,42 +451,6 @@ const shownGroups = new Set<GroupChatGroupId>();
 
 const wanted = (groupId: GroupChatGroupId) =>
   shownGroups.has(groupId) || appAtomRegistry.get(storeAtom).groups.has(groupId);
-
-/** Whether a read that started under `started` still has its stream and a group to serve. */
-const stillWanted = (started: number, groupId: GroupChatGroupId) =>
-  isCurrent(started) && wanted(groupId);
-
-const clearRetry = (key: ReturnType<typeof retryKey>) => {
-  const timer = retryTimers.get(key);
-  if (timer !== undefined) clearTimeout(timer);
-  retryTimers.delete(key);
-};
-
-/**
- * Schedules the next step of a read that started under `started`, replacing the group's pending
- * step of that kind. Once the stream has closed or the group is neither shown nor held, nothing
- * is scheduled and a timer already set does nothing.
- */
-const retryLater = (
-  started: number,
-  kind: ReadKind,
-  groupId: GroupChatGroupId,
-  delayMs: number,
-  run: () => void,
-) => {
-  if (!stillWanted(started, groupId)) return;
-  const key = retryKey(kind, groupId);
-  clearRetry(key);
-  retryTimers.set(
-    key,
-    setTimeout(() => {
-      retryTimers.delete(key);
-      if (stillWanted(started, groupId)) run();
-    }, delayMs),
-  );
-};
-
-const ignore = () => undefined;
 
 interface Reader {
   owed: boolean;
@@ -496,6 +467,52 @@ const readerOf = (groupId: GroupChatGroupId): Reader => {
   return reader;
 };
 
+const dropped = (reader: Reader, groupId: GroupChatGroupId) => readers.get(groupId) !== reader;
+
+const stillWanted = (reader: Reader, groupId: GroupChatGroupId) =>
+  !dropped(reader, groupId) && wanted(groupId);
+
+const clearRetry = (key: ReturnType<typeof retryKey>) => {
+  const timer = retryTimers.get(key);
+  if (timer !== undefined) clearTimeout(timer);
+  retryTimers.delete(key);
+};
+
+const endReader = (groupId: GroupChatGroupId) => {
+  readers.delete(groupId);
+  clearRetry(retryKey("latest", groupId));
+  clearRetry(retryKey("since", groupId));
+};
+
+const endReaders = () => {
+  readers.clear();
+  for (const timer of retryTimers.values()) clearTimeout(timer);
+  retryTimers.clear();
+};
+
+const retryLater = (
+  reader: Reader,
+  kind: ReadKind,
+  groupId: GroupChatGroupId,
+  delayMs: number,
+  run: () => void,
+) => {
+  if (!stillWanted(reader, groupId)) return;
+  const key = retryKey(kind, groupId);
+  clearRetry(key);
+  retryTimers.set(
+    key,
+    setTimeout(() => {
+      retryTimers.delete(key);
+      if (stillWanted(reader, groupId)) run();
+    }, delayMs),
+  );
+};
+
+const ignore = () => undefined;
+
+const isNotFound = (error: unknown) => error instanceof GroupChatRequestError && error.notFound;
+
 function readOwed(groupId: GroupChatGroupId): void {
   const reader = readers.get(groupId);
   if (reader === undefined || !reader.owed || reader.readsOut > 0) return;
@@ -503,19 +520,22 @@ function readOwed(groupId: GroupChatGroupId): void {
   if (view === null) return;
   reader.owed = false;
   reader.readsOut += 1;
-  const started = streamEpoch;
   fetchGroupPage(groupId, { after: view.highSeq }).then(
     (page) => {
-      if (!isCurrent(started)) return;
+      if (dropped(reader, groupId)) return;
       reader.readsOut -= 1;
       update((state) => applyPage(state, groupId, page, "since"));
       readOwed(groupId);
     },
-    () => {
-      if (!isCurrent(started)) return;
+    (error: unknown) => {
+      if (dropped(reader, groupId)) return;
       reader.readsOut -= 1;
+      if (isNotFound(error)) {
+        forgetGroup(groupId);
+        return;
+      }
       reader.owed = true;
-      retryLater(started, "since", groupId, READ_RETRY_DELAY_MS, () => readOwed(groupId));
+      retryLater(reader, "since", groupId, READ_RETRY_DELAY_MS, () => readOwed(groupId));
     },
   );
 }
@@ -531,23 +551,26 @@ const oweRead = (groupId: GroupChatGroupId) => {
  * failed; every later try is spaced out and silent.
  */
 function readLatest(groupId: GroupChatGroupId, failures: number): Promise<void> {
-  const started = streamEpoch;
   clearRetry(retryKey("latest", groupId));
   const reader = readerOf(groupId);
   reader.readsOut += 1;
   return fetchGroupPage(groupId, {}).then(
     (page) => {
-      if (!isCurrent(started)) return;
+      if (dropped(reader, groupId)) return;
       reader.readsOut -= 1;
       update((state) => applyPage(state, groupId, page, "latest"));
       readOwed(groupId);
     },
     (error: unknown) => {
-      if (isCurrent(started)) {
+      if (!dropped(reader, groupId)) {
         reader.readsOut -= 1;
-        retryLater(started, "latest", groupId, retryDelayMs(failures + 1), () => {
-          void readLatest(groupId, failures + 1).catch(ignore);
-        });
+        if (isNotFound(error)) {
+          forgetGroup(groupId);
+        } else {
+          retryLater(reader, "latest", groupId, retryDelayMs(failures + 1), () => {
+            void readLatest(groupId, failures + 1).catch(ignore);
+          });
+        }
       }
       throw error;
     },
@@ -573,10 +596,11 @@ export function applyStreamEvent(event: GroupChatStreamEvent): void {
   const pageMayPredateEvent =
     (readers.get(groupId)?.readsOut ?? 0) > 0 ||
     (shownGroups.has(groupId) && !applied.state.groups.has(groupId));
-  for (const id of new Set(
-    pageMayPredateEvent ? [groupId, ...applied.owedReads] : applied.owedReads,
-  ))
-    oweRead(id);
+  const owed = new Set(applied.owedReads);
+  if (event._tag === "group.deleted") endReader(groupId);
+  else if (pageMayPredateEvent) owed.add(groupId);
+  if (applied.gap) readWantedLatest();
+  for (const id of owed) oweRead(id);
 }
 
 export function noteMessage(message: GroupChatMessage): void {
@@ -590,11 +614,11 @@ export function readGroupView(groupId: GroupChatGroupId): GroupView | null {
 export async function loadOlder(groupId: GroupChatGroupId): Promise<boolean> {
   const current = readGroupView(groupId);
   if (current === null || current.olderBefore === null || current.loadingOlder) return false;
-  const started = streamEpoch;
+  const reader = readerOf(groupId);
   update((state) => setLoadingOlder(state, groupId, true));
   try {
     const page = await fetchGroupPage(groupId, { before: current.olderBefore });
-    if (!isCurrent(started)) return false;
+    if (dropped(reader, groupId)) return false;
     update((state) => applyPage(state, groupId, page, "older"));
     return true;
   } finally {
@@ -602,26 +626,28 @@ export async function loadOlder(groupId: GroupChatGroupId): Promise<boolean> {
   }
 }
 
-/** The stream opened. It has no replay, so whatever each wanted group missed is read again. */
-export function streamOpened(): void {
-  const state = appAtomRegistry.get(storeAtom);
-  appAtomRegistry.set(storeAtom, { ...state, lastEventSeq: null });
-  refreshGroupChatSnapshot();
-  for (const groupId of new Set([...shownGroups, ...state.groups.keys()])) {
+const readWantedLatest = () => {
+  const held = appAtomRegistry.get(storeAtom).groups.keys();
+  for (const groupId of new Set([...shownGroups, ...held])) {
     void readLatest(groupId, 0).catch(ignore);
   }
+};
+
+export function streamOpened(): void {
+  endReaders();
+  update((state) => ({ ...state, lastEventSeq: null }));
+  refreshGroupChatSnapshot();
+  readWantedLatest();
 }
 
 /** The stream closed. Reads under it take no next step, and its reopen starts the ones needed. */
 export function streamClosed(): void {
-  streamEpoch += 1;
-  readers.clear();
-  for (const timer of retryTimers.values()) clearTimeout(timer);
-  retryTimers.clear();
+  endReaders();
 }
 
 export function forgetGroup(groupId: GroupChatGroupId): void {
   update((state) => withGroup(state, groupId, null));
+  endReader(groupId);
 }
 
 export type { GroupChatDelivery };

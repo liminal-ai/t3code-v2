@@ -19,6 +19,7 @@ vi.mock("./api", async (importOriginal) => ({
   refreshGroupChatSnapshot: () => undefined,
 }));
 
+import { GroupChatRequestError } from "./api";
 import {
   applyEvent,
   applyPage,
@@ -155,14 +156,14 @@ describe("group chat store", () => {
     expect(stale.state.groups.get(groupId)!.deliveries.get("d1" as never)!.state).toBe("running");
   });
 
-  it("a sequence gap owes every loaded group a read", () => {
+  it("a sequence gap is reported once, and owes no catch-up read of its own", () => {
     const start = loaded([1, 2]);
     const first = applyEvent(start, event(7, { _tag: "group", group }));
-    expect(first.owedReads).toEqual([]);
-    const gapped = applyEvent(first.state, event(9, { _tag: "group", group }));
-    expect(gapped.owedReads).toEqual([groupId]);
+    expect(first.gap).toBe(false);
+    const gapped = applyEvent(first.state, event(9, { _tag: "message", message: messageHead(3) }));
+    expect([gapped.gap, gapped.owedReads]).toEqual([true, []]);
     const next = applyEvent(gapped.state, event(10, { _tag: "group", group }));
-    expect(next.owedReads).toEqual([]);
+    expect(next.gap).toBe(false);
   });
 
   it("a message head past the loaded end owes a read, and the bodies join when the page lands", () => {
@@ -765,6 +766,88 @@ describe("group chat store, read retries", () => {
     expect(readGroupView(id)?.highSeq).toBe(2);
     const wait = readGroupView(id)?.deliveries.get("d1" as never)?.wait;
     expect(wait?._tag === "waiting_on_question" && wait.questions.length).toBe(1);
+  });
+
+  it("a latest read started while the stream was down does not overwrite the reopen's page", async () => {
+    const id = groupNamed("grp_during_outage");
+    streamClosed();
+    const held = heldRead();
+    const first = showGroup(id);
+    api.fetchGroupPage.mockResolvedValueOnce(renamed(id, [1, 2]));
+    streamOpened();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(readGroupView(id)?.group.title).toBe("After restart");
+    held().resolve(pageFor(id, [1]));
+    await first;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(readGroupView(id)?.group.title).toBe("After restart");
+    expect(readGroupView(id)?.highSeq).toBe(2);
+  });
+
+  it("a stream gap reads the latest page, so a missed terminal delivery state lands", async () => {
+    const id = groupNamed("grp_gap_terminal");
+    const queued = { ...delivery("d1", 1, "queued", "2026-10-19T00:01:00Z"), groupId: id };
+    const failed = { ...queued, state: "failed" as const, updatedAt: "2026-10-19T00:02:00Z" };
+    api.fetchGroupPage.mockResolvedValueOnce({ ...pageFor(id, [1]), deliveries: [queued] });
+    await showGroup(id);
+    applyStreamEvent(event(1, { _tag: "group", group: { ...group, id } }));
+    api.fetchGroupPage.mockImplementation((_groupId, query) =>
+      Promise.resolve(
+        (query as { after?: number }).after === undefined
+          ? { ...pageFor(id, [1]), deliveries: [failed] }
+          : pageFor(id, []),
+      ),
+    );
+    applyStreamEvent(event(3, { _tag: "group", group: { ...group, id } }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(readGroupView(id)?.deliveries.get("d1" as never)?.state).toBe("failed");
+  });
+
+  it("an older page adds its messages without undoing a streamed group rename", async () => {
+    const id = groupNamed("grp_older_rename");
+    api.fetchGroupPage.mockResolvedValueOnce({
+      ...pageFor(id, [201, 202]),
+      olderBefore: 201 as never,
+    });
+    await showGroup(id);
+    const held = heldRead();
+    const older = loadOlder(id);
+    applyStreamEvent(event(1, { _tag: "group", group: { ...group, id, title: "New title" } }));
+    held().resolve({ ...pageFor(id, [199, 200]), olderBefore: 199 as never });
+    await expect(older).resolves.toBe(true);
+    const view = readGroupView(id)!;
+    expect(view.group.title).toBe("New title");
+    expect([...view.messages.values()].map((m) => m.seq).sort((a, b) => a - b)).toEqual([
+      199, 200, 201, 202,
+    ]);
+    expect([view.lowSeq, view.highSeq, view.olderBefore]).toEqual([199, 202, 199]);
+  });
+
+  it("a page that lands after the stream deleted its group writes nothing and stops its reads", async () => {
+    const id = groupNamed("grp_deleted_read");
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    const held = heldRead();
+    const late = showGroup(id);
+    applyStreamEvent(event(1, { _tag: "group.deleted", groupId: id }));
+    leaveGroup(id);
+    api.fetchGroupPage.mockRejectedValue(new Error("no such group"));
+    held().resolve(pageFor(id, [1]));
+    await late;
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(readGroupView(id)).toBeNull();
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+  });
+
+  it("a read the server answers with no such group drops the group and reads it no more", async () => {
+    const id = groupNamed("grp_gone");
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    api.fetchGroupPage.mockRejectedValue(new GroupChatRequestError("No group chat group.", true));
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(readGroupView(id)).toBeNull();
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
   });
 
   it("under arbitrary failures and reconnects, reads stay within one per event, failure and open, and the view catches up", async () => {
