@@ -26,13 +26,14 @@ import {
   emptyState,
   followUpRead,
   forgetGroup,
+  leaveGroup,
   readFailed,
-  readGroup,
   readGroupView,
   retryDelayMs,
-  stopGroupRetries,
-  stopRetries,
+  showGroup,
   type StoreState,
+  streamClosed,
+  streamOpened,
   timelineRows,
   turnsOf,
 } from "./store";
@@ -454,48 +455,82 @@ describe("group chat store, questions", () => {
 });
 
 describe("group chat store, read retries", () => {
-  const pageFor = (id: string, seqs: ReadonlyArray<number>): GroupChatGroupPage => ({
+  const pageFor = (id: GroupChatGroupPage["group"]["id"], seqs: ReadonlyArray<number>) => ({
     ...page(seqs),
-    group: { ...group, id: id as never },
-    messages: seqs.map((seq) => message(seq, { groupId: id as never })),
+    group: { ...group, id },
+    messages: seqs.map((seq) => message(seq, { groupId: id })),
   });
+
+  const shown: GroupChatGroupPage["group"]["id"][] = [];
+  const groupNamed = (name: string) => {
+    const id = name as GroupChatGroupPage["group"]["id"];
+    shown.push(id);
+    return id;
+  };
+
+  /** A read that never settles until the test says so, as a tunnel's dropped request would. */
+  const heldRead = () => {
+    let settle!: { resolve: (page: GroupChatGroupPage) => void; reject: (error: Error) => void };
+    api.fetchGroupPage.mockImplementationOnce(
+      () =>
+        new Promise((resolve, reject) => {
+          settle = { resolve, reject };
+        }),
+    );
+    return () => settle;
+  };
 
   beforeEach(() => {
     vi.useFakeTimers();
     api.fetchGroupPage.mockReset();
+    streamOpened();
   });
 
   afterEach(() => {
-    stopRetries();
+    for (const id of shown.splice(0)) {
+      leaveGroup(id);
+      forgetGroup(id);
+    }
+    streamClosed();
     vi.useRealTimers();
   });
 
   it("a failed first read of a group is read again after a spaced wait", async () => {
-    const id = "grp_first" as never;
+    const id = groupNamed("grp_first");
     api.fetchGroupPage
       .mockRejectedValueOnce(new Error("tunnel"))
       .mockResolvedValueOnce(pageFor(id, [1]));
-    await expect(readGroup(id)).rejects.toThrow("tunnel");
+    await expect(showGroup(id)).rejects.toThrow("tunnel");
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(retryDelayMs(1));
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
     expect(readGroupView(id)?.highSeq).toBe(1);
-    forgetGroup(id);
   });
 
   it("leaving the page stops its group's retry", async () => {
-    const id = "grp_left" as never;
+    const id = groupNamed("grp_left");
     api.fetchGroupPage.mockRejectedValue(new Error("tunnel"));
-    await expect(readGroup(id)).rejects.toThrow("tunnel");
-    stopGroupRetries(id);
+    await expect(showGroup(id)).rejects.toThrow("tunnel");
+    leaveGroup(id);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaving the page while its first read is out stops its retry too", async () => {
+    const id = groupNamed("grp_left_inflight");
+    const held = heldRead();
+    const first = showGroup(id);
+    leaveGroup(id);
+    held().reject(new Error("tunnel"));
+    await expect(first).rejects.toThrow("tunnel");
     await vi.advanceTimersByTimeAsync(60_000);
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(1);
   });
 
   it("a failed catch-up read is read again while the stream is up, and stops with it", async () => {
-    const id = "grp_catchup" as never;
+    const id = groupNamed("grp_catchup");
     api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
-    await readGroup(id);
+    await showGroup(id);
     api.fetchGroupPage.mockRejectedValue(new Error("tunnel"));
     applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
     await vi.advanceTimersByTimeAsync(0);
@@ -503,9 +538,58 @@ describe("group chat store, read retries", () => {
     expect(api.fetchGroupPage).toHaveBeenLastCalledWith(id, { after: 1 });
     await vi.advanceTimersByTimeAsync(2_000);
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
-    stopRetries();
+    streamClosed();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
-    forgetGroup(id);
+  });
+
+  it("a catch-up read that fails after the stream closed schedules nothing", async () => {
+    const id = groupNamed("grp_inflight_stop");
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    const held = heldRead();
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+    streamClosed();
+    api.fetchGroupPage.mockRejectedValue(new Error("still offline"));
+    held().reject(new Error("connection lost"));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+  });
+
+  it("a catch-up page that lands after the stream closed leaves its follow-up to the reopen", async () => {
+    const id = groupNamed("grp_inflight_ok");
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await showGroup(id);
+    const held = heldRead();
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
+    applyStreamEvent(event(2, { _tag: "message", message: messageHead(3, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+    streamClosed();
+    held().resolve(pageFor(id, [2]));
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+    expect(readGroupView(id)?.highSeq).toBe(2);
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1, 2, 3]));
+    streamOpened();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
+    expect(api.fetchGroupPage).toHaveBeenLastCalledWith(id, {});
+    expect(readGroupView(id)?.highSeq).toBe(3);
+  });
+
+  it("the stream's reopen reads a group whose first page failed", async () => {
+    const id = groupNamed("grp_first_reconnect");
+    api.fetchGroupPage
+      .mockRejectedValueOnce(new Error("503"))
+      .mockResolvedValueOnce(pageFor(id, [1]));
+    await expect(showGroup(id)).rejects.toThrow("503");
+    streamClosed();
+    streamOpened();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+    expect(readGroupView(id)?.highSeq).toBe(1);
   });
 });

@@ -484,20 +484,57 @@ const runFollowUp = (groupId: GroupChatGroupId) => {
 };
 
 type Timer = ReturnType<typeof setTimeout>;
+type ReadKind = FetchRequest["_tag"];
 
 /**
- * A failed read keeps trying while the stream stays up, since a tunnel can fail twice in a row
- * and the stream has no replay. Latest-page reads and catch-up follow-ups wait apart, so a
- * resync after a gap is never dropped for a catch-up of the same group. A new read of the group,
- * a dropped stream or a page left behind stops them.
+ * A read belongs to the stream that is up when it starts. The stream has no replay, so its reopen
+ * reads every wanted group's latest page again, and a read from before the close has nothing left
+ * to do: `generation` counts closes, a read's next step runs only under the generation it started
+ * in, and the close clears every timer. Latest-page and catch-up retries wait apart, so a resync
+ * after a gap is never dropped for a catch-up of the same group.
  */
-const latestRetries = new Map<GroupChatGroupId, Timer>();
-const followUpRetries = new Map<GroupChatGroupId, Timer>();
+let generation = 0;
+const retryKey = (kind: ReadKind, groupId: GroupChatGroupId) => `${kind}:${groupId}` as const;
+const retryTimers = new Map<ReturnType<typeof retryKey>, Timer>();
 
-const clearRetry = (timers: Map<GroupChatGroupId, Timer>, groupId: GroupChatGroupId) => {
-  const pending = timers.get(groupId);
-  if (pending !== undefined) clearTimeout(pending);
-  timers.delete(groupId);
+/** Groups the page shows. A group whose first page has not landed is known here and nowhere else. */
+const shownGroups = new Set<GroupChatGroupId>();
+
+/** The groups a read serves: those the page shows and those the store holds. */
+const wantedGroups = (state: StoreState) => new Set([...shownGroups, ...state.groups.keys()]);
+
+/** Whether a read that started under `started` still has its stream and a group to serve. */
+const stillWanted = (started: number, groupId: GroupChatGroupId) =>
+  started === generation && wantedGroups(appAtomRegistry.get(storeAtom)).has(groupId);
+
+const clearRetry = (key: ReturnType<typeof retryKey>) => {
+  const timer = retryTimers.get(key);
+  if (timer !== undefined) clearTimeout(timer);
+  retryTimers.delete(key);
+};
+
+/**
+ * Schedules the next step of a read that started under `started`, replacing the group's pending
+ * step of that kind. Once the stream has closed or the group is neither shown nor held, nothing
+ * is scheduled and a timer already set does nothing.
+ */
+const retryLater = (
+  started: number,
+  kind: ReadKind,
+  groupId: GroupChatGroupId,
+  delayMs: number,
+  run: () => void,
+) => {
+  if (!stillWanted(started, groupId)) return;
+  const key = retryKey(kind, groupId);
+  clearRetry(key);
+  retryTimers.set(
+    key,
+    setTimeout(() => {
+      retryTimers.delete(key);
+      if (stillWanted(started, groupId)) run();
+    }, delayMs),
+  );
 };
 
 const ignore = () => undefined;
@@ -506,54 +543,46 @@ const ignore = () => undefined;
  * Reads a group's latest page. The promise is the first try alone, so a page can show why it
  * failed; every later try is spaced out and silent.
  */
-export function readGroup(groupId: GroupChatGroupId, failures = 0): Promise<void> {
-  clearRetry(latestRetries, groupId);
-  return loadGroup(groupId).catch((error: unknown) => {
-    latestRetries.set(
-      groupId,
-      setTimeout(
-        () => void readGroup(groupId, failures + 1).catch(ignore),
-        retryDelayMs(failures + 1),
-      ),
-    );
-    throw error;
-  });
+function readLatest(groupId: GroupChatGroupId, failures: number): Promise<void> {
+  const started = generation;
+  clearRetry(retryKey("latest", groupId));
+  return fetchGroupPage(groupId, {})
+    .then((page) => update((state) => applyPage(state, groupId, page, "latest")))
+    .catch((error: unknown) => {
+      retryLater(started, "latest", groupId, retryDelayMs(failures + 1), () => {
+        void readLatest(groupId, failures + 1).catch(ignore);
+      });
+      throw error;
+    });
 }
 
-/** The stream is down or gone, so its next open reads again; every pending retry stops. */
-export function stopRetries(): void {
-  for (const timers of [latestRetries, followUpRetries]) {
-    for (const timer of timers.values()) clearTimeout(timer);
-    timers.clear();
-  }
+/** The page shows this group: its latest page is read now and again on every reopen of the stream. */
+export function showGroup(groupId: GroupChatGroupId): Promise<void> {
+  shownGroups.add(groupId);
+  return readLatest(groupId, 0);
 }
 
-/** The page left this group, so nothing shows a retry's result; the next visit reads again. */
-export function stopGroupRetries(groupId: GroupChatGroupId): void {
-  clearRetry(latestRetries, groupId);
-  clearRetry(followUpRetries, groupId);
+/** The page left this group. A retry for it runs only while the store still holds it. */
+export function leaveGroup(groupId: GroupChatGroupId): void {
+  shownGroups.delete(groupId);
 }
 
 const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
   for (const fetch of fetches) {
     if (fetch._tag === "latest") {
-      void readGroup(fetch.groupId).catch(ignore);
+      void readLatest(fetch.groupId, 0).catch(ignore);
       continue;
     }
+    const started = generation;
     void fetchGroupPage(fetch.groupId, { after: fetch.seq })
       .then((page) => {
         update((state) => applyPage(state, fetch.groupId, page, "since"));
-        runFollowUp(fetch.groupId);
+        if (stillWanted(started, fetch.groupId)) runFollowUp(fetch.groupId);
       })
       .catch(() => {
         update((state) => readFailed(state, fetch.groupId));
-        clearRetry(followUpRetries, fetch.groupId);
-        followUpRetries.set(
-          fetch.groupId,
-          setTimeout(() => {
-            followUpRetries.delete(fetch.groupId);
-            runFollowUp(fetch.groupId);
-          }, READ_RETRY_DELAY_MS),
+        retryLater(started, "since", fetch.groupId, READ_RETRY_DELAY_MS, () =>
+          runFollowUp(fetch.groupId),
         );
       });
   }
@@ -568,11 +597,6 @@ export function applyStreamEvent(event: GroupChatStreamEvent): void {
 
 export function noteMessage(message: GroupChatMessage): void {
   update((state) => applyMessage(state, message));
-}
-
-async function loadGroup(groupId: GroupChatGroupId): Promise<void> {
-  const page = await fetchGroupPage(groupId, {});
-  update((state) => applyPage(state, groupId, page, "latest"));
 }
 
 export function readGroupView(groupId: GroupChatGroupId): GroupView | null {
@@ -593,11 +617,19 @@ export async function loadOlder(groupId: GroupChatGroupId): Promise<boolean> {
   }
 }
 
-export function resyncAll(): void {
+/** The stream opened. It has no replay, so whatever each wanted group missed is read again. */
+export function streamOpened(): void {
   const state = appAtomRegistry.get(storeAtom);
   appAtomRegistry.set(storeAtom, { ...state, lastEventSeq: null });
   refreshGroupChatSnapshot();
-  runFetches([...state.groups.keys()].map((groupId) => ({ _tag: "latest", groupId })));
+  runFetches([...wantedGroups(state)].map((groupId) => ({ _tag: "latest", groupId })));
+}
+
+/** The stream closed. Reads under it take no next step, and its reopen starts the ones needed. */
+export function streamClosed(): void {
+  generation += 1;
+  for (const timer of retryTimers.values()) clearTimeout(timer);
+  retryTimers.clear();
 }
 
 export function forgetGroup(groupId: GroupChatGroupId): void {
