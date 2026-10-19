@@ -80,6 +80,7 @@ export interface FakeThread {
   readonly faults: SendFault[];
   /** Reads of the thread's runs that fail before one succeeds, as a transient store fault would. */
   readFaults: number;
+  threadReadFaults: number;
   /** Queued-run cancels that fail before one succeeds. */
   cancelFaults: number;
   readonly runs: FakeRun[];
@@ -170,6 +171,7 @@ export const makeFakeThreads = Effect.sync(() => {
         replyReads: 0,
         faults: [],
         readFaults: 0,
+        threadReadFaults: 0,
         cancelFaults: 0,
         runs: [],
         changes,
@@ -282,6 +284,10 @@ export const makeFakeThreads = Effect.sync(() => {
         const t = yield* thread(threadId);
         if (t.readReached !== null) yield* Deferred.succeed(t.readReached, undefined);
         if (t.readGate !== null) yield* Deferred.await(t.readGate);
+        if (t.threadReadFaults > 0) {
+          t.threadReadFaults -= 1;
+          return yield* new PortReadError({ threadId: t.id, cause: "thread read fault" });
+        }
         return t.deleted
           ? null
           : { projectId: t.projectId, title: t.title, archived: t.archived, readOnly: t.readOnly };

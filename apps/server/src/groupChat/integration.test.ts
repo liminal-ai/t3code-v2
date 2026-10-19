@@ -110,14 +110,19 @@ const layerGatedPort = Layer.effect(
           Effect.andThen(port.thread(threadId)),
         ),
       send: (input) =>
-        port.send(input).pipe(
-          Effect.tap(() =>
-            gates.sent === null ? Effect.void : Deferred.succeed(gates.sent, undefined),
-          ),
-          Effect.tap(() =>
-            gates.afterSend === null ? Effect.void : Deferred.await(gates.afterSend),
-          ),
-        ),
+        Effect.suspend(() => {
+          const gatesAtSend = { sent: gates.sent, afterSend: gates.afterSend };
+          return port.send(input).pipe(
+            Effect.tap(() =>
+              gatesAtSend.sent === null
+                ? Effect.void
+                : Deferred.succeed(gatesAtSend.sent, undefined),
+            ),
+            Effect.tap(() =>
+              gatesAtSend.afterSend === null ? Effect.void : Deferred.await(gatesAtSend.afterSend),
+            ),
+          );
+        }),
       cancelQueued: (input) =>
         (gates.beforeCancel === null ? Effect.void : Deferred.await(gates.beforeCancel)).pipe(
           Effect.andThen(port.cancelQueued(input)),

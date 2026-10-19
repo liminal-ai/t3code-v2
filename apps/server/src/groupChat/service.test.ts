@@ -201,6 +201,46 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
   );
 
   it.effect(
+    "an operator Retry on an unknown outcome finds the envelope T3 holds and never sends it again",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "unknown retry", [alpha]);
+        const thread = yield* fake.thread(alpha);
+        thread.faults.push({ type: "commit-silently" });
+        thread.sendReached = yield* Deferred.make<void>();
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        yield* Deferred.await(thread.sendReached);
+        thread.threadReadFaults = 1;
+        const unknown = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.dispatch === "unknown",
+        );
+        const refused = yield* app
+          .dispatch({ _tag: "delivery.retry", deliveryId: unknown.id })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused._tag, "GroupChatRefused");
+        for (
+          let looks = 0;
+          looks < 50 && (yield* latestDelivery(app, member(alpha).id))!.state !== "running";
+          looks++
+        ) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 millis");
+        }
+        const running = yield* awaitState(app, member(alpha).id, "running");
+        assert.strictEqual(running.attempt, 1);
+        assert.strictEqual(running.runId, thread.runs[0]!.id);
+        assert.strictEqual(
+          (yield* fake.sends(alpha)).length,
+          1,
+          "attempt 1 is followed, not resent",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "an in-flight dispatch finishes and is then followed, and a lost one is resent once",
     () =>
       Effect.gen(function* () {
@@ -906,6 +946,60 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("a group title longer than 200 characters is refused at create and rename", () =>
+    Effect.gen(function* () {
+      const { app } = yield* setup;
+      const tooLong = yield* app
+        .dispatch({ _tag: "group.create", title: "t".repeat(201), threadIds: [alpha] })
+        .pipe(Effect.flip);
+      assert.strictEqual(tooLong._tag, "GroupChatInvalid");
+      const { group } = yield* createGroup(app, "t".repeat(200), [alpha]);
+      const renamed = yield* app
+        .dispatch({ _tag: "group.rename", groupId: group.id, title: "t".repeat(201) })
+        .pipe(Effect.flip);
+      assert.strictEqual(renamed._tag, "GroupChatInvalid");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a long pending question stays off the delivery head and comes from the group page",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "long question", [alpha]);
+        const seen: GroupChatStreamEvent[] = [];
+        yield* app.engine.events.pipe(
+          Stream.runForEach((event) => Effect.sync(() => void seen.push(event))),
+          Effect.forkChild,
+        );
+        yield* Effect.yieldNow;
+        yield* fake.startOwnRun(alpha);
+        const question = "Which colour should the banner be? ".repeat(300);
+        yield* fake.ask(alpha, "q-long", question, ["red", "blue"]);
+        yield* send(app, group.id, "pick one", [member(alpha).id]);
+        const queued = yield* awaitDelivery(
+          app,
+          member(alpha).id,
+          (d) => d.wait?._tag === "waiting_on_question",
+        );
+        const encode = Schema.encodeEffect(Schema.fromJsonString(GroupChatStreamEvent));
+        const heads = seen.filter(
+          (e) => e._tag === "delivery" && e.delivery.wait?._tag === "waiting_on_question",
+        );
+        assert.isAbove(heads.length, 0);
+        for (const event of heads) {
+          assert.isBelow(Buffer.byteLength(yield* encode(event)), 4096, "a question head");
+        }
+        const page = yield* app.engine.groupPage(group.id, {});
+        const full = page.deliveries.find((d) => d.id === queued.id)!;
+        assert.strictEqual(full.wait?._tag, "waiting_on_question");
+        if (full.wait?._tag === "waiting_on_question") {
+          assert.strictEqual(full.wait.requestId, "q-long");
+          assert.strictEqual(full.wait.questions[0]!.question, question);
+        }
+      }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "a turn the thread starts on its own holds the envelope back, its question can be answered, and its text is never the reply",
     () =>
@@ -1421,6 +1515,88 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       assert.isTrue((yield* app.engine.groupPage(group.id, {})).deliveries[0]!.retryable);
       assert.deepStrictEqual(yield* messageTexts(app, group.id), ["hello"]);
     }).pipe(Effect.scoped),
+  );
+
+  it.effect("Stop keeps cancelling until T3 answers, so a withdrawn envelope never starts", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "cancel outage", [alpha]);
+      const own = yield* fake.startOwnRun(alpha);
+      yield* send(app, group.id, "must never start after Stop", [member(alpha).id]);
+      const queued = yield* awaitState(app, member(alpha).id, "queued");
+      const thread = yield* fake.thread(alpha);
+      thread.cancelFaults = 12;
+      yield* app.dispatch({ _tag: "delivery.stop", deliveryId: queued.id });
+      const envelopeRun = () => thread.runs.find((r) => r.id === queued.runId)!;
+      for (let looks = 0; looks < 100 && envelopeRun().status !== "cancelled"; looks++) {
+        yield* Effect.yieldNow;
+        yield* TestClock.adjust("10 millis");
+      }
+      assert.strictEqual(envelopeRun().status, "cancelled", "the cancel outlasted the outage");
+      yield* fake.complete(alpha, own.id, "own finished");
+      const ended = yield* app.until(
+        app.store.delivery(queued.id),
+        (d) => d?.state === "cancelled",
+      );
+      assert.strictEqual(ended!.error, "stopped by operator");
+      assert.isUndefined(thread.runs.find((r) => r.own && r.started));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a group deleted just before a crash has its queued envelope cancelled at the next boot",
+    () =>
+      Effect.gen(function* () {
+        const { fake, baseDir, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "deleted then crashed", [alpha]);
+        const own = yield* fake.startOwnRun(alpha);
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        const queued = yield* awaitState(app, member(alpha).id, "queued");
+        const thread = yield* fake.thread(alpha);
+        thread.cancelFaults = 1;
+        yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+        assert.isNull(yield* app.store.group(group.id));
+        const run = thread.runs.find((r) => r.id === queued.runId)!;
+        assert.strictEqual(run.status, "queued", "the cancel had not reached T3 at the crash");
+        yield* app.shutdown;
+        yield* boot(fake, baseDir);
+        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 millis");
+        }
+        assert.strictEqual(run.status, "cancelled");
+        yield* fake.complete(alpha, own.id, "own finished");
+        assert.isUndefined(thread.runs.find((r) => r.own && r.started));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a group deleted during a send that a crash then cuts short has its envelope cancelled at the next boot",
+    () =>
+      Effect.gen(function* () {
+        const { fake, baseDir, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "deleted mid-send then crashed", [alpha]);
+        const own = yield* fake.startOwnRun(alpha);
+        const thread = yield* fake.thread(alpha);
+        thread.sendReached = yield* Deferred.make<void>();
+        thread.sendGate = yield* Deferred.make<void>();
+        yield* send(app, group.id, "hello", [member(alpha).id]);
+        yield* Deferred.await(thread.sendReached);
+        thread.cancelFaults = 1;
+        yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+        yield* app.shutdown;
+        const envelope = thread.sends[0]!;
+        const run = thread.runs.find((r) => r.messageId === envelope.messageId)!;
+        assert.strictEqual(run.status, "queued", "T3 took the envelope before the crash");
+        yield* boot(fake, baseDir);
+        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
+          yield* Effect.yieldNow;
+          yield* TestClock.adjust("10 millis");
+        }
+        assert.strictEqual(run.status, "cancelled");
+        yield* fake.complete(alpha, own.id, "own finished");
+        assert.isUndefined(thread.runs.find((r) => r.own && r.started));
+      }).pipe(Effect.scoped),
   );
 
   it.effect("a Stop whose cancel never reached T3 is cancelled again at the next boot", () =>

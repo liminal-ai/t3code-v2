@@ -127,20 +127,31 @@ export const GroupChatPendingInput = Schema.Union([
 ]);
 export type GroupChatPendingInput = typeof GroupChatPendingInput.Type;
 
-/** Why a delivery has not run yet. Each one points at the member's thread. */
-export const GroupChatWait = Schema.Union([
+const waitsWithoutQuestion = [
   Schema.TaggedStruct("lane_busy", { deliveryId: GroupChatDeliveryId }),
   Schema.TaggedStruct("busy_with_own_run", { runId: RunId }),
   /** `note` tells the operator that Resume in T3 releases the thread's whole queue, this envelope included. */
   Schema.TaggedStruct("queue_held", { note: Schema.String }),
+  Schema.TaggedStruct("waiting_on_approval", {}),
+  Schema.TaggedStruct("stopped_in_t3", {}),
+] as const;
+
+/** Why a delivery has not run yet. Each one points at the member's thread. */
+export const GroupChatWait = Schema.Union([
+  ...waitsWithoutQuestion,
   Schema.TaggedStruct("waiting_on_question", {
     requestId: RuntimeRequestId,
     questions: Schema.Array(GroupChatQuestion),
   }),
-  Schema.TaggedStruct("waiting_on_approval", {}),
-  Schema.TaggedStruct("stopped_in_t3", {}),
 ]);
 export type GroupChatWait = typeof GroupChatWait.Type;
+
+/** The wait as a stream head carries it: a question's text is a body, read from the group page. */
+export const GroupChatWaitHead = Schema.Union([
+  ...waitsWithoutQuestion,
+  Schema.TaggedStruct("waiting_on_question", { requestId: RuntimeRequestId }),
+]);
+export type GroupChatWaitHead = typeof GroupChatWaitHead.Type;
 
 /** The run's status as the operator sees it. `queued` and `running` come from the envelope's T3 run. */
 export const GroupChatDeliveryState = Schema.Literals([
@@ -182,7 +193,6 @@ const deliveryHeadFields = {
   toSeq: NonNegativeInt,
   runId: Schema.NullOr(RunId),
   messageId: Schema.NullOr(MessageId),
-  wait: Schema.NullOr(GroupChatWait),
   /** Set when the operator no longer wants the reply while T3 still has the envelope. */
   withdrawn: Schema.NullOr(Schema.String),
   replyMessageId: Schema.NullOr(GroupChatMessageId),
@@ -191,12 +201,23 @@ const deliveryHeadFields = {
   createdAt: IsoDateTime,
   updatedAt: IsoDateTime,
 };
-/** A delivery without the envelope it sent, as the event stream carries it. */
-export const GroupChatDeliveryHead = Schema.Struct(deliveryHeadFields);
+/** A delivery without its bodies, as the event stream carries it. */
+export const GroupChatDeliveryHead = Schema.Struct({
+  ...deliveryHeadFields,
+  wait: Schema.NullOr(GroupChatWaitHead),
+});
 export type GroupChatDeliveryHead = typeof GroupChatDeliveryHead.Type;
+
+/** A delivery as the group page carries it: the question's text, but not the envelope. */
+export const GroupChatPageDelivery = Schema.Struct({
+  ...deliveryHeadFields,
+  wait: Schema.NullOr(GroupChatWait),
+});
+export type GroupChatPageDelivery = typeof GroupChatPageDelivery.Type;
 
 export const GroupChatDelivery = Schema.Struct({
   ...deliveryHeadFields,
+  wait: Schema.NullOr(GroupChatWait),
   envelope: Schema.String,
   /** The text that ran when it differs from the envelope, because it was edited in T3. */
   sentText: Schema.NullOr(Schema.String),
@@ -260,21 +281,24 @@ export type GroupChatGroupQuery = typeof GroupChatGroupQuery.Type;
 
 /**
  * One page of a group. `messages` rise by seq and hold at most `GROUP_CHAT_PAGE_SIZE`. `deliveries`
- * are the heads for those messages, plus every open delivery when the page was not read with
- * `before`, so a client always sees what is still in flight. A delivery's envelope comes from the
- * delivery read. `olderBefore` is the `before` for the next older page, or null at the first message.
+ * belong to those messages, plus every open delivery when the page was not read with `before`, so
+ * a client always sees what is still in flight and the question each one waits on. A delivery's
+ * envelope comes from the delivery read. `olderBefore` is the `before` for the next older page, or
+ * null at the first message.
  */
 export const GroupChatGroupPage = Schema.Struct({
   group: GroupChatGroup,
   members: Schema.Array(GroupChatMember),
   discussions: Schema.Array(GroupChatDiscussion),
   messages: Schema.Array(GroupChatMessage),
-  deliveries: Schema.Array(GroupChatDeliveryHead),
+  deliveries: Schema.Array(GroupChatPageDelivery),
   olderBefore: Schema.NullOr(PositiveInt),
 });
 export type GroupChatGroupPage = typeof GroupChatGroupPage.Type;
 
 const GROUP_CHAT_MAX_ROUNDS = 20;
+/** The title rides on every group head, and a stream event stays under 4 KiB. */
+export const GROUP_CHAT_TITLE_MAX_LENGTH = 200;
 
 export const GroupChatCommand = Schema.Union([
   Schema.TaggedStruct("group.create", {
