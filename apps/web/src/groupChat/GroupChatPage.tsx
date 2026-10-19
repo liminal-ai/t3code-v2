@@ -63,38 +63,40 @@ function GroupHeaderActions({ view }: { view: GroupView }) {
   const settled = view.group.settledAt !== null;
   const canDiscuss = members.length >= 2 && runningDiscussion(view) === null;
   return (
-    <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
+    <div className="flex flex-1 items-center justify-end gap-2">
       <div className="hidden min-w-0 flex-wrap items-center gap-1 sm:flex">
         {members.map((member) => (
           <MemberChip key={member.id} member={member} wait={open.get(member.id)?.wait ?? null} />
         ))}
       </div>
-      <Button
-        size="xs"
-        variant="ghost-muted"
-        onClick={() =>
-          void attempt(() =>
-            dispatchGroupChat({
-              _tag: settled ? "group.unsettle" : "group.settle",
-              groupId: view.group.id,
-            }),
-          )
-        }
-      >
-        {settled ? "Unsettle" : "Settle"}
-      </Button>
-      <Button
-        size="xs"
-        variant="outline"
-        disabled={!canDiscuss}
-        onClick={() => setDiscussOpen(true)}
-        data-testid="discuss"
-      >
-        Discuss
-      </Button>
-      <Button size="xs" variant="outline" onClick={() => setManageOpen(true)}>
-        Manage
-      </Button>
+      <div className="flex shrink-0 items-center gap-2">
+        <Button
+          size="xs"
+          variant="ghost-muted"
+          onClick={() =>
+            void attempt(() =>
+              dispatchGroupChat({
+                _tag: settled ? "group.unsettle" : "group.settle",
+                groupId: view.group.id,
+              }),
+            )
+          }
+        >
+          {settled ? "Unsettle" : "Settle"}
+        </Button>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={!canDiscuss}
+          onClick={() => setDiscussOpen(true)}
+          data-testid="discuss"
+        >
+          Discuss
+        </Button>
+        <Button size="xs" variant="outline" onClick={() => setManageOpen(true)}>
+          Manage
+        </Button>
+      </div>
       {discussOpen ? (
         <StartDiscussionDialog view={view} onClose={() => setDiscussOpen(false)} />
       ) : null}
