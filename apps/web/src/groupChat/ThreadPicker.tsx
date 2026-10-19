@@ -25,7 +25,7 @@ const STATUS_BADGE: Record<
   ready: { label: "ready", variant: "outline" },
 };
 
-export function ThreadStatusBadge({ thread }: { thread: EnvironmentThreadShell }) {
+function ThreadStatusBadge({ thread }: { thread: EnvironmentThreadShell }) {
   const status = STATUS_BADGE[resolveSidebarThreadStatus(thread)];
   return (
     <Badge variant={status.variant} size="sm" data-testid="thread-status">

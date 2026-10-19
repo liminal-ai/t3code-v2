@@ -118,7 +118,7 @@ type GroupChatClient = Effect.Success<
 >;
 type BearerHeaders = { readonly authorization?: string };
 
-export class GroupChatRequestError extends Error {
+class GroupChatRequestError extends Error {
   override readonly name = "GroupChatRequestError";
 }
 

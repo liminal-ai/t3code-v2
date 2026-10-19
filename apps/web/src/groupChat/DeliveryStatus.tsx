@@ -44,7 +44,7 @@ const DISPATCH_LABEL: Record<GroupChatDeliveryHead["dispatch"], string> = {
   rejected: "refused",
 };
 
-export function describeDelivery(d: GroupChatDeliveryHead): DeliveryView {
+function describeDelivery(d: GroupChatDeliveryHead): DeliveryView {
   const wait = d.wait;
   const retry = d.retryable && (d.state === "failed" || wait?._tag === "stopped_in_t3");
   switch (d.state) {
@@ -126,7 +126,7 @@ const TONE_BADGE: Record<DeliveryTone, "outline" | "info" | "warning" | "error" 
 const retryDelivery = (d: GroupChatDeliveryHead) =>
   attempt(() => dispatchGroupChat({ _tag: "delivery.retry", deliveryId: d.id }));
 
-export function RetryButton({ delivery }: { delivery: GroupChatDeliveryHead }) {
+function RetryButton({ delivery }: { delivery: GroupChatDeliveryHead }) {
   return (
     <Button size="xs" variant="outline" onClick={() => void retryDelivery(delivery)}>
       Retry

@@ -13,7 +13,7 @@ export function mentionAtCaret(text: string, caret: number): string | null {
   return match === null ? null : match[2]!.toLowerCase();
 }
 
-export function mentionedMembers(
+function mentionedMembers(
   text: string,
   members: ReadonlyArray<GroupChatMember>,
 ): ReadonlyArray<GroupChatMemberId> {

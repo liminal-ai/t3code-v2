@@ -1,7 +1,7 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ThreadId } from "@t3tools/contracts";
 
-export const ID_PREFIX_MIN_CHARS = 6;
+const ID_PREFIX_MIN_CHARS = 6;
 
 export function matchesThread(
   thread: { readonly id: string; readonly title: string },
@@ -23,7 +23,7 @@ export function matchesThread(
 export const isSubagentThread = (thread: EnvironmentThreadShell) =>
   thread.lineage.relationshipToParent === "subagent";
 
-export const isPickable = (thread: EnvironmentThreadShell) =>
+const isPickable = (thread: EnvironmentThreadShell) =>
   thread.archivedAt === null && thread.deletedAt === null;
 
 export interface PickerFilter {

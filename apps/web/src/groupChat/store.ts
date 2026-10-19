@@ -141,7 +141,7 @@ function pageRelation(
   return first <= current.highSeq + 1 ? "joins" : "replaces";
 }
 
-export function applyMessage(state: StoreState, message: GroupChatMessage): StoreState {
+function applyMessage(state: StoreState, message: GroupChatMessage): StoreState {
   const current = state.groups.get(message.groupId);
   if (current === undefined) return state;
   if (current.messages.has(message.id)) return state;
@@ -156,7 +156,7 @@ export function applyMessage(state: StoreState, message: GroupChatMessage): Stor
   });
 }
 
-export function setLoadingOlder(
+function setLoadingOlder(
   state: StoreState,
   groupId: GroupChatGroupId,
   loadingOlder: boolean,
@@ -278,7 +278,7 @@ const OPEN_STATES: ReadonlySet<GroupChatDeliveryHead["state"]> = new Set([
   "running",
 ]);
 
-export const isOpenDelivery = (d: GroupChatDeliveryHead) => OPEN_STATES.has(d.state);
+const isOpenDelivery = (d: GroupChatDeliveryHead) => OPEN_STATES.has(d.state);
 
 export function timelineRows(view: GroupView): ReadonlyArray<TimelineRow> {
   const messages = [...view.messages.values()].sort((a, b) => a.seq - b.seq);
