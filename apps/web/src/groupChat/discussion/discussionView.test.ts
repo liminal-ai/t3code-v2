@@ -246,6 +246,27 @@ describe("discussion view", () => {
     expect(lateLabel(message(4, { kind: "reply", late: true }), undefined)).toBe("late reply");
   });
 
+  it("a reply after Stop shows as late in the panel, never as replied", () => {
+    const stopped = discussion({ state: "ended", endReason: "stopped by operator", endedAt: at });
+    const lateReply = reply(2, m1, 1, { late: true });
+    const state = loaded({
+      discussions: [stopped],
+      messages: [prompt, lateReply],
+      deliveries: [
+        delivery(m1, 1, {
+          state: "replied",
+          replyMessageId: lateReply.id,
+          withdrawn: "discussion stopped",
+        }),
+        delivery(m2, 1, { withdrawn: "discussion stopped" }),
+      ],
+    });
+    const view = discussionView(viewOf(state), discussionId)!;
+    expect(view.participants.map((p) => p.status._tag)).toEqual(["late", "open"]);
+    expect(handles(view.replied)).toEqual([]);
+    expect(handles(view.signedOff)).toEqual([]);
+  });
+
   it("a stopped reply holds the round until Retry", () => {
     const state = loaded({
       deliveries: [

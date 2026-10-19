@@ -13,6 +13,7 @@ export type ParticipantStatus =
   | { readonly _tag: "removed" }
   | { readonly _tag: "signed_off" }
   | { readonly _tag: "replied" }
+  | { readonly _tag: "late" }
   | { readonly _tag: "open"; readonly delivery: GroupChatPageDelivery }
   | { readonly _tag: "paused"; readonly delivery: GroupChatPageDelivery }
   | { readonly _tag: "failed"; readonly delivery: GroupChatPageDelivery }
@@ -57,7 +58,9 @@ function statusOf(
   if (delivery === undefined) return { _tag: "no_delivery" };
   switch (delivery.state) {
     case "replied":
-      return { _tag: "replied" };
+      return delivery.withdrawn === null && reply?.late !== true
+        ? { _tag: "replied" }
+        : { _tag: "late" };
     case "failed":
       return delivery.wait?._tag === "stopped_in_t3"
         ? { _tag: "paused", delivery }

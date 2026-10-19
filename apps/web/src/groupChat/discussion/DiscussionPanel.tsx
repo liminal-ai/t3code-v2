@@ -27,8 +27,15 @@ function describeStatus(status: ParticipantStatus): {
       return { word: "signed off", className: "text-success-foreground" };
     case "replied":
       return { word: "replied", className: "text-success-foreground" };
-    case "open":
-      return { word: describeDelivery(status.delivery).label, className: "text-muted-foreground" };
+    case "late":
+      return { word: "replied late, not counted", className: "text-muted-foreground" };
+    case "open": {
+      const label = describeDelivery(status.delivery).label;
+      return {
+        word: status.delivery.withdrawn === null ? label : `${label}, will not count`,
+        className: "text-muted-foreground",
+      };
+    }
     case "paused":
       return { word: "stopped in T3", className: "text-warning-foreground" };
     case "failed":
