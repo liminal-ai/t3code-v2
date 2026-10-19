@@ -4,7 +4,9 @@ import {
   executeEnvironmentHttpRequest,
   makeEnvironmentHttpApiGroupClient,
   makeEnvironmentHttpApiUrlBuilder,
+  RemoteEnvironmentAuthFetchError,
 } from "@t3tools/client-runtime/rpc";
+import { GroupChatNotFound } from "@t3tools/contracts";
 import type {
   GroupChatCommand,
   GroupChatCommandError,
@@ -21,6 +23,7 @@ import type {
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { FetchHttpClient, type HttpClient } from "effect/http";
 import { AsyncResult } from "effect/reactivity";
 import { useEffect } from "react";
@@ -118,9 +121,19 @@ type GroupChatClient = Effect.Success<
 >;
 type BearerHeaders = { readonly authorization?: string };
 
-class GroupChatRequestError extends Error {
+export class GroupChatRequestError extends Error {
   override readonly name = "GroupChatRequestError";
+  readonly notFound: boolean;
+  constructor(message: string, notFound = false) {
+    super(message);
+    this.notFound = notFound;
+  }
 }
+
+const isGroupChatNotFound = Schema.is(GroupChatNotFound);
+
+const isNotFound = (cause: unknown) =>
+  cause instanceof RemoteEnvironmentAuthFetchError && isGroupChatNotFound(cause.cause);
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -183,7 +196,7 @@ const groupChatRequest = <A, E>(
       ),
     )
     .catch((cause: unknown) => {
-      throw new GroupChatRequestError(describeFailure(cause));
+      throw new GroupChatRequestError(describeFailure(cause), isNotFound(cause));
     });
 };
 

@@ -1,4 +1,6 @@
+import { useAtomValue } from "@effect/atom-react";
 import type { GroupChatGroupId, GroupChatMember, GroupChatMemberId } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import { ArrowUpIcon } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 
@@ -7,19 +9,46 @@ import { Checkbox } from "../components/ui/checkbox";
 import { Textarea } from "../components/ui/textarea";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { cn } from "../lib/utils";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { attempt, dispatchGroupChat } from "./api";
 import {
   completeMention,
+  type Draft,
+  type Drafts,
   loadRecipients,
   mentionAtCaret,
   saveRecipients,
   sendCommand,
   suggestions,
-  textAfterSend,
+  draftAfterSend,
   tickedAfterTyping,
 } from "./composer";
 import { MemberDot, memberColor } from "./MemberChip";
 import { type GroupView, noteMessage, openDeliveryByMember } from "./store";
+
+interface BoxesByGroup {
+  readonly drafts: Drafts;
+  readonly sending: ReadonlySet<GroupChatGroupId>;
+}
+
+const boxesByGroupAtom = Atom.make<BoxesByGroup>({
+  drafts: new Map<GroupChatGroupId, string>(),
+  sending: new Set<GroupChatGroupId>(),
+}).pipe(Atom.keepAlive, Atom.withLabel("group-chat-composer"));
+
+const updateBoxes = (next: (boxes: BoxesByGroup) => BoxesByGroup) =>
+  appAtomRegistry.update(boxesByGroupAtom, next);
+
+const setDraft = (groupId: GroupChatGroupId, text: string) =>
+  updateBoxes((boxes) => ({ ...boxes, drafts: new Map(boxes.drafts).set(groupId, text) }));
+
+const setSending = (groupId: GroupChatGroupId, sending: boolean) =>
+  updateBoxes((boxes) => {
+    const next = new Set(boxes.sending);
+    if (sending) next.add(groupId);
+    else next.delete(groupId);
+    return { ...boxes, sending: next };
+  });
 
 function StatusDot({ tone, label }: { tone: "warning" | "muted"; label: string }) {
   return (
@@ -49,7 +78,10 @@ export function Composer({
   members: ReadonlyArray<GroupChatMember>;
   view: GroupView;
 }) {
-  const [text, setText] = useState("");
+  const boxes = useAtomValue(boxesByGroupAtom);
+  const text = boxes.drafts.get(groupId) ?? "";
+  const setText = (value: string) => setDraft(groupId, value);
+  const sending = boxes.sending.has(groupId);
   const [ticked, setTicked] = useState<ReadonlyArray<GroupChatMemberId>>(() =>
     loadRecipients(groupId),
   );
@@ -57,12 +89,10 @@ export function Composer({
   if (tickedGroup !== groupId) {
     setTickedGroup(groupId);
     setTicked(loadRecipients(groupId));
-    setText("");
   }
   const [caret, setCaret] = useState(0);
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
-  const [sending, setSending] = useState(false);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
   const activeIds = new Set(members.map((m) => m.id));
@@ -100,16 +130,19 @@ export function Composer({
 
   const send = async () => {
     if (text.trim() === "" || sending) return;
-    const submitted = text;
-    setSending(true);
+    const submitted: Draft = { groupId, text };
+    setSending(groupId, true);
     setText("");
     setCaret(0);
     const result = await attempt(() =>
-      dispatchGroupChat(sendCommand(groupId, submitted, tickedActive, members)),
+      dispatchGroupChat(sendCommand(groupId, submitted.text, tickedActive, members)),
     );
-    setSending(false);
+    setSending(groupId, false);
     if (result?._tag === "message") noteMessage(result.message);
-    setText((draftNow) => textAfterSend(draftNow, submitted, result !== undefined));
+    updateBoxes((boxes) => ({
+      ...boxes,
+      drafts: draftAfterSend(boxes.drafts, submitted, result !== undefined),
+    }));
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {

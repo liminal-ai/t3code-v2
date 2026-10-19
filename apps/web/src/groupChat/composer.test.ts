@@ -8,7 +8,7 @@ import {
   saveRecipients,
   sendCommand,
   suggestions,
-  textAfterSend,
+  draftAfterSend,
   tickedAfterTyping,
 } from "./composer";
 
@@ -71,10 +71,21 @@ describe("composer", () => {
   });
 
   it("a draft typed during a send survives it, and a failed send comes back only to an empty box", () => {
-    expect(textAfterSend("next thought", "first message", true)).toBe("next thought");
-    expect(textAfterSend("", "first message", true)).toBe("");
-    expect(textAfterSend("next thought", "first message", false)).toBe("next thought");
-    expect(textAfterSend("", "first message", false)).toBe("first message");
+    const sent = { groupId, text: "first message" };
+    const typed = new Map([[groupId, "next thought"]]);
+    const empty = new Map<GroupChatGroupId, string>();
+    expect(draftAfterSend(typed, sent, true)).toBe(typed);
+    expect(draftAfterSend(empty, sent, true)).toBe(empty);
+    expect(draftAfterSend(typed, sent, false)).toBe(typed);
+    expect(draftAfterSend(empty, sent, false).get(groupId)).toBe("first message");
+  });
+
+  it("a failed send comes back to its own group's box while another group's box keeps its text", () => {
+    const other = "grp_other" as GroupChatGroupId;
+    const drafts = new Map([[other, "typing in the other group"]]);
+    const after = draftAfterSend(drafts, { groupId, text: "for the first group" }, false);
+    expect(after.get(groupId)).toBe("for the first group");
+    expect(after.get(other)).toBe("typing in the other group");
   });
 
   it("recipients are kept per group", () => {
