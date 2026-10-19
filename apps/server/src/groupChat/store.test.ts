@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ServerConfig from "../config.ts";
 import { GroupChat, layer as groupChatLayer } from "./layer.ts";
 import { MIGRATIONS_TABLE, open, storeFile } from "./store.ts";
+import { layerNeverPort } from "./testkit.ts";
 
 const setup = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -41,6 +42,7 @@ const openModule = (baseDir: string) =>
   Effect.flatMap(Effect.service(GroupChat), (groupChat) => Effect.flip(groupChat.store)).pipe(
     Effect.provide(
       groupChatLayer.pipe(
+        Layer.provide(layerNeverPort),
         Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
         Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
       ),

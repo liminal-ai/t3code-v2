@@ -9,6 +9,7 @@ import * as Path from "effect/Path";
 
 import * as ServerConfig from "../config.ts";
 import { GroupChat, layer as groupChatLayer } from "./layer.ts";
+import { layerNeverPort } from "./testkit.ts";
 
 it.layer(NodeServices.layer)("group chat module", (it) => {
   it.effect("T3CODE_GROUP_CHAT=off opens no store and answers disabled", () =>
@@ -21,6 +22,7 @@ it.layer(NodeServices.layer)("group chat module", (it) => {
       ).pipe(
         Effect.provide(
           groupChatLayer.pipe(
+            Layer.provide(layerNeverPort),
             Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
             Layer.provide(
               ConfigProvider.layer(ConfigProvider.fromEnv({ env: { T3CODE_GROUP_CHAT: "off" } })),
@@ -30,6 +32,27 @@ it.layer(NodeServices.layer)("group chat module", (it) => {
       );
       assert.deepStrictEqual(failure, new GroupChatUnavailable({ reason: "disabled" }));
       assert.isFalse(yield* fileSystem.exists(path.join(baseDir, "userdata", "group-chat")));
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("the layer builds while the thread port never settles", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-group-chat-never-" });
+      const snapshot = yield* Effect.flatMap(Effect.service(GroupChat), (groupChat) =>
+        Effect.flatMap(groupChat.engine, (engine) =>
+          engine.start.pipe(Effect.andThen(engine.snapshot)),
+        ),
+      ).pipe(
+        Effect.provide(
+          groupChatLayer.pipe(
+            Layer.provide(layerNeverPort),
+            Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
+            Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+          ),
+        ),
+      );
+      assert.deepStrictEqual(snapshot, { groups: [], members: [] });
     }).pipe(Effect.scoped),
   );
 });
