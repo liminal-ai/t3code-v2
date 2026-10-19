@@ -68,6 +68,15 @@ export function sendCommand(
   };
 }
 
+/**
+ * The box is cleared when a send leaves, so what the operator types while the request is out is
+ * theirs to keep. A failed send puts its text back only when nothing new was typed.
+ */
+export function textAfterSend(draftNow: string, submitted: string, sent: boolean): string {
+  if (sent || draftNow !== "") return draftNow;
+  return submitted;
+}
+
 const recipientsKey = (groupId: GroupChatGroupId) => `t3code:group-chat:recipients:${groupId}`;
 
 export function loadRecipients(
