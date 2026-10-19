@@ -141,7 +141,8 @@ export function applyPage(
       deliveries: mergeDeliveries(current.deliveries, page.deliveries),
       olderBefore: mode === "older" ? page.olderBefore : current.olderBefore,
       fetchingAfter: mode === "older" ? current.fetchingAfter : null,
-      awaitedSeq: mode === "older" ? current.awaitedSeq : 0,
+      // A head that arrived while this read was out is still owed a read.
+      awaitedSeq: current.awaitedSeq > current.highSeq ? current.awaitedSeq : 0,
     });
   }
   if (current === undefined || pageRelation(current, page, mode) === "replaces") {
@@ -472,6 +473,12 @@ const update = (next: (state: StoreState) => StoreState) =>
 
 /** A read that failed is tried again after this long; a tunnel drops requests now and then. */
 const READ_RETRY_DELAY_MS = 2_000;
+const READ_RETRY_MAX_DELAY_MS = 30_000;
+
+/** The wait before the next try of a failed page read: doubling from two seconds, capped. */
+export function retryDelayMs(failures: number): number {
+  return Math.min(READ_RETRY_DELAY_MS * 2 ** Math.max(0, failures - 1), READ_RETRY_MAX_DELAY_MS);
+}
 
 const runFollowUp = (groupId: GroupChatGroupId) => {
   const next = followUpRead(appAtomRegistry.get(storeAtom), groupId);
@@ -479,12 +486,35 @@ const runFollowUp = (groupId: GroupChatGroupId) => {
   runFetches(next.fetches);
 };
 
+/**
+ * A failed read of a group's latest page keeps trying while the stream stays up, since a tunnel
+ * can fail twice in a row and the stream has no replay. A new resync or a dropped stream starts
+ * over or stops it.
+ */
+const latestRetries = new Map<GroupChatGroupId, ReturnType<typeof setTimeout>>();
+
+const readLatest = (groupId: GroupChatGroupId, failures = 0) => {
+  const pending = latestRetries.get(groupId);
+  if (pending !== undefined) clearTimeout(pending);
+  latestRetries.delete(groupId);
+  void loadGroup(groupId).catch(() => {
+    latestRetries.set(
+      groupId,
+      setTimeout(() => readLatest(groupId, failures + 1), retryDelayMs(failures + 1)),
+    );
+  });
+};
+
+/** The stream is down, so its reconnect will read again; pending retries stop. */
+export function stopRetries(): void {
+  for (const timer of latestRetries.values()) clearTimeout(timer);
+  latestRetries.clear();
+}
+
 const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
   for (const fetch of fetches) {
     if (fetch._tag === "latest") {
-      void loadGroup(fetch.groupId).catch(() =>
-        setTimeout(() => void loadGroup(fetch.groupId).catch(() => {}), READ_RETRY_DELAY_MS),
-      );
+      readLatest(fetch.groupId);
       continue;
     }
     void fetchGroupPage(fetch.groupId, { after: fetch.seq })
