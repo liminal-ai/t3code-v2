@@ -1,7 +1,3 @@
-/**
- * Group chat keeps its own SQLite file beside T3's database, so its migrations never join T3's
- * numbered sequence and a fault in its file never reaches core's data.
- */
 import { GroupChatGroup } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
@@ -41,7 +37,6 @@ export interface GroupChatStore {
 export const storeFile = (path: Path.Path, stateDir: string) =>
   path.join(stateDir, "group-chat", "groupchat.sqlite");
 
-/** Opens and migrates the file for the life of the calling scope. */
 export const open = Effect.fn("groupChat.store.open")(function* (file: string) {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

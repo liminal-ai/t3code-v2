@@ -24,10 +24,6 @@ export type GroupChatSnapshotState =
 
 const SNAPSHOT_TIMEOUT_MS = 15_000;
 
-/**
- * Group chat lives on the primary environment, which the web reaches with its session cookie or,
- * on desktop, a bearer token. It is never a relay connection, so no DPoP proof is needed.
- */
 const fetchSnapshot = (prepared: PreparedConnection) =>
   Effect.gen(function* () {
     const client = yield* makeEnvironmentHttpApiGroupClient(prepared.httpBaseUrl, "groupChat");
@@ -41,9 +37,10 @@ const fetchSnapshot = (prepared: PreparedConnection) =>
       })
       .pipe(
         Effect.map((snapshot): GroupChatSnapshotState => ({ status: "ready", ...snapshot })),
-        Effect.catchTag("GroupChatUnavailable", (error) =>
-          Effect.succeed<GroupChatSnapshotState>({ status: "unavailable", reason: error.reason }),
-        ),
+        Effect.catchTags({
+          GroupChatUnavailable: (error) =>
+            Effect.succeed<GroupChatSnapshotState>({ status: "unavailable", reason: error.reason }),
+        }),
       );
     return yield* executeEnvironmentHttpRequest(
       makeEnvironmentHttpApiUrlBuilder(prepared.httpBaseUrl).groupChat.snapshot(),

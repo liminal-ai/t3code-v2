@@ -9,7 +9,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as SqlClient from "effect/sql/SqlClient";
-import * as NodeCrypto from "node:crypto";
 
 import * as ServerConfig from "../config.ts";
 import { GroupChat, layer as groupChatLayer } from "./layer.ts";
@@ -94,7 +93,10 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
     Effect.gen(function* () {
       const { fileSystem, baseDir, file } = yield* setup;
       yield* Effect.scoped(open(file));
-      yield* fileSystem.writeFile(file, NodeCrypto.randomBytes(4096));
+      yield* fileSystem.writeFile(
+        file,
+        new Uint8Array(4096).map((_, index) => (index * 131 + 7) % 256),
+      );
       yield* fileSystem.remove(`${file}-wal`).pipe(Effect.ignore);
       yield* fileSystem.remove(`${file}-shm`).pipe(Effect.ignore);
       const failure = yield* openModule(baseDir);

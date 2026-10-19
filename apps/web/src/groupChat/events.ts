@@ -18,7 +18,6 @@ import { refreshGroupChatSnapshot } from "./api";
 const GROUP_CHAT_BASE_PATH = "/api/group-chat";
 const RECONNECT_DELAY_MS = 5_000;
 
-/** A `wsTicket` is good for one connect, so every reconnect resolves the access again. */
 const eventsAccessAtom = connectionAtomRuntime
   .atom((get) => {
     const environmentId = get(primaryEnvironmentIdAtom);
@@ -31,6 +30,8 @@ const eventsAccessAtom = connectionAtomRuntime
   })
   .pipe(Atom.withLabel("group-chat-events-access"));
 
+const reconnectWithFreshTicket = () => appAtomRegistry.refresh(eventsAccessAtom);
+
 const openEventSource = (access: DeviceHubAccess, onMessage: () => void, onError: () => void) => {
   const source = new EventSource(withDeviceHubQuery(`${access.httpBase}/events`, access), {
     withCredentials: access.credentials,
@@ -40,7 +41,6 @@ const openEventSource = (access: DeviceHubAccess, onMessage: () => void, onError
   return () => source.close();
 };
 
-/** Keeps the group list current while a group chat page is open. */
 export function useGroupChatEvents(enabled: boolean): void {
   const result = useAtomValue(eventsAccessAtom);
   const access = AsyncResult.isSuccess(result) ? result.value : null;
@@ -49,7 +49,7 @@ export function useGroupChatEvents(enabled: boolean): void {
     let reconnect: ReturnType<typeof setTimeout> | undefined;
     const close = openEventSource(access, refreshGroupChatSnapshot, () => {
       close();
-      reconnect = setTimeout(() => appAtomRegistry.refresh(eventsAccessAtom), RECONNECT_DELAY_MS);
+      reconnect = setTimeout(reconnectWithFreshTicket, RECONNECT_DELAY_MS);
     });
     return () => {
       close();

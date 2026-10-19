@@ -14,10 +14,6 @@ import * as Events from "./events.ts";
 import * as Http from "./http.ts";
 import * as Store from "./store.ts";
 
-/**
- * Group chat as the server sees it. Whether it runs is decided once at boot, and a module that
- * cannot run answers every request with why instead of stopping the server.
- */
 export class GroupChat extends Context.Service<
   GroupChat,
   { readonly store: Effect.Effect<Store.GroupChatStore, GroupChatUnavailable> }
@@ -55,7 +51,7 @@ const make = Effect.gen(function* () {
     durationMs: (yield* Clock.currentTimeMillis) - startedAt,
   });
   return GroupChat.of({ store: Effect.succeed(opened.value) });
-});
+}).pipe(Effect.withSpan("groupChat.boot"));
 
 export const layer = Layer.effect(GroupChat, make);
 
@@ -66,7 +62,6 @@ export const layerHttpApi = withModule(Http.makeLayer);
 
 export const routeLayer = withModule(Events.makeRouteLayer);
 
-/** Opens the module at boot rather than on the first request. */
 export const layerEngineStart = Layer.effectDiscard(Effect.service(GroupChat)).pipe(
   Layer.provide(layer),
 );
