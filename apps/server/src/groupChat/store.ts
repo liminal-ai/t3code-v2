@@ -168,6 +168,10 @@ const migrations = Migrator.fromRecord({
       )
     `,
   ),
+  "5_cancel_in_flight": Effect.flatMap(
+    SqlClient.SqlClient,
+    (sql) => sql`ALTER TABLE cancels ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0`,
+  ),
 });
 
 const runMigrations = Migrator.make({});
@@ -335,12 +339,13 @@ const CancelRow = Schema.Struct({
   threadId: ThreadId,
   runId: Schema.NullOr(RunId),
   messageId: Schema.NullOr(MessageId),
+  inFlight: Schema.BooleanFromBit,
 });
 export type CancelRow = typeof CancelRow.Type;
 
 export type NewCancel =
   | { readonly threadId: ThreadId; readonly runId: RunId }
-  | { readonly threadId: ThreadId; readonly messageId: MessageId };
+  | { readonly threadId: ThreadId; readonly messageId: MessageId; readonly inFlight: boolean };
 
 export type StoreError = SqlError | Schema.SchemaError;
 
@@ -409,6 +414,18 @@ export interface Writes {
   readonly pauseLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
   readonly resumeLane: (threadId: ThreadId) => Effect.Effect<void, StoreError>;
   readonly insertCancel: (input: NewCancel) => Effect.Effect<void, StoreError>;
+  /**
+   * A cancel whose send is still in flight has nothing in T3 to cancel yet, and T3 may take the
+   * message after a lookup finds nothing, so the row waits for the send to return. Landing it
+   * records that return and the run T3 gave the message, if any. False when no row waited.
+   */
+  readonly landCancel: (input: {
+    readonly threadId: ThreadId;
+    readonly messageId: MessageId;
+    readonly runId: RunId | null;
+  }) => Effect.Effect<boolean, StoreError>;
+  /** No send survives a restart, so at boot every waiting row has returned. */
+  readonly landAllCancels: Effect.Effect<void, StoreError>;
   readonly deleteCancel: (id: string) => Effect.Effect<void, StoreError>;
   readonly appendMessage: (input: NewMessage) => Effect.Effect<GroupChatMessage, StoreError>;
   readonly insertDelivery: (input: NewDelivery) => Effect.Effect<DeliveryRow, StoreError>;
@@ -523,7 +540,8 @@ const makeReads = (sql: SqlClient.SqlClient): Reads => {
     Request: Schema.Void,
     Result: CancelRow,
     execute: () => sql`
-      SELECT id, thread_id AS "threadId", run_id AS "runId", message_id AS "messageId"
+      SELECT id, thread_id AS "threadId", run_id AS "runId", message_id AS "messageId",
+        in_flight AS "inFlight"
       FROM cancels
       ORDER BY created_at, rowid
     `,
@@ -764,13 +782,28 @@ const makeWrites = (
       Effect.gen(function* () {
         const runId = "runId" in input ? input.runId : null;
         const messageId = "messageId" in input ? input.messageId : null;
+        const inFlight = "inFlight" in input && input.inFlight ? 1 : 0;
         const id = `${input.threadId}:${runId ?? `message:${messageId}`}`;
         const at = yield* now;
         yield* sql`
-          INSERT OR IGNORE INTO cancels (id, thread_id, run_id, message_id, created_at)
-          VALUES (${id}, ${input.threadId}, ${runId}, ${messageId}, ${at})
+          INSERT OR IGNORE INTO cancels (id, thread_id, run_id, message_id, in_flight, created_at)
+          VALUES (${id}, ${input.threadId}, ${runId}, ${messageId}, ${inFlight}, ${at})
         `;
       }),
+    landCancel: (input) =>
+      Effect.gen(function* () {
+        const waiting = yield* sql<{ readonly id: string }>`
+          SELECT id FROM cancels
+          WHERE thread_id = ${input.threadId} AND message_id = ${input.messageId} AND in_flight = 1
+        `;
+        const row = waiting[0];
+        if (row === undefined) return false;
+        yield* sql`
+          UPDATE cancels SET in_flight = 0, run_id = ${input.runId} WHERE id = ${row.id}
+        `;
+        return true;
+      }),
+    landAllCancels: Effect.asVoid(sql`UPDATE cancels SET in_flight = 0 WHERE in_flight = 1`),
     deleteCancel: (id) => Effect.asVoid(sql`DELETE FROM cancels WHERE id = ${id}`),
     updateDiscussion: (id, patch) =>
       Effect.gen(function* () {

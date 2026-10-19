@@ -40,7 +40,7 @@ import { forkParked } from "../serverActivation.ts";
 import { newId } from "./domain.ts";
 import { deriveHandle, nextColor, renderEnvelope } from "./envelope.ts";
 import { countsAsSignOff, decideRound, gateSend, onWithdraw } from "./rounds.ts";
-import type { CancelRow, DeliveryRow, GroupChatStore, NewCancel, StoreError, Tx } from "./store.ts";
+import type { CancelRow, DeliveryRow, GroupChatStore, StoreError, Tx } from "./store.ts";
 import { handleProblem, stripLeadingHandle, withoutSignOffLine } from "./text.ts";
 import {
   dispatchIds,
@@ -400,6 +400,7 @@ export const makeEngine = (store: GroupChatStore) =>
         }
         const claimed = yield* claim(d.id);
         if (claimed === null) return;
+        const dispatch = { threadId, messageId: claimed.ids.messageId };
         const sent = yield* port
           .send({
             threadId,
@@ -412,32 +413,35 @@ export const makeEngine = (store: GroupChatStore) =>
         if (Result.isFailure(sent)) {
           const error = sent.failure;
           if (error._tag === "GroupChatPortRejected") {
-            yield* store.transaction((tx) =>
+            const orphaned = yield* store.transaction((tx) =>
               Effect.gen(function* () {
                 const current = yield* tx.delivery(d.id);
-                if (current === null) return;
+                if (current === null) return yield* tx.landCancel({ ...dispatch, runId: null });
                 yield* tx.updateDelivery(d.id, {
                   dispatch: "rejected",
                   state: current.withdrawn === null ? "failed" : "cancelled",
                   error: error.reason,
                   wait: null,
                 });
+                return false;
               }),
             );
+            if (orphaned) yield* kickCancels;
             yield* onTerminal(d.id);
             return;
           }
           yield* record(
             d.id,
             { dispatch: "unknown", error: error.message },
-            { threadId, messageId: claimed.ids.messageId },
+            { ...dispatch, runId: null },
           );
           return;
         }
+        const runId = sent.success.runId;
         yield* record(
           d.id,
-          { dispatch: "accepted", runId: sent.success.runId, state: "queued", error: null },
-          { threadId, runId: sent.success.runId },
+          { dispatch: "accepted", runId, state: "queued", error: null },
+          { ...dispatch, runId },
         );
         resends.delete(d.id);
       });
@@ -445,7 +449,7 @@ export const makeEngine = (store: GroupChatStore) =>
     const record = (
       deliveryId: GroupChatDeliveryId,
       patch: Parameters<Tx["updateDelivery"]>[1],
-      cancel: NewCancel,
+      dispatch: Parameters<Tx["landCancel"]>[0],
     ): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         const cancelled = yield* store.transaction((tx) =>
@@ -454,8 +458,17 @@ export const makeEngine = (store: GroupChatStore) =>
             if (current !== null) yield* tx.updateDelivery(deliveryId, patch);
             const orphaned = current === null;
             const withdrawnMeanwhile =
-              current !== null && current.withdrawn !== null && patch.dispatch === "accepted";
-            if (orphaned || withdrawnMeanwhile) yield* tx.insertCancel(cancel);
+              current !== null && current.withdrawn !== null && dispatch.runId !== null;
+            if (orphaned && !(yield* tx.landCancel(dispatch))) {
+              yield* tx.insertCancel(
+                dispatch.runId === null
+                  ? { threadId: dispatch.threadId, messageId: dispatch.messageId, inFlight: false }
+                  : { threadId: dispatch.threadId, runId: dispatch.runId },
+              );
+            }
+            if (withdrawnMeanwhile) {
+              yield* tx.insertCancel({ threadId: dispatch.threadId, runId: dispatch.runId! });
+            }
             return orphaned || withdrawnMeanwhile;
           }),
         );
@@ -912,6 +925,8 @@ export const makeEngine = (store: GroupChatStore) =>
             : yield* port.findMessage({ threadId: row.threadId, messageId: row.messageId });
         const runId = row.runId ?? found?.runId ?? null;
         if (runId !== null) yield* port.cancelQueued({ threadId: row.threadId, runId });
+        // T3 may still take the message from a send in flight; that send lands the row and kicks.
+        else if (row.inFlight) return "settled" as const;
         yield* store.transaction((tx) => tx.deleteCancel(row.id));
         return "settled" as const;
       }).pipe(
@@ -1509,7 +1524,11 @@ export const makeEngine = (store: GroupChatStore) =>
                   yield* withdraw(tx, d, "group deleted");
                   const threadId = threadOf.get(d.memberId);
                   if (dispatchUnresolved(d) && d.messageId !== null && threadId !== undefined) {
-                    yield* tx.insertCancel({ threadId, messageId: d.messageId });
+                    yield* tx.insertCancel({
+                      threadId,
+                      messageId: d.messageId,
+                      inFlight: d.dispatch === "sending",
+                    });
                   }
                 }
                 yield* tx.deleteGroup(command.groupId);
@@ -1656,6 +1675,7 @@ export const makeEngine = (store: GroupChatStore) =>
     );
 
     const recover = Effect.gen(function* () {
+      yield* store.transaction((tx) => tx.landAllCancels);
       yield* Effect.forkIn(drainCancels, scope);
       const open = yield* store.openDeliveries;
       const threads = new Set<ThreadId>();

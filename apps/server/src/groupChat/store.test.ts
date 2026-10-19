@@ -64,7 +64,13 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
       assert.strictEqual(mode?.journal_mode, "wal");
       assert.deepStrictEqual(
         (yield* recordedMigrations(file)).map((row) => `${row.migration_id}_${row.name}`),
-        ["1_groups", "2_members_messages_deliveries_discussions", "3_lanes", "4_cancels"],
+        [
+          "1_groups",
+          "2_members_messages_deliveries_discussions",
+          "3_lanes",
+          "4_cancels",
+          "5_cancel_in_flight",
+        ],
       );
     }).pipe(Effect.scoped),
   );
@@ -133,7 +139,7 @@ it.layer(NodeServices.layer)("group chat store", (it) => {
           ["older", null],
         ],
       );
-      assert.strictEqual((yield* recordedMigrations(file)).length, 4);
+      assert.strictEqual((yield* recordedMigrations(file)).length, 5);
     }).pipe(Effect.scoped),
   );
 
