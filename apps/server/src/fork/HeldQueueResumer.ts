@@ -12,6 +12,7 @@ import {
   type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -47,15 +48,17 @@ type HoldSource =
   | { readonly kind: "stopped" }
   | { readonly kind: "system" };
 
+interface RestartHeld {
+  readonly kind: "restart";
+  readonly threadId: ThreadId;
+  readonly reconcileCommandId: CommandId;
+  readonly heldAt: DateTime.Utc;
+  /** Runs the thread's latest reconcile pass cancelled or noted cancelled work on. */
+  readonly touchedRunIds: ReadonlyArray<RunId>;
+}
+
 type HeldThreadClass =
-  | {
-      readonly kind: "restart";
-      readonly threadId: ThreadId;
-      readonly reconcileCommandId: CommandId;
-      readonly heldAt: DateTime.Utc;
-      /** Runs the thread's latest reconcile pass cancelled or noted cancelled work on. */
-      readonly touchedRunIds: ReadonlyArray<RunId>;
-    }
+  | RestartHeld
   | { readonly kind: "stopped" | "system" | "unknown"; readonly threadId: ThreadId };
 
 interface RunEventRow {
@@ -157,6 +160,8 @@ const ENDED_WITHOUT_COMPLETING = new Set<OrchestrationV2Run["status"]>([
   "cancelled",
   "rolled_back",
 ]);
+
+const IN_FLIGHT = new Set<OrchestrationV2Run["status"]>(["starting", "running"]);
 
 type Outcome =
   | "resumed"
@@ -281,34 +286,53 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const resume = (held: Extract<HeldThreadClass, { kind: "restart" }>) =>
+  interface Release {
+    readonly held: RestartHeld;
+    readonly continuation: Continuation | undefined;
+  }
+
+  const admit = (held: RestartHeld): Effect.Effect<Outcome | Release> =>
     Effect.gen(function* () {
-      const { threadId } = held;
-      const shell = yield* projections.getThreadShell(threadId);
-      if (shell === null || shell.deletedAt !== null) return "needs-user";
+      const shell = yield* projections.getThreadShell(held.threadId);
+      if (shell === null || shell.deletedAt !== null) return "needs-user" as const;
       const current = yield* settings.getSettings;
       if (
         !resolveProjectSettings(current, shell.projectId).settings.continueThreadsAfterServerUpdate
       )
-        return "setting-off";
+        return "setting-off" as const;
       const continuation =
-        (yield* pendingContinuation(threadId)) ?? (yield* continuationFor(held.touchedRunIds));
-      if (continuation !== undefined) {
-        yield* outbox.awaitSettled(continuation.effectId);
-      } else if (held.touchedRunIds.length > 0) {
-        return "declined";
-      } else if (parkedForUser(shell, yield* DateTime.now) || (yield* secretPending(threadId))) {
-        return "needs-user";
-      }
+        (yield* pendingContinuation(held.threadId)) ?? (yield* continuationFor(held.touchedRunIds));
+      if (continuation === undefined && held.touchedRunIds.length > 0) return "declined" as const;
+      return { held, continuation };
+    }).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("held queue not admitted", { threadId: held.threadId, cause }).pipe(
+          Effect.as("refused" as const),
+        ),
+      ),
+    );
+
+  const resume = ({ held, continuation }: Release) =>
+    Effect.gen(function* () {
+      const { threadId } = held;
+      const shell = yield* projections.getThreadShell(threadId);
+      if (shell === null || shell.deletedAt !== null) return "needs-user";
       const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
+      const continued =
+        continuation === undefined
+          ? undefined
+          : runs.find((run) => run.restartContinuationOfRunId === continuation.sourceRunId);
       if (continuation !== undefined) {
-        const continued = runs.find(
-          (run) => run.restartContinuationOfRunId === continuation.sourceRunId,
-        );
         if (continued === undefined || ENDED_WITHOUT_COMPLETING.has(continued.status))
           return "declined";
         if (continued.status === "interrupted") return "stopped-since-hold";
       }
+      const followsContinuation = continued !== undefined && IN_FLIGHT.has(continued.status);
+      if (
+        !followsContinuation &&
+        (parkedForUser(shell, yield* DateTime.now) || (yield* secretPending(threadId)))
+      )
+        return "needs-user";
       if (yield* stoppedSince(threadId, held.heldAt)) return "stopped-since-hold";
       const queued = runs
         .filter((run) => run.status === "queued")
@@ -328,28 +352,46 @@ const make = Effect.gen(function* () {
         threadId,
       });
       return "resumed" as Outcome;
+    });
+
+  const release = (pending: Release) =>
+    Effect.gen(function* () {
+      const { threadId } = pending.held;
+      const from = yield* Clock.currentTimeMillis;
+      if (pending.continuation !== undefined)
+        yield* outbox.awaitSettled(pending.continuation.effectId);
+      const waitedMs = (yield* Clock.currentTimeMillis) - from;
+      const outcome = yield* resume(pending);
+      yield* Effect.logInfo("held queue release", { threadId, outcome, waitedMs });
     }).pipe(
       Effect.catchCause((cause) =>
-        Effect.logWarning("held queue not resumed", { threadId: held.threadId, cause }).pipe(
-          Effect.as("refused" as Outcome),
-        ),
+        Effect.logWarning("held queue not resumed", { threadId: pending.held.threadId, cause }),
       ),
     );
 
   const scan = Effect.gen(function* () {
+    const from = yield* Clock.currentTimeMillis;
     yield* Effect.logInfo("held queue scan started");
     const threadIds = yield* heldThreadIds;
     const classes = yield* Effect.forEach(threadIds, classify);
-    const outcomes = yield* Effect.forEach(
+    yield* Effect.logInfo("held queues classified", {
+      threads: threadIds.length,
+      ...tally(classes.map((held) => held.kind)),
+      ms: (yield* Clock.currentTimeMillis) - from,
+    });
+    const admitted = yield* Effect.forEach(
       classes.flatMap((held) => (held.kind === "restart" ? [held] : [])),
-      resume,
-      { concurrency: "unbounded" },
+      admit,
     );
+    const releases = admitted.flatMap((entry) => (typeof entry === "string" ? [] : [entry]));
     yield* Effect.logInfo("held queue scan ended", {
       threads: threadIds.length,
       ...tally(classes.map((held) => held.kind)),
-      ...tally(outcomes),
+      ...tally(admitted.flatMap((entry) => (typeof entry === "string" ? [entry] : []))),
+      releasing: releases.length,
+      ms: (yield* Clock.currentTimeMillis) - from,
     });
+    yield* Effect.forEach(releases, release, { concurrency: "unbounded", discard: true });
   }).pipe(Effect.catchCause((cause) => Effect.logWarning("held queue scan failed", { cause })));
 
   const start: HeldQueueResumer["Service"]["start"] = () => forkParked(scan);

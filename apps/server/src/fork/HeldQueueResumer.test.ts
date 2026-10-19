@@ -378,6 +378,59 @@ const resumeCommandIds = (threadId: ThreadId) =>
 const continuationOf = (runs: ReadonlyArray<OrchestrationV2Run>, sourceId: RunId) =>
   runs.find((run) => run.restartContinuationOfRunId === sourceId);
 
+const recordPendingRequest = (
+  threadId: ThreadId,
+  run: OrchestrationV2Run,
+  request: { readonly kind: "user_input" | "command"; readonly answeredBy: "live" | "message" },
+) =>
+  Effect.gen(function* () {
+    const orchestrator = yield* Orchestrator.OrchestratorV2;
+    const projection = yield* orchestrator.getThreadProjection(threadId);
+    const turn = projection.providerTurns.find(
+      (candidate) => candidate.runAttemptId === run.activeAttemptId,
+    );
+    const sink = yield* EventSink.EventSinkV2;
+    const now = yield* DateTime.now;
+    yield* sink.write({
+      events: [
+        {
+          id: EventId.make(`event:${threadId}:${request.kind}:${run.ordinal}`),
+          type: "runtime-request.updated",
+          threadId,
+          nodeId: run.rootNodeId!,
+          occurredAt: now,
+          payload: {
+            id: RuntimeRequestId.make(`request:${threadId}:${request.kind}:${run.ordinal}`),
+            nodeId: run.rootNodeId!,
+            providerTurnId: request.answeredBy === "live" ? turn!.id : null,
+            nativeRequestRef: null,
+            kind: request.kind,
+            status: "pending",
+            responseCapability:
+              request.answeredBy === "live"
+                ? { type: "live", providerSessionId: projection.providerSessions[0]!.id }
+                : { type: "message" },
+            createdAt: now,
+            resolvedAt: null,
+          },
+        },
+      ],
+    });
+  });
+
+const askSecret = (threadId: ThreadId, run: OrchestrationV2Run) =>
+  dispatch({
+    type: "secret_request.record",
+    commandId: CommandId.make(`${threadId}:secret:${run.ordinal}`),
+    threadId,
+    runId: run.id,
+    nodeId: run.rootNodeId!,
+    turnItemId: TurnItemId.make(`${threadId}:secret:${run.ordinal}`),
+    label: "Test token",
+    reason: "Held queue test",
+    secretStatus: "pending",
+  });
+
 type Harness = Layer.Success<ReturnType<typeof layerTest>>;
 
 const withHarness = <A, E>(
@@ -610,12 +663,12 @@ it.effect("awaits a continuation still pending from an earlier restart", () =>
   ),
 );
 
-it.effect(
-  "leaves the hold when the latest restart cut a turn core would not continue, after an older continuation completed",
-  () =>
-    withHarness("older-continuation", ({ cwd, started }) =>
+it.effect.each(["approval", "secret"] as const)(
+  "leaves the hold when the latest restart cut a turn waiting on a %s, after an older continuation completed",
+  (blocker) =>
+    withHarness(`older-continuation-${blocker}`, ({ cwd, started }) =>
       Effect.gen(function* () {
-        const threadId = ThreadId.make("thread:older-continuation");
+        const threadId = ThreadId.make(`thread:older-continuation-${blocker}`);
         const { active, queued } = yield* busyThread({ threadId, cwd });
         yield* restartOneSecondLater;
         const continuationTurn = yield* nextTurnRunning(active);
@@ -644,40 +697,9 @@ it.effect(
         yield* drain;
         yield* Fiber.join(laterTurn);
         const later = (yield* runsOf(threadId)).find((run) => run.status === "running")!;
-        // The later turn is waiting on an approval, which core never continues across a restart.
-        const sink = yield* EventSink.EventSinkV2;
-        const now = yield* DateTime.now;
-        const projection = yield* Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
-          orchestrator.getThreadProjection(threadId),
-        );
-        const turn = projection.providerTurns.find(
-          (candidate) => candidate.runAttemptId === later.activeAttemptId,
-        )!;
-        yield* sink.write({
-          events: [
-            {
-              id: EventId.make(`event:${threadId}:approval`),
-              type: "runtime-request.updated",
-              threadId,
-              nodeId: later.rootNodeId!,
-              occurredAt: now,
-              payload: {
-                id: RuntimeRequestId.make(`request:${threadId}:approval`),
-                nodeId: later.rootNodeId!,
-                providerTurnId: turn.id,
-                nativeRequestRef: null,
-                kind: "command",
-                status: "pending",
-                responseCapability: {
-                  type: "live",
-                  providerSessionId: projection.providerSessions[0]!.id,
-                },
-                createdAt: now,
-                resolvedAt: null,
-              },
-            },
-          ],
-        });
+        yield* blocker === "approval"
+          ? recordPendingRequest(threadId, later, { kind: "command", answeredBy: "live" })
+          : askSecret(threadId, later);
         yield* restartOneSecondLater;
         const scanning = yield* scan.pipe(Effect.forkScoped);
         yield* drain;
@@ -951,6 +973,103 @@ it.effect("leaves the hold when core declines the continuation", () =>
       assert.isUndefined(continuationOf(runs, active.id));
       const held = runs.find((run) => run.id === queued[0]!.id);
       assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+    }),
+  ),
+);
+
+it.effect("leaves the hold when a pending secret made core decline before it wrote an effect", () =>
+  withHarness("secret-declined", ({ cwd }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:secret-declined");
+      const { active, queued } = yield* busyThread({ threadId, cwd });
+      yield* askSecret(threadId, active);
+      yield* restartOneSecondLater;
+      yield* drain;
+      assert.isUndefined(continuationOf(yield* runsOf(threadId), active.id));
+      yield* scan;
+      yield* drain;
+      const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
+      assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+      assert.deepEqual(yield* resumeCommandIds(threadId), []);
+    }),
+  ),
+);
+
+it.effect(
+  "leaves the hold when core declined an unanswered live question before it wrote an effect",
+  () =>
+    withHarness("question-declined", ({ cwd }) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread:question-declined");
+        const { active, queued } = yield* busyThread({ threadId, cwd });
+        yield* recordPendingRequest(threadId, active, { kind: "user_input", answeredBy: "live" });
+        yield* restartOneSecondLater;
+        yield* drain;
+        assert.isUndefined(continuationOf(yield* runsOf(threadId), active.id));
+        yield* scan;
+        yield* drain;
+        const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
+        assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+        assert.deepEqual(yield* resumeCommandIds(threadId), []);
+      }),
+    ),
+);
+
+it.effect(
+  "leaves the hold when an older continuation completed and the thread now waits on an answer",
+  () =>
+    withHarness("answer-pending", ({ cwd, started }) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread:answer-pending");
+        const { active, queued } = yield* busyThread({ threadId, cwd });
+        yield* restartOneSecondLater;
+        const continuationTurn = yield* nextTurnRunning(active);
+        yield* drain;
+        yield* Fiber.join(continuationTurn);
+        const continuation = continuationOf(yield* runsOf(threadId), active.id)!;
+        const settled = yield* runStatus(continuation.id, "waiting");
+        const done = yield* runStatus(continuation.id, "completed");
+        yield* finishTurn(started.find((entry) => entry.turn.runId === continuation.id)!);
+        yield* Fiber.join(settled);
+        yield* drain;
+        yield* Fiber.join(done);
+        yield* recordPendingRequest(threadId, continuation, {
+          kind: "user_input",
+          answeredBy: "message",
+        });
+        yield* restartOneSecondLater;
+        yield* drain;
+        const shell = yield* Effect.flatMap(ProjectionStore.ProjectionStoreV2, (projections) =>
+          projections.getThreadShell(threadId),
+        );
+        assert.isNotNull(shell?.pendingRuntimeRequest);
+        yield* scan;
+        const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
+        assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+        assert.deepEqual(yield* resumeCommandIds(threadId), []);
+      }),
+    ),
+);
+
+it.effect("leaves the hold when a Stop lands while the continuation is still being admitted", () =>
+  withHarness("stop-while-admitting", ({ cwd }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:stop-while-admitting");
+      const { active, queued } = yield* busyThread({ threadId, cwd });
+      yield* restartOneSecondLater;
+      const scanning = yield* scan.pipe(Effect.forkScoped);
+      yield* dispatch({
+        type: "thread.stop",
+        commandId: CommandId.make(`${threadId}:stop`),
+        threadId,
+      });
+      yield* drain;
+      yield* Fiber.join(scanning);
+      const runs = yield* runsOf(threadId);
+      assert.isUndefined(continuationOf(runs, active.id));
+      const held = runs.find((run) => run.id === queued[0]!.id);
+      assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+      assert.deepEqual(yield* resumeCommandIds(threadId), []);
     }),
   ),
 );
