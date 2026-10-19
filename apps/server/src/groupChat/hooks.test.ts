@@ -24,7 +24,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import { withUntracedRequests } from "../http.ts";
 import * as Hooks from "./hooks.ts";
 import * as Reach from "./reach.ts";
-import { type App, boot, FAKE_ORIGIN, makeFakeThreads, tempBaseDir } from "./testkit.ts";
+import { type App, boot, FAKE_ORIGIN, fakeAgent, makeFakeThreads, tempBaseDir } from "./testkit.ts";
 import { sign } from "./transports/webhook.ts";
 
 class HooksApi extends HttpApi.make("environment").add(EnvironmentHttpApi.groups.groupChatHooks) {}
@@ -299,3 +299,49 @@ it.live("a logged path carries no token", () => {
     ),
   );
 });
+
+it.live("a removed member's open callback is refused and the group gains no message", () =>
+  Effect.gen(function* () {
+    const { app, group } = yield* setup;
+    const agent = yield* fakeAgent(() => ({ status: 202, body: "{}" }));
+    const added = yield* app.dispatch({
+      _tag: "member.addExternal",
+      groupId: group.id,
+      handle: "hook",
+      kind: "webhook",
+      config: {
+        url: agent.url,
+        headers: {},
+        bodyTemplate: "",
+        replyPath: "",
+        secret: "s3cret",
+        callbackOrigin: "",
+      },
+    });
+    const hook = added._tag === "member" ? added.member : assert.fail("member");
+    yield* app.dispatch({
+      _tag: "message.send",
+      groupId: group.id,
+      text: "hi",
+      recipients: [hook.id],
+    });
+    yield* app.until(
+      Effect.sync(() => agent.calls.length),
+      (calls) => calls === 1,
+    );
+    const callback = new URL(String(agent.calls[0]!.headers["x-reply-to"]));
+    yield* app.dispatch({ _tag: "member.remove", memberId: hook.id });
+    const { post } = yield* serveOnNodeSocket(app, false);
+    const body = JSON.stringify({ text: "from a removed member" });
+    const refused = yield* post(
+      `${callback.pathname}${callback.search}`,
+      body,
+      signed("s3cret", body),
+    );
+    assert.strictEqual(refused.status, 404);
+    assert.deepStrictEqual(
+      (yield* app.store.messages(group.id)).map((m) => m.text),
+      ["hi"],
+    );
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);

@@ -232,6 +232,7 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
           if (
             delivery === null ||
             member === null ||
+            member.removedAt !== null ||
             member.external === null ||
             token === null ||
             !constantTimeEquals(token, query.token)

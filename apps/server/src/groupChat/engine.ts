@@ -93,8 +93,8 @@ export class GroupChatEngine extends Context.Service<
     readonly start: Effect.Effect<void, never, Scope.Scope>;
     /**
      * A webhook member's callback. It lands once per delivery, even late, after a timeout or
-     * after Stop, because a reply never vanishes. The hook route has already checked the token
-     * and the signature.
+     * after Stop. A removed member's callback never lands. The hook route has already checked
+     * the token and the signature.
      */
     readonly landReply: (
       deliveryId: GroupChatDeliveryId,
@@ -2205,7 +2205,18 @@ export const makeEngine = (store: GroupChatStore) =>
     const start: GroupChatEngine["Service"]["start"] = forkParked(recover);
 
     const landReply: GroupChatEngine["Service"]["landReply"] = (deliveryId, text) =>
-      ingestReply(deliveryId, capUntrusted(text));
+      Effect.gen(function* () {
+        const stored = yield* store.transaction((tx) =>
+          Effect.gen(function* () {
+            const d = yield* tx.delivery(deliveryId);
+            const member = d === null ? null : yield* tx.member(d.memberId);
+            if (member === null || member.removedAt !== null) return "not_found" as const;
+            return yield* ingestReplyIn(tx, deliveryId, capUntrusted(text));
+          }),
+        );
+        if (stored === "landed") yield* onTerminal(deliveryId);
+        return stored;
+      });
 
     return GroupChatEngine.of({
       snapshot,
