@@ -193,6 +193,29 @@ function changedSinceAsked(view: GroupView | null, readAfter: number, asked: Ope
   return [...questionsWithoutText(view)].some((id) => !asked.questionsWithoutText.has(id));
 }
 
+function readPastLoaded(state: StoreState, groupId: GroupChatGroupId): Applied {
+  const none: Applied = { state, fetches: [], snapshotChanged: false };
+  const current = state.groups.get(groupId);
+  return current === undefined ? none : readSince(state, current, none, current.highSeq);
+}
+
+const eventGroupId = (event: GroupChatStreamEvent): GroupChatGroupId => {
+  switch (event._tag) {
+    case "group":
+      return event.group.id;
+    case "group.deleted":
+      return event.groupId;
+    case "member":
+      return event.member.groupId;
+    case "message":
+      return event.message.groupId;
+    case "delivery":
+      return event.delivery.groupId;
+    case "discussion":
+      return event.discussion.groupId;
+  }
+};
+
 /** After a since page lands, the read a head asked for while it was out. */
 export function followUpRead(state: StoreState, groupId: GroupChatGroupId): Applied {
   const none: Applied = { state, fetches: [], snapshotChanged: false };
@@ -490,8 +513,11 @@ export function retryDelayMs(failures: number): number {
   return Math.min(READ_RETRY_DELAY_MS * 2 ** Math.max(0, failures - 1), READ_RETRY_MAX_DELAY_MS);
 }
 
-const runFollowUp = (groupId: GroupChatGroupId) => {
-  const next = followUpRead(appAtomRegistry.get(storeAtom), groupId);
+const runRead = (
+  read: (state: StoreState, groupId: GroupChatGroupId) => Applied,
+  groupId: GroupChatGroupId,
+) => {
+  const next = read(appAtomRegistry.get(storeAtom), groupId);
   appAtomRegistry.set(storeAtom, next.state);
   runFetches(next.fetches);
 };
@@ -513,6 +539,8 @@ const retryTimers = new Map<ReturnType<typeof retryKey>, Timer>();
 
 /** Groups the page shows. A group whose first page has not landed is known here and nowhere else. */
 const shownGroups = new Set<GroupChatGroupId>();
+
+const firstPageMayMissHeads = new Set<GroupChatGroupId>();
 
 /** The groups a read serves: those the page shows and those the store holds. */
 const wantedGroups = (state: StoreState) => new Set([...shownGroups, ...state.groups.keys()]);
@@ -562,7 +590,9 @@ function readLatest(groupId: GroupChatGroupId, failures: number): Promise<void> 
   clearRetry(retryKey("latest", groupId));
   return fetchGroupPage(groupId, {})
     .then((page) => {
-      if (isCurrent(started)) update((state) => applyPage(state, groupId, page, "latest"));
+      if (!isCurrent(started)) return;
+      update((state) => applyPage(state, groupId, page, "latest"));
+      if (firstPageMayMissHeads.delete(groupId)) runRead(readPastLoaded, groupId);
     })
     .catch((error: unknown) => {
       retryLater(started, "latest", groupId, retryDelayMs(failures + 1), () => {
@@ -596,19 +626,23 @@ const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
         if (!isCurrent(started)) return;
         update((state) => applyPage(state, fetch.groupId, page, "since"));
         const changed = changedSinceAsked(readGroupView(fetch.groupId), fetch.seq, asked);
-        if (changed && stillWanted(started, fetch.groupId)) runFollowUp(fetch.groupId);
+        if (changed && stillWanted(started, fetch.groupId)) runRead(followUpRead, fetch.groupId);
       })
       .catch(() => {
         if (!isCurrent(started)) return;
         update((state) => readFailed(state, fetch.groupId, fetch.seq));
         retryLater(started, "since", fetch.groupId, READ_RETRY_DELAY_MS, () =>
-          runFollowUp(fetch.groupId),
+          runRead(followUpRead, fetch.groupId),
         );
       });
   }
 };
 
 export function applyStreamEvent(event: GroupChatStreamEvent): void {
+  const groupId = eventGroupId(event);
+  if (shownGroups.has(groupId) && readGroupView(groupId) === null) {
+    firstPageMayMissHeads.add(groupId);
+  }
   const applied = applyEvent(appAtomRegistry.get(storeAtom), event);
   appAtomRegistry.set(storeAtom, applied.state);
   if (applied.snapshotChanged) refreshGroupChatSnapshot();
@@ -649,6 +683,7 @@ export function streamOpened(): void {
 /** The stream closed. Reads under it take no next step, and its reopen starts the ones needed. */
 export function streamClosed(): void {
   generation += 1;
+  firstPageMayMissHeads.clear();
   for (const timer of retryTimers.values()) clearTimeout(timer);
   retryTimers.clear();
 }

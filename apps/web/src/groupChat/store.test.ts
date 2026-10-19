@@ -698,6 +698,20 @@ describe("group chat store, read retries", () => {
     expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
   });
 
+  it("a message head that arrives while a group's first page is out is read once the page lands", async () => {
+    const id = groupNamed("grp_first_race");
+    const held = heldRead();
+    const first = showGroup(id);
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [2]));
+    held().resolve(pageFor(id, [1]));
+    await first;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+    expect(api.fetchGroupPage).toHaveBeenLastCalledWith(id, { after: 1 });
+    expect(readGroupView(id)?.highSeq).toBe(2);
+  });
+
   it("an older page read before the stream closed does not overwrite the reopen's page", async () => {
     const id = groupNamed("grp_stale_older");
     api.fetchGroupPage.mockResolvedValueOnce({

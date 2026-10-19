@@ -8,7 +8,7 @@ import {
   saveRecipients,
   sendCommand,
   suggestions,
-  textAfterSend,
+  draftAfterSend,
   tickedAfterTyping,
 } from "./composer";
 
@@ -71,10 +71,17 @@ describe("composer", () => {
   });
 
   it("a draft typed during a send survives it, and a failed send comes back only to an empty box", () => {
-    expect(textAfterSend("next thought", "first message", true)).toBe("next thought");
-    expect(textAfterSend("", "first message", true)).toBe("");
-    expect(textAfterSend("next thought", "first message", false)).toBe("next thought");
-    expect(textAfterSend("", "first message", false)).toBe("first message");
+    const draft = (text: string) => ({ groupId, text });
+    const sent = draft("first message");
+    expect(draftAfterSend(draft("next thought"), sent, true)).toEqual(draft("next thought"));
+    expect(draftAfterSend(draft(""), sent, true)).toEqual(draft(""));
+    expect(draftAfterSend(draft("next thought"), sent, false)).toEqual(draft("next thought"));
+    expect(draftAfterSend(draft(""), sent, false)).toEqual(draft("first message"));
+  });
+
+  it("a failed send never comes back into another group's box", () => {
+    const other = { groupId: "grp_other" as GroupChatGroupId, text: "" };
+    expect(draftAfterSend(other, { groupId, text: "for the first group" }, false)).toEqual(other);
   });
 
   it("recipients are kept per group", () => {

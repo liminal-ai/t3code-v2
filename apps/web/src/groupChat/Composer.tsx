@@ -10,12 +10,13 @@ import { cn } from "../lib/utils";
 import { attempt, dispatchGroupChat } from "./api";
 import {
   completeMention,
+  type Draft,
   loadRecipients,
   mentionAtCaret,
   saveRecipients,
   sendCommand,
   suggestions,
-  textAfterSend,
+  draftAfterSend,
   tickedAfterTyping,
 } from "./composer";
 import { MemberDot, memberColor } from "./MemberChip";
@@ -49,7 +50,9 @@ export function Composer({
   members: ReadonlyArray<GroupChatMember>;
   view: GroupView;
 }) {
-  const [text, setText] = useState("");
+  const [draft, setDraft] = useState<Draft>({ groupId, text: "" });
+  const text = draft.groupId === groupId ? draft.text : "";
+  const setText = (value: string) => setDraft({ groupId, text: value });
   const [ticked, setTicked] = useState<ReadonlyArray<GroupChatMemberId>>(() =>
     loadRecipients(groupId),
   );
@@ -62,7 +65,8 @@ export function Composer({
   const [caret, setCaret] = useState(0);
   const [menuIndex, setMenuIndex] = useState(0);
   const [menuDismissed, setMenuDismissed] = useState(false);
-  const [sending, setSending] = useState(false);
+  const [sendingGroups, setSendingGroups] = useState<ReadonlySet<GroupChatGroupId>>(new Set());
+  const sending = sendingGroups.has(groupId);
   const textarea = useRef<HTMLTextAreaElement>(null);
 
   const activeIds = new Set(members.map((m) => m.id));
@@ -100,16 +104,20 @@ export function Composer({
 
   const send = async () => {
     if (text.trim() === "" || sending) return;
-    const submitted = text;
-    setSending(true);
+    const submitted: Draft = { groupId, text };
+    setSendingGroups((groups) => new Set(groups).add(groupId));
     setText("");
     setCaret(0);
     const result = await attempt(() =>
-      dispatchGroupChat(sendCommand(groupId, submitted, tickedActive, members)),
+      dispatchGroupChat(sendCommand(groupId, submitted.text, tickedActive, members)),
     );
-    setSending(false);
+    setSendingGroups((groups) => {
+      const next = new Set(groups);
+      next.delete(submitted.groupId);
+      return next;
+    });
     if (result?._tag === "message") noteMessage(result.message);
-    setText((draftNow) => textAfterSend(draftNow, submitted, result !== undefined));
+    setDraft((draftNow) => draftAfterSend(draftNow, submitted, result !== undefined));
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
