@@ -115,24 +115,58 @@ describe("group chat rounds", () => {
     const text = "Done.\n[[SIGN-OFF]]";
     const running = { state: "running" as const, round: 2 };
     expect(
-      countsAsSignOff({ discussion: running, replyRound: 2, memberRemoved: false, text }),
+      countsAsSignOff({
+        discussion: running,
+        replyRound: 2,
+        memberRemoved: false,
+        withdrawn: false,
+        text,
+      }),
     ).toBe(true);
     expect(
-      countsAsSignOff({ discussion: running, replyRound: 1, memberRemoved: false, text }),
+      countsAsSignOff({
+        discussion: running,
+        replyRound: 1,
+        memberRemoved: false,
+        withdrawn: false,
+        text,
+      }),
     ).toBe(false);
     expect(
       countsAsSignOff({
         discussion: { state: "ended", round: 2 },
         replyRound: 2,
         memberRemoved: false,
+        withdrawn: false,
         text,
       }),
     ).toBe(false);
-    expect(countsAsSignOff({ discussion: running, replyRound: 2, memberRemoved: true, text })).toBe(
-      false,
-    );
     expect(
-      countsAsSignOff({ discussion: null, replyRound: null, memberRemoved: false, text }),
+      countsAsSignOff({
+        discussion: running,
+        replyRound: 2,
+        memberRemoved: false,
+        withdrawn: true,
+        text,
+      }),
+    ).toBe(false);
+    expect(
+      countsAsSignOff({
+        discussion: running,
+        replyRound: 2,
+        memberRemoved: true,
+        withdrawn: false,
+        text,
+      }),
+    ).toBe(false);
+    expect(
+      countsAsSignOff({
+        discussion: null,
+        replyRound: null,
+        memberRemoved: false,
+        withdrawn: false,
+        text,
+      }),
     ).toBe(false);
   });
 

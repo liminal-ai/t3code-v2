@@ -772,6 +772,7 @@ export const makeEngine = (store: GroupChatStore) =>
               discussion,
               replyRound: d.round,
               memberRemoved,
+              withdrawn: d.withdrawn !== null,
               text: raw,
             });
             const late =

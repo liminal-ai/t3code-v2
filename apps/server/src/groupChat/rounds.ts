@@ -57,6 +57,8 @@ export function countsAsSignOff(input: {
   discussion: { state: GroupChatDiscussionState; round: number } | null;
   replyRound: number | null;
   memberRemoved: boolean;
+  /** The operator stopped wanting this reply; it is shown late and ends nothing. */
+  withdrawn: boolean;
   text: string;
 }): boolean {
   const { discussion } = input;
@@ -65,6 +67,7 @@ export function countsAsSignOff(input: {
     discussion.state === "running" &&
     discussion.round === input.replyRound &&
     !input.memberRemoved &&
+    !input.withdrawn &&
     isSignOff(input.text),
   );
 }
