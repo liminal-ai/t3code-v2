@@ -205,7 +205,7 @@ If the server restarts, saved queued messages keep their order and are held. Whe
 **Settings → General → Continue threads after restarts** on web and desktop, or
 **Settings → Maintenance → Continue after restart** on mobile, is on, the interrupted turn continues
 on its own and the held messages resume after it, in order, with no press. A queue that **Stop** held,
-or one behind a turn the server chose not to continue, still waits. Press **Resume** in an empty
+one behind a turn the server chose not to continue, or one held for more than a week, still waits. Press **Resume** in an empty
 composer on web or desktop, or **Resume queue** in the queue sheet on mobile, to continue it. You
 can edit, reorder, or remove held messages without starting them.
 

@@ -24,9 +24,11 @@ import {
   type ServerSettings as ServerSettingsShape,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -1229,4 +1231,134 @@ it.effect("the reconcile command id still starts with command:runtime-reconcile:
       assert.isTrue(commandId!.startsWith(RECONCILE_COMMAND_PREFIX), commandId!);
     }),
   ),
+);
+
+it.effect.each(["before a scan", "across another restart"] as const)(
+  "leaves the hold after an idle Stop on a completed continuation, %s",
+  (timing) =>
+    withHarness(
+      `idle-stop-${timing === "before a scan" ? "scan" : "restart"}`,
+      ({ cwd, started }) =>
+        Effect.gen(function* () {
+          const threadId = ThreadId.make(
+            `thread:idle-stop-${timing === "before a scan" ? "scan" : "restart"}`,
+          );
+          const { active, queued } = yield* busyThread({ threadId, cwd });
+          yield* restartOneSecondLater;
+          yield* drain;
+          yield* finishContinuation(threadId, active.id, started);
+          yield* dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make(`${threadId}:stop`),
+            threadId,
+          });
+          yield* drain;
+          if (timing === "across another restart") {
+            yield* restartOneSecondLater;
+            yield* drain;
+          }
+          const projection = yield* Effect.flatMap(Orchestrator.OrchestratorV2, (orchestrator) =>
+            orchestrator.getThreadProjection(threadId),
+          );
+          const continuation = continuationOf(projection.runs, active.id)!;
+          assert.equal(continuation.status, "completed");
+          assert.isTrue(
+            projection.turnItems.some(
+              (item) => item.type === "run_interrupt_request" && item.runId === continuation.id,
+            ),
+          );
+          yield* scan;
+          yield* drain;
+          const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
+          assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+          assert.deepEqual(yield* resumeCommandIds(threadId), []);
+        }),
+    ),
+);
+
+it.effect("leaves the hold after the outbox pruned core's refusal of a wake", () =>
+  withHarness("pruned-refusal", ({ cwd, started }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:pruned-refusal");
+      const { active, queued } = yield* busyThread({ threadId, cwd });
+      let source = active;
+      for (const _ of [1, 2, 3]) {
+        yield* restartOneSecondLater;
+        const continuationTurn = yield* nextTurnRunning(source);
+        yield* drain;
+        yield* Fiber.join(continuationTurn);
+        source = continuationOf(yield* runsOf(threadId), source.id)!;
+      }
+      yield* settleBehindAwaitedWork(threadId, source, started);
+      yield* restartOneSecondLater;
+      yield* drain;
+      assert.isUndefined(continuationOf(yield* runsOf(threadId), source.id));
+      const outbox = yield* EffectOutbox.EffectOutboxV2;
+      const refusal = `effect:restart-continuation:${source.id}`;
+      assert.isTrue(Option.isSome(yield* outbox.get(refusal)));
+      yield* TestClock.adjust(
+        Duration.sum(EffectOutbox.SETTLED_EFFECT_RETENTION, Duration.millis(1)),
+      );
+      assert.isAbove(yield* outbox.pruneSettled, 0);
+      assert.isTrue(Option.isNone(yield* outbox.get(refusal)));
+      yield* restartOneSecondLater;
+      yield* drain;
+      yield* scan;
+      yield* drain;
+      const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
+      assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+      assert.deepEqual(yield* resumeCommandIds(threadId), []);
+    }),
+  ),
+);
+
+it.effect.each(["a reorder", "a newer sibling"] as const)(
+  "keeps a hold older than the outbox retention, after %s",
+  (refresh) =>
+    withHarness(`old-hold-${refresh === "a reorder" ? "reorder" : "sibling"}`, ({ cwd, started }) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make(
+          `thread:old-hold-${refresh === "a reorder" ? "reorder" : "sibling"}`,
+        );
+        const { active, queued } = yield* busyThread({
+          threadId,
+          cwd,
+          queued: refresh === "a reorder" ? 2 : 1,
+        });
+        yield* restartOneSecondLater;
+        yield* drain;
+        yield* TestClock.adjust(EffectOutbox.SETTLED_EFFECT_RETENTION);
+        if (refresh === "a reorder") {
+          yield* dispatch({
+            type: "queued-run.reorder",
+            commandId: CommandId.make(`${threadId}:reorder`),
+            threadId,
+            runId: queued[1]!.id,
+            beforeRunId: queued[0]!.id,
+          });
+        } else {
+          yield* dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`${threadId}:sibling`),
+            threadId,
+            messageId: MessageId.make(`${threadId}:sibling`),
+            text: "One more",
+            attachments: [],
+            modelSelection,
+            dispatchMode: { type: "queue_after_active" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        const scanning = yield* scan.pipe(Effect.forkScoped);
+        yield* finishContinuation(threadId, active.id, started);
+        yield* Fiber.join(scanning);
+        yield* drain;
+        const runs = yield* runsOf(threadId);
+        const stillQueued = runs.filter((run) => run.status === "queued");
+        assert.lengthOf(stillQueued, 2);
+        assert.isTrue(stillQueued.every((run) => run.queueHeld === true));
+        assert.deepEqual(yield* resumeCommandIds(threadId), []);
+      }),
+    ),
 );

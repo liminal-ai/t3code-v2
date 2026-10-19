@@ -56,8 +56,8 @@ A thread is not resumed while it waits for your approval, answer, or secret, or
 while it is archived, snoozed, or settled. After three automatic resumes in a row,
 the thread waits for your next message.
 Messages queued behind the interrupted turn resume on their own once it has continued,
-in the order you queued them. A queue held by **Stop**, or by a turn the server chose
-not to continue, waits for **Resume** in that thread. With the setting off, every queue
+in the order you queued them. A queue held by **Stop**, by a turn the server chose
+not to continue, or for more than a week, waits for **Resume** in that thread. With the setting off, every queue
 held by a restart waits for **Resume**.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry

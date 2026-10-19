@@ -4,6 +4,7 @@
  * well. `queueHeld` carries no reason, so the stored command id of the event that set it is the
  * one record of why, and only a `command:runtime-reconcile:` hold counts as a restart.
  */
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
@@ -41,7 +42,12 @@ export class HeldQueueResumer extends Context.Service<
 >()("t3/fork/HeldQueueResumer") {}
 
 type HoldSource =
-  | { readonly kind: "restart"; readonly reconcileCommandId: CommandId; readonly sequence: number }
+  | {
+      readonly kind: "restart";
+      readonly reconcileCommandId: CommandId;
+      readonly sequence: number;
+      readonly heldAt: DateTime.Utc;
+    }
   | { readonly kind: "stopped" }
   | { readonly kind: "system" };
 
@@ -49,20 +55,108 @@ interface RestartHeld {
   readonly kind: "restart";
   readonly threadId: ThreadId;
   readonly reconcileCommandId: CommandId;
+  readonly oldestHeldAt: DateTime.Utc;
 }
 
 type HeldThreadClass =
   | RestartHeld
   | { readonly kind: "stopped" | "system" | "unknown"; readonly threadId: ThreadId };
 
-interface RunEventRow {
+interface StreamRow {
   readonly sequence: number;
-  readonly event_type: "run.created" | "run.updated";
+  readonly event_type: string;
   readonly command_id: string | null;
-  readonly run_id: RunId;
+  readonly occurred_at: string;
+  readonly run_id: RunId | null;
   readonly status: OrchestrationV2Run["status"] | null;
   readonly queue_held: 0 | 1 | null;
 }
+
+interface RunEventRow extends StreamRow {
+  readonly event_type: "run.created" | "run.updated";
+  readonly run_id: RunId;
+}
+
+interface HoldHistory {
+  readonly runEvents: ReadonlyArray<RunEventRow>;
+  readonly complete: boolean;
+}
+
+const FIRST_BATCH = 64;
+const LARGEST_BATCH = 1024;
+const STREAM_CAP = 2048;
+
+/** Which held runs still have no event showing where their hold began. */
+const holdOrigins = (heldRunIds: ReadonlyArray<RunId>) => {
+  const pending = new Set(heldRunIds);
+  const open = new Set<RunId>();
+  return {
+    get resolved() {
+      return pending.size === 0;
+    },
+    note(row: RunEventRow) {
+      if (row.event_type === "run.created") {
+        open.delete(row.run_id);
+        if (pending.delete(row.run_id) && row.queue_held === 1)
+          for (const id of open) pending.add(id);
+        return;
+      }
+      // Recovery holds only a run not yet held (ProviderRuntimeRecoveryService.ts
+      // reconcileProjection), so its hold row is where this run's hold began.
+      if (row.queue_held === 0 || row.command_id?.startsWith(RECONCILE_COMMAND_PREFIX))
+        pending.delete(row.run_id);
+      open.add(row.run_id);
+    },
+  };
+};
+
+const readHoldHistory = (threadId: ThreadId, heldRunIds: ReadonlyArray<RunId>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const origins = holdOrigins(heldRunIds);
+    const runEvents: Array<RunEventRow> = [];
+    let before = Number.MAX_SAFE_INTEGER;
+    let read = 0;
+    let limit = FIRST_BATCH;
+    while (!origins.resolved && read < STREAM_CAP) {
+      const batch = yield* sql<StreamRow>`
+        SELECT
+          sequence,
+          event_type,
+          command_id,
+          occurred_at,
+          CASE WHEN event_type IN ('run.created', 'run.updated')
+            THEN json_extract(payload_json, '$.id') END AS run_id,
+          CASE WHEN event_type IN ('run.created', 'run.updated')
+            THEN json_extract(payload_json, '$.status') END AS status,
+          CASE WHEN event_type IN ('run.created', 'run.updated')
+            THEN json_extract(payload_json, '$.queueHeld') END AS queue_held
+        FROM orchestration_events
+        WHERE aggregate_kind = 'thread'
+          AND stream_id = ${threadId}
+          AND application_event_version = 2
+          AND sequence < ${before}
+        ORDER BY sequence DESC
+        LIMIT ${Math.min(limit, STREAM_CAP - read)}
+      `;
+      if (batch.length === 0) break;
+      limit = Math.min(limit * 2, LARGEST_BATCH);
+      for (const row of batch) {
+        before = row.sequence;
+        read += 1;
+        if (
+          row.run_id === null ||
+          (row.event_type !== "run.created" && row.event_type !== "run.updated") ||
+          (row.event_type === "run.updated" && row.queue_held === null)
+        )
+          continue;
+        const event: RunEventRow = { ...row, event_type: row.event_type, run_id: row.run_id };
+        origins.note(event);
+        runEvents.push(event);
+      }
+    }
+    return { runEvents: runEvents.toReversed(), complete: origins.resolved } satisfies HoldHistory;
+  }).pipe(NodeSqliteClient.readOnly);
 
 const holdFromRow = (row: RunEventRow): HoldSource =>
   row.command_id === null
@@ -72,6 +166,7 @@ const holdFromRow = (row: RunEventRow): HoldSource =>
           kind: "restart",
           reconcileCommandId: CommandId.make(row.command_id),
           sequence: row.sequence,
+          heldAt: DateTime.makeUnsafe(row.occurred_at),
         }
       : { kind: "stopped" };
 
@@ -93,16 +188,14 @@ const strictestHold = (holds: ReadonlyArray<HoldSource>): HoldSource | undefined
 const bornHold = (siblings: ReadonlyArray<HoldSource>): HoldSource =>
   strictestHold(siblings) ?? { kind: "system" };
 
-const classifyHeldThread = (
-  threadId: ThreadId,
-  rows: ReadonlyArray<RunEventRow>,
-): HeldThreadClass => {
+const classifyHeldThread = (threadId: ThreadId, history: HoldHistory): HeldThreadClass => {
+  if (!history.complete) return { kind: "unknown", threadId };
   const runs = new Map<RunId, { status: OrchestrationV2Run["status"]; hold: HoldSource | null }>();
   const heldQueuedRuns = () =>
     [...runs.values()].flatMap((run) =>
       run.status === "queued" && run.hold !== null ? [run.hold] : [],
     );
-  for (const row of rows) {
+  for (const row of history.runEvents) {
     const status = row.status ?? "queued";
     const held = row.queue_held === 1;
     if (row.event_type === "run.created") {
@@ -113,11 +206,26 @@ const classifyHeldThread = (
     const hold = !held ? null : prior?.hold != null ? prior.hold : holdFromRow(row);
     runs.set(row.run_id, { status, hold });
   }
-  const hold = strictestHold(heldQueuedRuns());
+  const holds = heldQueuedRuns();
+  const hold = strictestHold(holds);
   if (hold === undefined) return { kind: "unknown", threadId };
   if (hold.kind !== "restart") return { kind: hold.kind, threadId };
-  return { kind: "restart", threadId, reconcileCommandId: hold.reconcileCommandId };
+  let oldest = hold;
+  for (const candidate of holds)
+    if (candidate.kind === "restart" && candidate.sequence < oldest.sequence) oldest = candidate;
+  return {
+    kind: "restart",
+    threadId,
+    reconcileCommandId: hold.reconcileCommandId,
+    oldestHeldAt: oldest.heldAt,
+  };
 };
+
+/** The hold class of one thread whose queued runs `heldRunIds` are held now. */
+export const classifyHeld = (threadId: ThreadId, heldRunIds: ReadonlyArray<RunId>) =>
+  readHoldHistory(threadId, heldRunIds).pipe(
+    Effect.map((history) => classifyHeldThread(threadId, history)),
+  );
 
 export const resumeCommandId = (input: {
   readonly threadId: ThreadId;
@@ -136,6 +244,7 @@ const ENDED_WELL = new Set<OrchestrationV2Run["status"]>(["completed", "waiting"
 type Outcome =
   | "resumed"
   | "setting-off"
+  | "stale"
   | "needs-user"
   | "cut"
   | "declined"
@@ -157,34 +266,22 @@ const make = Effect.gen(function* () {
   const outbox = yield* EffectOutbox.EffectOutboxV2;
   const settings = yield* ServerSettings.ServerSettingsService;
 
-  const heldThreadIds = sql<{ readonly thread_id: ThreadId }>`
-    SELECT DISTINCT thread_id FROM orchestration_v2_projection_runs
+  const heldRuns = sql<{ readonly thread_id: ThreadId; readonly run_id: RunId }>`
+    SELECT thread_id, json_extract(payload_json, '$.id') AS run_id
+    FROM orchestration_v2_projection_runs
     WHERE status = 'queued' AND json_extract(payload_json, '$.queueHeld') IS 1
-  `.pipe(Effect.map((rows) => rows.map((row) => row.thread_id)));
-
-  // A reorder copies `queueHeld: true` forward under the user's command, so the walk reads
-  // every flagged row in order and takes the flip, not the latest row.
-  const runEventRows = (threadId: ThreadId) => sql<RunEventRow>`
-    SELECT
-      sequence,
-      event_type,
-      command_id,
-      json_extract(payload_json, '$.id') AS run_id,
-      json_extract(payload_json, '$.status') AS status,
-      json_extract(payload_json, '$.queueHeld') AS queue_held
-    FROM orchestration_events
-    WHERE aggregate_kind = 'thread'
-      AND stream_id = ${threadId}
-      AND application_event_version = 2
-      AND (
-        event_type = 'run.created'
-        OR (event_type = 'run.updated' AND json_type(payload_json, '$.queueHeld') IS NOT NULL)
-      )
-    ORDER BY sequence ASC
-  `;
-
-  const classify = (threadId: ThreadId) =>
-    runEventRows(threadId).pipe(Effect.map((rows) => classifyHeldThread(threadId, rows)));
+  `.pipe(
+    NodeSqliteClient.readOnly,
+    Effect.map((rows) => {
+      const byThread = new Map<ThreadId, Array<RunId>>();
+      for (const row of rows) {
+        const runIds = byThread.get(row.thread_id);
+        if (runIds === undefined) byThread.set(row.thread_id, [row.run_id]);
+        else runIds.push(row.run_id);
+      }
+      return byThread;
+    }),
+  );
 
   const pendingContinuation = (threadId: ThreadId) =>
     sql<{ readonly effect_id: string }>`
@@ -193,7 +290,10 @@ const make = Effect.gen(function* () {
         AND effect_type = 'provider-runtime.continue'
         AND status IN ('pending', 'running')
       LIMIT 1
-    `.pipe(Effect.map((rows) => rows[0]?.effect_id));
+    `.pipe(
+      NodeSqliteClient.readOnly,
+      Effect.map((rows) => rows[0]?.effect_id),
+    );
 
   const quiet = (threadId: ThreadId) =>
     Effect.gen(function* () {
@@ -219,13 +319,18 @@ const make = Effect.gen(function* () {
     (shell.snoozedUntil != null && DateTime.isGreaterThan(shell.snoozedUntil, now)) ||
     shell.pendingRuntimeRequest !== null;
 
-  const secretPending = (threadId: ThreadId) =>
+  const secretOrStopAfterHold = (held: RestartHeld) =>
     projections
-      .getThreadRecords(threadId, ["turnItems"], { turnItemTypes: ["secret_request"] })
+      .getThreadRecords(held.threadId, ["turnItems"], {
+        turnItemTypes: ["secret_request", "run_interrupt_request"],
+      })
       .pipe(
+        NodeSqliteClient.readOnly,
         Effect.map(({ turnItems }) =>
-          turnItems.some(
-            (item) => item.type === "secret_request" && item.secretStatus === "pending",
+          turnItems.some((item) =>
+            item.type === "secret_request"
+              ? item.secretStatus === "pending"
+              : DateTime.isGreaterThanOrEqualTo(item.updatedAt, held.oldestHeldAt),
           ),
         ),
       );
@@ -239,6 +344,15 @@ const make = Effect.gen(function* () {
         !resolveProjectSettings(current, shell.projectId).settings.continueThreadsAfterServerUpdate
       )
         return "setting-off" as const;
+      // Upstream EffectOutbox.ts EffectOutboxV2Shape.pruneSettled can erase core's refusal
+      // of a continuation after SETTLED_EFFECT_RETENTION.
+      if (
+        DateTime.isGreaterThanOrEqualTo(
+          yield* DateTime.now,
+          DateTime.addDuration(held.oldestHeldAt, EffectOutbox.SETTLED_EFFECT_RETENTION),
+        )
+      )
+        return "stale" as const;
       return held;
     }).pipe(
       Effect.catchCause((cause) =>
@@ -253,7 +367,7 @@ const make = Effect.gen(function* () {
       const { threadId } = held;
       const shell = yield* projections.getThreadShell(threadId);
       if (shell === null || shell.deletedAt !== null) return "needs-user";
-      if (parkedForUser(shell, yield* DateTime.now) || (yield* secretPending(threadId)))
+      if (parkedForUser(shell, yield* DateTime.now) || (yield* secretOrStopAfterHold(held)))
         return "needs-user";
       const last = latestExecutedRun(runs);
       if (last !== null && !ENDED_WELL.has(last.status))
@@ -305,10 +419,12 @@ const make = Effect.gen(function* () {
   const scan = Effect.gen(function* () {
     const from = yield* Clock.currentTimeMillis;
     yield* Effect.logInfo("held queue scan started");
-    const threadIds = yield* heldThreadIds;
-    const classes = yield* Effect.forEach(threadIds, classify);
+    const held = yield* heldRuns;
+    const classes = yield* Effect.forEach(held, ([threadId, runIds]) =>
+      classifyHeld(threadId, runIds).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+    );
     yield* Effect.logInfo("held queues classified", {
-      threads: threadIds.length,
+      threads: held.size,
       ...tally(classes.map((held) => held.kind)),
       ms: (yield* Clock.currentTimeMillis) - from,
     });
@@ -318,7 +434,7 @@ const make = Effect.gen(function* () {
     );
     const releases = admitted.flatMap((entry) => (typeof entry === "string" ? [] : [entry]));
     yield* Effect.logInfo("held queue scan ended", {
-      threads: threadIds.length,
+      threads: held.size,
       ...tally(classes.map((held) => held.kind)),
       ...tally(admitted.flatMap((entry) => (typeof entry === "string" ? [entry] : []))),
       releasing: releases.length,
