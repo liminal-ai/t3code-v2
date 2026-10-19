@@ -100,7 +100,11 @@ export const GroupChatQuestion = Schema.Struct({
   header: Schema.NullOr(Schema.String),
   question: Schema.String,
   options: Schema.Array(
-    Schema.Struct({ label: Schema.String, description: Schema.NullOr(Schema.String) }),
+    Schema.Struct({
+      label: Schema.String,
+      description: Schema.NullOr(Schema.String),
+      value: Schema.NullOr(Schema.String),
+    }),
   ),
   multiSelect: Schema.Boolean,
 });
@@ -241,7 +245,10 @@ export const GroupChatCommand = Schema.Union([
   Schema.TaggedStruct("member.answer", {
     memberId: GroupChatMemberId,
     requestId: RuntimeRequestId,
-    answers: Schema.Record(Schema.String, Schema.String),
+    answers: Schema.Record(
+      Schema.String,
+      Schema.Union([Schema.String, Schema.Array(Schema.String)]),
+    ),
   }),
   Schema.TaggedStruct("message.send", {
     groupId: GroupChatGroupId,

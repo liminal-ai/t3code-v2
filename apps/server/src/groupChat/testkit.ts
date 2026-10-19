@@ -124,6 +124,7 @@ export interface FakeThreads {
     requestId: string,
     question: string,
     options?: ReadonlyArray<string>,
+    multiSelect?: boolean,
   ) => Effect.Effect<void>;
   readonly askApproval: (threadId: ThreadId) => Effect.Effect<void>;
   readonly sends: (threadId: ThreadId) => Effect.Effect<FakeThread["sends"]>;
@@ -450,7 +451,7 @@ export const makeFakeThreads = Effect.sync(() => {
         yield* signal(t);
         yield* startNextQueued(t);
       }),
-    ask: (threadId, requestId, question, options = []) =>
+    ask: (threadId, requestId, question, options = [], multiSelect = false) =>
       Effect.gen(function* () {
         const t = yield* thread(threadId);
         t.pending = {
@@ -461,8 +462,8 @@ export const makeFakeThreads = Effect.sync(() => {
               id: question,
               header: "Question",
               question,
-              options: options.map((label) => ({ label, description: null })),
-              multiSelect: false,
+              options: options.map((label) => ({ label, description: null, value: null })),
+              multiSelect,
             },
           ],
         };

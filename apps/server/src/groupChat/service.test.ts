@@ -593,6 +593,36 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect("a multi-select answer reaches T3 as the array the member asked for", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "multi", [alpha]);
+      yield* send(app, group.id, "pick", [member(alpha).id]);
+      yield* awaitState(app, member(alpha).id, "running");
+      yield* fake.ask(alpha, "req-m", "Which fruits?", ["Apple", "Pear", "Fig"], true);
+      yield* awaitDelivery(app, member(alpha).id, (d) => d.wait?._tag === "waiting_on_question");
+      const empty = yield* app
+        .dispatch({
+          _tag: "member.answer",
+          memberId: member(alpha).id,
+          requestId: "req-m" as never,
+          answers: { "Which fruits?": [] },
+        })
+        .pipe(Effect.flip);
+      assert.strictEqual(empty._tag, "GroupChatInvalid");
+      yield* app.dispatch({
+        _tag: "member.answer",
+        memberId: member(alpha).id,
+        requestId: "req-m" as never,
+        answers: { "Which fruits?": ["Apple", "Fig"] },
+      });
+      yield* awaitDelivery(app, member(alpha).id, (d) => d.wait === null);
+      assert.deepStrictEqual((yield* fake.thread(alpha)).responses, [
+        { requestId: "req-m" as RuntimeRequestId, answers: { "Which fruits?": ["Apple", "Fig"] } },
+      ]);
+    }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "a turn the thread starts on its own holds the envelope back, its question can be answered, and its text is never the reply",
     () =>

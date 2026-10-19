@@ -170,7 +170,7 @@ export class GroupChatThreadPort extends Context.Service<
 
 const WAIT_SLICE_MS = 10 * 60_000;
 
-const pendingInputOf = (
+export const pendingInputOf = (
   records: {
     readonly runtimeRequests: ReadonlyArray<{
       readonly id: RuntimeRequestId;
@@ -189,6 +189,7 @@ const pendingInputOf = (
             readonly options: ReadonlyArray<{
               readonly label: string;
               readonly description: string;
+              readonly value?: string | undefined;
             }>;
             readonly multiSelect?: boolean | undefined;
           }>;
@@ -216,7 +217,11 @@ const pendingInputOf = (
             id: q.id,
             header: q.header,
             question: q.question,
-            options: q.options.map((o) => ({ label: o.label, description: o.description })),
+            options: q.options.map((o) => ({
+              label: o.label,
+              description: o.description,
+              value: o.value ?? null,
+            })),
             multiSelect: q.multiSelect ?? false,
           }))
         : [];

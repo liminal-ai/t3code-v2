@@ -198,12 +198,18 @@ export const makeEngine = (store: GroupChatStore) =>
         for (;;) {
           const work = yield* nextWork(l).pipe(
             Effect.catchCause((cause) =>
-              Effect.logError("group chat lane could not read its deliveries", {
-                threadId: l.threadId,
-                cause,
-              }).pipe(Effect.as(null)),
+              Cause.hasInterrupts(cause)
+                ? Effect.interrupt
+                : Effect.logError("group chat lane could not read its deliveries", {
+                    threadId: l.threadId,
+                    cause,
+                  }).pipe(Effect.as("read-failed" as const)),
             ),
           );
+          if (work === "read-failed") {
+            yield* Effect.sleep(retryDelay);
+            continue;
+          }
           if (work === null) {
             yield* Queue.take(l.signal);
             continue;
@@ -1204,7 +1210,7 @@ export const makeEngine = (store: GroupChatStore) =>
     const answerMember = (
       memberId: GroupChatMemberId,
       requestId: string,
-      answers: Readonly<Record<string, string>>,
+      answers: Readonly<Record<string, string | ReadonlyArray<string>>>,
     ) =>
       Effect.gen(function* () {
         const member = yield* store.member(memberId);
@@ -1218,7 +1224,9 @@ export const makeEngine = (store: GroupChatStore) =>
         const filled = Object.fromEntries(
           pending.questions.map((q) => [q.id, answers[q.id] ?? ""]),
         );
-        if (Object.values(filled).some((a) => a.trim() === "")) {
+        const blank = (a: string | ReadonlyArray<string>): boolean =>
+          typeof a === "string" ? a.trim() === "" : a.length === 0 || a.some(blank);
+        if (Object.values(filled).some(blank)) {
           return yield* new GroupChatInvalid({ reason: "every question needs an answer" });
         }
         yield* port
