@@ -528,7 +528,6 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
   it.effect("waiting on a restarted run returns its continuation", () =>
     Effect.gen(function* () {
       const app = yield* openApp;
-      const orchestrator = yield* Orchestrator.OrchestratorV2;
       const sink = yield* EventSink.EventSinkV2;
       const threadId = ThreadId.make("gc-restart-thread");
       const { group, member } = yield* createGroup(app, "gc-restart", [threadId]);
@@ -536,6 +535,9 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
       const running = yield* startEnvelope(app, threadId, member(threadId).id);
       const original = yield* runOf(threadId, running.runId!);
       const now = yield* DateTime.now;
+      // Recovery cuts the run and admits its continuation in one commit, so the engine never
+      // sees the cut without the run that replaces it.
+      const continuationId = RunId.make(`${original.id}:continuation`);
       yield* sink.write({
         events: [
           {
@@ -546,26 +548,23 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
             occurredAt: now,
             payload: { ...original, status: "cancelled", completedAt: now },
           },
+          {
+            id: EventId.make(`event:${continuationId}:created`),
+            type: "run.created",
+            threadId,
+            runId: continuationId,
+            occurredAt: now,
+            payload: {
+              ...original,
+              id: continuationId,
+              ordinal: original.ordinal + 1,
+              status: "running",
+              startedAt: now,
+              completedAt: null,
+              restartContinuationOfRunId: original.id,
+            },
+          },
         ],
-      });
-      yield* orchestrator.dispatch({
-        type: "message.dispatch",
-        createdBy: "agent",
-        creationSource: "server",
-        commandId: id(`${threadId}-continue`),
-        threadId,
-        messageId: MessageId.make(`${threadId}-continue`),
-        text: "Continue where you left off.",
-        notification: {
-          source: { kind: "system" },
-          outcome: "updated",
-          summary: "T3 Code restarted and resumed this turn",
-          detail: "Continue where you left off.",
-        },
-        attachments: [],
-        modelSelection,
-        dispatchMode: { type: "start_immediately" },
-        restartContinuationOfRunId: original.id,
       });
       const continued = yield* awaitDelivery(
         app,

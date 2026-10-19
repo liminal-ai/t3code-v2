@@ -921,6 +921,43 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       assert.strictEqual((yield* again.store.member(member(alpha).id))!.seenSeq, 0);
     }).pipe(Effect.scoped),
   );
+  it.effect(
+    "starting a discussion releases a stopped participant's lane, like a message to it",
+    () =>
+      Effect.gen(function* () {
+        const { fake, app } = yield* setup;
+        const { group, member } = yield* createGroup(app, "released", [alpha, bravo]);
+        yield* send(app, group.id, "first", [member(alpha).id]);
+        const first = yield* awaitState(app, member(alpha).id, "running");
+        yield* fake.interrupt(alpha, first.runId!);
+        yield* awaitState(app, member(alpha).id, "failed");
+        yield* app.dispatch({
+          _tag: "discussion.start",
+          groupId: group.id,
+          participants: [member(alpha).id, member(bravo).id],
+          topic: "t",
+          maxRounds: 1,
+        });
+        yield* awaitDelivery(app, member(alpha).id, (d) => d.round === 1 && d.state === "running");
+        assert.strictEqual((yield* fake.sends(alpha)).length, 2);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("deleting a group cancels its envelopes still queued in T3", () =>
+    Effect.gen(function* () {
+      const { fake, app } = yield* setup;
+      const { group, member } = yield* createGroup(app, "deleted", [alpha]);
+      const own = yield* fake.startOwnRun(alpha);
+      yield* send(app, group.id, "hello", [member(alpha).id]);
+      const queued = yield* awaitState(app, member(alpha).id, "queued");
+      yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
+      assert.isNull(yield* app.store.group(group.id));
+      const run = (yield* fake.thread(alpha)).runs.find((r) => r.id === queued.runId)!;
+      assert.strictEqual(run.status, "cancelled", "the queued envelope left T3's queue");
+      yield* fake.complete(alpha, own.id, "own");
+      assert.isUndefined((yield* fake.thread(alpha)).runs.find((r) => r.own && r.started));
+    }).pipe(Effect.scoped),
+  );
 });
 
 // The lane's retry pause is a real sleep, so this case runs on the live clock.

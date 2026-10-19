@@ -222,7 +222,7 @@ export const GroupChatGroupSnapshot = Schema.Struct({
 });
 export type GroupChatGroupSnapshot = typeof GroupChatGroupSnapshot.Type;
 
-export const GROUP_CHAT_MAX_ROUNDS = 20;
+const GROUP_CHAT_MAX_ROUNDS = 20;
 
 export const GroupChatCommand = Schema.Union([
   Schema.TaggedStruct("group.create", {

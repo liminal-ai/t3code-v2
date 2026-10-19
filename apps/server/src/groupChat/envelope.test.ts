@@ -331,4 +331,24 @@ describe("group chat envelope and text", () => {
     expect(text).toMatch(/NOTE this envelope was shortened: 1 long message was shortened/);
     expect(text.length, `bounded (${text.length})`).toBeLessThan(45_000);
   });
+
+  it("a huge discussion topic is bounded in the instructions, head and tail", () => {
+    const a = member("a", "alpha", { introduced: true });
+    const topic = `TOPIC-HEAD-111\n${"t".repeat(50_000)}\nTOPIC-TAIL-222`;
+    const text = renderEnvelope({
+      group,
+      member: a,
+      members: [a],
+      unseen: [msg(1, { _tag: "operator" }, "round 1")],
+      expectedRepliers: ["a"],
+      footer: "",
+      discussion: { topic, round: 1, maxRounds: 2, participants: ["a"] },
+    });
+    const start = text.indexOf("DISCUSSION INSTRUCTIONS");
+    const block = text.slice(start, text.indexOf("END DISCUSSION INSTRUCTIONS"));
+    expect(block).toContain("| TOPIC-HEAD-111");
+    expect(block).toContain("| TOPIC-TAIL-222");
+    expect(block).toMatch(/shortened by the group-chat app/);
+    expect(block.length).toBeLessThan(7_000);
+  });
 });

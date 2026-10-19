@@ -85,7 +85,7 @@ export interface FakeThread {
   }>;
 }
 
-export const FAKE_ENVIRONMENT_ID = EnvironmentId.make("env-fake");
+const FAKE_ENVIRONMENT_ID = EnvironmentId.make("env-fake");
 
 const TERMINAL = new Set<OrchestrationV2Run["status"]>([
   "completed",
@@ -479,7 +479,7 @@ export const makeFakeThreads = Effect.sync(() => {
   return fake;
 });
 
-export const neverPort: GroupChatThreadPort["Service"] = {
+const neverPort: GroupChatThreadPort["Service"] = {
   environmentId: Effect.never,
   thread: () => Effect.never,
   send: () => Effect.never,
@@ -498,7 +498,7 @@ export const neverPort: GroupChatThreadPort["Service"] = {
 
 export const layerNeverPort = Layer.succeed(GroupChatThreadPort, neverPort);
 
-export const layerFakePort = (fake: FakeThreads) => Layer.succeed(GroupChatThreadPort, fake.port);
+const layerFakePort = (fake: FakeThreads) => Layer.succeed(GroupChatThreadPort, fake.port);
 
 export interface App {
   readonly engine: GroupChatEngine["Service"];

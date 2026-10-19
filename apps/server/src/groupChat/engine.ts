@@ -29,7 +29,6 @@ import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Queue from "effect/Queue";
-import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -87,8 +86,11 @@ export class RetryDelay extends Context.Reference<Duration.Input>(
 interface Lane {
   readonly threadId: ThreadId;
   readonly signal: Queue.Queue<void>;
-  readonly paused: Ref.Ref<boolean>;
 }
+
+/** A lane is paused while any of its pending envelopes carries the `stopped_in_t3` mark. */
+const pausedIn = (deliveries: ReadonlyArray<DeliveryRow>) =>
+  deliveries.some((d) => d.state === "pending" && d.wait?._tag === "stopped_in_t3");
 
 type Work =
   | { readonly kind: "resolve"; readonly delivery: DeliveryRow }
@@ -133,7 +135,6 @@ export const makeEngine = (store: GroupChatStore) =>
     const retryDelay = yield* RetryDelay;
     const scope = yield* Effect.scope;
     const lanes = new Map<ThreadId, Lane>();
-    const projectIds = new Map<ThreadId, ProjectId>();
     const resends = new Map<GroupChatDeliveryId, number>();
     /** Deliveries whose dispatch outcome stayed unknown this boot. Retry or the next boot looks again. */
     const stalled = new Set<GroupChatDeliveryId>();
@@ -159,29 +160,15 @@ export const makeEngine = (store: GroupChatStore) =>
       });
 
     const projectIdOf = (threadId: ThreadId): Effect.Effect<ProjectId | null, PortReadError> =>
-      Effect.gen(function* () {
-        const known = projectIds.get(threadId);
-        if (known !== undefined) return known;
-        const info = yield* port.thread(threadId);
-        if (info === null) return null;
-        projectIds.set(threadId, info.projectId);
-        return info.projectId;
-      });
+      Effect.map(port.thread(threadId), (info) => info?.projectId ?? null);
 
     const lane = (threadId: ThreadId): Effect.Effect<Lane> =>
       Effect.gen(function* () {
         const existing = lanes.get(threadId);
         if (existing !== undefined) return existing;
-        const paused = yield* store.deliveriesOfThread(threadId).pipe(
-          Effect.map((rows) =>
-            rows.some((d) => d.state === "pending" && d.wait?._tag === "stopped_in_t3"),
-          ),
-          Effect.orElseSucceed(() => false),
-        );
         const created: Lane = {
           threadId,
           signal: yield* Queue.make<void>({ capacity: 1, strategy: "sliding" }),
-          paused: yield* Ref.make(paused),
         };
         lanes.set(threadId, created);
         yield* Effect.forkIn(runLane(created), scope);
@@ -201,7 +188,6 @@ export const makeEngine = (store: GroupChatStore) =>
         if (unresolved !== undefined) return { kind: "resolve", delivery: unresolved };
         const outstanding = open.find((d) => d.dispatch === "accepted" && d.state !== "pending");
         if (outstanding !== undefined) return { kind: "follow", delivery: outstanding };
-        if (yield* Ref.get(l.paused)) return null;
         const pending = open.find(
           (d) =>
             d.state === "pending" && d.dispatch === "unsent" && d.wait?._tag !== "stopped_in_t3",
@@ -251,26 +237,18 @@ export const makeEngine = (store: GroupChatStore) =>
       }
     };
 
-    const pauseLane = (threadId: ThreadId): Effect.Effect<void, StoreError> =>
+    /** Marks the thread's waiting envelopes, in the transaction that records why. */
+    const markPaused = (tx: Tx, threadId: ThreadId): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
-        const l = yield* lane(threadId);
-        yield* Ref.set(l.paused, true);
-        yield* store.transaction((tx) =>
-          Effect.gen(function* () {
-            for (const d of yield* tx.deliveriesOfThread(threadId)) {
-              if (d.state === "pending") {
-                yield* tx.updateDelivery(d.id, { wait: { _tag: "stopped_in_t3" } });
-              }
-            }
-          }),
-        );
+        for (const d of yield* tx.deliveriesOfThread(threadId)) {
+          if (d.state === "pending") {
+            yield* tx.updateDelivery(d.id, { wait: { _tag: "stopped_in_t3" } });
+          }
+        }
       });
 
     const releaseLane = (threadId: ThreadId): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
-        const l = yield* lane(threadId);
-        if (!(yield* Ref.get(l.paused))) return;
-        yield* Ref.set(l.paused, false);
         yield* store.transaction((tx) =>
           Effect.gen(function* () {
             for (const d of yield* tx.deliveriesOfThread(threadId)) {
@@ -645,25 +623,23 @@ export const makeEngine = (store: GroupChatStore) =>
           reply?.streaming === true
             ? "\n\n_(the reply was still streaming when the run ended)_"
             : "";
-        let changed: boolean;
+        // The pause is written in the transaction that closes the delivery, so a boot that looks
+        // at an interrupted run again cannot undo a Retry the operator already gave.
+        const pause = run.status === "interrupted" ? threadId : null;
         if (run.status === "completed") {
-          changed =
-            text === null
-              ? yield* fail(d.id, "the run ended without a text reply")
-              : yield* ingestReply(d.id, `${text}${note}`);
+          if (text === null) yield* fail(d.id, "the run ended without a text reply");
+          else yield* ingestReply(d.id, `${text}${note}`);
         } else if (text !== null) {
-          changed = yield* ingestReply(d.id, `${text}${note}\n\n_(run ${run.status})_`);
+          yield* ingestReply(d.id, `${text}${note}\n\n_(run ${run.status})_`, pause);
         } else {
-          changed = yield* fail(
+          yield* fail(
             d.id,
             `T3 run ${run.status}`,
             undefined,
-            run.status === "interrupted" ? { _tag: "stopped_in_t3" } : null,
+            pause === null ? null : { _tag: "stopped_in_t3" },
+            pause,
           );
         }
-        // Only the pass that closes the delivery pauses the lane, so a boot that looks at an
-        // interrupted run again cannot undo a Retry the operator already gave.
-        if (changed && run.status === "interrupted") yield* pauseLane(threadId);
       });
 
     const fail = (
@@ -671,7 +647,8 @@ export const makeEngine = (store: GroupChatStore) =>
       error: string,
       dispatch?: GroupChatDelivery["dispatch"],
       wait: GroupChatWait | null = null,
-    ): Effect.Effect<boolean, StoreError> =>
+      pause: ThreadId | null = null,
+    ): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         const failed = yield* store.transaction((tx) =>
           Effect.gen(function* () {
@@ -683,18 +660,19 @@ export const makeEngine = (store: GroupChatStore) =>
               wait,
               ...(dispatch === undefined ? {} : { dispatch }),
             });
+            if (pause !== null) yield* markPaused(tx, pause);
             yield* tx.touchMember(d.memberId);
             return updated;
           }),
         );
         if (failed !== null) yield* onTerminal(deliveryId);
-        return failed !== null;
       });
 
     const ingestReply = (
       deliveryId: GroupChatDeliveryId,
       raw: string,
-    ): Effect.Effect<boolean, StoreError> =>
+      pause: ThreadId | null = null,
+    ): Effect.Effect<void, StoreError> =>
       Effect.gen(function* () {
         const stored = yield* store.transaction((tx) =>
           Effect.gen(function* () {
@@ -738,12 +716,12 @@ export const makeEngine = (store: GroupChatStore) =>
               error: null,
               wait: null,
             });
+            if (pause !== null) yield* markPaused(tx, pause);
             yield* tx.touchMember(d.memberId);
             return reply;
           }),
         );
         if (stored !== null) yield* onTerminal(deliveryId);
-        return stored !== null;
       });
 
     const onTerminal = (deliveryId: GroupChatDeliveryId): Effect.Effect<void, StoreError> =>
@@ -817,8 +795,7 @@ export const makeEngine = (store: GroupChatStore) =>
         const outstanding = (yield* tx.deliveriesOfThread(member.thread.threadId)).find((d) =>
           OPEN.has(d.state),
         );
-        const existing = lanes.get(member.thread.threadId);
-        const paused = existing === undefined ? false : yield* Ref.get(existing.paused);
+        const paused = pausedIn(yield* tx.deliveriesOfThread(member.thread.threadId));
         return yield* tx.insertDelivery({
           groupId: member.groupId,
           memberId: member.id,
@@ -974,7 +951,6 @@ export const makeEngine = (store: GroupChatStore) =>
       Effect.gen(function* () {
         const info = yield* port.thread(threadId);
         if (info === null) return yield* notFound("thread", threadId);
-        projectIds.set(threadId, info.projectId);
         const environmentId = yield* port.environmentId;
         return { environmentId, threadId, title: info.title };
       });
@@ -1185,7 +1161,10 @@ export const makeEngine = (store: GroupChatStore) =>
             };
           }),
         );
-        yield* Effect.forEach(threads, kick, { discard: true });
+        for (const threadId of threads) {
+          yield* releaseLane(threadId);
+          yield* kick(threadId);
+        }
         return discussion;
       });
 
@@ -1301,14 +1280,21 @@ export const makeEngine = (store: GroupChatStore) =>
             )
             .pipe(Effect.map((group) => ({ _tag: "group", group })));
         case "group.delete":
-          return store
-            .transaction((tx) =>
+          return Effect.gen(function* () {
+            const cancels = yield* store.transaction((tx) =>
               Effect.gen(function* () {
                 yield* requireGroup(tx, command.groupId);
+                const cancels = yield* Effect.forEach(
+                  yield* tx.deliveriesOfGroup(command.groupId),
+                  (d) => withdraw(tx, d, "group deleted"),
+                );
                 yield* tx.deleteGroup(command.groupId);
+                return cancels;
               }),
-            )
-            .pipe(Effect.as({ _tag: "done" } as const));
+            );
+            yield* cancelQueued(cancels);
+            return { _tag: "done" } as const;
+          });
         case "member.add":
           return Effect.gen(function* () {
             const thread = yield* threadOf(command.threadId);

@@ -46,7 +46,7 @@ export function deriveHandle(
   }
 }
 
-export const PALETTE_SIZE = 8;
+const PALETTE_SIZE = 8;
 
 export function nextColor(members: ReadonlyArray<GroupChatMember>): number {
   const used = new Set(members.filter((m) => !m.removedAt).map((m) => m.color));
@@ -54,7 +54,7 @@ export function nextColor(members: ReadonlyArray<GroupChatMember>): number {
   return members.length % PALETTE_SIZE;
 }
 
-export function memberLabel(m: GroupChatMember): string {
+function memberLabel(m: GroupChatMember): string {
   return `T3 agent "${oneLine(m.thread.title, 60)}"`;
 }
 
@@ -79,8 +79,8 @@ export interface EnvelopeInput {
   required?: ReadonlySet<string>;
 }
 
-export const SECTION_MAX = 6_000;
-export const LAST_SECTION_MAX = 40_000;
+const SECTION_MAX = 6_000;
+const LAST_SECTION_MAX = 40_000;
 
 const hhmm = (iso: string) => iso.slice(11, 16) + "Z";
 
@@ -233,9 +233,9 @@ export function renderEnvelope(input: EnvelopeInput): string {
   if (discussion) {
     lines.push(mark("DISCUSSION INSTRUCTIONS"));
     lines.push("Topic, as written by the operator:");
+    const topic = discussion.topic.trim();
     lines.push(
-      discussion.topic
-        .trim()
+      (topic.length > SECTION_MAX ? shorten(topic, SECTION_MAX) : topic)
         .split(/\r?\n/)
         .map((l) => `| ${l}`)
         .join("\n"),

@@ -19,7 +19,7 @@ export const RESERVED_HANDLES = new Set([
   "app",
 ]);
 
-export const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,15}$/;
+const HANDLE_RE = /^[a-z0-9][a-z0-9_-]{0,15}$/;
 
 export function handleProblem(handle: string): string | null {
   if (!HANDLE_RE.test(handle))
@@ -53,7 +53,7 @@ export function oneLine(s: string, max = 80): string {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-export const SIGN_OFF = "[[SIGN-OFF]]";
+const SIGN_OFF = "[[SIGN-OFF]]";
 export function isSignOff(text: string): boolean {
   const lines = text.split(/\r?\n/);
   while (lines.length && !lines.at(-1)!.trim()) lines.pop();
