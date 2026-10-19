@@ -9,7 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { appAtomRegistry } from "../rpc/atomRegistry";
@@ -57,23 +57,15 @@ const openEventSource = (access: DeviceHubAccess, onOpen: () => void, onError: (
 export function useGroupChatEvents(enabled: boolean): void {
   const result = useAtomValue(eventsAccessAtom);
   const access = AsyncResult.isSuccess(result) ? result.value : null;
-  // Nothing says what the stream missed while it was down, so every open after the first one
-  // reads the loaded groups again.
-  const openedBefore = useRef(false);
+  // The stream has no replay, so whatever was committed between a read and the open, or while
+  // the stream was down, is read again on every open.
   useEffect(() => {
     if (!enabled || access === null) return;
     let reconnect: ReturnType<typeof setTimeout> | undefined;
-    const close = openEventSource(
-      access,
-      () => {
-        if (openedBefore.current) resyncAll();
-        openedBefore.current = true;
-      },
-      () => {
-        close();
-        reconnect = setTimeout(reconnectWithFreshTicket, RECONNECT_DELAY_MS);
-      },
-    );
+    const close = openEventSource(access, resyncAll, () => {
+      close();
+      reconnect = setTimeout(reconnectWithFreshTicket, RECONNECT_DELAY_MS);
+    });
     return () => {
       close();
       clearTimeout(reconnect);

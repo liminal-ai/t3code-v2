@@ -1,5 +1,6 @@
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { ThreadId } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
 import { useState } from "react";
 
 import { resolveSidebarThreadStatus } from "../components/Sidebar.logic";
@@ -9,6 +10,7 @@ import { Input } from "../components/ui/input";
 import { Switch } from "../components/ui/switch";
 import { cn } from "../lib/utils";
 import { useProjects, useThreadShells } from "../state/entities";
+import { primaryEnvironmentIdAtom } from "../state/primaryEnvironment";
 import { formatRelativeTimeLabel } from "../timestampFormat";
 import { isSubagentThread, pickerRows } from "./picker";
 
@@ -43,7 +45,10 @@ export function ThreadPicker({
   onToggle: (thread: EnvironmentThreadShell) => void;
   exclude: ReadonlySet<ThreadId>;
 }) {
-  const threads = useThreadShells();
+  // Group chat talks to the server that serves the page, and a member is an unscoped thread id
+  // there, so only that environment's threads can join.
+  const primaryEnvironmentId = useAtomValue(primaryEnvironmentIdAtom);
+  const threads = useThreadShells().filter((t) => t.environmentId === primaryEnvironmentId);
   const projects = useProjects();
   const [query, setQuery] = useState("");
   const [showSubagents, setShowSubagents] = useState(false);
