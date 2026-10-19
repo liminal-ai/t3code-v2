@@ -405,8 +405,8 @@ export function timelineRows(view: GroupView): ReadonlyArray<TimelineRow> {
 }
 
 export interface TurnInfo {
-  readonly index: number;
-  readonly label: string;
+  /** A discussion round's name. A chat turn has none, since a loaded page cannot count turns. */
+  readonly label: string | null;
   readonly promptId: GroupChatMessageId | null;
 }
 
@@ -415,11 +415,8 @@ export function turnsOf(view: GroupView): ReadonlyMap<string, TurnInfo> {
   for (const m of [...view.messages.values()].sort((a, b) => a.seq - b.seq)) {
     if (out.has(m.turnKey)) continue;
     const discussion = m.discussionId === null ? undefined : view.discussions.get(m.discussionId);
-    const index = out.size;
     out.set(m.turnKey, {
-      index,
-      label:
-        discussion !== undefined && m.round !== null ? `Round ${m.round}` : `Turn ${index + 1}`,
+      label: discussion !== undefined && m.round !== null ? `Round ${m.round}` : null,
       promptId:
         discussion !== undefined
           ? discussion.promptMessageId
@@ -486,35 +483,61 @@ const runFollowUp = (groupId: GroupChatGroupId) => {
   runFetches(next.fetches);
 };
 
-/**
- * A failed read of a group's latest page keeps trying while the stream stays up, since a tunnel
- * can fail twice in a row and the stream has no replay. A new resync or a dropped stream starts
- * over or stops it.
- */
-const latestRetries = new Map<GroupChatGroupId, ReturnType<typeof setTimeout>>();
+type Timer = ReturnType<typeof setTimeout>;
 
-const readLatest = (groupId: GroupChatGroupId, failures = 0) => {
-  const pending = latestRetries.get(groupId);
+/**
+ * A failed read keeps trying while the stream stays up, since a tunnel can fail twice in a row
+ * and the stream has no replay. Latest-page reads and catch-up follow-ups wait apart, so a
+ * resync after a gap is never dropped for a catch-up of the same group. A new read of the group,
+ * a dropped stream or a page left behind stops them.
+ */
+const latestRetries = new Map<GroupChatGroupId, Timer>();
+const followUpRetries = new Map<GroupChatGroupId, Timer>();
+
+const clearRetry = (timers: Map<GroupChatGroupId, Timer>, groupId: GroupChatGroupId) => {
+  const pending = timers.get(groupId);
   if (pending !== undefined) clearTimeout(pending);
-  latestRetries.delete(groupId);
-  void loadGroup(groupId).catch(() => {
-    latestRetries.set(
-      groupId,
-      setTimeout(() => readLatest(groupId, failures + 1), retryDelayMs(failures + 1)),
-    );
-  });
+  timers.delete(groupId);
 };
 
-/** The stream is down, so its reconnect will read again; pending retries stop. */
+const ignore = () => undefined;
+
+/**
+ * Reads a group's latest page. The promise is the first try alone, so a page can show why it
+ * failed; every later try is spaced out and silent.
+ */
+export function readGroup(groupId: GroupChatGroupId, failures = 0): Promise<void> {
+  clearRetry(latestRetries, groupId);
+  return loadGroup(groupId).catch((error: unknown) => {
+    latestRetries.set(
+      groupId,
+      setTimeout(
+        () => void readGroup(groupId, failures + 1).catch(ignore),
+        retryDelayMs(failures + 1),
+      ),
+    );
+    throw error;
+  });
+}
+
+/** The stream is down or gone, so its next open reads again; every pending retry stops. */
 export function stopRetries(): void {
-  for (const timer of latestRetries.values()) clearTimeout(timer);
-  latestRetries.clear();
+  for (const timers of [latestRetries, followUpRetries]) {
+    for (const timer of timers.values()) clearTimeout(timer);
+    timers.clear();
+  }
+}
+
+/** The page left this group, so nothing shows a retry's result; the next visit reads again. */
+export function stopGroupRetries(groupId: GroupChatGroupId): void {
+  clearRetry(latestRetries, groupId);
+  clearRetry(followUpRetries, groupId);
 }
 
 const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
   for (const fetch of fetches) {
     if (fetch._tag === "latest") {
-      readLatest(fetch.groupId);
+      void readGroup(fetch.groupId).catch(ignore);
       continue;
     }
     void fetchGroupPage(fetch.groupId, { after: fetch.seq })
@@ -524,7 +547,14 @@ const runFetches = (fetches: ReadonlyArray<FetchRequest>) => {
       })
       .catch(() => {
         update((state) => readFailed(state, fetch.groupId));
-        setTimeout(() => runFollowUp(fetch.groupId), READ_RETRY_DELAY_MS);
+        clearRetry(followUpRetries, fetch.groupId);
+        followUpRetries.set(
+          fetch.groupId,
+          setTimeout(() => {
+            followUpRetries.delete(fetch.groupId);
+            runFollowUp(fetch.groupId);
+          }, READ_RETRY_DELAY_MS),
+        );
       });
   }
 };
@@ -540,7 +570,7 @@ export function noteMessage(message: GroupChatMessage): void {
   update((state) => applyMessage(state, message));
 }
 
-export async function loadGroup(groupId: GroupChatGroupId): Promise<void> {
+async function loadGroup(groupId: GroupChatGroupId): Promise<void> {
   const page = await fetchGroupPage(groupId, {});
   update((state) => applyPage(state, groupId, page, "latest"));
 }

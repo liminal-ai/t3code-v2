@@ -1,7 +1,18 @@
-import type { GroupChatPageDelivery } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import type { GroupChatDelivery, GroupChatPageDelivery } from "@t3tools/contracts";
+import { act, createElement } from "react";
+import { create, type ReactTestRenderer } from "react-test-renderer";
+import { describe, expect, it, vi } from "vite-plus/test";
 
-import { describeDelivery } from "./DeliveryStatus";
+const api = vi.hoisted(() => ({
+  fetchDelivery: vi.fn<(deliveryId: string) => Promise<GroupChatDelivery>>(),
+}));
+
+vi.mock("./api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./api")>()),
+  fetchDelivery: api.fetchDelivery,
+}));
+
+import { describeDelivery, useEnvelope } from "./DeliveryStatus";
 
 const head = (overrides: Partial<GroupChatPageDelivery>): GroupChatPageDelivery =>
   ({
@@ -69,6 +80,61 @@ describe("delivery status", () => {
     for (const state of ["replied", "failed", "cancelled"] as const) {
       expect(describeDelivery(head({ state })).stoppable).toBe(false);
     }
+  });
+
+  it("Stop is offered on a reply stopped in T3, so a round can move on without a resend", () => {
+    const stopped = describeDelivery(
+      head({ state: "failed", wait: { _tag: "stopped_in_t3" }, retryable: true }),
+    );
+    expect(stopped.stoppable).toBe(true);
+    expect(stopped.retry).toBe(true);
+    expect(stopped.label).toBe("stopped in T3");
+  });
+
+  it("a failed refresh never shows the envelope read for an earlier head", async () => {
+    function Probe({ delivery }: { delivery: GroupChatPageDelivery }) {
+      const { body, failure } = useEnvelope(delivery);
+      return createElement("output", null, JSON.stringify({ body, failure }));
+    }
+    const shown = (renderer: ReactTestRenderer) => {
+      const rendered = renderer.toJSON();
+      const text = rendered !== null && !Array.isArray(rendered) ? rendered.children?.[0] : null;
+      return JSON.parse(String(text)) as {
+        readonly body: GroupChatDelivery | null;
+        readonly failure: string | null;
+      };
+    };
+    const first = head({ updatedAt: "2026-10-19T00:00:01.000Z" });
+    api.fetchDelivery.mockResolvedValueOnce({
+      ...first,
+      envelope: "Hello @a",
+      sentText: null,
+    } as GroupChatDelivery);
+    let renderer!: ReactTestRenderer;
+    await act(async () => {
+      renderer = create(createElement(Probe, { delivery: first }));
+    });
+    expect(shown(renderer).body?.envelope).toBe("Hello @a");
+
+    let fail!: (error: Error) => void;
+    api.fetchDelivery.mockImplementationOnce(
+      () =>
+        new Promise<GroupChatDelivery>((_, reject) => {
+          fail = reject;
+        }),
+    );
+    const later = head({ updatedAt: "2026-10-19T00:00:02.000Z", attempt: 2 as never });
+    await act(async () => {
+      renderer.update(createElement(Probe, { delivery: later }));
+    });
+    expect(shown(renderer)).toEqual({ body: null, failure: null });
+
+    await act(async () => {
+      fail(new Error("The server did not answer in time."));
+      await Promise.resolve();
+    });
+    expect(shown(renderer)).toEqual({ body: null, failure: "The server did not answer in time." });
+    renderer.unmount();
   });
 
   it("a held queue shows the engine's note", () => {

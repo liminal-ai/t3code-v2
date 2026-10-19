@@ -1,22 +1,40 @@
 import type {
   GroupChatDeliveryHead,
+  GroupChatDiscussion,
   GroupChatGroupPage,
   GroupChatPageDelivery,
   GroupChatMessage,
   GroupChatMessageHead,
   GroupChatStreamEvent,
 } from "@t3tools/contracts";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+
+const api = vi.hoisted(() => ({
+  fetchGroupPage: vi.fn<(groupId: string, query: unknown) => Promise<GroupChatGroupPage>>(),
+}));
+
+vi.mock("./api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./api")>()),
+  fetchGroupPage: api.fetchGroupPage,
+  refreshGroupChatSnapshot: () => undefined,
+}));
 
 import {
   applyEvent,
   applyPage,
+  applyStreamEvent,
   emptyState,
   followUpRead,
+  forgetGroup,
   readFailed,
+  readGroup,
+  readGroupView,
   retryDelayMs,
+  stopGroupRetries,
+  stopRetries,
   type StoreState,
   timelineRows,
+  turnsOf,
 } from "./store";
 
 const groupId = "grp_1" as GroupChatGroupPage["group"]["id"];
@@ -214,6 +232,54 @@ describe("group chat store", () => {
     expect(refreshed.groups.get(groupId)!.deliveries.get("d1" as never)!.state).toBe("replied");
   });
 
+  it("a reply's prompt line names a discussion round and never a count of the loaded page", () => {
+    const discussionId = "dsc_1" as GroupChatDiscussion["id"];
+    const discussion: GroupChatDiscussion = {
+      id: discussionId,
+      groupId,
+      participants: [memberId],
+      maxRounds: 3 as never,
+      round: 1 as never,
+      state: "running",
+      endReason: null,
+      promptMessageId: "msg_203" as never,
+      signedOff: {},
+      topic: "Names",
+      createdAt: "2026-10-19T00:03:00.000Z",
+      endedAt: null,
+    };
+    const reply = { author: { _tag: "member", memberId } } as const;
+    const state = loaded([201, 202, 203, 204], {
+      olderBefore: 201 as never,
+      discussions: [discussion],
+      messages: [
+        message(201),
+        message(202, {
+          ...reply,
+          kind: "reply",
+          turnKey: "msg_201",
+          triggerMessageId: "msg_201" as never,
+        }),
+        message(203, {
+          kind: "discussion_prompt",
+          discussionId,
+          round: 1 as never,
+          turnKey: "dsc_1:1",
+        }),
+        message(204, {
+          ...reply,
+          kind: "discussion_reply",
+          discussionId,
+          round: 1 as never,
+          turnKey: "dsc_1:1",
+        }),
+      ],
+    });
+    const turns = turnsOf(state.groups.get(groupId)!);
+    expect(turns.get("msg_201")).toEqual({ label: null, promptId: "msg_201" });
+    expect(turns.get("dsc_1:1")).toEqual({ label: "Round 1", promptId: "msg_203" });
+  });
+
   it("open deliveries sit after the last message of their turn", () => {
     const state = loaded([1, 2, 3], {
       deliveries: [
@@ -384,5 +450,62 @@ describe("group chat store, questions", () => {
       "since",
     );
     expect(followUpRead(stale, groupId).fetches).toEqual([{ _tag: "since", groupId, seq: 1 }]);
+  });
+});
+
+describe("group chat store, read retries", () => {
+  const pageFor = (id: string, seqs: ReadonlyArray<number>): GroupChatGroupPage => ({
+    ...page(seqs),
+    group: { ...group, id: id as never },
+    messages: seqs.map((seq) => message(seq, { groupId: id as never })),
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    api.fetchGroupPage.mockReset();
+  });
+
+  afterEach(() => {
+    stopRetries();
+    vi.useRealTimers();
+  });
+
+  it("a failed first read of a group is read again after a spaced wait", async () => {
+    const id = "grp_first" as never;
+    api.fetchGroupPage
+      .mockRejectedValueOnce(new Error("tunnel"))
+      .mockResolvedValueOnce(pageFor(id, [1]));
+    await expect(readGroup(id)).rejects.toThrow("tunnel");
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(retryDelayMs(1));
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+    expect(readGroupView(id)?.highSeq).toBe(1);
+    forgetGroup(id);
+  });
+
+  it("leaving the page stops its group's retry", async () => {
+    const id = "grp_left" as never;
+    api.fetchGroupPage.mockRejectedValue(new Error("tunnel"));
+    await expect(readGroup(id)).rejects.toThrow("tunnel");
+    stopGroupRetries(id);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(1);
+  });
+
+  it("a failed catch-up read is read again while the stream is up, and stops with it", async () => {
+    const id = "grp_catchup" as never;
+    api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
+    await readGroup(id);
+    api.fetchGroupPage.mockRejectedValue(new Error("tunnel"));
+    applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(2);
+    expect(api.fetchGroupPage).toHaveBeenLastCalledWith(id, { after: 1 });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
+    stopRetries();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(api.fetchGroupPage).toHaveBeenCalledTimes(3);
+    forgetGroup(id);
   });
 });
