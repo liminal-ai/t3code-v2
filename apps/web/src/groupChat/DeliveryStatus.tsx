@@ -1,4 +1,9 @@
-import type { GroupChatDelivery, GroupChatPageDelivery, GroupChatMember } from "@t3tools/contracts";
+import type {
+  GroupChatDelivery,
+  GroupChatPageDelivery,
+  GroupChatMember,
+  GroupChatWait,
+} from "@t3tools/contracts";
 import { useEffect, useState } from "react";
 
 import { Badge } from "../components/ui/badge";
@@ -155,7 +160,7 @@ function StopButton({ delivery }: { delivery: GroupChatPageDelivery }) {
   );
 }
 
-function RetryButton({ delivery }: { delivery: GroupChatPageDelivery }) {
+export function RetryButton({ delivery }: { delivery: GroupChatPageDelivery }) {
   return (
     <Button size="xs" variant="outline" onClick={() => void retryDelivery(delivery)}>
       Retry
@@ -233,14 +238,25 @@ export function PendingReply({
       )}
       {view.answerable && member !== undefined && wait?._tag === "waiting_on_question" ? (
         <div className="pl-4">
-          {wait.questions.length === 0 ? (
-            <p className="text-xs text-muted-foreground">Reading the question…</p>
-          ) : (
-            <AnswerBox member={member} wait={wait} />
-          )}
+          <PendingQuestion member={member} wait={wait} />
         </div>
       ) : null}
     </div>
+  );
+}
+
+/** The question's text rides the page, so a head that names one shows a wait until the page lands. */
+export function PendingQuestion({
+  member,
+  wait,
+}: {
+  member: GroupChatMember;
+  wait: Extract<GroupChatWait, { readonly _tag: "waiting_on_question" }>;
+}) {
+  return wait.questions.length === 0 ? (
+    <p className="text-xs text-muted-foreground">Reading the question…</p>
+  ) : (
+    <AnswerBox member={member} wait={wait} />
   );
 }
 

@@ -20,6 +20,8 @@ import {
   useGroupChatSnapshot,
 } from "./api";
 import { ChatView } from "./ChatView";
+import { runningDiscussion } from "./discussion/discussionView";
+import { StartDiscussionDialog } from "./discussion/StartDiscussionDialog";
 import { useGroupChatEvents } from "./events";
 import { ManageGroupDialog } from "./ManageGroupDialog";
 import { MemberChip } from "./MemberChip";
@@ -53,11 +55,13 @@ function notice(snapshot: GroupChatSnapshotState, groupId: string | undefined): 
 
 function GroupHeaderActions({ view }: { view: GroupView }) {
   const [manageOpen, setManageOpen] = useState(false);
+  const [discussOpen, setDiscussOpen] = useState(false);
   const members = [...view.members.values()]
     .filter((m) => m.removedAt === null)
     .sort((a, b) => a.addedAt.localeCompare(b.addedAt));
   const open = openDeliveryByMember(view);
   const settled = view.group.settledAt !== null;
+  const canDiscuss = members.length >= 2 && runningDiscussion(view) === null;
   return (
     <div className="flex min-w-0 flex-1 items-center justify-end gap-2">
       <div className="hidden min-w-0 flex-wrap items-center gap-1 sm:flex">
@@ -79,9 +83,21 @@ function GroupHeaderActions({ view }: { view: GroupView }) {
       >
         {settled ? "Unsettle" : "Settle"}
       </Button>
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={!canDiscuss}
+        onClick={() => setDiscussOpen(true)}
+        data-testid="discuss"
+      >
+        Discuss
+      </Button>
       <Button size="xs" variant="outline" onClick={() => setManageOpen(true)}>
         Manage
       </Button>
+      {discussOpen ? (
+        <StartDiscussionDialog view={view} onClose={() => setDiscussOpen(false)} />
+      ) : null}
       {manageOpen ? <ManageGroupDialog view={view} onClose={() => setManageOpen(false)} /> : null}
     </div>
   );
