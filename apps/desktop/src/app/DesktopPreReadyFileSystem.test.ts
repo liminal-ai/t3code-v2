@@ -13,6 +13,7 @@ const resolveWindowsUserData = (appDataDirectory: string) =>
   DesktopUserData.resolveUserDataPath({
     appDataDirectory,
     isDevelopment: false,
+    appVersion: "0.1.0",
     platform: "win32",
   }).pipe(Effect.provide(DesktopPreReadyFileSystem.layer));
 

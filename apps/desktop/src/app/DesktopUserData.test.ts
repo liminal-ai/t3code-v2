@@ -19,6 +19,7 @@ it.effect("identifies a failed source read and preserves its cause", () => {
     const error = yield* resolveUserDataPath({
       appDataDirectory: "/profiles",
       isDevelopment: false,
+      appVersion: "0.1.0",
       platform: "win32",
     }).pipe(Effect.flip);
     assert.equal(error.operation, "read");
@@ -54,6 +55,7 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
       yield* resolveUserDataPath({
         appDataDirectory: directory,
         isDevelopment: false,
+        appVersion: "0.1.0",
         platform: "win32",
       });
       assert.equal(yield* fs.readFileString(path.join(destination, "Local State")), state);
@@ -63,11 +65,34 @@ it.effect.each(["t3code", "T3 Code (Alpha)"])(
       yield* resolveUserDataPath({
         appDataDirectory: directory,
         isDevelopment: false,
+        appVersion: "0.1.0",
         platform: "win32",
       });
       assert.equal(
         yield* fs.readFileString(path.join(destination, "Local State")),
         "existing V2 state",
       );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each(["darwin", "win32"] as const)(
+  "gives fork builds their own %s profile without adopting upstream's",
+  (platform) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped({ prefix: "t3-lim-profile-" });
+      for (const upstream of ["t3code-v2", "T3 Code (Alpha)", "t3code"]) {
+        yield* fs.makeDirectory(path.join(directory, upstream), { recursive: true });
+        yield* fs.writeFileString(path.join(directory, upstream, "Local State"), upstream);
+      }
+      const userData = yield* resolveUserDataPath({
+        appDataDirectory: directory,
+        isDevelopment: false,
+        appVersion: "0.1.1-nightly.20261017.3238-lim.39aa16c70e",
+        platform,
+      });
+      assert.equal(userData, path.join(directory, "t3code-lim"));
+      assert.isFalse(yield* fs.exists(path.join(directory, "t3code-lim")));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

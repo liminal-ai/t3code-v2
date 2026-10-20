@@ -167,6 +167,26 @@ describe("DesktopEnvironment", () => {
     }),
   );
 
+  it.effect("gives fork builds their own app user model id", () =>
+    Effect.gen(function* () {
+      const stable = yield* makeEnvironment({ platform: "win32", isPackaged: true });
+      const nightly = yield* makeEnvironment({
+        platform: "win32",
+        isPackaged: true,
+        appVersion: "0.1.1-nightly.20261017.3238",
+      });
+      const lim = yield* makeEnvironment({
+        platform: "win32",
+        isPackaged: true,
+        appVersion: "0.1.1-nightly.20261017.3238-lim.39aa16c70e",
+      });
+
+      assert.equal(stable.appUserModelId, "com.t3tools.t3code");
+      assert.equal(nightly.appUserModelId, "com.t3tools.t3code");
+      assert.equal(lim.appUserModelId, "ai.liminal.t3code.lim");
+    }),
+  );
+
   it.effect("uses a configured app user model id override", () =>
     Effect.gen(function* () {
       const environment = yield* makeEnvironment(
