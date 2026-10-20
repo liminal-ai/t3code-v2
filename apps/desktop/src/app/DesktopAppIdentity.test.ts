@@ -159,6 +159,22 @@ describe("DesktopAppIdentity", () => {
     ),
   );
 
+  it.effect("gives fork builds a profile separate from upstream stable and nightly", () =>
+    withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        assert.equal(
+          yield* identity.resolveUserDataPath,
+          "/Users/alice/Library/Application Support/t3code-lim",
+        );
+      }),
+      {
+        legacyPathExists: true,
+        environment: { appVersion: "0.1.1-nightly.20261017.3238-lim.39aa16c70e" },
+      },
+    ),
+  );
+
   it.effect("keeps using the legacy development profile", () =>
     withIdentity(
       Effect.gen(function* () {

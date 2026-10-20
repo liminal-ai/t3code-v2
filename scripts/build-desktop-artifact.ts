@@ -57,6 +57,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
+const LIM_DESKTOP_APP_ID = "ai.liminal.t3code.lim";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -2632,6 +2633,19 @@ export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
+// liminal-ai/t3code-v2 builds carry `-lim.<sha>` and install beside upstream's app.
+export function isDesktopLimVersion(version: string): boolean {
+  return /-lim\./.test(version);
+}
+
+export function resolveDesktopAppId(version: string): string {
+  return isDesktopLimVersion(version) ? LIM_DESKTOP_APP_ID : DESKTOP_APP_ID;
+}
+
+export function resolveDesktopDmgBackgroundChannel(version: string): "latest" | "nightly" {
+  return isDesktopLimVersion(version) ? "nightly" : resolveDesktopUpdateChannel(version);
+}
+
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
 }
@@ -2670,6 +2684,7 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
+  if (isDesktopLimVersion(version)) return "T3 Code Lim";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2692,7 +2707,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   arch?: typeof BuildArch.Type,
 ) {
   const buildConfig: Record<string, unknown> = {
-    appId: DESKTOP_APP_ID,
+    appId: resolveDesktopAppId(version),
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2722,7 +2737,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
-  if (!isDesktopPreviewVersion(version)) {
+  if (!isDesktopPreviewVersion(version) && !isDesktopLimVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
@@ -2788,7 +2803,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       // DMG window backgrounds by volume name, so reusing a generic name can
       // make a newly built background look unchanged during testing.
       title: `${resolveDesktopProductName(version)} ${version} Installer`,
-      background: `dmg/dmg-background-${updateChannel}.png`,
+      background: `dmg/dmg-background-${resolveDesktopDmgBackgroundChannel(version)}.png`,
       window: {
         width: 640,
         // The DMG backend derives bounds from the image, including Finder's
@@ -3629,7 +3644,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   if (options.platform === "mac" && options.target === "dmg") {
     yield* stageDesktopDmgBackground(
       stageResourcesDir,
-      resolveDesktopUpdateChannel(appVersion),
+      resolveDesktopDmgBackgroundChannel(appVersion),
       options.verbose,
     );
   }
@@ -3686,6 +3701,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
         ...configuredMacPasskeySigning,
+        appId: resolveDesktopAppId(appVersion),
         provisioningProfilePath: path.resolve(
           repoRoot,
           configuredMacPasskeySigning.provisioningProfilePath,
