@@ -86,7 +86,9 @@ Both commands work from the app's first launch, before anyone finishes the
 welcome setup, and with **Local environment** switched off. A computer paired
 while the setup is on its first step shows there, already selected. `t3 app
 <path>` waits until the setup is finished and the local environment is
-connected, because it opens the project there.
+connected, because it opens the project there. With **Local environment**
+switched off, it exits non-zero at once, because there is nowhere to open the
+project.
 
 The app pairs one link at a time. Several `t3 app pair` commands started at
 once wait their turn, up to a minute, and each pairing then has 30 seconds. A

@@ -135,14 +135,15 @@ describe("DesktopApp bootstrap", () => {
         }),
         Layer.mock(ElectronWindow.ElectronWindow, { main: Effect.succeedNone }),
       );
+      const settingsLayer = DesktopAppSettings.layerTest({
+        ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
+        localEnvironmentEnabled: false,
+      });
       const layer = Layer.mergeAll(
-        DesktopAppActivation.layer.pipe(Layer.provide(windowLayer)),
+        DesktopAppActivation.layer.pipe(Layer.provide(Layer.merge(windowLayer, settingsLayer))),
         windowLayer,
+        settingsLayer,
         DesktopState.layer,
-        DesktopAppSettings.layerTest({
-          ...DesktopAppSettings.DEFAULT_DESKTOP_SETTINGS,
-          localEnvironmentEnabled: false,
-        }),
         Layer.mock(DesktopSnapShot.DesktopSnapShot, { initialize: Effect.void }),
         Layer.mock(ElectronProtocol.ElectronProtocol, {
           registerDesktopProtocol: () => Effect.void,
@@ -172,9 +173,26 @@ describe("DesktopApp bootstrap", () => {
           yield* bootstrap;
           assert.equal(mainWindowRequests, 1);
 
-          const response = JSON.parse(yield* Effect.promise(() => exchange(address, "not json")));
-          assert.equal(response.ok, false);
-          assert.equal(response.code, "invalid-request");
+          const invalid = JSON.parse(yield* Effect.promise(() => exchange(address, "not json")));
+          assert.equal(invalid.code, "invalid-request");
+
+          // With nowhere to open a project, `t3 app <path>` gets its answer at once.
+          const openWorkspace = JSON.parse(
+            yield* Effect.promise(() =>
+              exchange(
+                address,
+                JSON.stringify({
+                  version: 1,
+                  requestId: "open-1",
+                  type: "open-workspace",
+                  workspaceRoot: home,
+                  platform,
+                }),
+              ),
+            ),
+          );
+          assert.equal(openWorkspace.requestId, "open-1");
+          assert.equal(openWorkspace.code, "environment-unavailable");
         }).pipe(Effect.provide(layer)),
       );
 

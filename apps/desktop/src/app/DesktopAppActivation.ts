@@ -27,6 +27,7 @@ import type * as Electron from "electron";
 
 import * as ElectronWindow from "../electron/ElectronWindow.ts";
 import { DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL } from "../ipc/channels.ts";
+import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import { DesktopAppActivationBroker } from "./DesktopAppActivationBroker.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
@@ -59,6 +60,17 @@ function invalidResponse(requestId: string, message: string): DesktopAppActivati
     ok: false,
     code: "invalid-request",
     message,
+  };
+}
+
+function localEnvironmentOffResponse(requestId: string): DesktopAppActivationResponse {
+  return {
+    version: DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
+    requestId,
+    ok: false,
+    code: "environment-unavailable",
+    message:
+      "Local environment is switched off in the desktop app, so it has nowhere to open a project. Turn it on in Settings to use `t3 app <path>`.",
   };
 }
 
@@ -303,6 +315,7 @@ const { logWarning } = makeComponentLogger("desktop-app-activation");
 export const make = Effect.gen(function* () {
   const desktopEnvironment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopWindow = yield* DesktopWindow.DesktopWindow;
+  const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
   const electronWindow = yield* ElectronWindow.ElectronWindow;
   const path = yield* Path.Path;
   const userId = yield* HostProcess.UserId;
@@ -351,7 +364,11 @@ export const make = Effect.gen(function* () {
           startDesktopAppControlServer({
             ...address,
             userId,
-            handle: (request) => broker.request(request),
+            handle: async (request) =>
+              request.type === "open-workspace" &&
+              !(await runPromise(desktopSettings.get)).localEnvironmentEnabled
+                ? localEnvironmentOffResponse(request.requestId)
+                : broker.request(request),
             cancel: (requestId) => broker.cancel(requestId),
             onReclaimError: (cause) =>
               void runPromise(
