@@ -75,7 +75,15 @@ t3 app pair "$url" --label dgx-01
 It prints one line: `Paired`, `Added ... as another route`, or `Already paired`.
 If the app already has an environment at that address, it reports it and leaves
 the link unspent. Pass `--force` to pair again anyway. An expired or used link,
-an unreachable host, or an older desktop app exits non-zero with the reason.
+an unreachable host, or an older desktop app exits non-zero with the reason. No
+output, including an error about the arguments, prints the link's token.
+
+The app pairs one link at a time. Several `t3 app pair` commands started at
+once wait their turn, up to a minute, and each pairing then has 30 seconds. A
+command that times out while it waits says the link was not used, so you can
+run it again. A command that times out during its pairing says so too, and the
+app may still save the environment, so run `t3 app environments` before you
+create a new link.
 
 `t3 app environments` lists what the app has saved. Add `--json` to compare it
 with what a machine should have:
