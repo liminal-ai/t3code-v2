@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { Command } from "effect/cli";
+import * as TestConsole from "effect/testing/TestConsole";
 import { describe, expect } from "vite-plus/test";
 
 import { makeCli } from "../binCli.ts";
@@ -40,6 +41,26 @@ const pathExists = (path: string) =>
       () => false,
     ),
   );
+
+const PAIRING_URL = "https://dgx-01.example.ts.net/pair#token=pairing-token";
+
+const dgxEnvironment = {
+  environmentId: "environment-dgx",
+  label: "dgx-01",
+  kind: "remote",
+  httpBaseUrl: "https://dgx-01.example.ts.net/",
+  enabled: true,
+  connection: "connecting",
+} as const;
+
+const localEnvironment = {
+  environmentId: "environment-local",
+  label: "This Mac",
+  kind: "local",
+  httpBaseUrl: "http://127.0.0.1:3773/",
+  enabled: true,
+  connection: "connected",
+} as const;
 
 async function startFakeDesktop(input: {
   readonly baseDir: string;
@@ -74,13 +95,30 @@ async function startFakeDesktop(input: {
       received.push(request);
       const response = input.reply
         ? input.reply(request)
-        : {
-            version: 1,
-            requestId: request.requestId,
-            ok: true,
-            projectId: "project-1",
-            threadId: `thread-${received.length}`,
-          };
+        : request.type === "open-workspace"
+          ? {
+              version: 1,
+              requestId: request.requestId,
+              ok: true,
+              projectId: "project-1",
+              threadId: `thread-${received.length}`,
+            }
+          : request.type === "pair-environment"
+            ? {
+                version: 1,
+                requestId: request.requestId,
+                ok: true,
+                type: "pair-environment",
+                outcome: "paired",
+                environment: { ...dgxEnvironment, label: request.label ?? dgxEnvironment.label },
+              }
+            : {
+                version: 1,
+                requestId: request.requestId,
+                ok: true,
+                type: "list-environments",
+                environments: [localEnvironment, dgxEnvironment],
+              };
       socket.end(`${JSON.stringify(response)}\n`);
     });
   });
@@ -217,7 +255,7 @@ describe("t3 app", () => {
         expect(error).toMatchObject({
           _tag: "DesktopAppSshUnsupportedError",
           message:
-            "`t3 app` only controls a desktop app on the same machine. It cannot run over SSH.",
+            "`t3 app` only controls a desktop app on the same machine. It cannot run over SSH. To set up the machine you are logged into from a script, pass --allow-ssh.",
         });
         expect(yield* pathExists(baseDir)).toBe(false);
       }),
@@ -273,11 +311,10 @@ describe("t3 app", () => {
         yield* runCli(["app"], { T3CODE_HOME: baseDir });
         yield* runCli(["app", explicitPath, "--base-dir", baseDir]);
 
-        expect(desktop.received.map((request) => request.workspaceRoot)).toEqual([
-          workingDirectory,
-          explicitPath,
+        expect(desktop.received).toMatchObject([
+          { type: "open-workspace", workspaceRoot: workingDirectory, platform },
+          { type: "open-workspace", workspaceRoot: explicitPath, platform },
         ]);
-        expect(desktop.received.every((request) => request.platform === platform)).toBe(true);
       }).pipe(Effect.scoped),
     ),
   );
@@ -374,5 +411,223 @@ describe("t3 app", () => {
           }
         }).pipe(Effect.provideService(HostProcess.HomeDirectory, root), Effect.scoped),
       ),
+  );
+
+  it.effect("runs under SSH when --allow-ssh or T3_APP_ALLOW_SSH=1 is set", () =>
+    withTempDirectory("t3-app-allow-ssh-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        const desktop = yield* fakeDesktop({ baseDir });
+        const ssh = {
+          T3CODE_HOME: baseDir,
+          SSH_CONNECTION: "client server",
+          SSH_TTY: "/dev/pts/1",
+        };
+
+        yield* runCli(["app", "--allow-ssh"], ssh);
+        yield* runCli(["app"], { ...ssh, T3_APP_ALLOW_SSH: "1" });
+        const refused = yield* runCli(["app"], { ...ssh, T3_APP_ALLOW_SSH: "0" }).pipe(Effect.flip);
+
+        expect(desktop.received).toHaveLength(2);
+        expect(refused).toMatchObject({ _tag: "DesktopAppSshUnsupportedError" });
+      }).pipe(Effect.scoped),
+    ),
+  );
+});
+
+describe("t3 app pair", () => {
+  it.effect("sends the link, label and --force to the app and prints the outcome", () =>
+    withTempDirectory("t3-app-pair-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        const desktop = yield* fakeDesktop({ baseDir });
+
+        yield* runCli(["app", "pair", PAIRING_URL, "--base-dir", baseDir]);
+        yield* runCli([
+          "app",
+          "pair",
+          PAIRING_URL,
+          "--label",
+          "DGX 01",
+          "--force",
+          "--base-dir",
+          baseDir,
+        ]);
+
+        expect(desktop.received).toEqual([
+          {
+            version: 1,
+            requestId: expect.any(String),
+            type: "pair-environment",
+            pairingUrl: PAIRING_URL,
+            force: false,
+          },
+          {
+            version: 1,
+            requestId: expect.any(String),
+            type: "pair-environment",
+            pairingUrl: PAIRING_URL,
+            label: "DGX 01",
+            force: true,
+          },
+        ]);
+        expect(yield* TestConsole.logLines).toEqual([
+          "Paired dgx-01 (environment-dgx) at https://dgx-01.example.ts.net/.",
+          "Paired DGX 01 (environment-dgx) at https://dgx-01.example.ts.net/.",
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+    ),
+  );
+
+  it.effect("reports an environment the app already has without failing", () =>
+    withTempDirectory("t3-app-pair-existing-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        yield* fakeDesktop({
+          baseDir,
+          reply: (request) => ({
+            version: 1,
+            requestId: request.requestId,
+            ok: true,
+            type: "pair-environment",
+            outcome: "already-paired",
+            environment: dgxEnvironment,
+          }),
+        });
+
+        yield* runCli(["app", "pair", PAIRING_URL, "--base-dir", baseDir]);
+
+        expect(yield* TestConsole.logLines).toEqual([
+          "Already paired: dgx-01 (environment-dgx) at https://dgx-01.example.ts.net/. Pass --force to pair again.",
+        ]);
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+    ),
+  );
+
+  it.effect("fails with the app's reason, never printing the token", () =>
+    withTempDirectory("t3-app-pair-failure-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        yield* fakeDesktop({
+          baseDir,
+          reply: (request) => ({
+            version: 1,
+            requestId: request.requestId,
+            ok: false,
+            code: "pairing-rejected",
+            message: "https://dgx-01.example.ts.net/ rejected the pairing token.",
+          }),
+        });
+
+        const error = yield* runCli(["app", "pair", PAIRING_URL, "--base-dir", baseDir]).pipe(
+          Effect.flip,
+        );
+
+        expect(error).toMatchObject({
+          _tag: "DesktopAppPairFailedError",
+          code: "pairing-rejected",
+          httpBaseUrl: "https://dgx-01.example.ts.net/",
+          message:
+            "Could not pair https://dgx-01.example.ts.net/ (pairing-rejected): https://dgx-01.example.ts.net/ rejected the pairing token.",
+        });
+        expect(String(error)).not.toContain("pairing-token");
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("rejects a link without a token before it reaches the app", () =>
+    withTempDirectory("t3-app-pair-invalid-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        const desktop = yield* fakeDesktop({ baseDir });
+
+        const error = yield* runCli([
+          "app",
+          "pair",
+          "https://dgx-01.example.ts.net/pair",
+          "--base-dir",
+          baseDir,
+        ]).pipe(Effect.flip);
+
+        expect(error).toMatchObject({
+          _tag: "DesktopAppPairingUrlInvalidError",
+          message: expect.stringContaining("Pairing URL is missing its token."),
+        });
+        expect(desktop.received).toHaveLength(0);
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("treats a response for another request kind as invalid", () =>
+    withTempDirectory("t3-app-pair-mismatch-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        yield* fakeDesktop({
+          baseDir,
+          reply: (request) => ({
+            version: 1,
+            requestId: request.requestId,
+            ok: true,
+            projectId: "project-1",
+            threadId: "thread-1",
+          }),
+        });
+
+        const error = yield* runCli(["app", "pair", PAIRING_URL, "--base-dir", baseDir]).pipe(
+          Effect.flip,
+        );
+
+        expect(error).toMatchObject({
+          _tag: "DesktopAppUnreachableError",
+          cause: { message: "The desktop app response is invalid." },
+        });
+      }).pipe(Effect.scoped),
+    ),
+  );
+
+  it.effect("refuses SSH unless --allow-ssh is passed", () =>
+    withTempDirectory("t3-app-pair-ssh-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        const desktop = yield* fakeDesktop({ baseDir });
+        const ssh = { SSH_CONNECTION: "client server" };
+
+        const error = yield* runCli(["app", "pair", PAIRING_URL, "--base-dir", baseDir], ssh).pipe(
+          Effect.flip,
+        );
+        yield* runCli(["app", "pair", PAIRING_URL, "--allow-ssh", "--base-dir", baseDir], ssh);
+
+        expect(error).toMatchObject({ _tag: "DesktopAppSshUnsupportedError" });
+        expect(desktop.received).toHaveLength(1);
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+    ),
+  );
+});
+
+describe("t3 app environments", () => {
+  it.effect("prints the app's environments as a table or as JSON", () =>
+    withTempDirectory("t3-app-environments-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        const desktop = yield* fakeDesktop({ baseDir });
+
+        yield* runCli(["app", "environments", "--base-dir", baseDir]);
+        yield* runCli(["app", "environments", "--json", "--base-dir", baseDir]);
+
+        expect(desktop.received).toMatchObject([
+          { type: "list-environments" },
+          { type: "list-environments" },
+        ]);
+        const [table, json] = yield* TestConsole.logLines;
+        expect(table).toBe(
+          [
+            "ENVIRONMENT ID     LABEL     KIND    CONNECTION  URL",
+            "environment-local  This Mac  local   connected   http://127.0.0.1:3773/",
+            "environment-dgx    dgx-01    remote  connecting  https://dgx-01.example.ts.net/",
+          ].join("\n"),
+        );
+        expect(JSON.parse(String(json))).toEqual([localEnvironment, dgxEnvironment]);
+      }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
+    ),
   );
 });
