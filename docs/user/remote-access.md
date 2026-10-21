@@ -62,6 +62,33 @@ created in Settings can only be copied from the client that created them while
 its Connections page stays open. If you leave or reload that page, create
 another link to share.
 
+### Pair from a script
+
+With the desktop app running, `t3 app pair` pairs it the same way pasting the
+link into **Add environment** does:
+
+```bash
+url="$(ssh dgx-01 t3 auth pairing create --base-url https://dgx-01.example.ts.net --json | jq -r .pairUrl)"
+t3 app pair "$url" --label dgx-01
+```
+
+It prints one line: `Paired`, `Added ... as another route`, or `Already paired`.
+If the app already has an environment at that address, it reports it and leaves
+the link unspent. Pass `--force` to pair again anyway. An expired or used link,
+an unreachable host, or an older desktop app exits non-zero with the reason.
+
+`t3 app environments` lists what the app has saved. Add `--json` to compare it
+with what a machine should have:
+
+```bash
+t3 app environments --json | jq -r '.[].httpBaseUrl'
+```
+
+Both commands talk to the app over a local socket, so they only reach the
+desktop app on the machine they run on. They refuse to run in an SSH session.
+When a script logs into that machine over SSH to set it up, pass `--allow-ssh`
+or set `T3_APP_ALLOW_SSH=1`.
+
 ### Reach one machine several ways
 
 A machine can have more than one route: LAN, Tailscale, another VPN, a public
