@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { redactPairingTokens } from "./remote.ts";
+import { redactPairingTokens, resolveRemotePairingTarget } from "./remote.ts";
 
 const TOKEN = "SYNTHETIC+secret/token";
 const LINK = `https://dgx-01.example.ts.net/pair#token=${encodeURIComponent(TOKEN)}`;
@@ -28,6 +28,49 @@ describe("redactPairingTokens", () => {
     expect(redactPairingTokens(`The server rejected ${quoted}.`, LINK)).toBe(
       "The server rejected <redacted>.",
     );
+  });
+
+  // URLSearchParams decodes names and values, so each of these links carries SYNTHETIC_PR24_SECRET
+  // or SYNTHETIC+PR24/SECRET.
+  const encodedLinks = [
+    [
+      "an encoded fragment name",
+      "https://dgx-01.example.ts.net/pair#%74oken=SYNTHETIC_PR24_SECRET",
+    ],
+    ["an encoded query name", "https://dgx-01.example.ts.net/pair?to%6Ben=SYNTHETIC_PR24_SECRET"],
+    [
+      "a fully encoded name",
+      "https://dgx-01.example.ts.net/pair#%74%6F%6B%65%6E=SYNTHETIC_PR24_SECRET&x=1",
+    ],
+    ["a noncanonical value", "https://dgx-01.example.ts.net/pair#%74oken=%53YNTHETIC_PR24_SECRET"],
+    ["lowercase escapes", "https://dgx-01.example.ts.net/pair#token=SYNTHETIC%2bPR24%2fSECRET"],
+    ["a tab in the name", "https://dgx-01.example.ts.net/pair#to\tken=SYNTHETIC_PR24_SECRET"],
+  ] as const;
+
+  it.each(encodedLinks)("hides the token of a link with %s, however it is quoted", (_, link) => {
+    expect(resolveRemotePairingTarget({ pairingUrl: link }).credential).toMatch(/PR24/);
+    for (const quoted of [
+      link,
+      encodeURIComponent(link),
+      encodeURIComponent(encodeURIComponent(link)),
+    ]) {
+      expect(redactPairingTokens(`Could not fetch ${quoted}`)).not.toContain("PR24");
+    }
+    for (const quoted of [link, JSON.stringify(link), encodeURIComponent(link)]) {
+      expect(redactPairingTokens(`Unexpected positional argument: ${quoted}`, link)).not.toContain(
+        "PR24",
+      );
+    }
+  });
+
+  it.each(encodedLinks)("hides the token of a link with %s quoted as written", (_, link) => {
+    const written = link.split("=")[1]!.split("&")[0]!;
+
+    for (const quoted of [written, encodeURIComponent(written)]) {
+      expect(redactPairingTokens(`The server rejected ${quoted}.`, link)).toBe(
+        "The server rejected <redacted>.",
+      );
+    }
   });
 
   it("leaves text without a token alone", () => {

@@ -245,31 +245,120 @@ export const resolveRemotePairingTarget = (input: {
 };
 
 const REDACTED_PAIRING_TOKEN = "<redacted>";
-// `token=` as written, or with the `=` percent-encoded once or twice, as when a link is quoted inside another.
-const PAIRING_TOKEN_ASSIGNMENT = /(token(?:=|%3D|%253D))[^\s&#"'<>]+/gi;
+// `=`, or `=` percent-encoded once or more, as when a link is quoted inside another.
+const PARAM_SEPARATOR = /=|%(?:25)*3D/gi;
+// Not a tab or newline, which the URL parser drops from a link.
+const PARAM_NAME_BOUNDARY = /[^\S\t\n\r]|[?#&"'<>]/;
+const PARAM_VALUE_END = /[\s&#"<>]/;
+// A name that decodes to `token`, after a `?`, `#` or `&` that may have been encoded with it.
+const PAIRING_TOKEN_NAME = /(?:^|[?#&])token$/i;
+const MAX_ENCODING_DEPTH = 4;
 
-const pairingTokenForms = (pairingUrl: string | undefined): ReadonlyArray<string> => {
-  if (pairingUrl === undefined) return [];
-  let token: string | null;
+const percentDecodeBytes = (text: string): string =>
+  text.replace(/%([0-9a-f]{2})/gi, (_, hex: string) =>
+    String.fromCharCode(Number.parseInt(hex, 16)),
+  );
+
+// URLSearchParams percent-decodes a name before it compares it, so `%74oken` is `token` too. The
+// URL parser drops tabs and newlines, but text also uses them to start a line.
+const namesPairingToken = (name: string): boolean => {
+  let decoded = name;
+  for (let depth = 0; depth <= MAX_ENCODING_DEPTH; depth += 1) {
+    const lines = decoded.split(/[\t\n\r]/);
+    if ([lines.join(""), lines[lines.length - 1] ?? ""].some((n) => PAIRING_TOKEN_NAME.test(n))) {
+      return true;
+    }
+    const next = percentDecodeBytes(decoded);
+    if (next === decoded) return false;
+    decoded = next;
+  }
+  return false;
+};
+
+// Every `name=value` whose name decodes to `token`, however either one is encoded.
+const redactPairingTokenParams = (text: string): string => {
+  let redacted = "";
+  let copiedTo = 0;
+  let nameFrom = 0;
+  for (const separator of text.matchAll(PARAM_SEPARATOR)) {
+    const at = separator.index;
+    if (at < copiedTo) continue;
+    let nameStart = at;
+    while (nameStart > nameFrom && !PARAM_NAME_BOUNDARY.test(text.charAt(nameStart - 1)))
+      nameStart -= 1;
+    const valueStart = at + separator[0].length;
+    nameFrom = valueStart;
+    if (!namesPairingToken(text.slice(nameStart, at))) continue;
+    let valueEnd = valueStart;
+    while (valueEnd < text.length && !PARAM_VALUE_END.test(text.charAt(valueEnd))) valueEnd += 1;
+    if (valueEnd === valueStart) continue;
+    redacted += text.slice(copiedTo, valueStart) + REDACTED_PAIRING_TOKEN;
+    copiedTo = valueEnd;
+    nameFrom = valueEnd;
+  }
+  return redacted + text.slice(copiedTo);
+};
+
+// The `token` values in a link's query and fragment, as written, before any decoding. The URL
+// parser drops tabs and newlines, and URLSearchParams decodes each name before it compares it.
+const pairingTokenValuesAsWritten = (link: string): ReadonlyArray<string> => {
+  const hashAt = link.indexOf("#");
+  const beforeHash = hashAt === -1 ? link : link.slice(0, hashAt);
+  const queryAt = beforeHash.indexOf("?");
+  return [
+    hashAt === -1 ? "" : link.slice(hashAt + 1),
+    queryAt === -1 ? "" : beforeHash.slice(queryAt + 1),
+  ]
+    .flatMap((params) => params.split("&"))
+    .flatMap((field) => {
+      const equalsAt = field.indexOf("=");
+      if (equalsAt === -1) return [];
+      const name = new URLSearchParams(field.replace(/[\t\n\r]/g, "")).keys().next().value;
+      return name === PAIRING_TOKEN_PARAM ? [field.slice(equalsAt + 1)] : [];
+    });
+};
+
+// Each way a link's token can be quoted without its name: as the parser reads it, as written in
+// the link and in the URL the parser makes of it, as a form encodes it, and each of those
+// percent-encoded once or twice, or escaped in a JSON string.
+const pairingTokenForms = (pairingUrl: string): ReadonlyArray<string> => {
+  let url: URL;
   try {
-    token = getPairingTokenFromUrl(new URL(pairingUrl.trim()));
+    url = new URL(pairingUrl.trim());
   } catch {
     return [];
   }
+  const token = getPairingTokenFromUrl(url);
   if (!token) return [];
-  const encodedOnce = encodeURIComponent(token);
-  return [...new Set([encodeURIComponent(encodedOnce), encodedOnce, token])];
+  const written = [
+    token,
+    ...pairingTokenValuesAsWritten(pairingUrl),
+    ...pairingTokenValuesAsWritten(url.href),
+    new URLSearchParams([["", token]]).toString().slice(1),
+  ];
+  const forms = written.flatMap((form) => {
+    const encodedOnce = encodeURIComponent(form);
+    return [form, encodedOnce, encodeURIComponent(encodedOnce), JSON.stringify(form).slice(1, -1)];
+  });
+  // Longest first, so a form inside another does not break it up before it is replaced.
+  return [...new Set(forms)].filter((form) => form.length > 0).sort((a, b) => b.length - a.length);
 };
 
 /**
  * Hides pairing tokens in text that can quote a pairing link, such as an error message: every
- * `token=` value, raw or percent-encoded, and each form of `pairingUrl`'s own token, which an
- * error can also quote without its `token=`.
+ * value of a parameter whose name decodes to `token`, raw or percent-encoded, and each form of
+ * the tokens in `pairingUrls`, which an error can also quote without their names.
  */
-export const redactPairingTokens = (text: string, pairingUrl?: string): string => {
+export const redactPairingTokens = (
+  text: string,
+  ...pairingUrls: ReadonlyArray<string | undefined>
+): string => {
   let redacted = text;
-  for (const token of pairingTokenForms(pairingUrl)) {
-    redacted = redacted.replaceAll(token, REDACTED_PAIRING_TOKEN);
+  for (const pairingUrl of pairingUrls) {
+    if (pairingUrl === undefined) continue;
+    for (const form of pairingTokenForms(pairingUrl)) {
+      redacted = redacted.replaceAll(form, REDACTED_PAIRING_TOKEN);
+    }
   }
-  return redacted.replace(PAIRING_TOKEN_ASSIGNMENT, `$1${REDACTED_PAIRING_TOKEN}`);
+  return redactPairingTokenParams(redacted);
 };

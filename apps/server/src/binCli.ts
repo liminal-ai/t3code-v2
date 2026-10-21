@@ -31,14 +31,16 @@ import { themeCommand } from "./cli/theme.ts";
 import { traceCommand } from "./cli/trace.ts";
 import { triageCommand } from "./cli/triage.ts";
 
-// Parser errors quote the arguments, and `t3 app pair` takes a pairing link with its token.
+// Parser errors quote the arguments, and `t3 app pair` takes a pairing link with its token. Each
+// argument is a link the error can quote, so its token is hidden however it is written.
 const redactingCliFormatter = (): CliOutput.Formatter => {
   const formatter = CliOutput.defaultFormatter();
+  const redact = (text: string) => redactPairingTokens(text, ...process.argv.slice(2));
   return {
     ...formatter,
-    formatCliError: (error) => redactPairingTokens(formatter.formatCliError(error)),
-    formatError: (error) => redactPairingTokens(formatter.formatError(error)),
-    formatErrors: (errors) => redactPairingTokens(formatter.formatErrors(errors)),
+    formatCliError: (error) => redact(formatter.formatCliError(error)),
+    formatError: (error) => redact(formatter.formatError(error)),
+    formatErrors: (errors) => redact(formatter.formatErrors(errors)),
   };
 };
 

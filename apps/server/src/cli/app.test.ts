@@ -738,6 +738,64 @@ describe("t3 app pair output", () => {
     30_000,
   );
 
+  // Each link's token is SYNTHETIC_PR24_SECRET or SYNTHETIC+PR24/SECRET once decoded.
+  const ENCODED_LINKS = [
+    ["an encoded fragment name", `https://dgx-01.example.ts.net/pair#%74oken=${SECRET}`],
+    ["an encoded query name", `https://dgx-01.example.ts.net/pair?to%6Ben=${SECRET}`],
+    ["a noncanonical value", `https://dgx-01.example.ts.net/pair#%74oken=%53YNTHETIC_PR24_SECRET`],
+    ["lowercase escapes", "https://dgx-01.example.ts.net/pair#token=SYNTHETIC%2bPR24%2fSECRET"],
+  ] as const;
+
+  it.effect(
+    "never prints the token of a link with encoded names or values when the arguments do not parse",
+    () =>
+      Effect.gen(function* () {
+        const results = yield* Effect.promise(() =>
+          Promise.all(ENCODED_LINKS.map(([, link]) => runCliProcess(["app", "pair", link, link]))),
+        );
+
+        for (const result of results) {
+          expect(result.exitCode).toBe(1);
+          expect(result.output).toContain("Unexpected positional argument");
+          expect(result.output).toContain("<redacted>");
+          expect(result.output).not.toContain("PR24");
+        }
+      }),
+    60_000,
+  );
+
+  it.effect.each(ENCODED_LINKS)(
+    "never prints the token of a link with %s when the app's failure quotes the link",
+    ([, link]) =>
+      withTempDirectory("t3-app-pair-encoded-echo-test-", (root) =>
+        Effect.gen(function* () {
+          const baseDir = NodePath.join(root, "t3-home");
+          // The value as written in the link, which the app can quote without its name.
+          const writtenValue = link.slice(link.lastIndexOf("=") + 1);
+          yield* fakeDesktop({
+            baseDir,
+            reply: (request) => ({
+              version: 1,
+              requestId: request.requestId,
+              ok: false,
+              code: "pairing-failed",
+              message: `Could not pair ${(request as { readonly pairingUrl: string }).pairingUrl}, which offered ${writtenValue}.`,
+            }),
+          });
+
+          const result = yield* Effect.promise(() =>
+            runCliProcess(["app", "pair", link, "--base-dir", baseDir]),
+          );
+
+          expect(result.exitCode).toBe(1);
+          expect(result.output).toContain("DesktopAppPairFailedError");
+          expect(result.output).toContain("<redacted>");
+          expect(result.output).not.toContain("PR24");
+        }).pipe(Effect.scoped),
+      ),
+    30_000,
+  );
+
   it.effect(
     "never prints the token of a link that does not parse",
     () =>

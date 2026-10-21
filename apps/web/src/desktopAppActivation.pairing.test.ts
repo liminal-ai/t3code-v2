@@ -276,6 +276,25 @@ describe("desktop app pairing", () => {
     expect(JSON.stringify(response)).not.toContain("pairing-token");
   });
 
+  // Each link's token is pairing-token-PR24 or pairing+token/PR24 once decoded.
+  it.each([
+    ["an encoded fragment name", "https://dgx-01.example.ts.net/pair#%74oken=pairing-token-PR24"],
+    ["an encoded query name", "https://dgx-01.example.ts.net/pair?to%6Ben=pairing-token-PR24"],
+    ["a noncanonical value", "https://dgx-01.example.ts.net/pair#%74oken=%70airing-token-PR24"],
+    ["lowercase escapes", "https://dgx-01.example.ts.net/pair#token=pairing%2btoken%2fPR24"],
+  ])("never quotes the token of a link with %s", async (_, pairingUrl) => {
+    const writtenValue = pairingUrl.slice(pairingUrl.lastIndexOf("=") + 1);
+    const deps = dependencies([[]], async () => {
+      throw new Error(`Could not pair ${pairingUrl}, which offered ${writtenValue}.`);
+    });
+
+    const response = await handleDesktopAppPairRequest({ ...pairRequest(), pairingUrl }, deps);
+
+    expect(deps.pairEnvironment).toHaveBeenCalled();
+    expect(response).toMatchObject({ ok: false, message: expect.stringContaining("<redacted>") });
+    expect(JSON.stringify(response)).not.toContain("PR24");
+  });
+
   it("answers a failure to read the saved environments without quoting the token", async () => {
     const deps = {
       readEnvironments: vi.fn(async () => {
