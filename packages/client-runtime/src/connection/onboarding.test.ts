@@ -269,6 +269,19 @@ describe("connection onboarding", () => {
     }),
   );
 
+  it.effect("saves a requested label in place of the server's", () =>
+    Effect.gen(function* () {
+      const calls: Array<{ readonly url: string; readonly init: RequestInit }> = [];
+      const registration = yield* preparePairingRegistration({
+        pairingUrl: "https://remote.example.test/pair#token=pairing-token",
+        label: "  dgx-01  ",
+      }).pipe(Effect.provide(Layer.mergeAll(layerClientPresentation, layerPairingHttp(calls))));
+
+      expect(registration.target.label).toBe("dgx-01");
+      expect(registration.profile.label).toBe("dgx-01");
+    }),
+  );
+
   it.effect("turns a switched-off environment back on when it is paired again", () =>
     Effect.gen(function* () {
       const registry = yield* EnvironmentRegistry.EnvironmentRegistry;
