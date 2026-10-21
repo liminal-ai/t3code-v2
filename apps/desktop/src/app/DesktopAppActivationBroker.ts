@@ -4,6 +4,7 @@ import {
   type DesktopAppActivationDeadlines,
   type DesktopAppActivationFailure,
   type DesktopAppActivationRequest,
+  DesktopAppActivationRequestType,
   type DesktopAppActivationResponse,
 } from "@t3tools/contracts";
 
@@ -62,6 +63,8 @@ export class DesktopAppActivationBroker {
   readonly #activate: () => void;
   readonly #onLateCompletion: (response: DesktopAppActivationResponse) => void;
   #renderer: RendererSender | null = null;
+  /** The kinds the renderer can handle now. A request of another kind waits, and others pass it. */
+  #accepts: ReadonlySet<DesktopAppActivationRequestType> = new Set();
   /** The request the renderer is working on. It stays set after a deadline answers the command, until the renderer finishes. */
   #running: string | null = null;
   #closed = false;
@@ -108,8 +111,12 @@ export class DesktopAppActivationBroker {
     return response;
   }
 
-  registerRenderer(send: RendererSender): void {
+  registerRenderer(
+    send: RendererSender,
+    accepts: ReadonlyArray<DesktopAppActivationRequestType> = DesktopAppActivationRequestType.literals,
+  ): void {
     this.#renderer = send;
+    this.#accepts = new Set(accepts);
     this.#flush();
   }
 
@@ -167,6 +174,7 @@ export class DesktopAppActivationBroker {
     if (renderer === null || this.#running !== null) return;
 
     for (const pending of this.#pending.values()) {
+      if (!this.#accepts.has(pending.request.type)) continue;
       try {
         renderer(pending.request);
       } catch {

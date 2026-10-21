@@ -42,6 +42,13 @@ export const DesktopAppActivationRequest = Schema.Union([
 ]);
 export type DesktopAppActivationRequest = typeof DesktopAppActivationRequest.Type;
 
+export const DesktopAppActivationRequestType = Schema.Literals([
+  "open-workspace",
+  "pair-environment",
+  "list-environments",
+]);
+export type DesktopAppActivationRequestType = typeof DesktopAppActivationRequestType.Type;
+
 export interface DesktopAppActivationDeadlines {
   /** How long a request may wait for the window and for the requests ahead of it. */
   readonly waitMs: number;
@@ -53,7 +60,7 @@ export interface DesktopAppActivationDeadlines {
 // deadline. Its wait covers a few pairings ahead of it, as a script pairing several servers at
 // once queues them.
 const DESKTOP_APP_ACTIVATION_DEADLINES: Record<
-  DesktopAppActivationRequest["type"],
+  DesktopAppActivationRequestType,
   DesktopAppActivationDeadlines
 > = {
   "open-workspace": { waitMs: 15_000, runMs: 15_000 },
@@ -62,7 +69,7 @@ const DESKTOP_APP_ACTIVATION_DEADLINES: Record<
 };
 
 export function desktopAppActivationDeadlines(
-  type: DesktopAppActivationRequest["type"],
+  type: DesktopAppActivationRequestType,
 ): DesktopAppActivationDeadlines {
   return DESKTOP_APP_ACTIVATION_DEADLINES[type];
 }

@@ -231,6 +231,42 @@ describe("DesktopAppActivationBroker", () => {
     }
   });
 
+  it("sends pairing and listing past an open-workspace the window cannot take yet", async () => {
+    const send = vi.fn();
+    const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });
+    // The local environment is off, so the window takes only pairing and listing.
+    broker.registerRenderer(send, ["pair-environment", "list-environments"]);
+    const opened = broker.request(request);
+    const pairing = broker.request(pairRequest("pair-1"));
+    const listing = broker.request({ version: 1, requestId: "list-1", type: "list-environments" });
+
+    expect(send).toHaveBeenCalledExactlyOnceWith(pairRequest("pair-1"));
+    broker.complete(paired("pair-1"));
+    await expect(pairing).resolves.toMatchObject({ ok: true, requestId: "pair-1" });
+    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ requestId: "list-1" }));
+    broker.complete({
+      version: 1,
+      requestId: "list-1",
+      ok: true,
+      type: "list-environments",
+      environments: [],
+    });
+    await expect(listing).resolves.toMatchObject({ ok: true, requestId: "list-1" });
+    expect(send).not.toHaveBeenCalledWith(request);
+
+    broker.registerRenderer(send, ["open-workspace", "pair-environment", "list-environments"]);
+    expect(send).toHaveBeenLastCalledWith(request);
+    broker.complete({
+      version: 1,
+      requestId: request.requestId,
+      ok: true,
+      projectId: ProjectId.make("project-1"),
+      threadId: ThreadId.make("thread-1"),
+    });
+    await expect(opened).resolves.toMatchObject({ ok: true, projectId: "project-1" });
+    broker.close();
+  });
+
   it("holds the next request while the renderer finishes one whose command closed", async () => {
     const send = vi.fn();
     const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });

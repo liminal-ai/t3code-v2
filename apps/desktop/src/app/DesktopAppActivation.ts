@@ -10,6 +10,7 @@ import {
   DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
   DesktopAppActivationRequest,
   desktopAppActivationDeadlines,
+  type DesktopAppActivationRequestType,
   type DesktopAppActivationResponse,
 } from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
@@ -288,7 +289,10 @@ export class DesktopAppActivation extends Context.Service<
   DesktopAppActivation,
   {
     readonly start: Effect.Effect<void, DesktopAppActivationStartError, Scope.Scope>;
-    readonly setRendererReady: (ready: boolean) => Effect.Effect<void>;
+    /** The request kinds the window can handle now. Empty unregisters it. */
+    readonly setRendererReady: (
+      accepts: ReadonlyArray<DesktopAppActivationRequestType>,
+    ) => Effect.Effect<void>;
     readonly complete: (response: DesktopAppActivationResponse) => Effect.Effect<void>;
   }
 >()("@t3tools/desktop/app/DesktopAppActivation") {}
@@ -364,8 +368,8 @@ export const make = Effect.gen(function* () {
           Effect.ensuring(Effect.sync(() => broker.close())),
         ),
     ).pipe(Effect.asVoid),
-    setRendererReady: Effect.fn("DesktopAppActivation.setRendererReady")(function* (ready) {
-      if (!ready) {
+    setRendererReady: Effect.fn("DesktopAppActivation.setRendererReady")(function* (accepts) {
+      if (accepts.length === 0) {
         clearRegisteredRenderer();
         return;
       }
@@ -393,7 +397,7 @@ export const make = Effect.gen(function* () {
 
       broker.registerRenderer((request) => {
         webContents.send(DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL, request);
-      });
+      }, accepts);
     }),
     complete: (response) => Effect.sync(() => broker.complete(response)),
   });
