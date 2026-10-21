@@ -82,8 +82,11 @@ A link to this app's own local server, through a LAN or Tailscale address, uses
 the link and then exits non-zero. T3 Code manages the local environment's
 addresses itself, so it does not save another route for it.
 
-Both commands work with **Local environment** switched off. `t3 app <path>`
-waits for the local environment instead, because it opens the project there.
+Both commands work from the app's first launch, before anyone finishes the
+welcome setup, and with **Local environment** switched off. A computer paired
+while the setup is on its first step shows there, already selected. `t3 app
+<path>` waits until the setup is finished and the local environment is
+connected, because it opens the project there.
 
 The app pairs one link at a time. Several `t3 app pair` commands started at
 once wait their turn, up to a minute, and each pairing then has 30 seconds. A
