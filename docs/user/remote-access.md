@@ -90,7 +90,12 @@ once wait their turn, up to a minute, and each pairing then has 30 seconds. A
 command that times out while it waits says the link was not used, so you can
 run it again. A command that times out during its pairing says so too, and the
 app may still save the environment, so run `t3 app environments` before you
-create a new link.
+create a new link. `t3 app environments` does not wait behind a pairing.
+
+If the app never finishes a pairing, later pairings and `t3 app <path>` wait
+their full time and then say the app is still working on an earlier command.
+Their links were not used. Reload the T3 Code window (**View > Reload**) or
+quit and reopen T3 Code to stop the earlier pairing, then run them again.
 
 `t3 app environments` lists what the app has saved. Add `--json` to compare it
 with what a machine should have:
