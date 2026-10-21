@@ -159,6 +159,7 @@ afterEach(async () => {
   await act(async () => renderer?.unmount());
   renderer = null;
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("DesktopAppActivationCoordinator", () => {
@@ -237,6 +238,90 @@ describe("DesktopAppActivationCoordinator", () => {
           platform: "linux",
         }),
       ).resolves.toMatchObject({ ok: true, projectId: "project-1", threadId: "thread-1" });
+    },
+  );
+
+  it("answers a listing while a pairing is still running", async () => {
+    await act(async () => {
+      renderer = create(<DesktopAppActivationCoordinator />);
+    });
+    await settle();
+    let finishPairing: (environmentId: EnvironmentId) => void = () => undefined;
+    testState.pairEnvironment.mockReturnValue(
+      new Promise<EnvironmentId>((resolve) => {
+        finishPairing = resolve;
+      }),
+    );
+    testState.catalogReads = [new Map(), new Map([[dgxId, dgxEntry()]])];
+    deliver!({
+      version: 1,
+      requestId: "pair-1",
+      type: "pair-environment",
+      pairingUrl: PAIRING_URL,
+      force: false,
+    });
+    await vi.waitFor(() => expect(testState.pairEnvironment).toHaveBeenCalled());
+
+    await expect(
+      handle({ version: 1, requestId: "list-1", type: "list-environments" }),
+    ).resolves.toMatchObject({ ok: true, type: "list-environments" });
+    expect(bridge.complete).not.toHaveBeenCalledWith(
+      expect.objectContaining({ requestId: "pair-1" }),
+    );
+
+    testState.catalogReads = [new Map([[dgxId, dgxEntry()]])];
+    finishPairing(dgxId);
+    await vi.waitFor(() =>
+      expect(bridge.complete).toHaveBeenCalledWith(
+        expect.objectContaining({ requestId: "pair-1", ok: true }),
+      ),
+    );
+  });
+
+  it.each([
+    ["once", 1, [true, true]],
+    ["every time", 3, [true, true, true, false]],
+  ] as const)(
+    "sends a result the desktop app refuses %s again, and then a failure in its place",
+    async (_, refusals, sentResult) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await act(async () => {
+        renderer = create(<DesktopAppActivationCoordinator />);
+      });
+      await settle();
+      for (let refusal = 0; refusal < refusals; refusal++) {
+        bridge.complete.mockRejectedValueOnce(new Error("An object could not be cloned."));
+      }
+      testState.catalogReads = [new Map(), new Map([[dgxId, dgxEntry()]])];
+      testState.pairEnvironment.mockResolvedValue(dgxId);
+
+      deliver!({
+        version: 1,
+        requestId: "pair-1",
+        type: "pair-environment",
+        pairingUrl: PAIRING_URL,
+        force: false,
+      });
+      await vi.waitFor(() => expect(bridge.complete).toHaveBeenCalledTimes(sentResult.length));
+      await settle();
+
+      expect(bridge.complete.mock.calls.map(([response]) => response.ok)).toEqual(sentResult);
+      if (sentResult.at(-1) === false) {
+        expect(bridge.complete).toHaveBeenLastCalledWith({
+          version: 1,
+          requestId: "pair-1",
+          ok: false,
+          code: "internal-error",
+          message:
+            "T3 Code finished the pairing but could not report how it went, so it may have saved the environment. Run `t3 app environments` before you create a new link.",
+        });
+      }
+
+      // The window still takes requests afterwards.
+      testState.catalogReads = [new Map()];
+      await expect(
+        handle({ version: 1, requestId: "list-1", type: "list-environments" }),
+      ).resolves.toMatchObject({ ok: true });
     },
   );
 

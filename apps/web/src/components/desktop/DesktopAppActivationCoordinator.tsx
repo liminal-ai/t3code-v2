@@ -4,6 +4,7 @@ import type {
   DesktopAppActivationRequestType,
   DesktopAppActivationResponse,
   DesktopAppOpenWorkspaceRequest,
+  DesktopBridge,
 } from "@t3tools/contracts";
 import { useEffect, useEffectEvent, useRef } from "react";
 
@@ -37,6 +38,51 @@ const ALL_REQUESTS: ReadonlyArray<DesktopAppActivationRequestType> = [
   "open-workspace",
   ...ENVIRONMENT_REQUESTS,
 ];
+
+type DesktopAppActivationBridge = NonNullable<DesktopBridge["appActivation"]>;
+
+const COMPLETION_ATTEMPTS = 3;
+
+function unreportedResultMessage(request: DesktopAppActivationRequest): string {
+  return request.type === "pair-environment"
+    ? "T3 Code finished the pairing but could not report how it went, so it may have saved the environment. Run `t3 app environments` before you create a new link."
+    : "T3 Code finished the request but could not report how it went.";
+}
+
+// The desktop app holds the next request until it hears how this one ended, so a result it
+// refuses is sent again, and then replaced by a failure it cannot refuse.
+async function reportCompletion(
+  activation: DesktopAppActivationBridge,
+  request: DesktopAppActivationRequest,
+  response: DesktopAppActivationResponse,
+): Promise<void> {
+  for (let attempt = 1; attempt <= COMPLETION_ATTEMPTS; attempt += 1) {
+    try {
+      await activation.complete(response);
+      return;
+    } catch (error) {
+      console.warn("The desktop app refused an activation result.", {
+        requestId: request.requestId,
+        attempt,
+        error,
+      });
+    }
+  }
+  try {
+    await activation.complete({
+      version: 1,
+      requestId: request.requestId,
+      ok: false,
+      code: "internal-error",
+      message: unreportedResultMessage(request),
+    });
+  } catch (error) {
+    console.error("The desktop app refused an activation failure.", {
+      requestId: request.requestId,
+      error,
+    });
+  }
+}
 
 export function DesktopAppActivationCoordinator() {
   const primaryEnvironment = usePrimaryEnvironment();
@@ -157,11 +203,13 @@ export function DesktopAppActivationCoordinator() {
     if (activation === undefined) return;
 
     const unsubscribe = activation.onRequest((request) => {
-      queueRef.current = queueRef.current.then(async () => {
-        const response = await processRequest(request);
-        await activation.complete(response);
-      });
-      queueRef.current = queueRef.current.catch(() => undefined);
+      const run = async () => reportCompletion(activation, request, await processRequest(request));
+      // Listing only reads, so it does not wait behind a pairing.
+      if (request.type === "list-environments") {
+        void run();
+        return;
+      }
+      queueRef.current = queueRef.current.then(run);
     });
     return () => {
       void activation.setReady([]).catch(() => undefined);
