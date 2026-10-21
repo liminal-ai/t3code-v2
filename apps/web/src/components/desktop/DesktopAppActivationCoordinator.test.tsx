@@ -85,7 +85,21 @@ vi.mock("../../state/use-atom-command", () => ({
   },
 }));
 
-import { DesktopAppActivationCoordinator } from "./DesktopAppActivationCoordinator";
+import {
+  DesktopAppActivationCoordinator,
+  DesktopAppActivationShellShown,
+} from "./DesktopAppActivationCoordinator";
+
+// The root route mounts the coordinator above the first-run gate, and the marker with the app
+// shell inside it. Without the marker, the gate is pending or the window is on /welcome.
+function Window({ appShell }: { readonly appShell: boolean }) {
+  return (
+    <>
+      <DesktopAppActivationCoordinator />
+      {appShell ? <DesktopAppActivationShellShown /> : null}
+    </>
+  );
+}
 
 const PAIRING_URL = "https://dgx-01.example.ts.net/pair#token=pairing-token";
 
@@ -153,6 +167,7 @@ beforeEach(() => {
   testState.openThread.mockReset();
   bridge.setReady.mockClear();
   bridge.complete.mockClear();
+  bridge.onRequest.mockClear();
 });
 
 afterEach(async () => {
@@ -219,7 +234,7 @@ describe("DesktopAppActivationCoordinator", () => {
       testState.primaryEnvironment = connectedLocal;
       testState.shell = { data: { snapshot: { _tag: "Some" } } };
       await act(async () => {
-        renderer!.update(<DesktopAppActivationCoordinator />);
+        renderer!.update(<Window appShell />);
       });
       await settle();
 
@@ -325,11 +340,60 @@ describe("DesktopAppActivationCoordinator", () => {
     },
   );
 
+  it("pairs and lists before the app shell shows, and opens a workspace only once it does", async () => {
+    // A new install: the local environment is up, and the first-run gate holds the app shell.
+    testState.primaryEnvironment = connectedLocal;
+    testState.shell = { data: { snapshot: { _tag: "Some" } } };
+    await act(async () => {
+      renderer = create(<Window appShell={false} />);
+    });
+    await settle();
+
+    expect(bridge.setReady).toHaveBeenLastCalledWith(["pair-environment", "list-environments"]);
+    testState.catalogReads = [new Map(), new Map([[dgxId, dgxEntry()]])];
+    testState.pairEnvironment.mockResolvedValue(dgxId);
+    await expect(
+      handle({
+        version: 1,
+        requestId: "pair-1",
+        type: "pair-environment",
+        pairingUrl: PAIRING_URL,
+        force: false,
+      }),
+    ).resolves.toMatchObject({ ok: true, outcome: "paired" });
+    testState.catalogReads = [new Map([[dgxId, dgxEntry()]])];
+    await expect(
+      handle({ version: 1, requestId: "list-1", type: "list-environments" }),
+    ).resolves.toMatchObject({ ok: true, environments: [{ environmentId: dgxId }] });
+    expect(bridge.setReady.mock.calls.flatMap(([accepts]) => accepts)).not.toContain(
+      "open-workspace",
+    );
+
+    await act(async () => {
+      renderer!.update(<Window appShell />);
+    });
+    await settle();
+    expect(bridge.setReady).toHaveBeenLastCalledWith([
+      "open-workspace",
+      "pair-environment",
+      "list-environments",
+    ]);
+
+    // Back on /welcome, the app shell is gone again, and so is open-workspace.
+    await act(async () => {
+      renderer!.update(<Window appShell={false} />);
+    });
+    await settle();
+    expect(bridge.setReady).toHaveBeenLastCalledWith(["pair-environment", "list-environments"]);
+    expect(bridge.setReady).not.toHaveBeenCalledWith([]);
+    expect(bridge.onRequest).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps its subscription when the local environment disconnects", async () => {
     testState.primaryEnvironment = connectedLocal;
     testState.shell = { data: { snapshot: { _tag: "Some" } } };
     await act(async () => {
-      renderer = create(<DesktopAppActivationCoordinator />);
+      renderer = create(<Window appShell />);
     });
     await settle();
     expect(bridge.setReady).toHaveBeenLastCalledWith([
@@ -340,7 +404,7 @@ describe("DesktopAppActivationCoordinator", () => {
 
     testState.primaryEnvironment = { ...connectedLocal, connection: { phase: "reconnecting" } };
     await act(async () => {
-      renderer!.update(<DesktopAppActivationCoordinator />);
+      renderer!.update(<Window appShell />);
     });
     await settle();
 

@@ -6,6 +6,8 @@ import type {
   DesktopAppOpenWorkspaceRequest,
   DesktopBridge,
 } from "@t3tools/contracts";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
+import { Atom } from "effect/reactivity";
 import { useEffect, useEffectEvent, useRef } from "react";
 
 import { readEnvironmentCatalogEntries } from "../../connection/catalog";
@@ -42,6 +44,25 @@ const ALL_REQUESTS: ReadonlyArray<DesktopAppActivationRequestType> = [
 type DesktopAppActivationBridge = NonNullable<DesktopBridge["appActivation"]>;
 
 const COMPLETION_ATTEMPTS = 3;
+
+const appShellShownAtom = Atom.make(false).pipe(
+  Atom.keepAlive,
+  Atom.withLabel("desktop-app-activation:app-shell-shown"),
+);
+
+/**
+ * Mounted with the app shell, past first-run onboarding. The coordinator itself mounts above
+ * the first-run gate, so pairing and listing work on a new install, and opens a workspace only
+ * while this is mounted, as upstream did when the gate held the whole coordinator.
+ */
+export function DesktopAppActivationShellShown() {
+  const setAppShellShown = useAtomSet(appShellShownAtom);
+  useEffect(() => {
+    setAppShellShown(true);
+    return () => setAppShellShown(false);
+  }, [setAppShellShown]);
+  return null;
+}
 
 function unreportedResultMessage(request: DesktopAppActivationRequest): string {
   return request.type === "pair-environment"
@@ -94,12 +115,14 @@ export function DesktopAppActivationCoordinator() {
   });
   const queueRef = useRef(Promise.resolve());
   const activation = window.desktopBridge?.appActivation;
+  const appShellShown = useAtomValue(appShellShownAtom);
   const shell = useEnvironmentQuery(
-    primaryEnvironment === null
+    !appShellShown || primaryEnvironment === null
       ? null
       : environmentShell.stateAtom(primaryEnvironment.environmentId),
   );
   const workspaceReady =
+    appShellShown &&
     primaryEnvironment?.connection.phase === "connected" &&
     primaryEnvironment.serverConfig !== null &&
     shell.data?.snapshot._tag === "Some";
@@ -217,7 +240,7 @@ export function DesktopAppActivationCoordinator() {
     };
   }, [activation]);
 
-  // Opening a workspace waits for the local environment and its shell. The desktop app holds
+  // Opening a workspace waits for the app shell, the local environment and its shell. The desktop app holds
   // those requests until then and sends the others past them.
   useEffect(() => {
     if (activation === undefined) return;

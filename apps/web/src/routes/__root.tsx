@@ -26,7 +26,10 @@ import { ConnectOnboardingDialog } from "../components/cloud/ConnectOnboardingDi
 import { RelayClientInstallDialog } from "../components/cloud/RelayClientInstallDialog";
 import { SshPasswordPromptDialog } from "../components/desktop/SshPasswordPromptDialog";
 import { SnapShotCoordinator } from "../components/desktop/SnapShotCoordinator";
-import { DesktopAppActivationCoordinator } from "../components/desktop/DesktopAppActivationCoordinator";
+import {
+  DesktopAppActivationCoordinator,
+  DesktopAppActivationShellShown,
+} from "../components/desktop/DesktopAppActivationCoordinator";
 import { DesktopWebLinkCoordinator } from "../components/desktop/DesktopWebLinkCoordinator";
 import { RunningThreadKeepAlive } from "../components/desktop/RunningThreadKeepAlive";
 import { ProviderUpdateLaunchNotification } from "../components/ProviderUpdateLaunchNotification";
@@ -141,6 +144,17 @@ function RootRouteNotFoundView() {
 }
 
 function RootRouteView() {
+  return (
+    <>
+      {/* Above every route branch and the first-run gate, so `t3 app pair` reaches a new
+          install's window, and the window stays subscribed through the welcome wizard. */}
+      {isElectron ? <DesktopAppActivationCoordinator /> : null}
+      <RootRouteContent />
+    </>
+  );
+}
+
+function RootRouteContent() {
   useEffect(() => installDesktopPasteAsText(window.desktopBridge, window), []);
   const pathname = useLocation({ select: (location) => location.pathname });
   const { authGateState } = Route.useRouteContext();
@@ -234,8 +248,7 @@ function RootRouteView() {
           hostedStatic={authGateState.status === "hosted-static"}
         >
           {primaryEnvironmentAuthenticated ? <AuthenticatedTracingBootstrap /> : null}
-          {/* Also with the local environment off, so `t3 app pair` reaches a remote-only app. */}
-          <DesktopAppActivationCoordinator />
+          {isElectron ? <DesktopAppActivationShellShown /> : null}
           {primaryEnvironmentAuthenticated ? <DesktopWebLinkCoordinator /> : null}
           {isElectron ? <RunningThreadKeepAlive /> : null}
           <RelayClientInstallDialog />
