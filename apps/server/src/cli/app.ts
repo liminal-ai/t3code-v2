@@ -13,6 +13,7 @@ import {
   type DesktopAppEnvironment,
   type DesktopAppListEnvironmentsSuccess,
   type DesktopAppPairEnvironmentSuccess,
+  desktopAppActivationDeadlines,
 } from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
 import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
@@ -29,9 +30,8 @@ import { Argument, Command, Flag } from "effect/cli";
 import { expandHomePath, resolveBaseDir } from "../os-jank.ts";
 import { baseDirFlag } from "./config.ts";
 
-const CLI_RESPONSE_TIMEOUT_MS = 17_000;
-// The desktop app gives a pairing 30 seconds.
-const CLI_PAIR_RESPONSE_TIMEOUT_MS = 32_000;
+// Past the desktop app's own deadlines, so the CLI hears the app's reason when one runs out.
+const CLI_RESPONSE_MARGIN_MS = 2_000;
 const MAX_RESPONSE_BYTES = 64 * 1024;
 const isDesktopAppActivationResponse = Schema.is(DesktopAppActivationResponse);
 
@@ -141,11 +141,15 @@ function responseType(response: DesktopAppActivationResponse & { readonly ok: tr
   return "type" in response ? response.type : "open-workspace";
 }
 
+function cliResponseTimeoutMs(request: DesktopAppActivationRequest): number {
+  const { waitMs, runMs } = desktopAppActivationDeadlines(request.type);
+  return waitMs + runMs + CLI_RESPONSE_MARGIN_MS;
+}
+
 function sendDesktopAppActivationRequest<Request extends DesktopAppActivationRequest>(input: {
   readonly address: string;
   readonly fallbackAddress?: string;
   readonly request: Request;
-  readonly timeoutMs?: number;
 }): Promise<DesktopAppResponseFor<Request>> {
   return new Promise((resolve, reject) => {
     const socket = NodeNet.createConnection(input.address);
@@ -172,7 +176,7 @@ function sendDesktopAppActivationRequest<Request extends DesktopAppActivationReq
         type: "failure",
         error: new Error("The desktop app did not respond in time."),
       });
-    }, input.timeoutMs ?? CLI_RESPONSE_TIMEOUT_MS);
+    }, cliResponseTimeoutMs(input.request));
 
     socket.once("connect", () => {
       connected = true;
@@ -229,7 +233,6 @@ function sendDesktopAppActivationRequest<Request extends DesktopAppActivationReq
           sendDesktopAppActivationRequest({
             address: input.fallbackAddress,
             request: input.request,
-            ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
           }),
         );
         return;
@@ -301,7 +304,7 @@ const resolveDesktopAppConnection = Effect.fn("cli.app.resolveConnection")(funct
 
   const send = <Request extends DesktopAppActivationRequest>(
     request: Request,
-    options: { readonly timeoutMs?: number; readonly workspaceRoot?: string } = {},
+    options: { readonly workspaceRoot?: string } = {},
   ) =>
     Effect.tryPromise({
       try: () =>
@@ -309,7 +312,6 @@ const resolveDesktopAppConnection = Effect.fn("cli.app.resolveConnection")(funct
           address,
           ...(fallbackAddress === undefined ? {} : { fallbackAddress }),
           request,
-          ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
         }),
       catch: (cause) =>
         new DesktopAppUnreachableError({
@@ -373,17 +375,14 @@ const runAppPairCommand = Effect.fn("cli.app.pair")(function* (
   });
   const label = Option.getOrUndefined(flags.label)?.trim();
   const { requestId, send } = yield* resolveDesktopAppConnection(flags);
-  const response = yield* send(
-    {
-      version: DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
-      requestId,
-      type: "pair-environment",
-      pairingUrl: flags.pairingUrl.trim(),
-      ...(label ? { label } : {}),
-      force: flags.force,
-    },
-    { timeoutMs: CLI_PAIR_RESPONSE_TIMEOUT_MS },
-  );
+  const response = yield* send({
+    version: DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
+    requestId,
+    type: "pair-environment",
+    pairingUrl: flags.pairingUrl.trim(),
+    ...(label ? { label } : {}),
+    force: flags.force,
+  });
   if (!response.ok) {
     return yield* new DesktopAppPairFailedError({
       code: response.code,

@@ -9,6 +9,7 @@ import * as NodePath from "node:path";
 import {
   DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
   DesktopAppActivationRequest,
+  desktopAppActivationDeadlines,
   type DesktopAppActivationResponse,
 } from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
@@ -31,9 +32,6 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
-const REQUEST_TIMEOUT_MS = 15_000;
-// Pairing fetches the server's descriptor and then redeems the token, each with a 10 second deadline.
-const PAIR_REQUEST_TIMEOUT_MS = 30_000;
 const isDesktopAppActivationRequest = Schema.is(DesktopAppActivationRequest);
 
 export class DesktopAppActivationStartError extends Schema.TaggedError<DesktopAppActivationStartError>()(
@@ -316,13 +314,21 @@ export const make = Effect.gen(function* () {
   let detachRendererListeners: (() => void) | null = null;
 
   const broker = new DesktopAppActivationBroker({
-    requestTimeoutMs: (request) =>
-      request.type === "pair-environment" ? PAIR_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
+    deadlines: (request) => desktopAppActivationDeadlines(request.type),
     activate: () => {
       void runPromise(
         desktopWindow.activate.pipe(
           Effect.catchCause((cause) => logWarning("failed to focus the desktop window", { cause })),
         ),
+      );
+    },
+    onLateCompletion: (response) => {
+      void runPromise(
+        logWarning("the window finished a request after its command had its answer", {
+          requestId: response.requestId,
+          ok: response.ok,
+          ...(response.ok ? {} : { code: response.code }),
+        }),
       );
     },
   });

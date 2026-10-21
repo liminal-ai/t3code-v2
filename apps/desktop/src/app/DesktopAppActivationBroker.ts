@@ -1,6 +1,7 @@
 // @effect-diagnostics globalTimers:off -- This protocol broker owns cancellable request deadlines outside the Effect runtime.
 import {
   DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
+  type DesktopAppActivationDeadlines,
   type DesktopAppActivationFailure,
   type DesktopAppActivationRequest,
   type DesktopAppActivationResponse,
@@ -9,7 +10,9 @@ import {
 interface PendingActivation {
   readonly request: DesktopAppActivationRequest;
   readonly resolve: (response: DesktopAppActivationResponse) => void;
-  readonly timeout: ReturnType<typeof setTimeout>;
+  readonly runMs: number;
+  /** The wait deadline until the request is dispatched, then the run deadline. */
+  timeout: ReturnType<typeof setTimeout>;
   dispatched: boolean;
 }
 
@@ -40,19 +43,38 @@ function requestActivity(request: DesktopAppActivationRequest): string {
   }
 }
 
+function waitTimeoutMessage(request: DesktopAppActivationRequest): string {
+  const message = `T3 Code did not start ${requestActivity(request)} in time, because its window was not ready or other requests were ahead.`;
+  return request.type === "pair-environment"
+    ? `${message} The link was not used, so you can run the command again.`
+    : message;
+}
+
+function runTimeoutMessage(request: DesktopAppActivationRequest): string {
+  return request.type === "pair-environment"
+    ? "T3 Code did not finish pairing the environment in time. It is still working and may yet save the environment, so run `t3 app environments` before you create a new link."
+    : `The desktop app did not finish ${requestActivity(request)} in time.`;
+}
+
 export class DesktopAppActivationBroker {
   readonly #pending = new Map<string, PendingActivation>();
-  readonly #requestTimeoutMs: number | ((request: DesktopAppActivationRequest) => number);
+  readonly #deadlines: (request: DesktopAppActivationRequest) => DesktopAppActivationDeadlines;
   readonly #activate: () => void;
+  readonly #onLateCompletion: (response: DesktopAppActivationResponse) => void;
   #renderer: RendererSender | null = null;
+  /** The request the renderer is working on. It stays set after a deadline answers the command, until the renderer finishes. */
+  #running: string | null = null;
   #closed = false;
 
   constructor(input: {
-    readonly requestTimeoutMs: number | ((request: DesktopAppActivationRequest) => number);
+    readonly deadlines: (request: DesktopAppActivationRequest) => DesktopAppActivationDeadlines;
     readonly activate: () => void;
+    /** The renderer finished a request after its deadline or its command had already answered. */
+    readonly onLateCompletion?: (response: DesktopAppActivationResponse) => void;
   }) {
-    this.#requestTimeoutMs = input.requestTimeoutMs;
+    this.#deadlines = input.deadlines;
     this.#activate = input.activate;
+    this.#onLateCompletion = input.onLateCompletion ?? (() => undefined);
   }
 
   request(request: DesktopAppActivationRequest): Promise<DesktopAppActivationResponse> {
@@ -61,29 +83,21 @@ export class DesktopAppActivationBroker {
         failure(request.requestId, "renderer-unavailable", "T3 Code is shutting down."),
       );
     }
-    if (this.#pending.has(request.requestId)) {
+    if (this.#pending.has(request.requestId) || this.#running === request.requestId) {
       return Promise.resolve(
         failure(request.requestId, "invalid-request", "The request id is already in use."),
       );
     }
 
-    const timeoutMs =
-      typeof this.#requestTimeoutMs === "number"
-        ? this.#requestTimeoutMs
-        : this.#requestTimeoutMs(request);
+    const { waitMs, runMs } = this.#deadlines(request);
     const response = new Promise<DesktopAppActivationResponse>((resolve) => {
       const timeout = setTimeout(() => {
-        this.#settle(
-          failure(
-            request.requestId,
-            "request-timeout",
-            `The desktop app did not finish ${requestActivity(request)} in time.`,
-          ),
-        );
-      }, timeoutMs);
+        this.#settle(failure(request.requestId, "request-timeout", waitTimeoutMessage(request)));
+      }, waitMs);
       this.#pending.set(request.requestId, {
         request,
         resolve,
+        runMs,
         timeout,
         dispatched: false,
       });
@@ -101,6 +115,8 @@ export class DesktopAppActivationBroker {
 
   clearRenderer(): void {
     this.#renderer = null;
+    // Whatever the old renderer was working on went with it.
+    this.#running = null;
     for (const pending of this.#pending.values()) {
       if (pending.dispatched) {
         this.#settle(
@@ -115,7 +131,16 @@ export class DesktopAppActivationBroker {
   }
 
   complete(response: DesktopAppActivationResponse): void {
-    this.#settle(response);
+    const wasRunning = this.#running === response.requestId;
+    if (wasRunning) this.#running = null;
+    if (this.#pending.has(response.requestId)) {
+      this.#settle(response);
+      return;
+    }
+    if (wasRunning) {
+      this.#onLateCompletion(response);
+      this.#flush();
+    }
   }
 
   cancel(requestId: string): void {
@@ -127,6 +152,7 @@ export class DesktopAppActivationBroker {
   close(): void {
     this.#closed = true;
     this.#renderer = null;
+    this.#running = null;
     for (const pending of this.#pending.values()) {
       this.#settle(
         failure(pending.request.requestId, "renderer-unavailable", "T3 Code is shutting down."),
@@ -134,20 +160,27 @@ export class DesktopAppActivationBroker {
     }
   }
 
+  // One request at a time, because the renderer runs them in order. A request's run deadline
+  // starts here, so time spent behind another request does not count against it.
   #flush(): void {
     const renderer = this.#renderer;
-    if (renderer === null) return;
-    if ([...this.#pending.values()].some((pending) => pending.dispatched)) return;
+    if (renderer === null || this.#running !== null) return;
 
     for (const pending of this.#pending.values()) {
-      if (pending.dispatched) continue;
       try {
-        pending.dispatched = true;
         renderer(pending.request);
       } catch {
-        pending.dispatched = false;
         this.#renderer = null;
+        return;
       }
+      pending.dispatched = true;
+      this.#running = pending.request.requestId;
+      clearTimeout(pending.timeout);
+      pending.timeout = setTimeout(() => {
+        this.#settle(
+          failure(pending.request.requestId, "request-timeout", runTimeoutMessage(pending.request)),
+        );
+      }, pending.runMs);
       return;
     }
   }

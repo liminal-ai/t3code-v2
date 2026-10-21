@@ -1,7 +1,15 @@
-import { ProjectId, ThreadId, type DesktopAppActivationRequest } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ThreadId,
+  type DesktopAppActivationRequest,
+  type DesktopAppActivationResponse,
+} from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 
 import { DesktopAppActivationBroker } from "./DesktopAppActivationBroker.ts";
+
+const oneSecond = () => ({ waitMs: 1_000, runMs: 1_000 });
 
 const request: DesktopAppActivationRequest = {
   version: 1,
@@ -15,7 +23,7 @@ describe("DesktopAppActivationBroker", () => {
   it("focuses immediately and waits for renderer readiness", async () => {
     const activate = vi.fn();
     const send = vi.fn();
-    const broker = new DesktopAppActivationBroker({ requestTimeoutMs: 1_000, activate });
+    const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate });
 
     const response = broker.request(request);
     expect(activate).toHaveBeenCalledOnce();
@@ -36,7 +44,7 @@ describe("DesktopAppActivationBroker", () => {
   });
 
   it("fails an in-flight request when the renderer goes away", async () => {
-    const broker = new DesktopAppActivationBroker({ requestTimeoutMs: 1_000, activate: vi.fn() });
+    const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });
     broker.registerRenderer(vi.fn());
 
     const response = broker.request(request);
@@ -52,7 +60,7 @@ describe("DesktopAppActivationBroker", () => {
   it("queues requests after unsubscribe until a new renderer registers", async () => {
     const previousSend = vi.fn();
     const nextSend = vi.fn();
-    const broker = new DesktopAppActivationBroker({ requestTimeoutMs: 1_000, activate: vi.fn() });
+    const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });
     broker.registerRenderer(previousSend);
     broker.clearRenderer();
 
@@ -76,7 +84,7 @@ describe("DesktopAppActivationBroker", () => {
 
   it("removes a queued request when its CLI connection closes", async () => {
     const send = vi.fn();
-    const broker = new DesktopAppActivationBroker({ requestTimeoutMs: 1_000, activate: vi.fn() });
+    const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });
 
     const response = broker.request(request);
     broker.cancel(request.requestId);
@@ -89,7 +97,7 @@ describe("DesktopAppActivationBroker", () => {
 
   it("never sends a canceled request that was queued behind another request", async () => {
     const send = vi.fn();
-    const broker = new DesktopAppActivationBroker({ requestTimeoutMs: 1_000, activate: vi.fn() });
+    const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });
     broker.registerRenderer(send);
     const secondRequest = { ...request, requestId: "request-2" };
 
@@ -116,7 +124,7 @@ describe("DesktopAppActivationBroker", () => {
   it("times out a request without polling", async () => {
     vi.useFakeTimers();
     try {
-      const broker = new DesktopAppActivationBroker({ requestTimeoutMs: 1_000, activate: vi.fn() });
+      const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });
       const response = broker.request(request);
 
       await vi.advanceTimersByTimeAsync(1_000);
@@ -128,39 +136,144 @@ describe("DesktopAppActivationBroker", () => {
     }
   });
 
-  it("gives each request kind its own deadline", async () => {
+  it("starts a request's run deadline when it reaches the renderer, not while it waits", async () => {
     vi.useFakeTimers();
     try {
+      const send = vi.fn();
       const broker = new DesktopAppActivationBroker({
-        requestTimeoutMs: (pending) => (pending.type === "pair-environment" ? 3_000 : 1_000),
+        deadlines: () => ({ waitMs: 60_000, runMs: 30_000 }),
         activate: vi.fn(),
       });
-      const pairing = broker.request({
-        version: 1,
-        requestId: "request-pair",
-        type: "pair-environment",
-        pairingUrl: "https://builder.example.ts.net/pair#token=abc",
-        force: false,
-      });
-      let settled = false;
-      void pairing.then(() => {
-        settled = true;
-      });
+      broker.registerRenderer(send);
+      const first = broker.request(pairRequest("pair-1"));
+      const second = broker.request(pairRequest("pair-2"));
+      expect(send).toHaveBeenCalledTimes(1);
 
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(settled).toBe(false);
-      await vi.advanceTimersByTimeAsync(2_000);
+      // Each pairing takes 19 seconds, so the second runs from 19 to 38.
+      await vi.advanceTimersByTimeAsync(19_000);
+      broker.complete(paired("pair-1"));
+      await expect(first).resolves.toMatchObject({ ok: true, requestId: "pair-1" });
+      expect(send).toHaveBeenLastCalledWith(pairRequest("pair-2"));
 
-      await expect(pairing).resolves.toEqual({
-        version: 1,
-        requestId: "request-pair",
-        ok: false,
-        code: "request-timeout",
-        message: "The desktop app did not finish pairing the environment in time.",
-      });
+      await vi.advanceTimersByTimeAsync(19_000);
+      broker.complete(paired("pair-2"));
+      await expect(second).resolves.toMatchObject({ ok: true, requestId: "pair-2" });
       broker.close();
     } finally {
       vi.useRealTimers();
     }
   });
+
+  it("fails a request that waits too long without sending it, and says the link is unused", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn();
+      const broker = new DesktopAppActivationBroker({
+        deadlines: () => ({ waitMs: 60_000, runMs: 30_000 }),
+        activate: vi.fn(),
+      });
+      const pairing = broker.request(pairRequest("pair-1"));
+
+      await vi.advanceTimersByTimeAsync(60_000);
+      broker.registerRenderer(send);
+
+      await expect(pairing).resolves.toEqual({
+        version: 1,
+        requestId: "pair-1",
+        ok: false,
+        code: "request-timeout",
+        message:
+          "T3 Code did not start pairing the environment in time, because its window was not ready or other requests were ahead. The link was not used, so you can run the command again.",
+      });
+      expect(send).not.toHaveBeenCalled();
+      broker.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reports a pairing that outlives its deadline as still running, and holds the next request until it ends", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn();
+      const onLateCompletion = vi.fn();
+      const broker = new DesktopAppActivationBroker({
+        deadlines: () => ({ waitMs: 60_000, runMs: 30_000 }),
+        activate: vi.fn(),
+        onLateCompletion,
+      });
+      broker.registerRenderer(send);
+      const slow = broker.request(pairRequest("pair-slow"));
+      const next = broker.request(pairRequest("pair-next"));
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(slow).resolves.toEqual({
+        version: 1,
+        requestId: "pair-slow",
+        ok: false,
+        code: "request-timeout",
+        message:
+          "T3 Code did not finish pairing the environment in time. It is still working and may yet save the environment, so run `t3 app environments` before you create a new link.",
+      });
+      // The renderer is still pairing, so the next request does not start its run yet.
+      expect(send).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(8_000);
+      broker.complete(paired("pair-slow"));
+      expect(onLateCompletion).toHaveBeenCalledWith(paired("pair-slow"));
+      expect(send).toHaveBeenLastCalledWith(pairRequest("pair-next"));
+
+      broker.complete(paired("pair-next"));
+      await expect(next).resolves.toMatchObject({ ok: true, requestId: "pair-next" });
+      broker.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("holds the next request while the renderer finishes one whose command closed", async () => {
+    const send = vi.fn();
+    const broker = new DesktopAppActivationBroker({ deadlines: oneSecond, activate: vi.fn() });
+    broker.registerRenderer(send);
+    const first = broker.request(pairRequest("pair-1"));
+    const second = broker.request(pairRequest("pair-2"));
+
+    broker.cancel("pair-1");
+    await expect(first).resolves.toMatchObject({ ok: false, code: "renderer-unavailable" });
+    expect(send).toHaveBeenCalledTimes(1);
+
+    broker.complete(paired("pair-1"));
+    expect(send).toHaveBeenLastCalledWith(pairRequest("pair-2"));
+    broker.complete(paired("pair-2"));
+    await expect(second).resolves.toMatchObject({ ok: true });
+    broker.close();
+  });
 });
+
+function pairRequest(requestId: string): DesktopAppActivationRequest {
+  return {
+    version: 1,
+    requestId,
+    type: "pair-environment",
+    pairingUrl: "https://builder.example.ts.net/pair#token=abc",
+    force: false,
+  };
+}
+
+function paired(requestId: string): DesktopAppActivationResponse {
+  return {
+    version: 1,
+    requestId,
+    ok: true,
+    type: "pair-environment",
+    outcome: "paired",
+    environment: {
+      environmentId: EnvironmentId.make("environment-builder"),
+      label: "builder",
+      kind: "remote",
+      httpBaseUrl: "https://builder.example.ts.net/",
+      enabled: true,
+      connection: "connecting",
+    },
+  };
+}

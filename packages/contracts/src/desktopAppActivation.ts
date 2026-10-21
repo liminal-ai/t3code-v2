@@ -42,6 +42,31 @@ export const DesktopAppActivationRequest = Schema.Union([
 ]);
 export type DesktopAppActivationRequest = typeof DesktopAppActivationRequest.Type;
 
+export interface DesktopAppActivationDeadlines {
+  /** How long a request may wait for the window and for the requests ahead of it. */
+  readonly waitMs: number;
+  /** How long the window may work on it once it starts. */
+  readonly runMs: number;
+}
+
+// Pairing fetches the server's descriptor and then redeems the token, each with a 10 second
+// deadline. Its wait covers a few pairings ahead of it, as a script pairing several servers at
+// once queues them.
+const DESKTOP_APP_ACTIVATION_DEADLINES: Record<
+  DesktopAppActivationRequest["type"],
+  DesktopAppActivationDeadlines
+> = {
+  "open-workspace": { waitMs: 15_000, runMs: 15_000 },
+  "pair-environment": { waitMs: 60_000, runMs: 30_000 },
+  "list-environments": { waitMs: 15_000, runMs: 15_000 },
+};
+
+export function desktopAppActivationDeadlines(
+  type: DesktopAppActivationRequest["type"],
+): DesktopAppActivationDeadlines {
+  return DESKTOP_APP_ACTIVATION_DEADLINES[type];
+}
+
 export const DesktopAppActivationErrorCode = Schema.Literals([
   "invalid-request",
   "renderer-unavailable",
