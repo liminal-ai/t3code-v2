@@ -62,57 +62,6 @@ created in Settings can only be copied from the client that created them while
 its Connections page stays open. If you leave or reload that page, create
 another link to share.
 
-### Pair from a script
-
-With the desktop app running, `t3 app pair` pairs it the same way pasting the
-link into **Add environment** does:
-
-```bash
-url="$(ssh dgx-01 t3 auth pairing create --base-url https://dgx-01.example.ts.net --json | jq -r .pairUrl)"
-t3 app pair "$url" --label dgx-01
-```
-
-It prints one line: `Paired`, `Added ... as another route`, or `Already paired`.
-If the app already has an environment at that address, it reports it and leaves
-the link unspent. Pass `--force` to pair again anyway. An expired or used link,
-an unreachable host, or an older desktop app exits non-zero with the reason. No
-output, including an error about the arguments, prints the link's token.
-
-A link to this app's own local server, through a LAN or Tailscale address, uses
-the link and then exits non-zero. T3 Code manages the local environment's
-addresses itself, so it does not save another route for it.
-
-Both commands work from the app's first launch, before anyone finishes the
-welcome setup, and with **Local environment** switched off. A computer paired
-while the setup is on its first step shows there, already selected. `t3 app
-<path>` waits until the setup is finished and the local environment is
-connected, because it opens the project there.
-
-The app pairs one link at a time. Several `t3 app pair` commands started at
-once wait their turn, up to a minute, and each pairing then has 30 seconds. A
-command that times out while it waits says the link was not used, so you can
-run it again. A command that times out during its pairing says so too, and the
-app may still save the environment, so run `t3 app environments` before you
-create a new link. `t3 app environments` does not wait behind a pairing.
-
-If the app never finishes a pairing, even one whose command you stopped, later
-pairings and `t3 app <path>` wait their full time and then say the app is still
-working on an earlier command. Their links were not used. Reload the T3 Code
-window (**View > Reload**) or quit and reopen T3 Code to stop the earlier
-pairing, then run them again.
-
-`t3 app environments` lists what the app has saved. Add `--json` to compare it
-with what a machine should have:
-
-```bash
-t3 app environments --json | jq -r '.[].httpBaseUrl'
-```
-
-Both commands talk to the app over a local socket, so they only reach the
-desktop app on the machine they run on. They refuse to run in an SSH session.
-When a script logs into that machine over SSH to set it up, pass `--allow-ssh`
-or set `T3_APP_ALLOW_SSH=1`.
-
 ### Reach one machine several ways
 
 A machine can have more than one route: LAN, Tailscale, another VPN, a public

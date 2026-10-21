@@ -17,7 +17,6 @@ import type { PreviewForwardedShortcut } from "./keybindings.ts";
 
 import type {
   DesktopAppActivationRequest,
-  DesktopAppActivationRequestType,
   DesktopAppActivationResponse,
 } from "./desktopAppActivation.ts";
 
@@ -1137,8 +1136,7 @@ export interface DesktopBridge {
     onOpen: (listener: (url: string) => void) => () => void;
   };
   appActivation?: {
-    /** The request kinds the window can handle now. Empty when it can handle none. */
-    setReady: (accepts: ReadonlyArray<DesktopAppActivationRequestType>) => Promise<void>;
+    setReady: (ready: boolean) => Promise<void>;
     complete: (response: DesktopAppActivationResponse) => Promise<void>;
     onRequest: (listener: (request: DesktopAppActivationRequest) => void) => () => void;
   };
