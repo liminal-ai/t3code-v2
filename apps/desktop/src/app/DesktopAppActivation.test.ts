@@ -63,7 +63,7 @@ function startOkServer(target: ReturnType<typeof makeTarget>, userId: number | u
   });
 }
 
-function exchange(address: string, payload: unknown) {
+function exchange(address: string, payload: DesktopAppActivationRequest) {
   return new Promise<DesktopAppActivationResponse>((resolve, reject) => {
     const socket = NodeNet.createConnection(address);
     socket.setEncoding("utf8");
@@ -116,59 +116,6 @@ describe("desktop app control server", () => {
         if (target.directory !== null) {
           await expect(NodeFSP.stat(target.address)).rejects.toMatchObject({ code: "ENOENT" });
         }
-        await NodeFSP.rm(root, { recursive: true, force: true });
-      });
-    }),
-  );
-
-  it.effect("hands a pairing request to the app and answers a malformed one itself", () =>
-    Effect.gen(function* () {
-      const platform = yield* HostProcess.Platform;
-      const userId = yield* HostProcess.UserId;
-      yield* Effect.promise(async () => {
-        const root = await NodeFSP.mkdtemp(NodePath.join(NodeOS.tmpdir(), "t3-app-pair-test-"));
-        const target = makeTarget(NodePath.join(root, "userdata"), platform, userId);
-        const received: DesktopAppActivationRequest[] = [];
-        const server = await startDesktopAppControlServer({
-          ...target,
-          userId,
-          handle: async (input) => {
-            received.push(input);
-            return {
-              version: 1,
-              requestId: input.requestId,
-              ok: true,
-              type: "list-environments",
-              environments: [],
-            };
-          },
-          cancel: () => undefined,
-          onReclaimError: () => undefined,
-        });
-        openServers.push(server);
-        const pair = {
-          version: 1,
-          requestId: "request-pair",
-          type: "pair-environment",
-          pairingUrl: "https://dgx-01.example.ts.net/pair#token=abc",
-          force: false,
-        } as const;
-
-        await exchange(target.address, pair);
-        const malformed = await exchange(target.address, {
-          ...pair,
-          requestId: "request-malformed",
-          force: "yes",
-        });
-
-        expect(received).toEqual([pair]);
-        expect(malformed).toEqual({
-          version: 1,
-          requestId: "request-malformed",
-          ok: false,
-          code: "invalid-request",
-          message: "The desktop app request is invalid.",
-        });
         await NodeFSP.rm(root, { recursive: true, force: true });
       });
     }),

@@ -1,4 +1,4 @@
-import { DesktopAppActivationRequestType, DesktopAppActivationResponse } from "@t3tools/contracts";
+import { DesktopAppActivationResponse } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
@@ -8,11 +8,11 @@ import * as DesktopIpc from "../DesktopIpc.ts";
 
 export const setReady = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.DESKTOP_APP_ACTIVATION_READY_CHANNEL,
-  payload: Schema.Array(DesktopAppActivationRequestType),
+  payload: Schema.Boolean,
   result: Schema.Void,
-  handler: Effect.fn("desktop.ipc.appActivation.setReady")(function* (accepts) {
+  handler: Effect.fn("desktop.ipc.appActivation.setReady")(function* (ready) {
     const activation = yield* DesktopAppActivation.DesktopAppActivation;
-    yield* activation.setRendererReady(accepts);
+    yield* activation.setRendererReady(ready);
   }),
 });
 

@@ -296,8 +296,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
     },
   },
   appActivation: {
-    setReady: (accepts) =>
-      ipcRenderer.invoke(IpcChannels.DESKTOP_APP_ACTIVATION_READY_CHANNEL, accepts),
+    setReady: (ready) =>
+      ipcRenderer.invoke(IpcChannels.DESKTOP_APP_ACTIVATION_READY_CHANNEL, ready),
     complete: (response) =>
       ipcRenderer.invoke(IpcChannels.DESKTOP_APP_ACTIVATION_COMPLETE_CHANNEL, response),
     onRequest: (listener) => {

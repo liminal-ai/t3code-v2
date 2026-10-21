@@ -9,8 +9,6 @@ import * as NodePath from "node:path";
 import {
   DESKTOP_APP_ACTIVATION_PROTOCOL_VERSION,
   DesktopAppActivationRequest,
-  desktopAppActivationDeadlines,
-  type DesktopAppActivationRequestType,
   type DesktopAppActivationResponse,
 } from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
@@ -33,6 +31,7 @@ import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import { makeComponentLogger } from "./DesktopObservability.ts";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
+const REQUEST_TIMEOUT_MS = 15_000;
 const isDesktopAppActivationRequest = Schema.is(DesktopAppActivationRequest);
 
 export class DesktopAppActivationStartError extends Schema.TaggedError<DesktopAppActivationStartError>()(
@@ -289,10 +288,7 @@ export class DesktopAppActivation extends Context.Service<
   DesktopAppActivation,
   {
     readonly start: Effect.Effect<void, DesktopAppActivationStartError, Scope.Scope>;
-    /** The request kinds the window can handle now. Empty unregisters it. */
-    readonly setRendererReady: (
-      accepts: ReadonlyArray<DesktopAppActivationRequestType>,
-    ) => Effect.Effect<void>;
+    readonly setRendererReady: (ready: boolean) => Effect.Effect<void>;
     readonly complete: (response: DesktopAppActivationResponse) => Effect.Effect<void>;
   }
 >()("@t3tools/desktop/app/DesktopAppActivation") {}
@@ -318,21 +314,12 @@ export const make = Effect.gen(function* () {
   let detachRendererListeners: (() => void) | null = null;
 
   const broker = new DesktopAppActivationBroker({
-    deadlines: (request) => desktopAppActivationDeadlines(request.type),
+    requestTimeoutMs: REQUEST_TIMEOUT_MS,
     activate: () => {
       void runPromise(
         desktopWindow.activate.pipe(
           Effect.catchCause((cause) => logWarning("failed to focus the desktop window", { cause })),
         ),
-      );
-    },
-    onLateCompletion: (response) => {
-      void runPromise(
-        logWarning("the window finished a request after its command had its answer", {
-          requestId: response.requestId,
-          ok: response.ok,
-          ...(response.ok ? {} : { code: response.code }),
-        }),
       );
     },
   });
@@ -368,8 +355,8 @@ export const make = Effect.gen(function* () {
           Effect.ensuring(Effect.sync(() => broker.close())),
         ),
     ).pipe(Effect.asVoid),
-    setRendererReady: Effect.fn("DesktopAppActivation.setRendererReady")(function* (accepts) {
-      if (accepts.length === 0) {
+    setRendererReady: Effect.fn("DesktopAppActivation.setRendererReady")(function* (ready) {
+      if (!ready) {
         clearRegisteredRenderer();
         return;
       }
@@ -397,7 +384,7 @@ export const make = Effect.gen(function* () {
 
       broker.registerRenderer((request) => {
         webContents.send(DESKTOP_APP_ACTIVATION_REQUEST_CHANNEL, request);
-      }, accepts);
+      });
     }),
     complete: (response) => Effect.sync(() => broker.complete(response)),
   });
