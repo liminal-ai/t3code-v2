@@ -159,7 +159,7 @@ export const stopAllPoolInstances = Effect.fn("desktop.app.stopAllPoolInstances"
   },
 );
 
-const bootstrap = Effect.gen(function* () {
+export const bootstrap = Effect.gen(function* () {
   const state = yield* DesktopState.DesktopState;
   const environment = yield* DesktopEnvironment.DesktopEnvironment;
   const desktopSettings = yield* DesktopAppSettings.DesktopAppSettings;
@@ -185,6 +185,16 @@ const bootstrap = Effect.gen(function* () {
   );
 
   yield* snapShot.initialize;
+
+  // `t3 app pair` and `t3 app environments` need only the window, so the control socket
+  // runs with the local environment switched off. The broker holds a request until the
+  // window says it can take that kind.
+  if (!(yield* Ref.get(state.quitting))) {
+    yield* appActivation.start.pipe(
+      Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
+      Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
+    );
+  }
 
   if (!settings.localEnvironmentEnabled) {
     yield* logBootstrapInfo("bootstrap skipping local environment (disabled in settings)");
@@ -244,10 +254,6 @@ const bootstrap = Effect.gen(function* () {
     }
     yield* primaryBackend.start;
     yield* logBootstrapInfo("bootstrap backend start requested");
-    yield* appActivation.start.pipe(
-      Effect.tap(() => logBootstrapInfo("desktop app control socket ready")),
-      Effect.catch((error) => logStartupError("desktop app control socket unavailable", { error })),
-    );
     yield* Effect.forkScoped(wslBackend.reconcile);
   }
 }).pipe(Effect.withSpan("desktop.bootstrap"));
