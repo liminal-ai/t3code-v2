@@ -16,7 +16,7 @@ import {
   desktopAppActivationDeadlines,
 } from "@t3tools/contracts";
 import { resolveDesktopAppControlAddress } from "@t3tools/shared/desktopAppControl";
-import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
+import { redactPairingTokens, resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Config from "effect/Config";
 import * as Console from "effect/Console";
@@ -81,13 +81,22 @@ export class DesktopAppRequestFailedError extends Schema.TaggedError<DesktopAppR
   }
 }
 
+// Keeps a reason rather than the cause, since a URL parse error carries the link as its input.
 export class DesktopAppPairingUrlInvalidError extends Schema.TaggedError<DesktopAppPairingUrlInvalidError>()(
   "DesktopAppPairingUrlInvalidError",
-  { cause: Schema.Defect() },
+  { reason: Schema.String },
 ) {
   override get message(): string {
-    const reason = this.cause instanceof Error ? ` ${this.cause.message}` : "";
-    return `The pairing URL is not usable.${reason} Pass the link from \`t3 pair\` or Settings → Connections.`;
+    return `The pairing URL is not usable. ${this.reason} Pass the link from \`t3 pair\` or Settings → Connections.`;
+  }
+}
+
+export class DesktopAppWorkspaceIsUrlError extends Schema.TaggedError<DesktopAppWorkspaceIsUrlError>()(
+  "DesktopAppWorkspaceIsUrlError",
+  {},
+) {
+  override get message(): string {
+    return "`t3 app` opens a project directory, and that path is a URL. To pair with a server, run `t3 app pair <pairing-url>`.";
   }
 }
 
@@ -331,6 +340,10 @@ const runAppCommand = Effect.fn("cli.app")(function* (
     readonly workspaceRoot: Option.Option<string>;
   },
 ) {
+  // A pairing link here would be saved as a project path, with its token.
+  if (Option.exists(flags.workspaceRoot, (root) => /^[a-z][a-z0-9+.-]*:\/\//i.test(root.trim()))) {
+    return yield* new DesktopAppWorkspaceIsUrlError({});
+  }
   const { hostPlatform, requestId, send } = yield* resolveDesktopAppConnection(flags);
   const path = yield* Path.Path;
   const rawWorkspaceRoot =
@@ -371,7 +384,13 @@ const runAppPairCommand = Effect.fn("cli.app.pair")(function* (
   // Checked here too, so a mistyped link never reaches the app.
   const target = yield* Effect.try({
     try: () => resolveRemotePairingTarget({ pairingUrl: flags.pairingUrl }),
-    catch: (cause) => new DesktopAppPairingUrlInvalidError({ cause }),
+    catch: (cause) =>
+      new DesktopAppPairingUrlInvalidError({
+        reason: redactPairingTokens(
+          cause instanceof Error ? cause.message : "It could not be read.",
+          flags.pairingUrl,
+        ),
+      }),
   });
   const label = Option.getOrUndefined(flags.label)?.trim();
   const { requestId, send } = yield* resolveDesktopAppConnection(flags);
@@ -388,7 +407,8 @@ const runAppPairCommand = Effect.fn("cli.app.pair")(function* (
       code: response.code,
       httpBaseUrl: target.httpBaseUrl,
       requestId: response.requestId,
-      detail: response.message,
+      // The app redacts its own messages. This catches any it misses.
+      detail: redactPairingTokens(response.message, flags.pairingUrl),
     });
   }
 

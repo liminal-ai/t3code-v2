@@ -19,7 +19,7 @@ import type {
   ScopedProjectRef,
   ThreadId,
 } from "@t3tools/contracts";
-import { resolveRemotePairingTarget } from "@t3tools/shared/remote";
+import { redactPairingTokens, resolveRemotePairingTarget } from "@t3tools/shared/remote";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
@@ -225,7 +225,20 @@ function pairingFailure(
   );
 }
 
+/** Every failure goes back to the CLI, so none of them may quote the link's token. */
 export async function handleDesktopAppPairRequest(
+  request: DesktopAppPairEnvironmentRequest,
+  dependencies: DesktopAppEnvironmentDependencies,
+): Promise<DesktopAppActivationResponse> {
+  const response = await pairEnvironment(request, dependencies).catch((error: unknown) =>
+    failure(request.requestId, "internal-error", errorMessage(error, "T3 Code could not pair.")),
+  );
+  return response.ok
+    ? response
+    : { ...response, message: redactPairingTokens(response.message, request.pairingUrl) };
+}
+
+async function pairEnvironment(
   request: DesktopAppPairEnvironmentRequest,
   dependencies: DesktopAppEnvironmentDependencies,
 ): Promise<DesktopAppActivationResponse> {

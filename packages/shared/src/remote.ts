@@ -243,3 +243,33 @@ export const resolveRemotePairingTarget = (input: {
     wsBaseUrl: toWsBaseUrl(normalizedHost),
   };
 };
+
+const REDACTED_PAIRING_TOKEN = "<redacted>";
+// `token=` as written, or with the `=` percent-encoded once or twice, as when a link is quoted inside another.
+const PAIRING_TOKEN_ASSIGNMENT = /(token(?:=|%3D|%253D))[^\s&#"'<>]+/gi;
+
+const pairingTokenForms = (pairingUrl: string | undefined): ReadonlyArray<string> => {
+  if (pairingUrl === undefined) return [];
+  let token: string | null;
+  try {
+    token = getPairingTokenFromUrl(new URL(pairingUrl.trim()));
+  } catch {
+    return [];
+  }
+  if (!token) return [];
+  const encodedOnce = encodeURIComponent(token);
+  return [...new Set([encodeURIComponent(encodedOnce), encodedOnce, token])];
+};
+
+/**
+ * Hides pairing tokens in text that can quote a pairing link, such as an error message: every
+ * `token=` value, raw or percent-encoded, and each form of `pairingUrl`'s own token, which an
+ * error can also quote without its `token=`.
+ */
+export const redactPairingTokens = (text: string, pairingUrl?: string): string => {
+  let redacted = text;
+  for (const token of pairingTokenForms(pairingUrl)) {
+    redacted = redacted.replaceAll(token, REDACTED_PAIRING_TOKEN);
+  }
+  return redacted.replace(PAIRING_TOKEN_ASSIGNMENT, `$1${REDACTED_PAIRING_TOKEN}`);
+};

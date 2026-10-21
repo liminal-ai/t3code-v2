@@ -1,4 +1,5 @@
-// @effect-diagnostics nodeBuiltinImport:off -- The integration fixture binds the same platform socket or named pipe as the CLI.
+// @effect-diagnostics nodeBuiltinImport:off -- The integration fixture binds the same platform socket or named pipe as the CLI, and runs the built entry point as a process.
+import * as NodeChildProcess from "node:child_process";
 import * as NodeFSP from "node:fs/promises";
 import * as NodeNet from "node:net";
 import * as NodeOS from "node:os";
@@ -413,6 +414,20 @@ describe("t3 app", () => {
       ),
   );
 
+  it.effect("refuses a URL as the project path, so a pairing link is never saved as one", () =>
+    withTempDirectory("t3-app-url-test-", (root) =>
+      Effect.gen(function* () {
+        const baseDir = NodePath.join(root, "t3-home");
+        const desktop = yield* fakeDesktop({ baseDir });
+
+        const error = yield* runCli(["app", PAIRING_URL, "--base-dir", baseDir]).pipe(Effect.flip);
+
+        expect(error).toMatchObject({ _tag: "DesktopAppWorkspaceIsUrlError" });
+        expect(desktop.received).toHaveLength(0);
+      }).pipe(Effect.scoped),
+    ),
+  );
+
   it.effect("runs under SSH when --allow-ssh or T3_APP_ALLOW_SSH=1 is set", () =>
     withTempDirectory("t3-app-allow-ssh-test-", (root) =>
       Effect.gen(function* () {
@@ -629,5 +644,112 @@ describe("t3 app environments", () => {
         expect(JSON.parse(String(json))).toEqual([localEnvironment, dgxEnvironment]);
       }).pipe(Effect.scoped, Effect.provide(TestConsole.layer)),
     ),
+  );
+});
+
+const SECRET = "SYNTHETIC_PR24_SECRET";
+const SECRET_URL = `https://dgx-01.example.ts.net/pair#token=${SECRET}`;
+
+/** Runs the real entry point, so the output is what a terminal or CI log would capture. */
+function runCliProcess(args: ReadonlyArray<string>) {
+  const env = { ...process.env };
+  delete env.SSH_CONNECTION;
+  delete env.SSH_TTY;
+  delete env.T3CODE_HOME;
+  return new Promise<{ readonly exitCode: number | null; readonly output: string }>(
+    (resolve, reject) => {
+      const child = NodeChildProcess.spawn(
+        process.execPath,
+        ["--experimental-strip-types", new URL("../bin.ts", import.meta.url).pathname, ...args],
+        { env, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      let output = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => (output += chunk));
+      child.once("error", reject);
+      child.once("close", (exitCode) => resolve({ exitCode, output }));
+    },
+  );
+}
+
+describe("t3 app pair output", () => {
+  it.effect(
+    "never prints the token when the arguments do not parse",
+    () =>
+      Effect.gen(function* () {
+        const results = yield* Effect.promise(() =>
+          Promise.all(
+            [
+              ["app", "pair", SECRET_URL, SECRET_URL],
+              ["app", "pair", SECRET_URL, `--force=${encodeURIComponent(SECRET_URL)}`],
+              ["app", "pair", SECRET_URL, "--label"],
+            ].map(runCliProcess),
+          ),
+        );
+
+        for (const result of results) {
+          expect(result.exitCode).toBe(1);
+          expect(result.output).toContain("ERROR");
+          expect(result.output).not.toContain(SECRET);
+        }
+        expect(results[0]!.output).toContain(
+          'Unexpected positional argument: "https://dgx-01.example.ts.net/pair#token=<redacted>"',
+        );
+        expect(results[1]!.output).toContain("token%3D<redacted>");
+      }),
+    60_000,
+  );
+
+  it.effect.each([
+    ["raw", (request: { readonly pairingUrl: string }) => `Could not pair ${request.pairingUrl}`],
+    [
+      "encoded",
+      (request: { readonly pairingUrl: string }) =>
+        `Could not fetch ${encodeURIComponent(request.pairingUrl)}`,
+    ],
+    ["bare", () => `The server refused ${SECRET}.`],
+  ] as const)(
+    "never prints the token when the app's %s failure quotes it",
+    ([, message]) =>
+      withTempDirectory("t3-app-pair-echo-test-", (root) =>
+        Effect.gen(function* () {
+          const baseDir = NodePath.join(root, "t3-home");
+          yield* fakeDesktop({
+            baseDir,
+            reply: (request) => ({
+              version: 1,
+              requestId: request.requestId,
+              ok: false,
+              code: "pairing-failed",
+              message: message(request as { readonly pairingUrl: string }),
+            }),
+          });
+
+          const result = yield* Effect.promise(() =>
+            runCliProcess(["app", "pair", SECRET_URL, "--base-dir", baseDir]),
+          );
+
+          expect(result.exitCode).toBe(1);
+          expect(result.output).toContain("DesktopAppPairFailedError");
+          expect(result.output).toContain("<redacted>");
+          expect(result.output).not.toContain(SECRET);
+        }).pipe(Effect.scoped),
+      ),
+    30_000,
+  );
+
+  it.effect(
+    "never prints the token of a link that does not parse",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* Effect.promise(() =>
+          runCliProcess(["app", "pair", `not a url#token=${SECRET}`]),
+        );
+
+        expect(result.exitCode).toBe(1);
+        expect(result.output).toContain("DesktopAppPairingUrlInvalidError");
+        expect(result.output).not.toContain(SECRET);
+      }),
+    30_000,
   );
 });

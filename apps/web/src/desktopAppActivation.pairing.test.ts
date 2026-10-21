@@ -202,6 +202,48 @@ describe("desktop app pairing", () => {
     });
   });
 
+  it.each([
+    ["a pairing error", new Error(`Could not pair ${PAIRING_URL}`)],
+    [
+      "an unreachable host",
+      new ConnectionTransientError({
+        reason: "network",
+        detail: `fetch ${encodeURIComponent(PAIRING_URL)} failed`,
+      }),
+    ],
+    ["a bare token", new Error("Credential pairing-token was refused.")],
+  ])("never quotes the token from %s", async (_, error) => {
+    const deps = dependencies([[]], async () => {
+      throw error;
+    });
+
+    const response = await handleDesktopAppPairRequest(pairRequest(), deps);
+
+    expect(response).toMatchObject({ ok: false, message: expect.stringContaining("<redacted>") });
+    expect(JSON.stringify(response)).not.toContain("pairing-token");
+  });
+
+  it("answers a failure to read the saved environments without quoting the token", async () => {
+    const deps = {
+      readEnvironments: vi.fn(async () => {
+        throw new Error(`Catalog read failed while pairing ${PAIRING_URL}`);
+      }),
+      pairEnvironment: vi.fn(async () => dgxId),
+    };
+
+    const response = await handleDesktopAppPairRequest(pairRequest(), deps);
+
+    expect(response).toEqual({
+      version: 1,
+      requestId: "request-pair",
+      ok: false,
+      code: "internal-error",
+      message:
+        "Catalog read failed while pairing https://dgx-01.example.ts.net/pair#token=<redacted>",
+    });
+    expect(deps.pairEnvironment).not.toHaveBeenCalled();
+  });
+
   it("rejects a link without a token without pairing", async () => {
     const deps = dependencies([[]]);
 
