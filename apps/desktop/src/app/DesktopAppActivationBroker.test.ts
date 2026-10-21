@@ -290,7 +290,7 @@ describe("DesktopAppActivationBroker", () => {
         ok: false,
         code: "request-timeout",
         message:
-          "T3 Code did not start pairing the environment, because it is still pairing the environment for an earlier command that already timed out. The link was not used. Run `t3 app environments` to see whether the earlier pairing saved its environment. To stop the earlier request, reload the T3 Code window (View > Reload) or quit and reopen T3 Code, then run the command again.",
+          "T3 Code did not start pairing the environment, because it is still pairing the environment for an earlier command that already timed out or was stopped. The link was not used. Run `t3 app environments` to see whether the earlier pairing saved its environment. To stop the earlier request, reload the T3 Code window (View > Reload) or quit and reopen T3 Code, then run the command again.",
       });
       expect(send).not.toHaveBeenCalledWith(pairRequest("pair-next"));
 
@@ -299,6 +299,62 @@ describe("DesktopAppActivationBroker", () => {
       expect(send).toHaveBeenLastCalledWith(listRequest("list-2"));
       broker.complete(listed("list-2"));
       await expect(laterListing).resolves.toMatchObject({ ok: true, requestId: "list-2" });
+
+      // Reloading the window ends the stalled pairing, and the next one runs.
+      broker.clearRenderer();
+      broker.registerRenderer(send);
+      const afterReload = broker.request(pairRequest("pair-after-reload"));
+      expect(send).toHaveBeenLastCalledWith(pairRequest("pair-after-reload"));
+      broker.complete(paired("pair-after-reload"));
+      await expect(afterReload).resolves.toMatchObject({ ok: true });
+      broker.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("says how to recover from a pairing the window never finishes after its command was stopped", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn();
+      const broker = new DesktopAppActivationBroker({
+        deadlines: (request) => desktopAppActivationDeadlines(request.type),
+        activate: vi.fn(),
+      });
+      broker.registerRenderer(send);
+      const stopped = broker.request(pairRequest("pair-stopped"));
+      expect(send).toHaveBeenLastCalledWith(pairRequest("pair-stopped"));
+
+      // Ctrl+C before the pairing's run deadline.
+      await vi.advanceTimersByTimeAsync(5_000);
+      broker.cancel("pair-stopped");
+      await expect(stopped).resolves.toMatchObject({ ok: false, code: "renderer-unavailable" });
+
+      const listing = broker.request(listRequest("list-1"));
+      expect(send).toHaveBeenLastCalledWith(listRequest("list-1"));
+      broker.complete(listed("list-1"));
+      await expect(listing).resolves.toMatchObject({ ok: true, requestId: "list-1" });
+
+      const recovery =
+        "T3 Code did not start pairing the environment, because it is still pairing the environment for an earlier command that already timed out or was stopped. The link was not used. Run `t3 app environments` to see whether the earlier pairing saved its environment. To stop the earlier request, reload the T3 Code window (View > Reload) or quit and reopen T3 Code, then run the command again.";
+      const next = broker.request(pairRequest("pair-next"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(next).resolves.toMatchObject({
+        ok: false,
+        code: "request-timeout",
+        message: recovery,
+      });
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+      const later = broker.request(pairRequest("pair-later"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(later).resolves.toMatchObject({
+        ok: false,
+        code: "request-timeout",
+        message: recovery,
+      });
+      expect(send).not.toHaveBeenCalledWith(pairRequest("pair-next"));
+      expect(send).not.toHaveBeenCalledWith(pairRequest("pair-later"));
 
       // Reloading the window ends the stalled pairing, and the next one runs.
       broker.clearRenderer();

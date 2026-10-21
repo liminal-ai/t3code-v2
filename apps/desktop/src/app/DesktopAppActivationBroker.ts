@@ -12,13 +12,15 @@ interface PendingActivation {
   readonly request: DesktopAppActivationRequest;
   readonly resolve: (response: DesktopAppActivationResponse) => void;
   readonly runMs: number;
-  /** The wait deadline until the request is dispatched, then the run deadline. */
+  /** The wait deadline until the request is dispatched, then a listing's run deadline. */
   timeout: ReturnType<typeof setTimeout>;
   dispatched: boolean;
 }
 
 interface RunningActivation {
   readonly request: DesktopAppActivationRequest;
+  /** Its run deadline, which keeps running after its command closes. */
+  readonly timeout: ReturnType<typeof setTimeout>;
   /** Its run deadline passed and its command has its answer, but the renderer has not finished. */
   overdue: boolean;
 }
@@ -72,7 +74,7 @@ function stalledMessage(
   stalled: DesktopAppActivationRequest,
 ): string {
   return [
-    `T3 Code did not start ${requestActivity(request)}, because it is still ${requestActivity(stalled)} for an earlier command that already timed out.`,
+    `T3 Code did not start ${requestActivity(request)}, because it is still ${requestActivity(stalled)} for an earlier command that already timed out or was stopped.`,
     ...(request.type === "pair-environment" ? ["The link was not used."] : []),
     ...(stalled.type === "pair-environment"
       ? ["Run `t3 app environments` to see whether the earlier pairing saved its environment."]
@@ -164,7 +166,7 @@ export class DesktopAppActivationBroker {
   clearRenderer(): void {
     this.#renderer = null;
     // Whatever the old renderer was working on went with it.
-    this.#running = null;
+    this.#endRunning();
     this.#reading.clear();
     for (const pending of this.#pending.values()) {
       if (pending.dispatched) {
@@ -181,7 +183,7 @@ export class DesktopAppActivationBroker {
 
   complete(response: DesktopAppActivationResponse): void {
     const wasRunning = this.#running?.request.requestId === response.requestId;
-    if (wasRunning) this.#running = null;
+    if (wasRunning) this.#endRunning();
     const wasReading = this.#reading.delete(response.requestId);
     if (this.#pending.has(response.requestId)) {
       this.#settle(response);
@@ -202,7 +204,7 @@ export class DesktopAppActivationBroker {
   close(): void {
     this.#closed = true;
     this.#renderer = null;
-    this.#running = null;
+    this.#endRunning();
     this.#reading.clear();
     for (const pending of this.#pending.values()) {
       this.#settle(
@@ -229,17 +231,33 @@ export class DesktopAppActivationBroker {
         return;
       }
       pending.dispatched = true;
-      const running = beside ? null : { request: pending.request, overdue: false };
-      if (running === null) this.#reading.add(pending.request.requestId);
-      else this.#running = running;
       clearTimeout(pending.timeout);
-      pending.timeout = setTimeout(() => {
-        if (running !== null) running.overdue = true;
+      const timedOut = () =>
         this.#settle(
           failure(pending.request.requestId, "request-timeout", runTimeoutMessage(pending.request)),
         );
-      }, pending.runMs);
+      if (beside) {
+        this.#reading.add(pending.request.requestId);
+        pending.timeout = setTimeout(timedOut, pending.runMs);
+        continue;
+      }
+      // The run deadline belongs to the running request, not its command, so a command that
+      // closes early still leaves later requests the guidance to recover from a stalled one.
+      const running: RunningActivation = {
+        request: pending.request,
+        overdue: false,
+        timeout: setTimeout(() => {
+          running.overdue = true;
+          timedOut();
+        }, pending.runMs),
+      };
+      this.#running = running;
     }
+  }
+
+  #endRunning(): void {
+    if (this.#running !== null) clearTimeout(this.#running.timeout);
+    this.#running = null;
   }
 
   #settle(response: DesktopAppActivationResponse): void {
