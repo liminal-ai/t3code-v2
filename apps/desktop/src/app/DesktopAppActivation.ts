@@ -32,6 +32,8 @@ import { makeComponentLogger } from "./DesktopObservability.ts";
 
 const MAX_REQUEST_BYTES = 64 * 1024;
 const REQUEST_TIMEOUT_MS = 15_000;
+// Pairing fetches the server's descriptor and then redeems the token, each with a 10 second deadline.
+const PAIR_REQUEST_TIMEOUT_MS = 30_000;
 const isDesktopAppActivationRequest = Schema.is(DesktopAppActivationRequest);
 
 export class DesktopAppActivationStartError extends Schema.TaggedError<DesktopAppActivationStartError>()(
@@ -314,7 +316,8 @@ export const make = Effect.gen(function* () {
   let detachRendererListeners: (() => void) | null = null;
 
   const broker = new DesktopAppActivationBroker({
-    requestTimeoutMs: REQUEST_TIMEOUT_MS,
+    requestTimeoutMs: (request) =>
+      request.type === "pair-environment" ? PAIR_REQUEST_TIMEOUT_MS : REQUEST_TIMEOUT_MS,
     activate: () => {
       void runPromise(
         desktopWindow.activate.pipe(

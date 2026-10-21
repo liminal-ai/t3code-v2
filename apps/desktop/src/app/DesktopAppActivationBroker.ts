@@ -29,14 +29,28 @@ function failure(
   };
 }
 
+function requestActivity(request: DesktopAppActivationRequest): string {
+  switch (request.type) {
+    case "open-workspace":
+      return "opening the project";
+    case "pair-environment":
+      return "pairing the environment";
+    case "list-environments":
+      return "listing environments";
+  }
+}
+
 export class DesktopAppActivationBroker {
   readonly #pending = new Map<string, PendingActivation>();
-  readonly #requestTimeoutMs: number;
+  readonly #requestTimeoutMs: number | ((request: DesktopAppActivationRequest) => number);
   readonly #activate: () => void;
   #renderer: RendererSender | null = null;
   #closed = false;
 
-  constructor(input: { readonly requestTimeoutMs: number; readonly activate: () => void }) {
+  constructor(input: {
+    readonly requestTimeoutMs: number | ((request: DesktopAppActivationRequest) => number);
+    readonly activate: () => void;
+  }) {
     this.#requestTimeoutMs = input.requestTimeoutMs;
     this.#activate = input.activate;
   }
@@ -53,16 +67,20 @@ export class DesktopAppActivationBroker {
       );
     }
 
+    const timeoutMs =
+      typeof this.#requestTimeoutMs === "number"
+        ? this.#requestTimeoutMs
+        : this.#requestTimeoutMs(request);
     const response = new Promise<DesktopAppActivationResponse>((resolve) => {
       const timeout = setTimeout(() => {
         this.#settle(
           failure(
             request.requestId,
             "request-timeout",
-            "The desktop app did not finish opening the project in time.",
+            `The desktop app did not finish ${requestActivity(request)} in time.`,
           ),
         );
-      }, this.#requestTimeoutMs);
+      }, timeoutMs);
       this.#pending.set(request.requestId, {
         request,
         resolve,
@@ -89,7 +107,7 @@ export class DesktopAppActivationBroker {
           failure(
             pending.request.requestId,
             "renderer-unavailable",
-            "The T3 Code window closed before it opened the project.",
+            `The T3 Code window closed before it finished ${requestActivity(pending.request)}.`,
           ),
         );
       }

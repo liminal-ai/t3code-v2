@@ -127,4 +127,40 @@ describe("DesktopAppActivationBroker", () => {
       vi.useRealTimers();
     }
   });
+
+  it("gives each request kind its own deadline", async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = new DesktopAppActivationBroker({
+        requestTimeoutMs: (pending) => (pending.type === "pair-environment" ? 3_000 : 1_000),
+        activate: vi.fn(),
+      });
+      const pairing = broker.request({
+        version: 1,
+        requestId: "request-pair",
+        type: "pair-environment",
+        pairingUrl: "https://builder.example.ts.net/pair#token=abc",
+        force: false,
+      });
+      let settled = false;
+      void pairing.then(() => {
+        settled = true;
+      });
+
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      await expect(pairing).resolves.toEqual({
+        version: 1,
+        requestId: "request-pair",
+        ok: false,
+        code: "request-timeout",
+        message: "The desktop app did not finish pairing the environment in time.",
+      });
+      broker.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
