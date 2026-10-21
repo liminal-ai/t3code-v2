@@ -289,6 +289,16 @@ async function pairEnvironment(
       `T3 Code paired ${httpBaseUrl} but did not save environment ${environmentId}.`,
     );
   }
+  // The registry leaves an environment it manages itself, such as this app's own, unchanged.
+  if (!saved.httpBaseUrls.some((url) => sameOrigin(url, httpBaseUrl))) {
+    return failure(
+      request.requestId,
+      "pairing-failed",
+      saved.environment.kind === "local"
+        ? `${httpBaseUrl} is this app's own local environment, ${saved.environment.label}. T3 Code manages its addresses itself, so it did not save ${httpBaseUrl} as another route. The link was used.`
+        : `T3 Code paired ${httpBaseUrl} as ${saved.environment.label} (${environmentId}) but did not save the address as one of its routes. The link was used.`,
+    );
+  }
   const savedBefore = before.some((record) => record.environment.environmentId === environmentId);
   return {
     version: 1,

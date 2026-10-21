@@ -160,6 +160,59 @@ describe("desktop app pairing", () => {
     expect(response).toMatchObject({ ok: true, outcome: "route-added" });
   });
 
+  it("says the app's own environment reached through another address was not saved", async () => {
+    const localId = EnvironmentId.make("environment-local");
+    const local = desktopAppEnvironmentRecord(
+      {
+        target: new PrimaryConnectionTarget({
+          environmentId: localId,
+          label: "This Mac",
+          httpBaseUrl: "http://127.0.0.1:3773/",
+          wsBaseUrl: "ws://127.0.0.1:3773/",
+        }),
+        profile: Option.none(),
+        enabled: true,
+      },
+      "connected",
+    );
+    // The registry refuses to change an environment the platform manages, so the catalog stays put.
+    const deps = dependencies([[local], [local]], async () => localId);
+
+    const response = await handleDesktopAppPairRequest(
+      { ...pairRequest(), pairingUrl: "http://192.168.1.20:3773/pair#token=pairing-token" },
+      deps,
+    );
+
+    expect(deps.pairEnvironment).toHaveBeenCalledOnce();
+    expect(response).toEqual({
+      version: 1,
+      requestId: "request-pair",
+      ok: false,
+      code: "pairing-failed",
+      message:
+        "http://192.168.1.20:3773/ is this app's own local environment, This Mac. T3 Code manages its addresses itself, so it did not save http://192.168.1.20:3773/ as another route. The link was used.",
+    });
+  });
+
+  it("says a saved server's new address was not saved when its routes did not change", async () => {
+    const lan = desktopAppEnvironmentRecord(
+      bearerEntry({ environmentId: dgxId, label: "dgx-01", httpBaseUrls: ["https://10.0.0.5/"] }),
+      "connected",
+    );
+    const deps = dependencies([[lan], [lan]]);
+
+    const response = await handleDesktopAppPairRequest(pairRequest(), deps);
+
+    expect(response).toEqual({
+      version: 1,
+      requestId: "request-pair",
+      ok: false,
+      code: "pairing-failed",
+      message:
+        "T3 Code paired https://dgx-01.example.ts.net/ as dgx-01 (environment-dgx) but did not save the address as one of its routes. The link was used.",
+    });
+  });
+
   it.each([
     {
       name: "an expired or used token",
