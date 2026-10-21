@@ -1,4 +1,5 @@
 import {
+  desktopAppActivationDeadlines,
   EnvironmentId,
   ProjectId,
   ThreadId,
@@ -238,20 +239,14 @@ describe("DesktopAppActivationBroker", () => {
     broker.registerRenderer(send, ["pair-environment", "list-environments"]);
     const opened = broker.request(request);
     const pairing = broker.request(pairRequest("pair-1"));
-    const listing = broker.request({ version: 1, requestId: "list-1", type: "list-environments" });
+    const listing = broker.request(listRequest("list-1"));
 
-    expect(send).toHaveBeenCalledExactlyOnceWith(pairRequest("pair-1"));
+    // Listing only reads, so it runs beside the pairing.
+    expect(send.mock.calls).toEqual([[pairRequest("pair-1")], [listRequest("list-1")]]);
+    broker.complete(listed("list-1"));
+    await expect(listing).resolves.toMatchObject({ ok: true, requestId: "list-1" });
     broker.complete(paired("pair-1"));
     await expect(pairing).resolves.toMatchObject({ ok: true, requestId: "pair-1" });
-    expect(send).toHaveBeenLastCalledWith(expect.objectContaining({ requestId: "list-1" }));
-    broker.complete({
-      version: 1,
-      requestId: "list-1",
-      ok: true,
-      type: "list-environments",
-      environments: [],
-    });
-    await expect(listing).resolves.toMatchObject({ ok: true, requestId: "list-1" });
     expect(send).not.toHaveBeenCalledWith(request);
 
     broker.registerRenderer(send, ["open-workspace", "pair-environment", "list-environments"]);
@@ -265,6 +260,57 @@ describe("DesktopAppActivationBroker", () => {
     });
     await expect(opened).resolves.toMatchObject({ ok: true, projectId: "project-1" });
     broker.close();
+  });
+
+  it("keeps listing while a pairing the window never finishes holds later pairings, and says how to recover", async () => {
+    vi.useFakeTimers();
+    try {
+      const send = vi.fn();
+      const broker = new DesktopAppActivationBroker({
+        deadlines: (request) => desktopAppActivationDeadlines(request.type),
+        activate: vi.fn(),
+      });
+      broker.registerRenderer(send);
+      const stalled = broker.request(pairRequest("pair-stalled"));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await expect(stalled).resolves.toMatchObject({ ok: false, code: "request-timeout" });
+
+      // `t3 app environments`, as the timeout tells the user to run, still answers.
+      const listing = broker.request(listRequest("list-1"));
+      expect(send).toHaveBeenLastCalledWith(listRequest("list-1"));
+      broker.complete(listed("list-1"));
+      await expect(listing).resolves.toMatchObject({ ok: true, requestId: "list-1" });
+
+      // A new pairing is never sent while the earlier one may still save, and says why.
+      const next = broker.request(pairRequest("pair-next"));
+      await vi.advanceTimersByTimeAsync(60_000);
+      await expect(next).resolves.toEqual({
+        version: 1,
+        requestId: "pair-next",
+        ok: false,
+        code: "request-timeout",
+        message:
+          "T3 Code did not start pairing the environment, because it is still pairing the environment for an earlier command that already timed out. The link was not used. Run `t3 app environments` to see whether the earlier pairing saved its environment. To stop the earlier request, reload the T3 Code window (View > Reload) or quit and reopen T3 Code, then run the command again.",
+      });
+      expect(send).not.toHaveBeenCalledWith(pairRequest("pair-next"));
+
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+      const laterListing = broker.request(listRequest("list-2"));
+      expect(send).toHaveBeenLastCalledWith(listRequest("list-2"));
+      broker.complete(listed("list-2"));
+      await expect(laterListing).resolves.toMatchObject({ ok: true, requestId: "list-2" });
+
+      // Reloading the window ends the stalled pairing, and the next one runs.
+      broker.clearRenderer();
+      broker.registerRenderer(send);
+      const afterReload = broker.request(pairRequest("pair-after-reload"));
+      expect(send).toHaveBeenLastCalledWith(pairRequest("pair-after-reload"));
+      broker.complete(paired("pair-after-reload"));
+      await expect(afterReload).resolves.toMatchObject({ ok: true });
+      broker.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("holds the next request while the renderer finishes one whose command closed", async () => {
@@ -294,6 +340,14 @@ function pairRequest(requestId: string): DesktopAppActivationRequest {
     pairingUrl: "https://builder.example.ts.net/pair#token=abc",
     force: false,
   };
+}
+
+function listRequest(requestId: string): DesktopAppActivationRequest {
+  return { version: 1, requestId, type: "list-environments" };
+}
+
+function listed(requestId: string): DesktopAppActivationResponse {
+  return { version: 1, requestId, ok: true, type: "list-environments", environments: [] };
 }
 
 function paired(requestId: string): DesktopAppActivationResponse {

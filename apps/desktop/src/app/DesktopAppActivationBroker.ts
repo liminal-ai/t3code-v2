@@ -17,7 +17,18 @@ interface PendingActivation {
   dispatched: boolean;
 }
 
+interface RunningActivation {
+  readonly request: DesktopAppActivationRequest;
+  /** Its run deadline passed and its command has its answer, but the renderer has not finished. */
+  overdue: boolean;
+}
+
 type RendererSender = (request: DesktopAppActivationRequest) => void;
+
+/** Listing only reads, so it runs beside the other kinds and never waits behind them. */
+function runsBesideOthers(request: DesktopAppActivationRequest): boolean {
+  return request.type === "list-environments";
+}
 
 function failure(
   requestId: string,
@@ -44,11 +55,30 @@ function requestActivity(request: DesktopAppActivationRequest): string {
   }
 }
 
-function waitTimeoutMessage(request: DesktopAppActivationRequest): string {
+function waitTimeoutMessage(
+  request: DesktopAppActivationRequest,
+  running: RunningActivation | null,
+): string {
+  if (running?.overdue) return stalledMessage(request, running.request);
   const message = `T3 Code did not start ${requestActivity(request)} in time, because its window was not ready or other requests were ahead.`;
   return request.type === "pair-environment"
     ? `${message} The link was not used, so you can run the command again.`
     : message;
+}
+
+// Only the renderer can end a request it is working on, and it can end it only by going away.
+function stalledMessage(
+  request: DesktopAppActivationRequest,
+  stalled: DesktopAppActivationRequest,
+): string {
+  return [
+    `T3 Code did not start ${requestActivity(request)}, because it is still ${requestActivity(stalled)} for an earlier command that already timed out.`,
+    ...(request.type === "pair-environment" ? ["The link was not used."] : []),
+    ...(stalled.type === "pair-environment"
+      ? ["Run `t3 app environments` to see whether the earlier pairing saved its environment."]
+      : []),
+    "To stop the earlier request, reload the T3 Code window (View > Reload) or quit and reopen T3 Code, then run the command again.",
+  ].join(" ");
 }
 
 function runTimeoutMessage(request: DesktopAppActivationRequest): string {
@@ -65,8 +95,13 @@ export class DesktopAppActivationBroker {
   #renderer: RendererSender | null = null;
   /** The kinds the renderer can handle now. A request of another kind waits, and others pass it. */
   #accepts: ReadonlySet<DesktopAppActivationRequestType> = new Set();
-  /** The request the renderer is working on. It stays set after a deadline answers the command, until the renderer finishes. */
-  #running: string | null = null;
+  /**
+   * The request that can change the app, which the renderer is working on. It stays set after a
+   * deadline answers the command, until the renderer finishes or goes away, so two never overlap.
+   */
+  #running: RunningActivation | null = null;
+  /** Listings the renderer is working on. */
+  readonly #reading = new Set<string>();
   #closed = false;
 
   constructor(input: {
@@ -86,7 +121,11 @@ export class DesktopAppActivationBroker {
         failure(request.requestId, "renderer-unavailable", "T3 Code is shutting down."),
       );
     }
-    if (this.#pending.has(request.requestId) || this.#running === request.requestId) {
+    if (
+      this.#pending.has(request.requestId) ||
+      this.#running?.request.requestId === request.requestId ||
+      this.#reading.has(request.requestId)
+    ) {
       return Promise.resolve(
         failure(request.requestId, "invalid-request", "The request id is already in use."),
       );
@@ -95,7 +134,9 @@ export class DesktopAppActivationBroker {
     const { waitMs, runMs } = this.#deadlines(request);
     const response = new Promise<DesktopAppActivationResponse>((resolve) => {
       const timeout = setTimeout(() => {
-        this.#settle(failure(request.requestId, "request-timeout", waitTimeoutMessage(request)));
+        this.#settle(
+          failure(request.requestId, "request-timeout", waitTimeoutMessage(request, this.#running)),
+        );
       }, waitMs);
       this.#pending.set(request.requestId, {
         request,
@@ -124,6 +165,7 @@ export class DesktopAppActivationBroker {
     this.#renderer = null;
     // Whatever the old renderer was working on went with it.
     this.#running = null;
+    this.#reading.clear();
     for (const pending of this.#pending.values()) {
       if (pending.dispatched) {
         this.#settle(
@@ -138,13 +180,14 @@ export class DesktopAppActivationBroker {
   }
 
   complete(response: DesktopAppActivationResponse): void {
-    const wasRunning = this.#running === response.requestId;
+    const wasRunning = this.#running?.request.requestId === response.requestId;
     if (wasRunning) this.#running = null;
+    const wasReading = this.#reading.delete(response.requestId);
     if (this.#pending.has(response.requestId)) {
       this.#settle(response);
       return;
     }
-    if (wasRunning) {
+    if (wasRunning || wasReading) {
       this.#onLateCompletion(response);
       this.#flush();
     }
@@ -160,6 +203,7 @@ export class DesktopAppActivationBroker {
     this.#closed = true;
     this.#renderer = null;
     this.#running = null;
+    this.#reading.clear();
     for (const pending of this.#pending.values()) {
       this.#settle(
         failure(pending.request.requestId, "renderer-unavailable", "T3 Code is shutting down."),
@@ -167,14 +211,17 @@ export class DesktopAppActivationBroker {
     }
   }
 
-  // One request at a time, because the renderer runs them in order. A request's run deadline
-  // starts here, so time spent behind another request does not count against it.
+  // One request that can change the app at a time, because the renderer runs them in order.
+  // Listings go at once. A request's run deadline starts here, so time spent behind another
+  // request does not count against it.
   #flush(): void {
     const renderer = this.#renderer;
-    if (renderer === null || this.#running !== null) return;
+    if (renderer === null) return;
 
     for (const pending of this.#pending.values()) {
-      if (!this.#accepts.has(pending.request.type)) continue;
+      if (pending.dispatched || !this.#accepts.has(pending.request.type)) continue;
+      const beside = runsBesideOthers(pending.request);
+      if (!beside && this.#running !== null) continue;
       try {
         renderer(pending.request);
       } catch {
@@ -182,14 +229,16 @@ export class DesktopAppActivationBroker {
         return;
       }
       pending.dispatched = true;
-      this.#running = pending.request.requestId;
+      const running = beside ? null : { request: pending.request, overdue: false };
+      if (running === null) this.#reading.add(pending.request.requestId);
+      else this.#running = running;
       clearTimeout(pending.timeout);
       pending.timeout = setTimeout(() => {
+        if (running !== null) running.overdue = true;
         this.#settle(
           failure(pending.request.requestId, "request-timeout", runTimeoutMessage(pending.request)),
         );
       }, pending.runMs);
-      return;
     }
   }
 
