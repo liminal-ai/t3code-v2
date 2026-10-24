@@ -372,6 +372,33 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
     }),
   );
 
+  it.effect("keeps refusing a planned start that converged on a workflow it did not create", () =>
+    Effect.gen(function* () {
+      const existing = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        title: "Taken",
+      });
+      const { instanceId } = existing.structuredContent as { readonly instanceId: string };
+      const before = stepsOf(structured(yield* call("thread_workflow_get", {})));
+      const args = {
+        templateId: "open-ended",
+        title: "Taken",
+        steps: [stage("Sneaked in")],
+        requestId: "converge-1",
+      };
+      assert.strictEqual(
+        failure(yield* call("thread_workflow_start", args))?.code,
+        "instance_open",
+      );
+      assert.strictEqual(
+        failure(yield* call("thread_workflow_start", args))?.code,
+        "instance_open",
+      );
+      assert.deepStrictEqual(stepsOf(structured(yield* call("thread_workflow_get", {}))), before);
+      yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
+    }),
+  );
+
   it.effect("acks the reopened instance an unanchored insert went into, not a later start", () =>
     Effect.gen(function* () {
       const startClosed = (title: string) =>
