@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import { describe, expect, it } from "vite-plus/test";
 
 import { onControl } from "./keys";

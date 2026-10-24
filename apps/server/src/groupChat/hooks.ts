@@ -128,35 +128,36 @@ const collectCapped = (
     return Effect.sync(cleanup);
   });
 
-const readBody = (
+// The hook path stays out of traces like its request (layerUntracedRequests in http.ts): its
+// token rides in the query, so these functions open no spans.
+const readBody = Effect.fnUntraced(function* (
   request: HttpServerRequest.HttpServerRequest,
-): Effect.Effect<Uint8Array | "too_large" | "timed_out"> =>
-  Effect.gen(function* () {
-    const declared = Number(request.headers["content-length"] ?? "0");
-    if (!Number.isFinite(declared) || declared > HOOK_MAX_BODY_BYTES) return "too_large" as const;
-    const collected =
-      request.source instanceof NodeHttp.IncomingMessage
-        ? collectCapped(request.source, HOOK_MAX_BODY_BYTES)
-        : request.arrayBuffer.pipe(
-            Effect.map((buffer) => new Uint8Array(buffer)),
-            Effect.provideService(
-              HttpIncomingMessage.MaxBodySize,
-              ByteSize.bytes(HOOK_MAX_BODY_BYTES),
-            ),
-            Effect.orElseSucceed(() => "too_large" as const),
-          );
-    // A caller holding the body open would otherwise hold the handler for Node's own 300 s.
-    const body = yield* collected.pipe(
-      Effect.timeoutOrElse({
-        duration: yield* HookBodyReadTimeout,
-        orElse: () => Effect.succeed("timed_out" as const),
-      }),
-    );
-    if (body !== "too_large" && body !== "timed_out" && body.byteLength > HOOK_MAX_BODY_BYTES) {
-      return "too_large" as const;
-    }
-    return body;
-  });
+): Effect.fn.Return<Uint8Array | "too_large" | "timed_out"> {
+  const declared = Number(request.headers["content-length"] ?? "0");
+  if (!Number.isFinite(declared) || declared > HOOK_MAX_BODY_BYTES) return "too_large" as const;
+  const collected =
+    request.source instanceof NodeHttp.IncomingMessage
+      ? collectCapped(request.source, HOOK_MAX_BODY_BYTES)
+      : request.arrayBuffer.pipe(
+          Effect.map((buffer) => new Uint8Array(buffer)),
+          Effect.provideService(
+            HttpIncomingMessage.MaxBodySize,
+            ByteSize.bytes(HOOK_MAX_BODY_BYTES),
+          ),
+          Effect.orElseSucceed(() => "too_large" as const),
+        );
+  // A caller holding the body open would otherwise hold the handler for Node's own 300 s.
+  const body = yield* collected.pipe(
+    Effect.timeoutOrElse({
+      duration: yield* HookBodyReadTimeout,
+      orElse: () => Effect.succeed("timed_out" as const),
+    }),
+  );
+  if (body !== "too_large" && body !== "timed_out" && body.byteLength > HOOK_MAX_BODY_BYTES) {
+    return "too_large" as const;
+  }
+  return body;
+});
 
 const decoder = new TextDecoder();
 
@@ -168,36 +169,35 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
       const reach = yield* GroupChatReach;
       const underLimit = makeRateLimiter(HOOK_RATE_LIMIT);
 
-      const accept = (input: {
+      const accept = Effect.fnUntraced(function* (input: {
         readonly key: string;
         readonly external: ExternalSecrets;
         readonly request: HttpServerRequest.HttpServerRequest;
-      }) =>
-        Effect.gen(function* () {
-          if (!underLimit(input.key, yield* Clock.currentTimeMillis)) {
-            return { _tag: "refused", response: refused(429, "rate_limited") } as const;
-          }
-          const body = yield* readBody(input.request);
-          if (body === "too_large") return { _tag: "refused", response: tooLarge } as const;
-          if (body === "timed_out") return { _tag: "refused", response: tooSlow } as const;
-          const signature = checkSignature({
-            external: input.external,
-            body,
-            header: input.request.headers[GROUP_CHAT_HOOK_SIGNATURE_HEADER],
-            exposed: yield* reach.exposed,
-          });
-          if (signature !== "ok") {
-            return { _tag: "refused", response: refused(401, signature) } as const;
-          }
-          const text = extractText(decoder.decode(body), input.external.replyPath);
-          if (text === null) {
-            return {
-              _tag: "refused",
-              response: refused(400, `no text at "${input.external.replyPath}"`),
-            } as const;
-          }
-          return { _tag: "text", text } as const;
+      }) {
+        if (!underLimit(input.key, yield* Clock.currentTimeMillis)) {
+          return { _tag: "refused", response: refused(429, "rate_limited") } as const;
+        }
+        const body = yield* readBody(input.request);
+        if (body === "too_large") return { _tag: "refused", response: tooLarge } as const;
+        if (body === "timed_out") return { _tag: "refused", response: tooSlow } as const;
+        const signature = checkSignature({
+          external: input.external,
+          body,
+          header: input.request.headers[GROUP_CHAT_HOOK_SIGNATURE_HEADER],
+          exposed: yield* reach.exposed,
         });
+        if (signature !== "ok") {
+          return { _tag: "refused", response: refused(401, signature) } as const;
+        }
+        const text = extractText(decoder.decode(body), input.external.replyPath);
+        if (text === null) {
+          return {
+            _tag: "refused",
+            response: refused(400, `no text at "${input.external.replyPath}"`),
+          } as const;
+        }
+        return { _tag: "text", text } as const;
+      });
 
       const module = Effect.all([groupChat.store, groupChat.engine]).pipe(
         Effect.map(([store, engine]) => ({ store, engine })),
@@ -214,7 +214,7 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
           Effect.as(refused(500, "internal_error")),
         );
 
-      const reply = ({
+      const reply = Effect.fnUntraced(function* ({
         params,
         query,
         request,
@@ -222,36 +222,33 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
         readonly params: { readonly deliveryId: import("@t3tools/contracts").GroupChatDeliveryId };
         readonly query: GroupChatHookQuery;
         readonly request: HttpServerRequest.HttpServerRequest;
-      }) =>
-        Effect.gen(function* () {
-          const ready = yield* module;
-          if (isResponse(ready)) return ready;
-          const delivery = yield* ready.store.delivery(params.deliveryId);
-          const member = delivery === null ? null : yield* ready.store.member(delivery.memberId);
-          const token = delivery?.external?.callbackToken ?? null;
-          if (
-            delivery === null ||
-            member === null ||
-            member.removedAt !== null ||
-            member.external === null ||
-            token === null ||
-            !constantTimeEquals(token, query.token)
-          ) {
-            return refused(404, "unknown_callback");
-          }
-          const accepted = yield* accept({
-            key: `reply:${delivery.id}`,
-            external: member.external,
-            request,
-          });
-          if (accepted._tag === "refused") return accepted.response;
-          const outcome = yield* ready.engine.landReply(delivery.id, accepted.text);
-          return outcome === "not_found"
-            ? refused(404, "unknown_callback")
-            : json(200, { ok: true });
-        }).pipe(Effect.catchCause(failed));
+      }) {
+        const ready = yield* module;
+        if (isResponse(ready)) return ready;
+        const delivery = yield* ready.store.delivery(params.deliveryId);
+        const member = delivery === null ? null : yield* ready.store.member(delivery.memberId);
+        const token = delivery?.external?.callbackToken ?? null;
+        if (
+          delivery === null ||
+          member === null ||
+          member.removedAt !== null ||
+          member.external === null ||
+          token === null ||
+          !constantTimeEquals(token, query.token)
+        ) {
+          return refused(404, "unknown_callback");
+        }
+        const accepted = yield* accept({
+          key: `reply:${delivery.id}`,
+          external: member.external,
+          request,
+        });
+        if (accepted._tag === "refused") return accepted.response;
+        const outcome = yield* ready.engine.landReply(delivery.id, accepted.text);
+        return outcome === "not_found" ? refused(404, "unknown_callback") : json(200, { ok: true });
+      }, Effect.catchCause(failed));
 
-      const inbound = ({
+      const inbound = Effect.fnUntraced(function* ({
         params,
         query,
         request,
@@ -259,30 +256,29 @@ export const makeLayer = (groupChat: GroupChat["Service"]) =>
         readonly params: { readonly memberId: import("@t3tools/contracts").GroupChatMemberId };
         readonly query: GroupChatHookQuery;
         readonly request: HttpServerRequest.HttpServerRequest;
-      }) =>
-        Effect.gen(function* () {
-          const ready = yield* module;
-          if (isResponse(ready)) return ready;
-          const member = yield* ready.store.member(params.memberId);
-          if (
-            member === null ||
-            member.removedAt !== null ||
-            member.external === null ||
-            !constantTimeEquals(member.external.inboundToken, query.token)
-          ) {
-            return refused(404, "unknown_inbound_url");
-          }
-          const accepted = yield* accept({
-            key: `inbound:${member.id}`,
-            external: member.external,
-            request,
-          });
-          if (accepted._tag === "refused") return accepted.response;
-          const message = yield* ready.engine.postInbound(member.id, accepted.text);
-          return message === null
-            ? refused(404, "unknown_inbound_url")
-            : json(200, { messageId: message.id });
-        }).pipe(Effect.catchCause(failed));
+      }) {
+        const ready = yield* module;
+        if (isResponse(ready)) return ready;
+        const member = yield* ready.store.member(params.memberId);
+        if (
+          member === null ||
+          member.removedAt !== null ||
+          member.external === null ||
+          !constantTimeEquals(member.external.inboundToken, query.token)
+        ) {
+          return refused(404, "unknown_inbound_url");
+        }
+        const accepted = yield* accept({
+          key: `inbound:${member.id}`,
+          external: member.external,
+          request,
+        });
+        if (accepted._tag === "refused") return accepted.response;
+        const message = yield* ready.engine.postInbound(member.id, accepted.text);
+        return message === null
+          ? refused(404, "unknown_inbound_url")
+          : json(200, { messageId: message.id });
+      }, Effect.catchCause(failed));
 
       return handlers.handleRaw("reply", reply).handleRaw("inbound", inbound);
     }),

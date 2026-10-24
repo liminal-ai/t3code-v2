@@ -193,8 +193,8 @@ const make = Effect.gen(function* () {
       }),
     );
 
-  const loadThread = (threadId: ThreadId, file: string) =>
-    Effect.gen(function* () {
+  const loadThread = Effect.fn("threadWorkflow.store.loadThread")(
+    function* (threadId: ThreadId, file: string) {
       const bytes = yield* fileSystem.readFile(file);
       const complete = bytes.lastIndexOf(NEWLINE) + 1;
       // A final segment without its newline was never acknowledged, decodable or not.
@@ -203,13 +203,16 @@ const make = Effect.gen(function* () {
         yield* syncFile(file);
       }
       return parseLog(threadId, new TextDecoder().decode(bytes.subarray(0, complete)));
-    }).pipe(
-      Effect.catch((cause) =>
-        Effect.logWarning("thread workflow log unreadable", { threadId, cause }).pipe(
-          Effect.as(markCorrupt(emptyState(threadId), "its log could not be read")),
+    },
+    (effect, threadId) =>
+      effect.pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("thread workflow log unreadable", { threadId, cause }).pipe(
+            Effect.as(markCorrupt(emptyState(threadId), "its log could not be read")),
+          ),
         ),
       ),
-    );
+  );
 
   const loadAll = Effect.gen(function* () {
     if (!(yield* fileSystem.exists(threadsDir))) return new Map<ThreadId, ThreadWorkflowState>();
@@ -261,28 +264,30 @@ const make = Effect.gen(function* () {
     yield* Ref.set(directoriesReady, true);
   });
 
-  const write = (threadId: ThreadId, record: ThreadWorkflowRecord) =>
-    Effect.gen(function* () {
-      yield* ensureDirectories;
-      const file = path.join(threadsDir, threadLogFileName(threadId));
-      const bytes = new TextEncoder().encode(`${yield* encodeLine(record).pipe(Effect.orDie)}\n`);
-      if (record.kind === "change" && record.event._tag === "recovered") {
-        const recovering = `${file}.recovering`;
-        // Copy, not rename, so a crash at any point leaves either the old log live or the new one.
-        if (yield* fileSystem.exists(file)) {
-          const aside = `${file}.corrupt-${record.at.replace(/[^0-9A-Za-z]/g, "")}`;
-          yield* fileSystem.copyFile(file, aside);
-          yield* syncFile(aside);
-        }
-        yield* writeDurably(recovering, bytes, "w");
-        yield* fileSystem.rename(recovering, file);
-        yield* syncDirectory(threadsDir);
-        return;
+  const write = Effect.fn("threadWorkflow.store.write")(function* (
+    threadId: ThreadId,
+    record: ThreadWorkflowRecord,
+  ) {
+    yield* ensureDirectories;
+    const file = path.join(threadsDir, threadLogFileName(threadId));
+    const bytes = new TextEncoder().encode(`${yield* encodeLine(record).pipe(Effect.orDie)}\n`);
+    if (record.kind === "change" && record.event._tag === "recovered") {
+      const recovering = `${file}.recovering`;
+      // Copy, not rename, so a crash at any point leaves either the old log live or the new one.
+      if (yield* fileSystem.exists(file)) {
+        const aside = `${file}.corrupt-${record.at.replace(/[^0-9A-Za-z]/g, "")}`;
+        yield* fileSystem.copyFile(file, aside);
+        yield* syncFile(aside);
       }
-      const created = !(yield* fileSystem.exists(file));
-      yield* writeDurably(file, bytes, "a");
-      if (created) yield* syncDirectory(threadsDir);
-    });
+      yield* writeDurably(recovering, bytes, "w");
+      yield* fileSystem.rename(recovering, file);
+      yield* syncDirectory(threadsDir);
+      return;
+    }
+    const created = !(yield* fileSystem.exists(file));
+    yield* writeDurably(file, bytes, "a");
+    if (created) yield* syncDirectory(threadsDir);
+  });
 
   const stateOf = (map: ReadonlyMap<ThreadId, ThreadWorkflowState>, threadId: ThreadId) =>
     map.get(threadId) ?? emptyState(threadId);
@@ -290,64 +295,66 @@ const make = Effect.gen(function* () {
   const unavailable = (message: string) =>
     new ThreadWorkflowError({ code: "store_unavailable", message });
 
-  const append = (threadId: ThreadId, record: ThreadWorkflowRecord) =>
-    Effect.gen(function* () {
-      if (loaded.unavailable !== null) return yield* unavailable(loaded.unavailable);
-      const current = stateOf(yield* Ref.get(states), threadId);
-      const recovering = record.kind === "change" && record.event._tag === "recovered";
-      if (current.corruption !== null && !recovering) {
-        return yield* unavailable(
-          `This thread's workflow log cannot be trusted (${current.corruption}), so nothing more is written to it. The user can recover it from the Workflow tab on web or desktop.`,
-        );
-      }
-      const expectedSeq = recovering ? 1 : current.lastSeq + 1;
-      if (record.seq !== expectedSeq) {
-        return yield* Effect.die(
-          new Error(`thread workflow record seq ${record.seq}, expected ${expectedSeq}`),
-        );
-      }
-      const problem = admits(current, record);
-      if (problem !== null) {
-        return yield* Effect.die(new Error(`thread workflow record ${record.seq} ${problem}`));
-      }
-      const folded = Ref.modify(states, (map) => {
-        const next = evolve(stateOf(map, threadId), record);
-        return [next, new Map(map).set(threadId, next)];
-      });
-      const corrupted = (why: Record<string, unknown>) =>
-        Effect.logWarning("thread workflow write did not complete", { threadId, ...why }).pipe(
-          Effect.andThen(
-            Ref.update(states, (map) =>
-              new Map(map).set(
-                threadId,
-                markCorrupt(stateOf(map, threadId), "a write did not complete"),
-              ),
+  const append = Effect.fn("threadWorkflow.store.append")(function* (
+    threadId: ThreadId,
+    record: ThreadWorkflowRecord,
+  ) {
+    if (loaded.unavailable !== null) return yield* unavailable(loaded.unavailable);
+    const current = stateOf(yield* Ref.get(states), threadId);
+    const recovering = record.kind === "change" && record.event._tag === "recovered";
+    if (current.corruption !== null && !recovering) {
+      return yield* unavailable(
+        `This thread's workflow log cannot be trusted (${current.corruption}), so nothing more is written to it. The user can recover it from the Workflow tab on web or desktop.`,
+      );
+    }
+    const expectedSeq = recovering ? 1 : current.lastSeq + 1;
+    if (record.seq !== expectedSeq) {
+      return yield* Effect.die(
+        new Error(`thread workflow record seq ${record.seq}, expected ${expectedSeq}`),
+      );
+    }
+    const problem = admits(current, record);
+    if (problem !== null) {
+      return yield* Effect.die(new Error(`thread workflow record ${record.seq} ${problem}`));
+    }
+    const folded = Ref.modify(states, (map) => {
+      const next = evolve(stateOf(map, threadId), record);
+      return [next, new Map(map).set(threadId, next)];
+    });
+    const corrupted = (why: Record<string, unknown>) =>
+      Effect.logWarning("thread workflow write did not complete", { threadId, ...why }).pipe(
+        Effect.andThen(
+          Ref.update(states, (map) =>
+            new Map(map).set(
+              threadId,
+              markCorrupt(stateOf(map, threadId), "a write did not complete"),
             ),
           ),
-          Effect.andThen(
-            Effect.fail(
-              unavailable(
-                "The workflow write did not complete, so this thread's workflow is read-only until the server restarts.",
-              ),
+        ),
+        Effect.andThen(
+          Effect.fail(
+            unavailable(
+              "The workflow write did not complete, so this thread's workflow is read-only until the server restarts.",
             ),
-          ),
-        );
-      // Uninterruptible so memory always learns the write's outcome; the deadline bounds the wait.
-      // Only this fiber touches memory: a write that finishes after the deadline changes nothing.
-      return yield* Effect.uninterruptible(
-        withinDeadline(onDisk(write(threadId, record)), WRITE_DEADLINE).pipe(
-          Effect.flatMap(
-            Option.match({
-              onNone: () => corrupted({ timeout: WRITE_DEADLINE }),
-              onSome: Exit.match({
-                onSuccess: () => folded,
-                onFailure: (cause) => corrupted({ cause }),
-              }),
-            }),
           ),
         ),
       );
-    });
+    // Uninterruptible so memory always learns the write's outcome; the deadline bounds the wait.
+    // Only this fiber touches memory: a write that finishes after the deadline changes nothing.
+    return yield* Effect.uninterruptible(
+      withinDeadline(onDisk(write(threadId, record)), WRITE_DEADLINE).pipe(
+        Effect.flatMap(
+          Option.match({
+            onNone: () => corrupted({ timeout: WRITE_DEADLINE }),
+            onSome: Exit.match({
+              onSuccess: () => folded,
+              onFailure: (cause) => corrupted({ cause }),
+            }),
+          }),
+        ),
+      ),
+    );
+  });
 
   return ThreadWorkflowStore.of({
     unavailable: loaded.unavailable,

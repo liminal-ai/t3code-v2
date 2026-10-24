@@ -238,40 +238,43 @@ export const makeFakeThreads = Effect.sync(() => {
     return next === undefined ? Effect.void : startRun(t, next);
   };
 
-  const end = (
+  const end = Effect.fn("groupChat.testkit.end")(function* (
     t: FakeThread,
     run: FakeRun,
     status: OrchestrationV2Run["status"],
     reply: string | null,
     streaming = false,
-  ) =>
-    Effect.gen(function* () {
-      run.status = status;
-      run.reply = reply;
-      run.streaming = streaming;
-      yield* Deferred.succeed(run.ended, undefined);
-      yield* signal(t);
-      yield* startNextQueued(t);
-    });
+  ) {
+    run.status = status;
+    run.reply = reply;
+    run.streaming = streaming;
+    yield* Deferred.succeed(run.ended, undefined);
+    yield* signal(t);
+    yield* startNextQueued(t);
+  });
 
-  const commit = (t: FakeThread, commandId: CommandId, messageId: MessageId, text: string) =>
-    Effect.gen(function* () {
-      const seen = receipts.get(commandId);
-      if (seen !== undefined) return seen;
-      const run = yield* newRun({
-        messageId,
-        text,
-        started: false,
-        queueHeld: t.held,
-        continuationOf: null,
-        own: true,
-      });
-      receipts.set(commandId, run);
-      t.runs.push(run);
-      if (activeOf(t) === undefined && !t.held) yield* startRun(t, run);
-      else yield* signal(t);
-      return run;
+  const commit = Effect.fn("groupChat.testkit.commit")(function* (
+    t: FakeThread,
+    commandId: CommandId,
+    messageId: MessageId,
+    text: string,
+  ) {
+    const seen = receipts.get(commandId);
+    if (seen !== undefined) return seen;
+    const run = yield* newRun({
+      messageId,
+      text,
+      started: false,
+      queueHeld: t.held,
+      continuationOf: null,
+      own: true,
     });
+    receipts.set(commandId, run);
+    t.runs.push(run);
+    if (activeOf(t) === undefined && !t.held) yield* startRun(t, run);
+    else yield* signal(t);
+    return run;
+  });
 
   const latest = (t: FakeThread, run: FakeRun): FakeRun => {
     let current = run;
@@ -293,51 +296,49 @@ export const makeFakeThreads = Effect.sync(() => {
 
   const port: GroupChatThreadPort["Service"] = {
     environmentId: Effect.succeed(FAKE_ENVIRONMENT_ID),
-    thread: (threadId) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        if (t.readReached !== null) yield* Deferred.succeed(t.readReached, undefined);
-        if (t.readGate !== null) yield* Deferred.await(t.readGate);
-        if (t.threadReadFaults > 0) {
-          t.threadReadFaults -= 1;
-          return yield* new PortReadError({ threadId: t.id, cause: "thread read fault" });
-        }
-        return t.deleted
-          ? null
-          : { projectId: t.projectId, title: t.title, archived: t.archived, readOnly: t.readOnly };
-      }),
-    send: (input) =>
-      Effect.gen(function* () {
-        const t = yield* thread(input.threadId);
-        t.sends.push({ commandId: input.commandId, messageId: input.messageId, text: input.text });
-        if (t.archived) {
-          return yield* new PortRejected({
-            threadId: t.id,
-            reason: `Thread ${t.id} is archived and cannot receive messages.`,
-          });
-        }
-        const fault = t.faults.shift();
-        if (fault?.type === "reject") {
-          return yield* new PortRejected({ threadId: t.id, reason: fault.reason });
-        }
-        if (fault?.type === "lose") {
-          return yield* new PortUnknown({ threadId: t.id, cause: "lost" });
-        }
-        if (t.commitGate !== null) yield* Deferred.await(t.commitGate);
-        const run = yield* commit(t, input.commandId, input.messageId, input.text);
-        if (t.sendReached !== null) yield* Deferred.succeed(t.sendReached, undefined);
-        if (t.sendGate !== null) yield* Deferred.await(t.sendGate);
-        if (fault?.type === "commit-silently") {
-          return yield* new PortUnknown({ threadId: t.id, cause: "response lost" });
-        }
-        if (fault?.type === "reject-late") {
-          return yield* new PortRejected({ threadId: t.id, reason: fault.reason });
-        }
-        return {
-          runId: run.id,
-          delivery: run.started ? ("started" as const) : ("queued" as const),
-        };
-      }),
+    thread: Effect.fn("groupChat.testkit.thread")(function* (threadId) {
+      const t = yield* thread(threadId);
+      if (t.readReached !== null) yield* Deferred.succeed(t.readReached, undefined);
+      if (t.readGate !== null) yield* Deferred.await(t.readGate);
+      if (t.threadReadFaults > 0) {
+        t.threadReadFaults -= 1;
+        return yield* new PortReadError({ threadId: t.id, cause: "thread read fault" });
+      }
+      return t.deleted
+        ? null
+        : { projectId: t.projectId, title: t.title, archived: t.archived, readOnly: t.readOnly };
+    }),
+    send: Effect.fn("groupChat.testkit.send")(function* (input) {
+      const t = yield* thread(input.threadId);
+      t.sends.push({ commandId: input.commandId, messageId: input.messageId, text: input.text });
+      if (t.archived) {
+        return yield* new PortRejected({
+          threadId: t.id,
+          reason: `Thread ${t.id} is archived and cannot receive messages.`,
+        });
+      }
+      const fault = t.faults.shift();
+      if (fault?.type === "reject") {
+        return yield* new PortRejected({ threadId: t.id, reason: fault.reason });
+      }
+      if (fault?.type === "lose") {
+        return yield* new PortUnknown({ threadId: t.id, cause: "lost" });
+      }
+      if (t.commitGate !== null) yield* Deferred.await(t.commitGate);
+      const run = yield* commit(t, input.commandId, input.messageId, input.text);
+      if (t.sendReached !== null) yield* Deferred.succeed(t.sendReached, undefined);
+      if (t.sendGate !== null) yield* Deferred.await(t.sendGate);
+      if (fault?.type === "commit-silently") {
+        return yield* new PortUnknown({ threadId: t.id, cause: "response lost" });
+      }
+      if (fault?.type === "reject-late") {
+        return yield* new PortRejected({ threadId: t.id, reason: fault.reason });
+      }
+      return {
+        runId: run.id,
+        delivery: run.started ? ("started" as const) : ("queued" as const),
+      };
+    }),
     findMessage: (input) =>
       Effect.map(thread(input.threadId), (t) => {
         const run = t.runs.find((candidate) => candidate.messageId === input.messageId);
@@ -352,18 +353,17 @@ export const makeFakeThreads = Effect.sync(() => {
         const run = t.runs.find((candidate) => candidate.id === input.runId);
         return Effect.succeed(run === undefined ? null : view(latest(t, run)));
       }),
-    awaitRun: (input) =>
-      Effect.gen(function* () {
-        const t = yield* thread(input.threadId);
-        let current = t.runs.find((candidate) => candidate.id === input.runId);
-        if (current === undefined) return null;
-        for (;;) {
-          yield* Deferred.await(current.ended);
-          const next = latest(t, current);
-          if (next.id === current.id) return view(current);
-          current = next;
-        }
-      }),
+    awaitRun: Effect.fn("groupChat.testkit.awaitRun")(function* (input) {
+      const t = yield* thread(input.threadId);
+      let current = t.runs.find((candidate) => candidate.id === input.runId);
+      if (current === undefined) return null;
+      for (;;) {
+        yield* Deferred.await(current.ended);
+        const next = latest(t, current);
+        if (next.id === current.id) return view(current);
+        current = next;
+      }
+    }),
     readReply: (input) =>
       Effect.map(thread(input.threadId), (t) => {
         const run = t.runs.find((candidate) => candidate.id === input.runId);
@@ -391,48 +391,44 @@ export const makeFakeThreads = Effect.sync(() => {
       Effect.flatMap(thread(threadId), (t) =>
         Effect.map(PubSub.subscribe(t.changes), Stream.fromSubscription),
       ),
-    cancelQueued: (input) =>
-      Effect.gen(function* () {
-        const t = yield* thread(input.threadId);
-        if (t.cancelFaults > 0) {
-          t.cancelFaults -= 1;
-          return yield* new PortReadError({ threadId: t.id, cause: "cancel fault" });
-        }
-        const run = t.runs.find((candidate) => candidate.id === input.runId);
-        if (run === undefined || run.status !== "queued") return "started" as const;
-        yield* end(t, run, "cancelled", null);
-        return "cancelled" as const;
-      }),
-    settle: (threadId) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        if (t.settleRefusal !== null) {
-          return yield* new PortRefused({ threadId, action: "settle", reason: t.settleRefusal });
-        }
-        t.settled = true;
-      }),
-    unsettle: (threadId) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        if (t.settleRefusal !== null) {
-          return yield* new PortRefused({ threadId, action: "unsettle", reason: t.settleRefusal });
-        }
-        t.settled = false;
-      }),
-    respond: (input) =>
-      Effect.gen(function* () {
-        const t = yield* thread(input.threadId);
-        if (t.pending?._tag !== "question" || t.pending.requestId !== input.requestId) {
-          return yield* new PortRefused({
-            threadId: t.id,
-            action: "answer",
-            reason: "The pending user-input request was not found.",
-          });
-        }
-        t.responses.push({ requestId: input.requestId, answers: input.answers });
-        t.pending = null;
-        yield* signal(t);
-      }),
+    cancelQueued: Effect.fn("groupChat.testkit.cancelQueued")(function* (input) {
+      const t = yield* thread(input.threadId);
+      if (t.cancelFaults > 0) {
+        t.cancelFaults -= 1;
+        return yield* new PortReadError({ threadId: t.id, cause: "cancel fault" });
+      }
+      const run = t.runs.find((candidate) => candidate.id === input.runId);
+      if (run === undefined || run.status !== "queued") return "started" as const;
+      yield* end(t, run, "cancelled", null);
+      return "cancelled" as const;
+    }),
+    settle: Effect.fn("groupChat.testkit.settle")(function* (threadId) {
+      const t = yield* thread(threadId);
+      if (t.settleRefusal !== null) {
+        return yield* new PortRefused({ threadId, action: "settle", reason: t.settleRefusal });
+      }
+      t.settled = true;
+    }),
+    unsettle: Effect.fn("groupChat.testkit.unsettle")(function* (threadId) {
+      const t = yield* thread(threadId);
+      if (t.settleRefusal !== null) {
+        return yield* new PortRefused({ threadId, action: "unsettle", reason: t.settleRefusal });
+      }
+      t.settled = false;
+    }),
+    respond: Effect.fn("groupChat.testkit.respond")(function* (input) {
+      const t = yield* thread(input.threadId);
+      if (t.pending?._tag !== "question" || t.pending.requestId !== input.requestId) {
+        return yield* new PortRefused({
+          threadId: t.id,
+          action: "answer",
+          reason: "The pending user-input request was not found.",
+        });
+      }
+      t.responses.push({ requestId: input.requestId, answers: input.answers });
+      t.pending = null;
+      yield* signal(t);
+    }),
   };
 
   const fake: FakeThreads = {
@@ -440,23 +436,26 @@ export const makeFakeThreads = Effect.sync(() => {
     thread,
     start: (threadId, runId) =>
       Effect.flatMap(thread(threadId), (t) => startRun(t, runOf(t, runId))),
-    startOwnRun: (threadId, text = "own work", options = {}) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        const run = yield* newRun({
-          messageId: (options.idlePing
-            ? `server:thread-workflow-idle:${threadId}:w1:0:1`
-            : `message:own-${runCount + 1}`) as MessageId,
-          text,
-          started: true,
-          queueHeld: false,
-          continuationOf: null,
-          own: false,
-        });
-        t.runs.push(run);
-        yield* signal(t);
-        return run;
-      }),
+    startOwnRun: Effect.fn("groupChat.testkit.startOwnRun")(function* (
+      threadId,
+      text = "own work",
+      options = {},
+    ) {
+      const t = yield* thread(threadId);
+      const run = yield* newRun({
+        messageId: (options.idlePing
+          ? `server:thread-workflow-idle:${threadId}:w1:0:1`
+          : `message:own-${runCount + 1}`) as MessageId,
+        text,
+        started: true,
+        queueHeld: false,
+        continuationOf: null,
+        own: false,
+      });
+      t.runs.push(run);
+      yield* signal(t);
+      return run;
+    }),
     complete: (threadId, runId, reply, streaming = false) =>
       Effect.flatMap(thread(threadId), (t) =>
         end(t, runOf(t, runId), "completed", reply, streaming),
@@ -477,56 +476,58 @@ export const makeFakeThreads = Effect.sync(() => {
         runOf(t, runId).text = text;
         return signal(t);
       }),
-    restart: (threadId, runId) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        const cut = runOf(t, runId);
-        cut.status = "cancelled";
-        yield* Deferred.succeed(cut.ended, undefined);
-        const continuation = yield* newRun({
-          messageId: cut.messageId,
-          text: cut.text,
-          started: true,
-          queueHeld: false,
-          continuationOf: cut.id,
-          own: cut.own,
-        });
-        t.runs.push(continuation);
-        yield* signal(t);
-        return continuation;
-      }),
-    hold: (threadId, held) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        t.held = held;
-        for (const run of t.runs) if (run.status === "queued") run.queueHeld = held;
-        yield* signal(t);
-        yield* startNextQueued(t);
-      }),
-    ask: (threadId, requestId, question, options = [], multiSelect = false) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        t.pending = {
-          _tag: "question",
-          requestId: requestId as RuntimeRequestId,
-          questions: [
-            {
-              id: question,
-              header: "Question",
-              question,
-              options: options.map((label) => ({ label, description: null, value: null })),
-              multiSelect,
-            },
-          ],
-        };
-        yield* signal(t);
-      }),
-    askApproval: (threadId) =>
-      Effect.gen(function* () {
-        const t = yield* thread(threadId);
-        t.pending = { _tag: "approval" };
-        yield* signal(t);
-      }),
+    restart: Effect.fn("groupChat.testkit.restart")(function* (threadId, runId) {
+      const t = yield* thread(threadId);
+      const cut = runOf(t, runId);
+      cut.status = "cancelled";
+      yield* Deferred.succeed(cut.ended, undefined);
+      const continuation = yield* newRun({
+        messageId: cut.messageId,
+        text: cut.text,
+        started: true,
+        queueHeld: false,
+        continuationOf: cut.id,
+        own: cut.own,
+      });
+      t.runs.push(continuation);
+      yield* signal(t);
+      return continuation;
+    }),
+    hold: Effect.fn("groupChat.testkit.hold")(function* (threadId, held) {
+      const t = yield* thread(threadId);
+      t.held = held;
+      for (const run of t.runs) if (run.status === "queued") run.queueHeld = held;
+      yield* signal(t);
+      yield* startNextQueued(t);
+    }),
+    ask: Effect.fn("groupChat.testkit.ask")(function* (
+      threadId,
+      requestId,
+      question,
+      options = [],
+      multiSelect = false,
+    ) {
+      const t = yield* thread(threadId);
+      t.pending = {
+        _tag: "question",
+        requestId: requestId as RuntimeRequestId,
+        questions: [
+          {
+            id: question,
+            header: "Question",
+            question,
+            options: options.map((label) => ({ label, description: null, value: null })),
+            multiSelect,
+          },
+        ],
+      };
+      yield* signal(t);
+    }),
+    askApproval: Effect.fn("groupChat.testkit.askApproval")(function* (threadId) {
+      const t = yield* thread(threadId);
+      t.pending = { _tag: "approval" };
+      yield* signal(t);
+    }),
     sends: (threadId) => Effect.map(thread(threadId), (t) => t.sends),
   };
   return fake;
@@ -578,50 +579,46 @@ const FAST_EXTERNAL: ExternalDeliverySettings = {
   webhookPostTimeout: "300 millis",
 };
 
-export const boot = (
+export const boot = Effect.fn("groupChat.testkit.boot")(function* (
   fake: FakeThreads,
   baseDir: string,
   options: {
     readonly external?: Partial<ExternalDeliverySettings>;
     readonly exposed?: boolean;
   } = {},
-): Effect.Effect<App, never, Scope.Scope | NodeServices.NodeServices> =>
-  Effect.gen(function* () {
-    const layer = GroupChatLayer.layer.pipe(
-      Layer.provide(layerFakePort(fake)),
-      Layer.provide(Layer.succeed(RetryDelay, "10 millis")),
-      Layer.provide(
-        Layer.succeed(ExternalDeliveryConfig, { ...FAST_EXTERNAL, ...options.external }),
-      ),
-      Layer.provide(Reach.layerFixed({ exposed: options.exposed ?? false, origin: FAKE_ORIGIN })),
-      Layer.provide(FetchHttpClient.layer),
-      Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
-      Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
-    );
-    const scope = yield* Scope.make();
-    yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
-    const context = yield* Layer.buildWithScope(layer, scope).pipe(Effect.orDie);
-    const groupChat = Context.get(context, GroupChatLayer.GroupChat);
-    const engine = yield* groupChat.engine.pipe(Effect.orDie);
-    const store = yield* groupChat.store.pipe(Effect.orDie);
-    const subscription = yield* PubSub.subscribe(store.changes);
-    yield* engine.start;
-    const until: App["until"] = (read, predicate) =>
-      Effect.gen(function* () {
-        for (;;) {
-          const value = yield* read;
-          if (predicate(value)) return value;
-          yield* PubSub.take(subscription);
-        }
-      });
-    return {
-      engine,
-      store,
-      until,
-      dispatch: engine.dispatch,
-      shutdown: Scope.close(scope, Exit.void),
-    };
+): Effect.fn.Return<App, never, Scope.Scope | NodeServices.NodeServices> {
+  const layer = GroupChatLayer.layer.pipe(
+    Layer.provide(layerFakePort(fake)),
+    Layer.provide(Layer.succeed(RetryDelay, "10 millis")),
+    Layer.provide(Layer.succeed(ExternalDeliveryConfig, { ...FAST_EXTERNAL, ...options.external })),
+    Layer.provide(Reach.layerFixed({ exposed: options.exposed ?? false, origin: FAKE_ORIGIN })),
+    Layer.provide(FetchHttpClient.layer),
+    Layer.provide(Layer.fresh(ServerConfig.layerTest(process.cwd(), baseDir))),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} }))),
+  );
+  const scope = yield* Scope.make();
+  yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void));
+  const context = yield* Layer.buildWithScope(layer, scope).pipe(Effect.orDie);
+  const groupChat = Context.get(context, GroupChatLayer.GroupChat);
+  const engine = yield* groupChat.engine.pipe(Effect.orDie);
+  const store = yield* groupChat.store.pipe(Effect.orDie);
+  const subscription = yield* PubSub.subscribe(store.changes);
+  yield* engine.start;
+  const until: App["until"] = Effect.fn("groupChat.testkit.until")(function* (read, predicate) {
+    for (;;) {
+      const value = yield* read;
+      if (predicate(value)) return value;
+      yield* PubSub.take(subscription);
+    }
   });
+  return {
+    engine,
+    store,
+    until,
+    dispatch: engine.dispatch,
+    shutdown: Scope.close(scope, Exit.void),
+  };
+});
 
 export const tempBaseDir = Effect.flatMap(FileSystem.FileSystem, (fileSystem) =>
   fileSystem.makeTempDirectoryScoped({ prefix: "t3-group-chat-" }),

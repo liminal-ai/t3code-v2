@@ -110,16 +110,18 @@ const holdOrigins = (heldRunIds: ReadonlyArray<RunId>) => {
   };
 };
 
-const readHoldHistory = (threadId: ThreadId, heldRunIds: ReadonlyArray<RunId>) =>
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    const origins = holdOrigins(heldRunIds);
-    const runEvents: Array<RunEventRow> = [];
-    let before = Number.MAX_SAFE_INTEGER;
-    let read = 0;
-    let limit = FIRST_BATCH;
-    while (!origins.resolved && read < STREAM_CAP) {
-      const batch = yield* sql<StreamRow>`
+const readHoldHistory = Effect.fn("heldQueueResumer.readHoldHistory")(function* (
+  threadId: ThreadId,
+  heldRunIds: ReadonlyArray<RunId>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const origins = holdOrigins(heldRunIds);
+  const runEvents: Array<RunEventRow> = [];
+  let before = Number.MAX_SAFE_INTEGER;
+  let read = 0;
+  let limit = FIRST_BATCH;
+  while (!origins.resolved && read < STREAM_CAP) {
+    const batch = yield* sql<StreamRow>`
         SELECT
           sequence,
           event_type,
@@ -139,24 +141,24 @@ const readHoldHistory = (threadId: ThreadId, heldRunIds: ReadonlyArray<RunId>) =
         ORDER BY sequence DESC
         LIMIT ${Math.min(limit, STREAM_CAP - read)}
       `;
-      if (batch.length === 0) break;
-      limit = Math.min(limit * 2, LARGEST_BATCH);
-      for (const row of batch) {
-        before = row.sequence;
-        read += 1;
-        if (
-          row.run_id === null ||
-          (row.event_type !== "run.created" && row.event_type !== "run.updated") ||
-          (row.event_type === "run.updated" && row.queue_held === null)
-        )
-          continue;
-        const event: RunEventRow = { ...row, event_type: row.event_type, run_id: row.run_id };
-        origins.note(event);
-        runEvents.push(event);
-      }
+    if (batch.length === 0) break;
+    limit = Math.min(limit * 2, LARGEST_BATCH);
+    for (const row of batch) {
+      before = row.sequence;
+      read += 1;
+      if (
+        row.run_id === null ||
+        (row.event_type !== "run.created" && row.event_type !== "run.updated") ||
+        (row.event_type === "run.updated" && row.queue_held === null)
+      )
+        continue;
+      const event: RunEventRow = { ...row, event_type: row.event_type, run_id: row.run_id };
+      origins.note(event);
+      runEvents.push(event);
     }
-    return { runEvents: runEvents.toReversed(), complete: origins.resolved } satisfies HoldHistory;
-  }).pipe(NodeSqliteClient.readOnly);
+  }
+  return { runEvents: runEvents.toReversed(), complete: origins.resolved } satisfies HoldHistory;
+}, NodeSqliteClient.readOnly);
 
 const holdFromRow = (row: RunEventRow): HoldSource =>
   row.command_id === null
@@ -295,22 +297,21 @@ const make = Effect.gen(function* () {
       Effect.map((rows) => rows[0]?.effect_id),
     );
 
-  const quiet = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      while (true) {
-        const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
-        const pending = yield* pendingContinuation(threadId);
-        if (pending !== undefined) {
-          yield* outbox.awaitSettled(pending);
-          continue;
-        }
-        const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
-        if (!runs.some((run) => ACTIVE.has(run.status))) return runs;
-        yield* orchestrator
-          .streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" })
-          .pipe(Stream.take(1), Stream.runDrain);
+  const quiet = Effect.fn("heldQueueResumer.quiet")(function* (threadId: ThreadId) {
+    while (true) {
+      const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
+      const pending = yield* pendingContinuation(threadId);
+      if (pending !== undefined) {
+        yield* outbox.awaitSettled(pending);
+        continue;
       }
-    });
+      const { runs } = yield* projections.getThreadRecords(threadId, ["runs"]);
+      if (!runs.some((run) => ACTIVE.has(run.status))) return runs;
+      yield* orchestrator
+        .streamStoredEventsFrom({ threadId, afterSequence, eventType: "run.updated" })
+        .pipe(Stream.take(1), Stream.runDrain);
+    }
+  });
 
   const parkedForUser = (shell: OrchestrationV2ThreadShell, now: DateTime.Utc) =>
     shell.archivedAt !== null ||
@@ -335,8 +336,8 @@ const make = Effect.gen(function* () {
         ),
       );
 
-  const admit = (held: RestartHeld): Effect.Effect<Outcome | RestartHeld> =>
-    Effect.gen(function* () {
+  const admit = Effect.fn("heldQueueResumer.admit")(
+    function* (held: RestartHeld) {
       const shell = yield* projections.getThreadShell(held.threadId);
       if (shell === null || shell.deletedAt !== null) return "needs-user" as const;
       const current = yield* settings.getSettings;
@@ -354,67 +355,72 @@ const make = Effect.gen(function* () {
       )
         return "stale" as const;
       return held;
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("held queue not admitted", { threadId: held.threadId, cause }).pipe(
-          Effect.as("refused" as const),
+    },
+    (effect, held) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("held queue not admitted", { threadId: held.threadId, cause }).pipe(
+            Effect.as("refused" as const),
+          ),
         ),
       ),
-    );
+  );
 
-  const decide = (held: RestartHeld, runs: ReadonlyArray<OrchestrationV2Run>) =>
-    Effect.gen(function* () {
-      const { threadId } = held;
-      const shell = yield* projections.getThreadShell(threadId);
-      if (shell === null || shell.deletedAt !== null) return "needs-user";
-      if (parkedForUser(shell, yield* DateTime.now) || (yield* secretOrStopAfterHold(held)))
-        return "needs-user";
-      const last = latestExecutedRun(runs);
-      if (last !== null && !ENDED_WELL.has(last.status))
-        return last.status === "cancelled"
-          ? "cut"
-          : last.status === "interrupted"
-            ? "stopped"
-            : "failed";
-      // Core writes this effect for a run it meant to continue. With nothing continuing the run,
-      // core declined when the effect ran, as it does past its chain cap.
-      if (
-        last !== null &&
-        Option.isSome(yield* outbox.get(`effect:restart-continuation:${last.id}`))
-      )
-        return "declined";
-      const queued = runs
-        .filter((run) => run.status === "queued")
-        .sort(
-          (left, right) =>
-            (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal),
-        );
-      const head = queued[0];
-      if (head === undefined || !queued.some((run) => run.queueHeld === true)) return "released";
-      yield* orchestrator.dispatch({
-        type: "queue.resume",
-        commandId: resumeCommandId({
-          threadId,
-          headRunId: head.id,
-          reconcileCommandId: held.reconcileCommandId,
-        }),
+  const decide = Effect.fn("heldQueueResumer.decide")(function* (
+    held: RestartHeld,
+    runs: ReadonlyArray<OrchestrationV2Run>,
+  ) {
+    const { threadId } = held;
+    const shell = yield* projections.getThreadShell(threadId);
+    if (shell === null || shell.deletedAt !== null) return "needs-user";
+    if (parkedForUser(shell, yield* DateTime.now) || (yield* secretOrStopAfterHold(held)))
+      return "needs-user";
+    const last = latestExecutedRun(runs);
+    if (last !== null && !ENDED_WELL.has(last.status))
+      return last.status === "cancelled"
+        ? "cut"
+        : last.status === "interrupted"
+          ? "stopped"
+          : "failed";
+    // Core writes this effect for a run it meant to continue. With nothing continuing the run,
+    // core declined when the effect ran, as it does past its chain cap.
+    if (last !== null && Option.isSome(yield* outbox.get(`effect:restart-continuation:${last.id}`)))
+      return "declined";
+    const queued = runs
+      .filter((run) => run.status === "queued")
+      .sort(
+        (left, right) =>
+          (left.queuePosition ?? left.ordinal) - (right.queuePosition ?? right.ordinal),
+      );
+    const head = queued[0];
+    if (head === undefined || !queued.some((run) => run.queueHeld === true)) return "released";
+    yield* orchestrator.dispatch({
+      type: "queue.resume",
+      commandId: resumeCommandId({
         threadId,
-      });
-      return "resumed" as Outcome;
+        headRunId: head.id,
+        reconcileCommandId: held.reconcileCommandId,
+      }),
+      threadId,
     });
+    return "resumed" as Outcome;
+  });
 
-  const release = (held: RestartHeld) =>
-    Effect.gen(function* () {
+  const release = Effect.fn("heldQueueResumer.release")(
+    function* (held: RestartHeld) {
       const from = yield* Clock.currentTimeMillis;
       const runs = yield* quiet(held.threadId);
       const waitedMs = (yield* Clock.currentTimeMillis) - from;
       const outcome = yield* decide(held, runs);
       yield* Effect.logInfo("held queue release", { threadId: held.threadId, outcome, waitedMs });
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logWarning("held queue not resumed", { threadId: held.threadId, cause }),
+    },
+    (effect, held) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("held queue not resumed", { threadId: held.threadId, cause }),
+        ),
       ),
-    );
+  );
 
   const scan = Effect.gen(function* () {
     const from = yield* Clock.currentTimeMillis;

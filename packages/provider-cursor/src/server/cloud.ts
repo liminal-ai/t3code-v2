@@ -221,39 +221,38 @@ export const linkCursorCloudPullRequests = Effect.fn("linkCursorCloudPullRequest
   if (input.urls.length === 0) return;
   let sessionId: string | null = null;
   let protocolVersion: string | null = null;
-  const send = (message: object) =>
-    Effect.gen(function* () {
-      const response = yield* Effect.tryPromise({
-        try: () =>
-          fetchImplementation(input.mcpSession.endpoint, {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              accept: "application/json, text/event-stream",
-              authorization: input.mcpSession.authorizationHeader,
-              ...(sessionId === null ? {} : { "mcp-session-id": sessionId }),
-              ...(protocolVersion === null ? {} : { "mcp-protocol-version": protocolVersion }),
-            },
-            body: JSON.stringify(message),
-          }),
-        catch: (cause) =>
-          new CursorCloudPullRequestLinkError({ detail: "T3 MCP request failed.", cause }),
-      });
-      sessionId = response.headers.get("mcp-session-id") ?? sessionId;
-      if (!response.ok) {
-        yield* discardResponseBody(response);
-        return yield* new CursorCloudPullRequestLinkError({
-          detail: `T3 MCP endpoint answered HTTP ${response.status}.`,
-        });
-      }
-      return yield* Stream.runCollect(
-        responsePayloads(
-          response,
-          (cause) =>
-            new CursorCloudPullRequestLinkError({ detail: "Unreadable T3 MCP response.", cause }),
-        ),
-      );
+  const send = Effect.fn("linkCursorCloudPullRequests.send")(function* (message: object) {
+    const response = yield* Effect.tryPromise({
+      try: () =>
+        fetchImplementation(input.mcpSession.endpoint, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            accept: "application/json, text/event-stream",
+            authorization: input.mcpSession.authorizationHeader,
+            ...(sessionId === null ? {} : { "mcp-session-id": sessionId }),
+            ...(protocolVersion === null ? {} : { "mcp-protocol-version": protocolVersion }),
+          },
+          body: JSON.stringify(message),
+        }),
+      catch: (cause) =>
+        new CursorCloudPullRequestLinkError({ detail: "T3 MCP request failed.", cause }),
     });
+    sessionId = response.headers.get("mcp-session-id") ?? sessionId;
+    if (!response.ok) {
+      yield* discardResponseBody(response);
+      return yield* new CursorCloudPullRequestLinkError({
+        detail: `T3 MCP endpoint answered HTTP ${response.status}.`,
+      });
+    }
+    return yield* Stream.runCollect(
+      responsePayloads(
+        response,
+        (cause) =>
+          new CursorCloudPullRequestLinkError({ detail: "Unreadable T3 MCP response.", cause }),
+      ),
+    );
+  });
 
   const initialized = yield* send({
     jsonrpc: "2.0",

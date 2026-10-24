@@ -21,20 +21,19 @@ export const builtInTemplates: ReadonlyMap<ThreadWorkflowTemplateId, ThreadWorkf
  * Compares the installed playbook with the hash the template was derived from. A stale template
  * still starts; the flag tells the user a fork sync changed the playbook under it.
  */
-export const freshness = (
+export const freshness = Effect.fn("threadWorkflow.templates.freshness")(function* (
   template: ThreadWorkflowTemplate,
   playbookDir: string,
-): Effect.Effect<ThreadWorkflowTemplateFreshness, never, FileSystem.FileSystem | Path.Path> =>
-  Effect.gen(function* () {
-    if (template.source === null) return "no-source";
-    const { sha256 } = template.source;
-    const fileSystem = yield* FileSystem.FileSystem;
-    const path = yield* Path.Path;
-    return yield* fileSystem.readFile(path.join(playbookDir, template.source.playbook)).pipe(
-      Effect.map((bytes) =>
-        NodeCrypto.createHash("sha256").update(bytes).digest("hex") === sha256 ? "fresh" : "stale",
-      ),
-      // Unreadable counts as missing: either way nothing installed vouches for the template.
-      Effect.orElseSucceed(() => "source-missing" as const),
-    );
-  });
+): Effect.fn.Return<ThreadWorkflowTemplateFreshness, never, FileSystem.FileSystem | Path.Path> {
+  if (template.source === null) return "no-source";
+  const { sha256 } = template.source;
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return yield* fileSystem.readFile(path.join(playbookDir, template.source.playbook)).pipe(
+    Effect.map((bytes) =>
+      NodeCrypto.createHash("sha256").update(bytes).digest("hex") === sha256 ? "fresh" : "stale",
+    ),
+    // Unreadable counts as missing: either way nothing installed vouches for the template.
+    Effect.orElseSucceed(() => "source-missing" as const),
+  );
+});

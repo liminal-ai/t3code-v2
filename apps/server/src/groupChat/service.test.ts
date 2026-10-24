@@ -1850,7 +1850,11 @@ it.live("Stop and removal cancel deliveries waiting to retry, and a restart rese
     const baseDir = yield* tempBaseDir;
     const external = { backoffBase: "300 millis", maxAttempts: 5 } as const;
     const app = yield* boot(fake, baseDir, { external });
-    const agent = yield* fakeAgent(() => ({ status: 503, body: '{"error":"down"}' }));
+    let status = 503;
+    const agent = yield* fakeAgent(() => ({
+      status,
+      body: JSON.stringify(status < 300 ? { reply: "back" } : { error: "down" }),
+    }));
     const { group, member } = yield* createGroup(app, "cancel pending", [alpha]);
     const x = yield* addRest(app, group.id, "xray", agent.url);
     const y = yield* addRest(app, group.id, "yank", agent.url);
@@ -1876,9 +1880,20 @@ it.live("Stop and removal cancel deliveries waiting to retry, and a restart rese
 
     const sent = agent.calls.length;
     yield* app.shutdown;
+    status = 200;
     const again = yield* boot(fake, baseDir, { external });
-    yield* Effect.sleep("700 millis");
-    assert.strictEqual(agent.calls.length, sent, "nothing resent after Stop, removal or restart");
+    // xray's lane sends in order, so a new envelope going out means nothing older went first.
+    const probe = yield* send(again, group.id, "after restart", [x.id]);
+    const probed = yield* chatDelivery(
+      again,
+      x.id,
+      (d) => d.triggerMessageId === probe.id && d.state === "replied",
+    );
+    assert.deepStrictEqual(
+      agent.calls.slice(sent).map((call) => call.headers["idempotency-key"]),
+      [probed.id],
+      "nothing resent after Stop, removal or restart",
+    );
     const open = yield* again.store.openDeliveriesOfGroup(group.id);
     assert.deepStrictEqual(
       open.filter((d) => d.state === "pending"),

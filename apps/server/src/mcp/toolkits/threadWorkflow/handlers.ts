@@ -35,28 +35,27 @@ const parseRequest = (raw: unknown) =>
  * instance. The tool stays listed either way, so a missing capability is a refusal
  * the agent can read, not a tool that vanished.
  */
-const callingThread = (operation: string) =>
-  Effect.gen(function* () {
-    const scope = yield* McpInvocationContext.McpInvocationContext;
-    const { thread } = yield* McpInvocationContext.requireThreadScope(scope, operation);
-    if (!scope.capabilities.has("thread-workflow")) {
-      return yield* new ThreadWorkflowError({
-        code: "disabled",
-        message:
-          "Thread workflows are turned off on this server and this thread has none open, so the thread_workflow tools do nothing here. The user can turn them on with threadWorkflowsEnabled in the server settings.",
-      });
-    }
-    const threads = yield* ThreadManagementService.ThreadManagementService;
-    const shell = yield* threads.getThreadShell(thread.threadId).pipe(Effect.mapError(unavailable));
-    const actor: ThreadWorkflowActor = {
-      _tag: "agent",
-      threadId: thread.threadId,
-      providerInstanceId: thread.providerInstanceId,
-      providerSessionId: ProviderSessionId.make(thread.providerSessionId),
-      ...(shell?.activeRunId == null ? {} : { runId: shell.activeRunId }),
-    };
-    return { threadId: thread.threadId, actor };
-  });
+const callingThread = Effect.fn("threadWorkflow.mcp.callingThread")(function* (operation: string) {
+  const scope = yield* McpInvocationContext.McpInvocationContext;
+  const { thread } = yield* McpInvocationContext.requireThreadScope(scope, operation);
+  if (!scope.capabilities.has("thread-workflow")) {
+    return yield* new ThreadWorkflowError({
+      code: "disabled",
+      message:
+        "Thread workflows are turned off on this server and this thread has none open, so the thread_workflow tools do nothing here. The user can turn them on with threadWorkflowsEnabled in the server settings.",
+    });
+  }
+  const threads = yield* ThreadManagementService.ThreadManagementService;
+  const shell = yield* threads.getThreadShell(thread.threadId).pipe(Effect.mapError(unavailable));
+  const actor: ThreadWorkflowActor = {
+    _tag: "agent",
+    threadId: thread.threadId,
+    providerInstanceId: thread.providerInstanceId,
+    providerSessionId: ProviderSessionId.make(thread.providerSessionId),
+    ...(shell?.activeRunId == null ? {} : { runId: shell.activeRunId }),
+  };
+  return { threadId: thread.threadId, actor };
+});
 
 const needed = <T>(value: T | undefined, name: string, action: string) =>
   value === undefined
@@ -113,42 +112,40 @@ const changeRequest = (
 const layerHandlers = Effect.gen(function* () {
   const service = yield* ThreadWorkflowService.ThreadWorkflowService;
 
-  const agentView = (
+  const agentView = Effect.fn("threadWorkflow.mcp.agentView")(function* (
     threadId: ThreadId,
     instanceId?: ThreadWorkflowInstanceId,
-  ): Effect.Effect<ThreadWorkflowAgentView, ThreadWorkflowError> =>
-    Effect.gen(function* () {
-      const [view, state] = yield* Effect.all([service.view(threadId), service.state(threadId)]);
-      const focusId = instanceId ?? view.activeInstanceId;
-      const instance = view.instances.find((candidate) => candidate.id === focusId) ?? null;
-      if (instanceId !== undefined && instance === null) {
-        return yield* new ThreadWorkflowError({
-          code: "unknown_instance",
-          message: `No workflow ${instanceId} on this thread. See them all: ${printedCall.get()}`,
-        });
-      }
-      return {
-        enabled: state.enabled,
-        revision: view.revision,
-        activeInstanceId: view.activeInstanceId,
-        corruption: view.corruption,
-        instance,
-        instances: state.view.instances,
-        templates: view.activeInstanceId === null ? yield* service.templates : [],
-        note: turnNote(state.view),
-      };
-    });
+  ): Effect.fn.Return<ThreadWorkflowAgentView, ThreadWorkflowError> {
+    const [view, state] = yield* Effect.all([service.view(threadId), service.state(threadId)]);
+    const focusId = instanceId ?? view.activeInstanceId;
+    const instance = view.instances.find((candidate) => candidate.id === focusId) ?? null;
+    if (instanceId !== undefined && instance === null) {
+      return yield* new ThreadWorkflowError({
+        code: "unknown_instance",
+        message: `No workflow ${instanceId} on this thread. See them all: ${printedCall.get()}`,
+      });
+    }
+    return {
+      enabled: state.enabled,
+      revision: view.revision,
+      activeInstanceId: view.activeInstanceId,
+      corruption: view.corruption,
+      instance,
+      instances: state.view.instances,
+      templates: view.activeInstanceId === null ? yield* service.templates : [],
+      note: turnNote(state.view),
+    };
+  });
 
-  const applyThenView = (
+  const applyThenView = Effect.fn("threadWorkflow.mcp.applyThenView")(function* (
     raw: unknown,
     options: ThreadWorkflowService.ThreadWorkflowApplyOptions,
     operation: string,
-  ) =>
-    Effect.gen(function* () {
-      const { threadId, actor } = yield* callingThread(operation);
-      yield* service.apply(actor, threadId, yield* parseRequest(raw), options);
-      return yield* agentView(threadId);
-    });
+  ) {
+    const { threadId, actor } = yield* callingThread(operation);
+    yield* service.apply(actor, threadId, yield* parseRequest(raw), options);
+    return yield* agentView(threadId);
+  });
 
   return {
     thread_workflow_get: McpToolAccess.readsAsCaller((params) =>

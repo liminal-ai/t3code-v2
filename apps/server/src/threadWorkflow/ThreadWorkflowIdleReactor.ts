@@ -92,28 +92,30 @@ const make = Effect.gen(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
 
   // Core's own picture of the thread: anything in flight or parked means not idle.
-  const runStartedAtIfIdle = (shell: OrchestrationV2ThreadShell, nowMs: number) =>
-    Effect.gen(function* () {
-      if (
-        shell.deletedAt !== null ||
-        shell.archivedAt !== null ||
-        shell.settledAt !== null ||
-        shell.settledOverride === "settled" ||
-        shell.lineage.parentThreadId !== null ||
-        shell.activeRunId !== null ||
-        shell.pendingRuntimeRequest !== null
-      ) {
-        return null;
-      }
-      const snoozedUntil = millis(shell.snoozedUntil);
-      if (snoozedUntil !== null && snoozedUntil > nowMs) return null;
-      const { runs } = yield* projections.getThreadRecords(shell.id, ["runs"]);
-      if (runs.some((run) => run.status === "queued")) return null;
-      return millis(shell.latestRunStartedAt) ?? 0;
-    });
+  const runStartedAtIfIdle = Effect.fn("threadWorkflow.idleReactor.runStartedAtIfIdle")(function* (
+    shell: OrchestrationV2ThreadShell,
+    nowMs: number,
+  ) {
+    if (
+      shell.deletedAt !== null ||
+      shell.archivedAt !== null ||
+      shell.settledAt !== null ||
+      shell.settledOverride === "settled" ||
+      shell.lineage.parentThreadId !== null ||
+      shell.activeRunId !== null ||
+      shell.pendingRuntimeRequest !== null
+    ) {
+      return null;
+    }
+    const snoozedUntil = millis(shell.snoozedUntil);
+    if (snoozedUntil !== null && snoozedUntil > nowMs) return null;
+    const { runs } = yield* projections.getThreadRecords(shell.id, ["runs"]);
+    if (runs.some((run) => run.status === "queued")) return null;
+    return millis(shell.latestRunStartedAt) ?? 0;
+  });
 
-  const ping = (threadId: ThreadId, candidate: QuietInstance, nowMs: number) =>
-    Effect.gen(function* () {
+  const ping = Effect.fn("threadWorkflow.idleReactor.ping")(
+    function* (threadId: ThreadId, candidate: QuietInstance, nowMs: number) {
       if (nowMs - candidate.lastRecordAt < QUIET_PERIOD_MS) return;
       const shell = yield* projections.getThreadShell(threadId);
       if (shell === null) return;
@@ -152,11 +154,14 @@ const make = Effect.gen(function* () {
         createdBy: "agent",
         creationSource: "server",
       });
-    }).pipe(
-      Effect.catchCause((cause) =>
-        Effect.logDebug("thread workflow idle ping not sent", { threadId, cause }),
+    },
+    (effect, threadId) =>
+      effect.pipe(
+        Effect.catchCause((cause) =>
+          Effect.logDebug("thread workflow idle ping not sent", { threadId, cause }),
+        ),
       ),
-    );
+  );
 
   const scan = Effect.gen(function* () {
     const current = yield* settings.getSettings;
