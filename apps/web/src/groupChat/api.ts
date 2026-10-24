@@ -54,32 +54,31 @@ const notServedByT3 = {
   message: "Group chat works only on the T3 server that serves this page.",
 } as const satisfies GroupChatSnapshotState;
 
-const fetchSnapshot = (prepared: PreparedConnection) =>
-  Effect.gen(function* () {
-    const client = yield* makeEnvironmentHttpApiGroupClient(prepared.httpBaseUrl, "groupChat");
-    const authorization = prepared.httpAuthorization;
-    if (authorization?._tag === "Dpop") return notServedByT3;
-    const request = client
-      .snapshot({
-        headers: authorization === null ? {} : { authorization: `Bearer ${authorization.token}` },
-      })
-      .pipe(
-        Effect.map((snapshot): GroupChatSnapshotState => ({ status: "ready", ...snapshot })),
-        Effect.catchTags({
-          GroupChatUnavailable: (error) =>
-            Effect.succeed<GroupChatSnapshotState>({ status: "unavailable", reason: error.reason }),
-        }),
-      );
-    return yield* executeEnvironmentHttpRequest(
-      makeEnvironmentHttpApiUrlBuilder(prepared.httpBaseUrl).groupChat.snapshot(),
-      SNAPSHOT_TIMEOUT_MS,
-      authorization === null
-        ? request.pipe(
-            Effect.provideService(FetchHttpClient.RequestInit, { credentials: "include" }),
-          )
-        : request,
+const fetchSnapshot = Effect.fn("groupChat.api.fetchSnapshot")(function* (
+  prepared: PreparedConnection,
+) {
+  const client = yield* makeEnvironmentHttpApiGroupClient(prepared.httpBaseUrl, "groupChat");
+  const authorization = prepared.httpAuthorization;
+  if (authorization?._tag === "Dpop") return notServedByT3;
+  const request = client
+    .snapshot({
+      headers: authorization === null ? {} : { authorization: `Bearer ${authorization.token}` },
+    })
+    .pipe(
+      Effect.map((snapshot): GroupChatSnapshotState => ({ status: "ready", ...snapshot })),
+      Effect.catchTags({
+        GroupChatUnavailable: (error) =>
+          Effect.succeed<GroupChatSnapshotState>({ status: "unavailable", reason: error.reason }),
+      }),
     );
-  });
+  return yield* executeEnvironmentHttpRequest(
+    makeEnvironmentHttpApiUrlBuilder(prepared.httpBaseUrl).groupChat.snapshot(),
+    SNAPSHOT_TIMEOUT_MS,
+    authorization === null
+      ? request.pipe(Effect.provideService(FetchHttpClient.RequestInit, { credentials: "include" }))
+      : request,
+  );
+});
 
 const groupChatSnapshotAtom = connectionAtomRuntime.atom((get) => {
   const environmentId = get(primaryEnvironmentIdAtom);

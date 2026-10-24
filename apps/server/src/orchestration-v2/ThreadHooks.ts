@@ -69,19 +69,18 @@ export const HOOK_DEADLINE: Duration.Input = "2 seconds";
  * waited for, so an uninterruptible region inside it runs to its end unobserved, and its result
  * is never read. Interrupting the caller does the same.
  */
-export const withinDeadline = <A, E, R>(
+export const withinDeadline = Effect.fn("threadHooks.withinDeadline")(function* <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   deadline: Duration.Input,
-): Effect.Effect<Option.Option<Exit.Exit<A, E>>, never, R> =>
-  Effect.gen(function* () {
-    const fiber = yield* Effect.forkDetach(effect);
-    const stop = Effect.asVoid(Effect.forkDetach(Fiber.interrupt(fiber)));
-    return yield* Fiber.await(fiber).pipe(
-      Effect.timeoutOption(deadline),
-      Effect.tap((result) => (Option.isNone(result) ? stop : Effect.void)),
-      Effect.onInterrupt(() => stop),
-    );
-  });
+): Effect.fn.Return<Option.Option<Exit.Exit<A, E>>, never, R> {
+  const fiber = yield* Effect.forkDetach(effect);
+  const stop = Effect.asVoid(Effect.forkDetach(Fiber.interrupt(fiber)));
+  return yield* Fiber.await(fiber).pipe(
+    Effect.timeoutOption(deadline),
+    Effect.tap((result) => (Option.isNone(result) ? stop : Effect.void)),
+    Effect.onInterrupt(() => stop),
+  );
+});
 
 /**
  * Makes `effect` total and bounded: it answers by `deadline`, and a typed failure, a defect or

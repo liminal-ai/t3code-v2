@@ -417,29 +417,30 @@ const make = Effect.gen(function* () {
     candidate.status === "running" ||
     candidate.status === "waiting";
 
-  const blockingRun: GroupChatThreadPort["Service"]["blockingRun"] = (input) =>
-    Effect.gen(function* () {
-      const projection = yield* records(
-        input.threadId,
-        ["runs", "nodes", "runtimeRequests", "turnItems"],
-        { turnItemTypes: ["user_input_request"] },
-      );
-      const active = projection.runs
-        .toSorted((a, b) => b.ordinal - a.ordinal)
-        .find((candidate) => candidate.id !== input.runId && isActive(candidate));
-      if (active === undefined) return null;
-      const kind: PortBlockingKind = active.userMessageId.startsWith(GROUP_CHAT_MESSAGE_PREFIX)
-        ? "group_envelope"
-        : active.restartContinuationOfRunId !== undefined
-          ? "continuation"
-          : active.userMessageId.startsWith(IDLE_PING_PREFIX)
-            ? "idle_ping"
-            : "own_run";
-      const nodeIds = new Set(
-        projection.nodes.filter((node) => node.runId === active.id).map((node) => node.id),
-      );
-      return { kind, runId: active.id, pending: pendingInputOf(projection, nodeIds) };
-    });
+  const blockingRun: GroupChatThreadPort["Service"]["blockingRun"] = Effect.fn(
+    "groupChat.threadPort.blockingRun",
+  )(function* (input) {
+    const projection = yield* records(
+      input.threadId,
+      ["runs", "nodes", "runtimeRequests", "turnItems"],
+      { turnItemTypes: ["user_input_request"] },
+    );
+    const active = projection.runs
+      .toSorted((a, b) => b.ordinal - a.ordinal)
+      .find((candidate) => candidate.id !== input.runId && isActive(candidate));
+    if (active === undefined) return null;
+    const kind: PortBlockingKind = active.userMessageId.startsWith(GROUP_CHAT_MESSAGE_PREFIX)
+      ? "group_envelope"
+      : active.restartContinuationOfRunId !== undefined
+        ? "continuation"
+        : active.userMessageId.startsWith(IDLE_PING_PREFIX)
+          ? "idle_ping"
+          : "own_run";
+    const nodeIds = new Set(
+      projection.nodes.filter((node) => node.runId === active.id).map((node) => node.id),
+    );
+    return { kind, runId: active.id, pending: pendingInputOf(projection, nodeIds) };
+  });
 
   const pendingRequest: GroupChatThreadPort["Service"]["pendingRequest"] = (threadId) =>
     records(threadId, ["runtimeRequests", "turnItems"], {
@@ -475,60 +476,64 @@ const make = Effect.gen(function* () {
       ),
     );
 
-  const cancelQueued: GroupChatThreadPort["Service"]["cancelQueued"] = (input) =>
-    Effect.gen(function* () {
-      const id = yield* commandId("cancel", input.threadId, input.runId);
-      return yield* threads
-        .dispatch({
-          type: "queued-run.cancel",
-          commandId: id,
-          threadId: input.threadId,
-          runId: input.runId,
-        })
-        .pipe(
-          Effect.as("cancelled" as const),
-          Effect.catchTags({
-            OrchestratorDispatchError: () => Effect.succeed("started" as const),
-          }),
-          Effect.mapError(readError(input.threadId)),
-        );
-    });
+  const cancelQueued: GroupChatThreadPort["Service"]["cancelQueued"] = Effect.fn(
+    "groupChat.threadPort.cancelQueued",
+  )(function* (input) {
+    const id = yield* commandId("cancel", input.threadId, input.runId);
+    return yield* threads
+      .dispatch({
+        type: "queued-run.cancel",
+        commandId: id,
+        threadId: input.threadId,
+        runId: input.runId,
+      })
+      .pipe(
+        Effect.as("cancelled" as const),
+        Effect.catchTags({
+          OrchestratorDispatchError: () => Effect.succeed("started" as const),
+        }),
+        Effect.mapError(readError(input.threadId)),
+      );
+  });
 
-  const settle: GroupChatThreadPort["Service"]["settle"] = (threadId) =>
-    Effect.gen(function* () {
+  const settle: GroupChatThreadPort["Service"]["settle"] = Effect.fn("groupChat.threadPort.settle")(
+    function* (threadId) {
       const id = yield* commandId("settle", threadId);
       yield* dispatch(
         threadId,
         "settle",
         threads.settleThread({ threadId, commandId: id, byOwnAgent: false }),
       );
-    });
+    },
+  );
 
-  const unsettle: GroupChatThreadPort["Service"]["unsettle"] = (threadId) =>
-    Effect.gen(function* () {
-      const id = yield* commandId("unsettle", threadId);
-      yield* dispatch(
-        threadId,
-        "unsettle",
-        threads.dispatch({ type: "thread.unsettle", commandId: id, threadId, reason: "user" }),
-      );
-    });
+  const unsettle: GroupChatThreadPort["Service"]["unsettle"] = Effect.fn(
+    "groupChat.threadPort.unsettle",
+  )(function* (threadId) {
+    const id = yield* commandId("unsettle", threadId);
+    yield* dispatch(
+      threadId,
+      "unsettle",
+      threads.dispatch({ type: "thread.unsettle", commandId: id, threadId, reason: "user" }),
+    );
+  });
 
-  const respond: GroupChatThreadPort["Service"]["respond"] = (input) =>
-    Effect.gen(function* () {
-      const id = yield* commandId("respond", input.threadId, input.requestId);
-      yield* dispatch(
-        input.threadId,
-        "answer",
-        threads.dispatch({
-          type: "runtime-request.respond",
-          commandId: id,
-          threadId: input.threadId,
-          requestId: input.requestId,
-          answers: input.answers,
-        }),
-      );
-    });
+  const respond: GroupChatThreadPort["Service"]["respond"] = Effect.fn(
+    "groupChat.threadPort.respond",
+  )(function* (input) {
+    const id = yield* commandId("respond", input.threadId, input.requestId);
+    yield* dispatch(
+      input.threadId,
+      "answer",
+      threads.dispatch({
+        type: "runtime-request.respond",
+        commandId: id,
+        threadId: input.threadId,
+        requestId: input.requestId,
+        answers: input.answers,
+      }),
+    );
+  });
 
   return GroupChatThreadPort.of({
     environmentId: identity.getEnvironmentId,

@@ -747,45 +747,41 @@ const makeWrites = (
         : Effect.succeed(value),
     );
   return {
-    createGroup: (title) =>
-      Effect.gen(function* () {
-        const id = GroupChatGroupId.make(newId("grp"));
-        const at = yield* now;
-        yield* sql`
+    createGroup: Effect.fn("groupChat.store.createGroup")(function* (title) {
+      const id = GroupChatGroupId.make(newId("grp"));
+      const at = yield* now;
+      yield* sql`
           INSERT INTO groups (id, title, created_at, last_activity_at)
           VALUES (${id}, ${title}, ${at}, ${at})
         `;
-        const group = yield* stored("group", reads.group(id));
-        emit({ _tag: "group", group });
-        return group;
-      }),
-    updateGroup: (id, patch) =>
-      Effect.gen(function* () {
-        const current = yield* stored("group", reads.group(id));
-        if (patch.title !== undefined) {
-          yield* sql`UPDATE groups SET title = ${patch.title} WHERE id = ${id}`;
-        }
-        if (patch.settled !== undefined && patch.settled !== (current.settledAt !== null)) {
-          const settledAt = patch.settled ? yield* now : null;
-          yield* sql`UPDATE groups SET settled_at = ${settledAt} WHERE id = ${id}`;
-        }
-        const group = yield* stored("group", reads.group(id));
-        emit({ _tag: "group", group });
-        return group;
-      }),
-    deleteGroup: (id) =>
-      Effect.gen(function* () {
-        yield* sql`DELETE FROM groups WHERE id = ${id}`;
-        emit({ _tag: "group.deleted", groupId: id });
-      }),
-    addMember: (input) =>
-      Effect.gen(function* () {
-        const id = GroupChatMemberId.make(newId("mem"));
-        const at = yield* now;
-        const thread = input.source._tag === "t3" ? input.source.thread : null;
-        const external =
-          input.source._tag === "t3" ? null : encodeExternalSecrets(input.source.external);
-        yield* sql`
+      const group = yield* stored("group", reads.group(id));
+      emit({ _tag: "group", group });
+      return group;
+    }),
+    updateGroup: Effect.fn("groupChat.store.updateGroup")(function* (id, patch) {
+      const current = yield* stored("group", reads.group(id));
+      if (patch.title !== undefined) {
+        yield* sql`UPDATE groups SET title = ${patch.title} WHERE id = ${id}`;
+      }
+      if (patch.settled !== undefined && patch.settled !== (current.settledAt !== null)) {
+        const settledAt = patch.settled ? yield* now : null;
+        yield* sql`UPDATE groups SET settled_at = ${settledAt} WHERE id = ${id}`;
+      }
+      const group = yield* stored("group", reads.group(id));
+      emit({ _tag: "group", group });
+      return group;
+    }),
+    deleteGroup: Effect.fn("groupChat.store.deleteGroup")(function* (id) {
+      yield* sql`DELETE FROM groups WHERE id = ${id}`;
+      emit({ _tag: "group.deleted", groupId: id });
+    }),
+    addMember: Effect.fn("groupChat.store.addMember")(function* (input) {
+      const id = GroupChatMemberId.make(newId("mem"));
+      const at = yield* now;
+      const thread = input.source._tag === "t3" ? input.source.thread : null;
+      const external =
+        input.source._tag === "t3" ? null : encodeExternalSecrets(input.source.external);
+      yield* sql`
           INSERT INTO members (
             id, group_id, handle, color, kind, environment_id, thread_id, thread_title,
             external_json, added_at
@@ -795,64 +791,62 @@ const makeWrites = (
             ${external}, ${at}
           )
         `;
-        const member = yield* stored("member", reads.member(id));
-        emit({ _tag: "member", member });
-        return member;
-      }),
-    updateMember: (id, patch) =>
-      Effect.gen(function* () {
-        const current = yield* stored("member", reads.member(id));
-        if (patch.handle !== undefined && patch.handle !== current.handle) {
-          const history = encodeStrings(
-            [
-              ...current.handleHistory.filter((h) => h !== current.handle && h !== patch.handle),
-              current.handle,
-            ].slice(-10),
-          );
-          yield* sql`
+      const member = yield* stored("member", reads.member(id));
+      emit({ _tag: "member", member });
+      return member;
+    }),
+    updateMember: Effect.fn("groupChat.store.updateMember")(function* (id, patch) {
+      const current = yield* stored("member", reads.member(id));
+      if (patch.handle !== undefined && patch.handle !== current.handle) {
+        const history = encodeStrings(
+          [
+            ...current.handleHistory.filter((h) => h !== current.handle && h !== patch.handle),
+            current.handle,
+          ].slice(-10),
+        );
+        yield* sql`
             UPDATE members SET handle = ${patch.handle}, handle_history_json = ${history}
             WHERE id = ${id}
           `;
-        }
-        if (patch.color !== undefined) {
-          yield* sql`UPDATE members SET color = ${patch.color} WHERE id = ${id}`;
-        }
-        if (patch.threadTitle !== undefined) {
-          yield* sql`UPDATE members SET thread_title = ${patch.threadTitle} WHERE id = ${id}`;
-        }
-        if (patch.seenSeq !== undefined) {
-          yield* sql`
+      }
+      if (patch.color !== undefined) {
+        yield* sql`UPDATE members SET color = ${patch.color} WHERE id = ${id}`;
+      }
+      if (patch.threadTitle !== undefined) {
+        yield* sql`UPDATE members SET thread_title = ${patch.threadTitle} WHERE id = ${id}`;
+      }
+      if (patch.seenSeq !== undefined) {
+        yield* sql`
             UPDATE members SET seen_seq = MAX(seen_seq, ${patch.seenSeq}) WHERE id = ${id}
           `;
-        }
-        if (patch.introduced !== undefined) {
-          yield* sql`UPDATE members SET introduced = ${patch.introduced ? 1 : 0} WHERE id = ${id}`;
-        }
-        if (patch.toldRoster !== undefined) {
-          const roster = encodeRoster(patch.toldRoster);
-          yield* sql`UPDATE members SET told_roster_json = ${roster} WHERE id = ${id}`;
-        }
-        if (patch.removed !== undefined) {
-          const removedAt = patch.removed ? yield* now : null;
-          yield* sql`UPDATE members SET removed_at = ${removedAt} WHERE id = ${id}`;
-        }
-        const member = yield* stored("member", reads.member(id));
-        emit({ _tag: "member", member });
-        return member;
-      }),
+      }
+      if (patch.introduced !== undefined) {
+        yield* sql`UPDATE members SET introduced = ${patch.introduced ? 1 : 0} WHERE id = ${id}`;
+      }
+      if (patch.toldRoster !== undefined) {
+        const roster = encodeRoster(patch.toldRoster);
+        yield* sql`UPDATE members SET told_roster_json = ${roster} WHERE id = ${id}`;
+      }
+      if (patch.removed !== undefined) {
+        const removedAt = patch.removed ? yield* now : null;
+        yield* sql`UPDATE members SET removed_at = ${removedAt} WHERE id = ${id}`;
+      }
+      const member = yield* stored("member", reads.member(id));
+      emit({ _tag: "member", member });
+      return member;
+    }),
     touchMember: (id) =>
       Effect.map(reads.member(id), (member) => {
         if (member !== null) emit({ _tag: "member", member });
       }),
-    appendMessage: (input) =>
-      Effect.gen(function* () {
-        const id = GroupChatMessageId.make(newId("msg"));
-        const [next] = yield* sql<{ readonly seq: number }>`
+    appendMessage: Effect.fn("groupChat.store.appendMessage")(function* (input) {
+      const id = GroupChatMessageId.make(newId("msg"));
+      const [next] = yield* sql<{ readonly seq: number }>`
           SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM messages WHERE group_id = ${input.groupId}
         `;
-        const seq = next?.seq ?? 1;
-        const at = yield* now;
-        yield* sql`
+      const seq = next?.seq ?? 1;
+      const at = yield* now;
+      yield* sql`
           INSERT INTO messages (
             id, group_id, seq, author_json, kind, text, display_text, recipients_json, turn_key,
             trigger_message_id, discussion_id, round, sign_off, late, created_at
@@ -863,18 +857,17 @@ const makeWrites = (
             ${input.round ?? null}, ${input.signOff ? 1 : 0}, ${input.late ? 1 : 0}, ${at}
           )
         `;
-        yield* sql`UPDATE groups SET last_activity_at = ${at} WHERE id = ${input.groupId}`;
-        const message = yield* stored("message", reads.message(id));
-        emit({ _tag: "message", message });
-        emit({ _tag: "group", group: yield* stored("group", reads.group(input.groupId)) });
-        return message;
-      }),
-    insertDelivery: (input) =>
-      Effect.gen(function* () {
-        const id = GroupChatDeliveryId.make(newId("dlv"));
-        const at = yield* now;
-        const wait = input.wait === null ? null : encodeWait(input.wait);
-        yield* sql`
+      yield* sql`UPDATE groups SET last_activity_at = ${at} WHERE id = ${input.groupId}`;
+      const message = yield* stored("message", reads.message(id));
+      emit({ _tag: "message", message });
+      emit({ _tag: "group", group: yield* stored("group", reads.group(input.groupId)) });
+      return message;
+    }),
+    insertDelivery: Effect.fn("groupChat.store.insertDelivery")(function* (input) {
+      const id = GroupChatDeliveryId.make(newId("dlv"));
+      const at = yield* now;
+      const wait = input.wait === null ? null : encodeWait(input.wait);
+      yield* sql`
           INSERT INTO deliveries (
             id, group_id, member_id, trigger_message_id, turn_key, discussion_id, round,
             state, dispatch, to_seq, wait_json, created_at, updated_at
@@ -884,19 +877,18 @@ const makeWrites = (
             ${wait}, ${at}, ${at}
           )
         `;
-        const delivery = yield* stored("delivery", reads.delivery(id));
-        emit({ _tag: "delivery", delivery });
-        return delivery;
-      }),
-    updateDelivery: (id, patch) =>
-      Effect.gen(function* () {
-        const current = yield* stored("delivery", reads.delivery(id));
-        const next = { ...current, ...patch };
-        const at = yield* now;
-        const wait = next.wait === null ? null : encodeWait(next.wait);
-        const roster = next.roster === null ? null : encodeRoster(next.roster);
-        const external = next.external === null ? null : encodeExternalDelivery(next.external);
-        yield* sql`
+      const delivery = yield* stored("delivery", reads.delivery(id));
+      emit({ _tag: "delivery", delivery });
+      return delivery;
+    }),
+    updateDelivery: Effect.fn("groupChat.store.updateDelivery")(function* (id, patch) {
+      const current = yield* stored("delivery", reads.delivery(id));
+      const next = { ...current, ...patch };
+      const at = yield* now;
+      const wait = next.wait === null ? null : encodeWait(next.wait);
+      const roster = next.roster === null ? null : encodeRoster(next.roster);
+      const external = next.external === null ? null : encodeExternalDelivery(next.external);
+      yield* sql`
           UPDATE deliveries SET
             state = ${next.state}, dispatch = ${next.dispatch}, attempt = ${next.attempt},
             envelope = ${next.envelope}, from_seq = ${next.fromSeq}, run_id = ${next.runId},
@@ -906,14 +898,13 @@ const makeWrites = (
             updated_at = ${at}
           WHERE id = ${id}
         `;
-        const delivery = yield* stored("delivery", reads.delivery(id));
-        emit({ _tag: "delivery", delivery });
-        return delivery;
-      }),
-    insertDiscussion: (input) =>
-      Effect.gen(function* () {
-        const at = yield* now;
-        yield* sql`
+      const delivery = yield* stored("delivery", reads.delivery(id));
+      emit({ _tag: "delivery", delivery });
+      return delivery;
+    }),
+    insertDiscussion: Effect.fn("groupChat.store.insertDiscussion")(function* (input) {
+      const at = yield* now;
+      yield* sql`
           INSERT INTO discussions (
             id, group_id, participants_json, topic, max_rounds, round, state, end_reason,
             prompt_message_id, signed_off_json, created_at
@@ -923,61 +914,57 @@ const makeWrites = (
             ${input.promptMessageId}, ${encodeSignedOff(input.signedOff)}, ${at}
           )
         `;
-        const discussion = yield* stored("discussion", reads.discussion(input.id));
-        emit({ _tag: "discussion", discussion });
-        return discussion;
-      }),
-    pauseLane: (threadId) =>
-      Effect.gen(function* () {
-        const pausedAt = yield* now;
-        yield* sql`
+      const discussion = yield* stored("discussion", reads.discussion(input.id));
+      emit({ _tag: "discussion", discussion });
+      return discussion;
+    }),
+    pauseLane: Effect.fn("groupChat.store.pauseLane")(function* (threadId) {
+      const pausedAt = yield* now;
+      yield* sql`
           INSERT INTO lanes (thread_id, paused_at) VALUES (${threadId}, ${pausedAt})
           ON CONFLICT(thread_id) DO UPDATE SET paused_at = excluded.paused_at
         `;
-      }),
+    }),
     resumeLane: (threadId) => Effect.asVoid(sql`DELETE FROM lanes WHERE thread_id = ${threadId}`),
-    insertCancel: (input) =>
-      Effect.gen(function* () {
-        const runId = "runId" in input ? input.runId : null;
-        const messageId = "messageId" in input ? input.messageId : null;
-        const inFlight = "inFlight" in input && input.inFlight ? 1 : 0;
-        const id = `${input.threadId}:${runId ?? `message:${messageId}`}`;
-        const at = yield* now;
-        yield* sql`
+    insertCancel: Effect.fn("groupChat.store.insertCancel")(function* (input) {
+      const runId = "runId" in input ? input.runId : null;
+      const messageId = "messageId" in input ? input.messageId : null;
+      const inFlight = "inFlight" in input && input.inFlight ? 1 : 0;
+      const id = `${input.threadId}:${runId ?? `message:${messageId}`}`;
+      const at = yield* now;
+      yield* sql`
           INSERT OR IGNORE INTO cancels (id, thread_id, run_id, message_id, in_flight, created_at)
           VALUES (${id}, ${input.threadId}, ${runId}, ${messageId}, ${inFlight}, ${at})
         `;
-      }),
-    landCancel: (input) =>
-      Effect.gen(function* () {
-        const waiting = yield* sql<{ readonly id: string }>`
+    }),
+    landCancel: Effect.fn("groupChat.store.landCancel")(function* (input) {
+      const waiting = yield* sql<{ readonly id: string }>`
           SELECT id FROM cancels
           WHERE thread_id = ${input.threadId} AND message_id = ${input.messageId} AND in_flight = 1
         `;
-        const row = waiting[0];
-        if (row === undefined) return false;
-        yield* sql`
+      const row = waiting[0];
+      if (row === undefined) return false;
+      yield* sql`
           UPDATE cancels SET in_flight = 0, run_id = ${input.runId} WHERE id = ${row.id}
         `;
-        return true;
-      }),
+      return true;
+    }),
     landAllCancels: Effect.asVoid(sql`UPDATE cancels SET in_flight = 0 WHERE in_flight = 1`),
     deleteCancel: (id) => Effect.asVoid(sql`DELETE FROM cancels WHERE id = ${id}`),
-    updateDiscussion: (id, patch) =>
-      Effect.gen(function* () {
-        const current = yield* stored("discussion", reads.discussion(id));
-        const next = { ...current, ...patch };
-        const endedAt = next.state === "ended" ? (current.endedAt ?? (yield* now)) : null;
-        yield* sql`
+    updateDiscussion: Effect.fn("groupChat.store.updateDiscussion")(function* (id, patch) {
+      const current = yield* stored("discussion", reads.discussion(id));
+      const next = { ...current, ...patch };
+      const endedAt = next.state === "ended" ? (current.endedAt ?? (yield* now)) : null;
+      yield* sql`
           UPDATE discussions SET
             round = ${next.round}, state = ${next.state}, end_reason = ${next.endReason},
             signed_off_json = ${encodeSignedOff(next.signedOff)}, ended_at = ${endedAt}
           WHERE id = ${id}
         `;
-        const discussion = yield* stored("discussion", reads.discussion(id));
-        emit({ _tag: "discussion", discussion });
-        return discussion;
-      }),
+      const discussion = yield* stored("discussion", reads.discussion(id));
+      emit({ _tag: "discussion", discussion });
+      return discussion;
+    }),
   };
 };
 

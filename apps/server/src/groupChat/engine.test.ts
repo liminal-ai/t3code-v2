@@ -6,6 +6,7 @@ import {
   type GroupChatMemberId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
 import * as Tracer from "effect/Tracer";
@@ -952,20 +953,23 @@ it.live("a REST reply is stored in the same transaction as its acceptance", () =
     const rest = yield* addExternal(app, group.id, "rest", "rest", agent.url);
     const changes = yield* PubSub.subscribe(app.store.changes);
     const seen: Array<string> = [];
+    const repliedSeen = yield* Deferred.make<void>();
     yield* Effect.forkScoped(
       Effect.forever(
-        Effect.map(PubSub.take(changes), ({ change }) => {
-          if (change._tag === "delivery") {
-            seen.push(
-              `${change.delivery.memberId} ${change.delivery.state}/${change.delivery.dispatch}`,
-            );
-          }
+        Effect.flatMap(PubSub.take(changes), ({ change }) => {
+          if (change._tag !== "delivery") return Effect.void;
+          seen.push(
+            `${change.delivery.memberId} ${change.delivery.state}/${change.delivery.dispatch}`,
+          );
+          return change.delivery.memberId === rest.id && change.delivery.state === "replied"
+            ? Deferred.succeed(repliedSeen, undefined)
+            : Effect.void;
         }),
       ),
     );
     yield* send(app, group.id, "hi", [rest.id]);
-    yield* deliveryOf(app, rest.id, (d) => d.state === "replied");
-    yield* Effect.sleep("100 millis");
+    // Changes arrive in order, so once the reply's change is seen every earlier one is too.
+    yield* Deferred.await(repliedSeen);
     const states = seen.filter((s) => s.startsWith(rest.id)).map((s) => s.split(" ")[1]!);
     assert.notInclude(
       states,

@@ -10,7 +10,7 @@ import ChatMarkdown from "../components/ChatMarkdown";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import { cn } from "../lib/utils";
-import { formatTimestamp } from "../timestampFormat";
+import { formatShortTimestamp } from "../timestampFormat";
 import { DeliveryChip } from "./DeliveryStatus";
 import { lateLabel, type RoundDivider, roundDivider } from "./discussion/discussionView";
 import { MemberLabel } from "./MemberChip";
@@ -42,7 +42,7 @@ function Collapsible({ text, render }: { text: string; render: (text: string) =>
   );
 }
 
-const clock = (iso: string) => formatTimestamp(iso, "locale");
+const clock = (iso: string) => formatShortTimestamp(iso, "locale");
 
 export function OperatorMessage({
   message,

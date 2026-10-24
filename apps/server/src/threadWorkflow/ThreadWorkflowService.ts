@@ -129,17 +129,16 @@ const make = Effect.gen(function* () {
     freshness: template.source === null ? "no-source" : "source-missing",
   }));
 
-  const stateOf = (threadId: ThreadId) =>
-    Effect.gen(function* () {
-      const [current, flag] = yield* Effect.all([store.state(threadId), enabled]);
-      const view = toSubscriptionView(current);
-      return {
-        enabled: flag,
-        visible: flag || view.corruption !== null || view.activeInstanceId !== null,
-        unavailable: store.unavailable,
-        view,
-      } satisfies ThreadWorkflowSubscriptionState;
-    });
+  const stateOf = Effect.fn("threadWorkflow.service.stateOf")(function* (threadId: ThreadId) {
+    const [current, flag] = yield* Effect.all([store.state(threadId), enabled]);
+    const view = toSubscriptionView(current);
+    return {
+      enabled: flag,
+      visible: flag || view.corruption !== null || view.activeInstanceId !== null,
+      unavailable: store.unavailable,
+      view,
+    } satisfies ThreadWorkflowSubscriptionState;
+  });
 
   /** A dependency that does not answer in time fails the request instead of holding the lock. */
   const awaited = <A, E>(

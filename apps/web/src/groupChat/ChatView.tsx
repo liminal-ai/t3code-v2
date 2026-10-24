@@ -8,7 +8,7 @@ import type {
   GroupChatMessage,
   GroupChatMessageId,
 } from "@t3tools/contracts";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   TYPE_TO_FOCUS_EDITABLE_SELECTOR,
@@ -198,16 +198,12 @@ export function ChatView({
   const [dismissed, setDismissed] = useState(() => readDismissed(groupId));
   if (dismissed.groupId !== groupId) setDismissed(readDismissed(groupId));
   const panel = panelDiscussion(view, dismissed.id);
-  const rows = useMemo(() => timelineRows(view), [view]);
-  const turns = useMemo(() => turnsOf(view), [view]);
-  const byTrigger = useMemo(() => deliveriesByTrigger(view), [view]);
-  const activeMembers = useMemo(
-    () =>
-      [...view.members.values()]
-        .filter((m) => m.removedAt === null)
-        .sort((a, b) => a.addedAt.localeCompare(b.addedAt)),
-    [view.members],
-  );
+  const rows = timelineRows(view);
+  const turns = turnsOf(view);
+  const byTrigger = deliveriesByTrigger(view);
+  const activeMembers = [...view.members.values()]
+    .filter((m) => m.removedAt === null)
+    .sort((a, b) => a.addedAt.localeCompare(b.addedAt));
 
   useEffect(() => {
     if (flashId === null) return;
@@ -242,19 +238,15 @@ export function ChatView({
     setDismissed({ groupId, id: panel.id });
   };
 
-  const renderItem = useMemo(
-    () =>
-      makeRenderItem({
-        members: view.members,
-        messages: view.messages,
-        discussions: view.discussions,
-        turns,
-        byTrigger,
-        flashId,
-        jumpTo,
-      }),
-    [view.members, view.messages, view.discussions, turns, byTrigger, flashId, jumpTo],
-  );
+  const renderItem = makeRenderItem({
+    members: view.members,
+    messages: view.messages,
+    discussions: view.discussions,
+    turns,
+    byTrigger,
+    flashId,
+    jumpTo,
+  });
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">

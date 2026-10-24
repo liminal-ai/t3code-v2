@@ -10,7 +10,7 @@ import ChatMarkdown from "../../components/ChatMarkdown";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
-import { formatTimestamp } from "../../timestampFormat";
+import { formatShortTimestamp } from "../../timestampFormat";
 import { PendingReply } from "../DeliveryStatus";
 import { lateLabel } from "../discussion/discussionView";
 import { memberColor } from "../MemberChip";
@@ -74,7 +74,7 @@ function Collapsible({ text, markdown }: { readonly text: string; readonly markd
   );
 }
 
-const clock = (iso: string) => formatTimestamp(iso, "locale");
+const clock = (iso: string) => formatShortTimestamp(iso, "locale");
 
 export interface LaneCardProps {
   readonly message: GroupChatMessage;

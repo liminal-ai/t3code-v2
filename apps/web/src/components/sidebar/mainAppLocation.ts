@@ -1,5 +1,5 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect } from "react";
+import { useEffect } from "react";
 
 export function isSidebarUtilityPage(pathname: string) {
   return (
@@ -56,5 +56,5 @@ export function MainAppLocationTracker() {
 
 export function useNavigateToMainApp() {
   const navigate = useNavigate();
-  return useCallback(() => navigate({ href: mainAppReturnHref() }), [navigate]);
+  return () => navigate({ href: mainAppReturnHref() });
 }

@@ -93,6 +93,8 @@ export class ProjectThreadsBlockedError extends Schema.TaggedError<ProjectThread
   }
 }
 
+const isProjectThreadsBlockedError = Schema.is(ProjectThreadsBlockedError);
+
 export class ProjectOperationError extends Schema.TaggedError<ProjectOperationError>()(
   "ProjectOperationError",
   {
@@ -502,7 +504,7 @@ export const make = Effect.gen(function* () {
           )
           .pipe(
             Effect.mapError((cause) =>
-              Schema.is(ProjectThreadsBlockedError)(cause)
+              isProjectThreadsBlockedError(cause)
                 ? cause
                 : new ProjectOperationError({ operation: "delete-thread", projectId, cause }),
             ),

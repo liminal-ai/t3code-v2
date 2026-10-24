@@ -4,7 +4,7 @@ import type {
   GroupChatMessage,
   GroupChatMessageId,
 } from "@t3tools/contracts";
-import { type RefObject, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { type RefObject, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import { isCommandPaletteOpen } from "../../commandPaletteBus";
 import { Button } from "../../components/ui/button";
@@ -452,7 +452,7 @@ function LaneDivider({
 }
 
 export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: GroupView }) {
-  const model = useMemo(() => buildModel(view), [view]);
+  const model = buildModel(view);
   const [mode, setMode] = useState<AlignMode>(readMode);
   const [selected, setSelected] = useState<Selection | null>(null);
   const [spacers, setSpacers] = useState<Spacers>(new Map());
@@ -492,17 +492,12 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
 
   const selection = selected !== null && model.turnByKey.has(selected.turnKey) ? selected : null;
   const turn = selection === null ? null : model.turnByKey.get(selection.turnKey)!;
-  const focus: Focus = useMemo(() => {
-    const colorOf = (memberId: GroupChatMemberId) => {
-      const member = view.members.get(memberId);
-      return member === undefined ? "var(--muted-foreground)" : memberColor(member.color);
-    };
-    return focusFor(model, selection, colorOf, ACCENT);
-  }, [model, selection, view.members]);
-  const lightIndex = useMemo(
-    () => new Map(focus.lightOrder.map((id, index) => [id, index] as const)),
-    [focus.lightOrder],
-  );
+  const colorOf = (memberId: GroupChatMemberId) => {
+    const member = view.members.get(memberId);
+    return member === undefined ? "var(--muted-foreground)" : memberColor(member.color);
+  };
+  const focus: Focus = focusFor(model, selection, colorOf, ACCENT);
+  const lightIndex = new Map(focus.lightOrder.map((id, index) => [id, index] as const));
 
   const selectMessage = useStableCallback((message: GroupChatMessage) => {
     setSelected({ turnKey: message.turnKey, messageId: message.id });

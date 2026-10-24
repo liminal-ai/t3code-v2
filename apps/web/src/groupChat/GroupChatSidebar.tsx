@@ -1,7 +1,7 @@
 import { useLocation, useNavigate } from "@tanstack/react-router";
 import type { GroupChatGroup, GroupChatMember } from "@t3tools/contracts";
 import { PlusIcon } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useState } from "react";
 
 import { SidebarUtilityMenu } from "../components/sidebar/SidebarChrome";
 import { ThreadHoverCard, ThreadHoverCardPopup } from "../components/ThreadHoverCard";
@@ -117,13 +117,10 @@ function GroupList({
   const navigate = useNavigate();
   const pathname = useLocation({ select: (location) => location.pathname });
   const { isMobile, setOpenMobile } = useSidebar();
-  const openGroup = useCallback(
-    (groupId: GroupChatGroup["id"]) => {
-      if (isMobile) setOpenMobile(false);
-      void navigate({ to: "/group-chat/$groupId", params: { groupId } });
-    },
-    [isMobile, navigate, setOpenMobile],
-  );
+  const openGroup = (groupId: GroupChatGroup["id"]) => {
+    if (isMobile) setOpenMobile(false);
+    void navigate({ to: "/group-chat/$groupId", params: { groupId } });
+  };
   return (
     <SidebarMenu>
       {groups.map((group) => (
