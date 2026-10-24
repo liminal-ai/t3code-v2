@@ -31,7 +31,7 @@ import { THREAD_WORKFLOW_FIELD_LIMITS, type ThreadWorkflowFormIntent } from "./t
  */
 export type StepPhase = "done" | "current" | "upcoming" | "skipped" | "removed";
 
-export function stepPhase(
+function stepPhase(
   step: Pick<ThreadWorkflowStepSummary, "id" | "state">,
   instance: Pick<ThreadWorkflowInstanceSummary, "currentStepId">,
 ): StepPhase {
