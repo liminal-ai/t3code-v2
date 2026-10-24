@@ -17,11 +17,7 @@ function FreshnessBadge({ freshness }: { freshness: ThreadWorkflowTemplateSummar
     case "fresh":
       return null;
     case "no-source":
-      return (
-        <Badge variant="outline" size="sm">
-          no playbook
-        </Badge>
-      );
+      return null;
     case "stale":
       return (
         <Badge variant="warning" size="sm">
@@ -97,7 +93,7 @@ export function ThreadWorkflowStart({
             <span className="font-medium text-sm">{template.title}</span>
             <FreshnessBadge freshness={template.freshness} />
             <span className="ms-auto text-muted-foreground text-xs">
-              {template.stepCount} steps · v{template.version}
+              {template.stepCount} {template.stepCount === 1 ? "step" : "steps"}
             </span>
           </div>
           <p className="text-muted-foreground text-xs">{template.description}</p>

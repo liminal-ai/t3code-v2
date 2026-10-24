@@ -2,9 +2,6 @@ import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/threa
 import {
   activeThreadWorkflowInstance,
   deriveThreadWorkflowAsks,
-  threadWorkflowProgress,
-  threadWorkflowStepNumbers,
-  type ThreadWorkflowProgress,
 } from "@t3tools/client-runtime/state/thread-workflow";
 import type {
   ScopedThreadRef,
@@ -12,7 +9,6 @@ import type {
   ThreadWorkflowInstanceSummary,
   ThreadWorkflowRequest,
   ThreadWorkflowStepId,
-  ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
 import { TriangleAlertIcon } from "lucide-react";
 import { useState, type ReactNode } from "react";
@@ -24,39 +20,15 @@ import { Skeleton } from "~/components/ui/skeleton";
 import { useEnvironmentQuery } from "~/state/query";
 import { threadWorkflowStateAtom } from "~/state/threadWorkflow";
 import { ThreadWorkflowActivity } from "./ThreadWorkflowActivity";
-import { ThreadWorkflowChecklistLayout } from "./ThreadWorkflowChecklistLayout";
-import { ThreadWorkflowFocusLayout } from "./ThreadWorkflowFocusLayout";
 import { ThreadWorkflowForm } from "./ThreadWorkflowForm";
 import { threadWorkflowFormStepId, type ThreadWorkflowFormIntent } from "./threadWorkflowForms";
-import {
-  ThreadWorkflowHeader,
-  ThreadWorkflowInstanceList,
-  ThreadWorkflowLayoutToggle,
-} from "./ThreadWorkflowHeader";
-import { useThreadWorkflowLayoutStore } from "./threadWorkflowLayoutStore";
+import { ThreadWorkflowHeader, ThreadWorkflowInstanceList } from "./ThreadWorkflowHeader";
 import { ThreadWorkflowStart } from "./ThreadWorkflowStart";
+import { ThreadWorkflowStepList } from "./ThreadWorkflowStepList";
 import { ThreadWorkflowStrip } from "./ThreadWorkflowStrip";
 import { useThreadWorkflowActions } from "./useThreadWorkflowActions";
 
-/**
- * What a layout gets. It arranges these and owns nothing else, so deleting one is one file. The
- * header, with the instance's close, abandon and reopen calls, sits above the layout, so no layout
- * can drop it.
- */
-export interface ThreadWorkflowLayoutProps {
-  readonly threadRef: ScopedThreadRef;
-  readonly view: ThreadWorkflowSubscriptionView;
-  readonly instance: ThreadWorkflowInstanceSummary;
-  readonly stepNumbers: ReadonlyMap<ThreadWorkflowStepId, number>;
-  readonly progress: ThreadWorkflowProgress;
-  readonly disabled: boolean;
-  /** The step the open form belongs to, or null for an instance-level form or none. */
-  readonly formStepId: ThreadWorkflowStepId | null;
-  readonly onOpenForm: (intent: ThreadWorkflowFormIntent) => void;
-  readonly renderForm: () => ReactNode;
-  readonly instanceList: ReactNode;
-  readonly renderActivity: (open: boolean, onOpenChange: (open: boolean) => void) => ReactNode;
-}
+const UNDO_REASON = "Undone from the Workflow tab";
 
 function formTitle(
   intent: ThreadWorkflowFormIntent,
@@ -72,15 +44,6 @@ function formTitle(
     return instance.steps.slice(index + 1).find((step) => step.state._tag === "open") ?? null;
   };
   switch (intent.kind) {
-    case "tick":
-      return {
-        title: (
-          <>
-            Tick <b>{stepTitle(intent.stepId)}</b> as you
-          </>
-        ),
-        hint: "Recorded as you, now. The agent sees it at its next turn start.",
-      };
     case "skip": {
       const next = nextAfter(intent.stepId);
       return {
@@ -90,8 +53,8 @@ function formTitle(
           </>
         ),
         hint: next
-          ? `The current step moves to ${next.title}.`
-          : "No open step remains after this one.",
+          ? `The current stage moves to ${next.title}.`
+          : "No open stage remains after it.",
       };
     }
     case "remove":
@@ -111,8 +74,8 @@ function formTitle(
           </>
         ),
         hint: intent.target.includes(".")
-          ? "The step goes back to open."
-          : "The workflow becomes the thread's active one again.",
+          ? "The stage goes back to open."
+          : "The workflow becomes the thread's open one again.",
       };
     case "comment":
       return {
@@ -127,12 +90,12 @@ function formTitle(
       return {
         title:
           intent.after === "end" ? (
-            "Insert a step at the end"
+            "Add a stage at the end"
           ) : intent.after === "top" ? (
-            "Insert a step at the top"
+            "Add a stage at the top"
           ) : (
             <>
-              Insert a step after <b>{stepTitle(intent.after)}</b>
+              Add a stage after <b>{stepTitle(intent.after)}</b>
             </>
           ),
         hint: null,
@@ -156,7 +119,7 @@ function formTitle(
             ),
             hint:
               unresolved > 0
-                ? `${unresolved} ${unresolved === 1 ? "step is" : "steps are"} still open. Abandoning records your reason and frees the thread.`
+                ? `${unresolved} ${unresolved === 1 ? "stage is" : "stages are"} still open. Abandoning records your reason and frees the thread.`
                 : "The thread can settle once no workflow is open.",
           };
     }
@@ -179,11 +142,13 @@ export function ThreadWorkflowPanel({
 }) {
   const query = useEnvironmentQuery(threadWorkflowStateAtom(threadRef));
   const state = query.data;
-  const layout = useThreadWorkflowLayoutStore((store) => store.layout);
   const actions = useThreadWorkflowActions(threadRef, state?.view.revision ?? 0);
   const [viewedInstanceId, setViewedInstanceId] = useState<ThreadWorkflowInstanceId | null>(null);
   const [form, setForm] = useState<ThreadWorkflowFormIntent | null>(null);
   const [starting, setStarting] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
+  // The step the user just marked done here. Undo shows on it until the next write.
+  const [undoStepId, setUndoStepId] = useState<ThreadWorkflowStepId | null>(null);
 
   const view = state?.view ?? null;
   const active = view === null ? null : activeThreadWorkflowInstance(view);
@@ -196,18 +161,24 @@ export function ThreadWorkflowPanel({
         null);
   const corrupt = view !== null && view.corruption !== null;
   const disabled = !actions.canOperate || actions.busy || corrupt;
-  const asks = deriveThreadWorkflowAsks({ pendingUserInputs, view });
+  const asks = deriveThreadWorkflowAsks(pendingUserInputs);
   const formStepId = threadWorkflowFormStepId(form);
-  // The strip renders the tick form for a waits-for-user step itself, so the layout must not.
-  const stripOwnsForm =
-    form?.kind === "tick" && asks.some((ask) => ask.kind === "step" && ask.step.id === form.stepId);
 
   const submit = async (request: ThreadWorkflowRequest) => {
     const accepted = await actions.submit(request);
-    if (!accepted) return;
+    if (!accepted) return false;
     setForm(null);
+    setUndoStepId(request._tag === "tick" ? request.stepId : null);
     if (request._tag === "start") setStarting(false);
     if (request._tag === "reopen" && !request.target.includes(".")) setViewedInstanceId(null);
+    return true;
+  };
+  const markDone = (stepId: ThreadWorkflowStepId, note: string) => {
+    const comment = note.trim();
+    void submit({ _tag: "tick", stepId, ...(comment.length === 0 ? {} : { comment }) });
+  };
+  const undo = (stepId: ThreadWorkflowStepId) => {
+    void submit({ _tag: "reopen", target: stepId, reason: UNDO_REASON });
   };
   const openForm = (intent: ThreadWorkflowFormIntent) => {
     actions.dismissFailure();
@@ -302,9 +273,6 @@ export function ThreadWorkflowPanel({
     if (instance === null || (active === null && starting)) {
       body = (
         <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-end">
-            <ThreadWorkflowLayoutToggle />
-          </div>
           {corruption}
           {recoverForm}
           {corrupt ? null : (
@@ -318,7 +286,6 @@ export function ThreadWorkflowPanel({
           {currentView.instances.length > 0 ? (
             <ThreadWorkflowInstanceList
               view={currentView}
-              viewedInstanceId={null}
               disabled={disabled}
               onView={(instanceId) => {
                 viewInstance(instanceId);
@@ -331,53 +298,37 @@ export function ThreadWorkflowPanel({
         </div>
       );
     } else {
-      const layoutProps: ThreadWorkflowLayoutProps = {
-        threadRef,
-        view: currentView,
-        instance,
-        stepNumbers: threadWorkflowStepNumbers(instance.steps),
-        progress: threadWorkflowProgress(instance.steps),
-        disabled,
-        formStepId: stripOwnsForm ? null : formStepId,
-        onOpenForm: openForm,
-        renderForm,
-        instanceList: (
-          <ThreadWorkflowInstanceList
-            view={currentView}
-            viewedInstanceId={instance.id}
-            disabled={disabled}
-            onView={viewInstance}
-            onOpenForm={openForm}
-            onStartNew={() => setStarting(true)}
-          />
-        ),
-        renderActivity: (open, onOpenChange) => (
-          <ThreadWorkflowActivity
-            threadRef={threadRef}
-            instanceId={instance.id}
-            lastChangeAt={instance.lastChangeAt}
-            open={open}
-            onOpenChange={onOpenChange}
-          />
-        ),
-      };
       body = (
         <>
           <ThreadWorkflowHeader
             view={currentView}
             instance={instance}
             disabled={disabled}
+            activityOpen={activityOpen}
             onView={viewInstance}
             onOpenForm={openForm}
             onStartNew={() => setStarting(true)}
+            onToggleActivity={() => setActivityOpen((open) => !open)}
           />
           {corruption}
-          {form !== null && formStepId === null && !stripOwnsForm ? renderForm() : null}
-          {layout === "checklist" ? (
-            <ThreadWorkflowChecklistLayout {...layoutProps} />
-          ) : (
-            <ThreadWorkflowFocusLayout {...layoutProps} />
-          )}
+          {form !== null && formStepId === null ? renderForm() : null}
+          <ThreadWorkflowStepList
+            instance={instance}
+            disabled={disabled}
+            undoStepId={undoStepId}
+            formStepId={formStepId}
+            renderForm={renderForm}
+            onOpenForm={openForm}
+            onDone={markDone}
+            onUndo={undo}
+          />
+          {activityOpen ? (
+            <ThreadWorkflowActivity
+              threadRef={threadRef}
+              instanceId={instance.id}
+              lastChangeAt={instance.lastChangeAt}
+            />
+          ) : null}
         </>
       );
     }
@@ -385,14 +336,7 @@ export function ThreadWorkflowPanel({
 
   return (
     <div className="flex h-full min-h-0 flex-col" data-thread-workflow-panel>
-      <ThreadWorkflowStrip
-        asks={asks}
-        disabled={disabled}
-        formStepId={stripOwnsForm && form?.kind === "tick" ? form.stepId : null}
-        renderForm={renderForm}
-        onOpenForm={openForm}
-        onAnswerInComposer={onAnswerInComposer}
-      />
+      <ThreadWorkflowStrip asks={asks} onAnswerInComposer={onAnswerInComposer} />
       <ScrollArea className="min-h-0 flex-1" radius="none">
         <div className="flex flex-col gap-3 px-3 py-3">
           {failure}
