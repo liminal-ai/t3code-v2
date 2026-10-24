@@ -13,7 +13,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPendingUserInput } from "./threadRequests.ts";
 import {
-  countOpenThreadWorkflowAsks,
   deriveThreadWorkflowAsks,
   threadWorkflowProgress,
   threadWorkflowRevisionAtom,
@@ -91,56 +90,16 @@ const question = (requestId: string, createdAt: string) =>
   }) as unknown as ThreadPendingUserInput;
 
 describe("deriveThreadWorkflowAsks", () => {
-  it("lists pending questions oldest first, then the active instance's open waits-for-user steps", () => {
-    const gate = step("w1.3", "open", { waitsForUser: true });
-    const asks = deriveThreadWorkflowAsks({
-      pendingUserInputs: [
-        question("req-later", "2026-10-17T12:00:00.000Z"),
-        question("req-earlier", "2026-10-17T11:00:00.000Z"),
-      ],
-      view: view("w1", [
-        instance("w1", [
-          step("w1.1", "done"),
-          step("w1.2", "open"),
-          gate,
-          step("w1.4", "done", { waitsForUser: true }),
-        ]),
-      ]),
-    });
-    expect(asks).toEqual([
-      { kind: "question", request: expect.objectContaining({ requestId: "req-earlier" }) },
-      { kind: "question", request: expect.objectContaining({ requestId: "req-later" }) },
-      { kind: "step", instance: expect.objectContaining({ id: "w1" }), step: gate, stepNumber: 3 },
+  it("lists pending questions oldest first", () => {
+    const asks = deriveThreadWorkflowAsks([
+      question("req-later", "2026-10-17T12:00:00.000Z"),
+      question("req-earlier", "2026-10-17T11:00:00.000Z"),
     ]);
+    expect(asks.map((ask) => ask.requestId)).toEqual(["req-earlier", "req-later"]);
   });
 
-  it("is empty with no questions and no open waits-for-user step", () => {
-    expect(
-      deriveThreadWorkflowAsks({
-        pendingUserInputs: [],
-        view: view("w1", [
-          instance("w1", [step("w1.1", "open"), step("w1.2", "skipped", { waitsForUser: true })]),
-        ]),
-      }),
-    ).toEqual([]);
-    expect(deriveThreadWorkflowAsks({ pendingUserInputs: [], view: null })).toEqual([]);
-  });
-
-  it("ignores waits-for-user steps of closed instances", () => {
-    const asks = deriveThreadWorkflowAsks({
-      pendingUserInputs: [],
-      view: view(null, [instance("w1", [step("w1.1", "open", { waitsForUser: true })], "closed")]),
-    });
-    expect(asks).toEqual([]);
-    expect(
-      countOpenThreadWorkflowAsks({
-        pendingUserInputCount: 2,
-        view: view("w2", [
-          instance("w1", [step("w1.1", "open", { waitsForUser: true })], "closed"),
-          instance("w2", [step("w2.1", "open", { waitsForUser: true })]),
-        ]),
-      }),
-    ).toBe(3);
+  it("is empty with no pending question", () => {
+    expect(deriveThreadWorkflowAsks([])).toEqual([]);
   });
 });
 

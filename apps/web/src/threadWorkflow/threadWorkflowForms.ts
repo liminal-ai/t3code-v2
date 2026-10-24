@@ -8,9 +8,11 @@ import {
   type ThreadWorkflowTarget,
 } from "@t3tools/contracts";
 
-/** What the open form is for. One intent builds one request; the table below says which fields it asks. */
+/**
+ * What the open form is for. One intent builds one request; the table below says which fields it
+ * asks. Done is not here: it is one click on the current step with an optional note, no form.
+ */
 export type ThreadWorkflowFormIntent =
-  | { readonly kind: "tick"; readonly stepId: ThreadWorkflowStepId }
   | { readonly kind: "skip"; readonly stepId: ThreadWorkflowStepId }
   | { readonly kind: "remove"; readonly stepId: ThreadWorkflowStepId }
   | { readonly kind: "reopen"; readonly target: ThreadWorkflowTarget }
@@ -66,7 +68,6 @@ export const THREAD_WORKFLOW_FORM_SPECS: Record<
   ThreadWorkflowFormIntent["kind"],
   ThreadWorkflowFormSpec
 > = {
-  tick: { fields: ["comment", "proof"], required: [], submit: "Tick step", tone: "default" },
   skip: { fields: ["reason"], required: ["reason"], submit: "Skip step", tone: "warning" },
   remove: { fields: ["reason"], required: ["reason"], submit: "Remove step", tone: "destructive" },
   reopen: { fields: ["reason"], required: ["reason"], submit: "Reopen", tone: "default" },
@@ -79,7 +80,7 @@ export const THREAD_WORKFLOW_FORM_SPECS: Record<
   insert: {
     fields: ["title", "instructions", "proofLevel", "proofHint", "waitsForUser", "reason"],
     required: ["title", "instructions", "reason"],
-    submit: "Insert step",
+    submit: "Add step",
     tone: "default",
   },
   close: { fields: ["reason"], required: ["reason"], submit: "Close workflow", tone: "default" },
@@ -117,13 +118,6 @@ export function buildThreadWorkflowRequest(
   const proof = text(values.proof);
   const reason = text(values.reason) ?? "";
   switch (intent.kind) {
-    case "tick":
-      return {
-        _tag: "tick",
-        stepId: intent.stepId,
-        ...(comment === undefined ? {} : { comment }),
-        ...(proof === undefined ? {} : { proof }),
-      };
     case "skip":
       return { _tag: "skip", stepId: intent.stepId, reason };
     case "remove":
@@ -167,7 +161,6 @@ export function threadWorkflowFormStepId(
 ): ThreadWorkflowStepId | null {
   if (intent === null) return null;
   switch (intent.kind) {
-    case "tick":
     case "skip":
     case "remove":
       return intent.stepId;

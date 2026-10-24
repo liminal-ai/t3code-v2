@@ -4,14 +4,13 @@ import type {
   ThreadWorkflowInstance,
   ThreadWorkflowInstanceId,
 } from "@t3tools/contracts";
-import { ChevronDownIcon, ChevronRightIcon, HistoryIcon } from "lucide-react";
+import { HistoryIcon } from "lucide-react";
 
-import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/ui/collapsible";
 import { Skeleton } from "~/components/ui/skeleton";
 import { useEnvironmentQuery } from "~/state/query";
 import { threadWorkflowEnvironment } from "~/state/threadWorkflow";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
-import { actorLabel } from "./ThreadWorkflowStepParts";
+import { actorLabel } from "./ThreadWorkflowStepList";
 
 function describe(record: ThreadWorkflowChangeRecord, instance: ThreadWorkflowInstance): string {
   const { event } = record;
@@ -21,11 +20,11 @@ function describe(record: ThreadWorkflowChangeRecord, instance: ThreadWorkflowIn
     case "started":
       return `started "${event.title}"`;
     case "ticked":
-      return `ticked ${stepTitle(event.stepId)}`;
+      return `marked ${stepTitle(event.stepId)} done`;
     case "skipped":
       return `skipped ${stepTitle(event.stepId)}: ${event.reason}`;
     case "inserted":
-      return `inserted ${event.step.title}: ${event.reason}`;
+      return `added ${event.step.title}: ${event.reason}`;
     case "removed":
       return `removed ${stepTitle(event.stepId)}: ${event.reason}`;
     case "commented":
@@ -46,27 +45,21 @@ function recordComment(record: ThreadWorkflowChangeRecord): string | null {
   return null;
 }
 
-/** Full history comes from `get`, fetched only while this is expanded. Newest first. */
+/** Full history comes from `get`, fetched only while this is shown. Newest first. */
 export function ThreadWorkflowActivity({
   threadRef,
   instanceId,
   lastChangeAt,
-  open,
-  onOpenChange,
 }: {
   threadRef: ScopedThreadRef;
   instanceId: ThreadWorkflowInstanceId;
   lastChangeAt: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
 }) {
   const query = useEnvironmentQuery(
-    open
-      ? threadWorkflowEnvironment.instance({
-          environmentId: threadRef.environmentId,
-          input: { threadId: threadRef.threadId, instanceId },
-        })
-      : null,
+    threadWorkflowEnvironment.instance({
+      environmentId: threadRef.environmentId,
+      input: { threadId: threadRef.threadId, instanceId },
+    }),
   );
   const instance = query.data;
   const records =
@@ -78,40 +71,37 @@ export function ThreadWorkflowActivity({
           )
           .sort((left, right) => right.seq - left.seq);
   return (
-    <Collapsible open={open} onOpenChange={onOpenChange}>
-      <CollapsibleTrigger className="flex items-center gap-1.5 text-muted-foreground text-xs hover:text-foreground">
-        {open ? <ChevronDownIcon className="size-3" /> : <ChevronRightIcon className="size-3" />}
+    <section className="flex flex-col gap-2" aria-label="Activity">
+      <header className="flex items-center gap-1.5 text-muted-foreground text-xs">
         <HistoryIcon className="size-3" />
         Activity
         <span>
           · last change <time dateTime={lastChangeAt}>{formatRelativeTimeLabel(lastChangeAt)}</time>
         </span>
-      </CollapsibleTrigger>
-      <CollapsiblePanel>
-        <ol className="mt-2 flex flex-col gap-1 border-border border-s ps-3 text-xs">
-          {instance === null && query.error === null ? <Skeleton className="h-12 w-full" /> : null}
-          {query.error ? <li className="text-destructive">{query.error}</li> : null}
-          {instance === null
-            ? null
-            : records.map((record) => {
-                const comment = recordComment(record);
-                return (
-                  <li key={record.seq} className="flex flex-col">
-                    <span>
-                      <time className="text-muted-foreground" dateTime={record.at}>
-                        {formatRelativeTimeLabel(record.at)}
-                      </time>{" "}
-                      · <span className="font-medium">{actorLabel(record)}</span>{" "}
-                      {describe(record, instance)}
-                    </span>
-                    {comment ? (
-                      <span className="whitespace-pre-wrap text-muted-foreground">“{comment}”</span>
-                    ) : null}
-                  </li>
-                );
-              })}
-        </ol>
-      </CollapsiblePanel>
-    </Collapsible>
+      </header>
+      <ol className="flex flex-col gap-1 border-border border-s ps-3 text-xs">
+        {instance === null && query.error === null ? <Skeleton className="h-12 w-full" /> : null}
+        {query.error ? <li className="text-destructive">{query.error}</li> : null}
+        {instance === null
+          ? null
+          : records.map((record) => {
+              const comment = recordComment(record);
+              return (
+                <li key={record.seq} className="flex flex-col">
+                  <span>
+                    <time className="text-muted-foreground" dateTime={record.at}>
+                      {formatRelativeTimeLabel(record.at)}
+                    </time>{" "}
+                    · <span className="font-medium">{actorLabel(record)}</span>{" "}
+                    {describe(record, instance)}
+                  </span>
+                  {comment ? (
+                    <span className="whitespace-pre-wrap text-muted-foreground">"{comment}"</span>
+                  ) : null}
+                </li>
+              );
+            })}
+      </ol>
+    </section>
   );
 }

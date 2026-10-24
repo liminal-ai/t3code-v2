@@ -10,6 +10,7 @@ import {
   type ThreadId,
   type ThreadWorkflowActor,
   type ThreadWorkflowApplyResult,
+  type ThreadWorkflowInstanceId,
   type ThreadWorkflowRequest,
   type ThreadWorkflowSubscriptionState,
   type ThreadWorkflowTemplateId,
@@ -32,7 +33,14 @@ import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { withinDeadline } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { decide, recordFor, toSubscriptionView, toView, type ResolvedTemplate } from "./domain.ts";
+import {
+  decide,
+  instanceActedOn,
+  recordFor,
+  toSubscriptionView,
+  toView,
+  type ResolvedTemplate,
+} from "./domain.ts";
 import { ThreadWorkflowStore } from "./store.ts";
 import { builtInTemplates, freshness } from "./templates/index.ts";
 
@@ -43,6 +51,11 @@ export interface ThreadWorkflowApplyOptions {
   readonly expectedRevision?: number | undefined;
 }
 
+/** The pane's result, plus the instance the request acted on, which the agent's ack reports. */
+export interface ThreadWorkflowApplied extends ThreadWorkflowApplyResult {
+  readonly instanceId: ThreadWorkflowInstanceId | null;
+}
+
 export class ThreadWorkflowService extends Context.Service<
   ThreadWorkflowService,
   {
@@ -51,7 +64,7 @@ export class ThreadWorkflowService extends Context.Service<
       threadId: ThreadId,
       request: ThreadWorkflowRequest,
       options?: ThreadWorkflowApplyOptions,
-    ) => Effect.Effect<ThreadWorkflowApplyResult, ThreadWorkflowError>;
+    ) => Effect.Effect<ThreadWorkflowApplied, ThreadWorkflowError>;
     /** Every instance with full history, from memory. */
     readonly view: (threadId: ThreadId) => Effect.Effect<ThreadWorkflowView, ThreadWorkflowError>;
     /** The history-free view with the flag and whether the pane should show the tab. */
@@ -203,6 +216,7 @@ const make = Effect.gen(function* () {
             changed: decision._tag === "changed",
             replayed: decision._tag === "unchanged" && decision.replayed,
             view: toSubscriptionView(next),
+            instanceId: instanceActedOn(next, request, options.requestId ?? null),
           };
         }),
       ),
