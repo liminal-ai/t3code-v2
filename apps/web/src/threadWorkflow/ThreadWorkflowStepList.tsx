@@ -334,7 +334,12 @@ function StepRow({
                 {result}
               </span>
               {undoable ? (
-                <Button size="xs" variant="ghost-muted" onClick={() => onUndo(step.id)}>
+                <Button
+                  size="xs"
+                  variant="ghost-muted"
+                  disabled={disabled}
+                  onClick={() => onUndo(step.id)}
+                >
                   <Undo2Icon />
                   Undo
                 </Button>
@@ -342,7 +347,12 @@ function StepRow({
             </div>
           ) : undoable ? (
             <div>
-              <Button size="xs" variant="ghost-muted" onClick={() => onUndo(step.id)}>
+              <Button
+                size="xs"
+                variant="ghost-muted"
+                disabled={disabled}
+                onClick={() => onUndo(step.id)}
+              >
                 <Undo2Icon />
                 Undo
               </Button>
