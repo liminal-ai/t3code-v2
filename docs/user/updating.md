@@ -57,8 +57,8 @@ while it is archived, snoozed, or settled. After three automatic resumes in a ro
 the thread waits for your next message.
 Messages queued behind the interrupted turn resume on their own once it has continued,
 in the order you queued them. A queue held by **Stop**, by a turn the server chose
-not to continue, or for more than a week, waits for **Resume** in that thread. With the setting off, every queue
-held by a restart waits for **Resume**.
+not to continue, or for more than a week, waits for **Resume** or your next message in that thread. With the
+setting off, every queue held by a restart waits for **Resume** or your next message.
 
 Updates from the previous orchestration system preserve conversation transcripts but cannot carry
 every kind of runtime history forward. Read [Threads from older T3 Code versions](./thread-migration.md)
@@ -121,6 +121,15 @@ directory and pair with the running server.
 **Update all** updates every outdated provider on every connected environment
 at once. Hover it to see which providers it will update. Providers that only
 offer a manual update command are not included.
+
+After a successful provider CLI update, T3 Code refreshes model discovery for
+every enabled instance of that provider using its own configuration. Connected
+clients receive the refreshed catalogs automatically. Provider update checks
+must be enabled to download the latest T3 Code model catalog.
+
+Provider updates do not restart running chats. An existing session can keep
+using the previous CLI until it ends. If discovery fails, check the provider
+status and refresh it again.
 
 ## Mobile updates
 

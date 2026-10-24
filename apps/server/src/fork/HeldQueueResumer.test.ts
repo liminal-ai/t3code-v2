@@ -1346,8 +1346,10 @@ it.effect.each(["a reorder", "a newer sibling"] as const)(
             attachments: [],
             modelSelection,
             dispatchMode: { type: "queue_after_active" },
-            createdBy: "user",
-            creationSource: "web",
+            // A user's own send releases the queue upstream (Orchestrator.ts message.dispatch),
+            // so the sibling comes from an agent, whose send leaves the hold in place.
+            createdBy: "agent",
+            creationSource: "mcp",
           });
         }
         const scanning = yield* scan.pipe(Effect.forkScoped);
@@ -1359,6 +1361,60 @@ it.effect.each(["a reorder", "a newer sibling"] as const)(
         assert.lengthOf(stillQueued, 2);
         assert.isTrue(stillQueued.every((run) => run.queueHeld === true));
         assert.deepEqual(yield* resumeCommandIds(threadId), []);
+      }),
+    ),
+);
+
+it.effect(
+  "a message the user sends after a restart releases the queue once, with no fork resume",
+  () =>
+    withHarness("user-send", ({ cwd, started }) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make("thread:user-send");
+        const { active, queued } = yield* busyThread({ threadId, cwd });
+        yield* restartOneSecondLater;
+        const scanning = yield* scan.pipe(Effect.forkScoped);
+        yield* drain;
+        const messageId = MessageId.make(`${threadId}:after-restart`);
+        yield* dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:after-restart`),
+          threadId,
+          messageId,
+          text: "Back now",
+          attachments: [],
+          modelSelection,
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "user",
+          creationSource: "web",
+        });
+        const sent = (yield* runsOf(threadId)).find((run) => run.userMessageId === messageId)!;
+        const order = [queued[0]!.id, sent.id];
+        for (const run of (yield* runsOf(threadId)).filter((run) => order.includes(run.id)))
+          assert.deepEqual([run.status, run.queueHeld === true], ["queued", false]);
+
+        const firstRunning = yield* runStatus(order[0]!, "running");
+        yield* finishContinuation(threadId, active.id, started);
+        for (const [index, runId] of order.entries()) {
+          if (index === 0) yield* Fiber.join(firstRunning);
+          const nextRunning =
+            index + 1 < order.length ? yield* runStatus(order[index + 1]!, "running") : undefined;
+          const settled = yield* runStatus(runId, "waiting");
+          const completed = yield* runStatus(runId, "completed");
+          yield* finishTurn(started.find((entry) => entry.turn.runId === runId)!);
+          yield* Fiber.join(settled);
+          yield* drain;
+          yield* Fiber.join(completed);
+          if (nextRunning !== undefined) yield* Fiber.join(nextRunning);
+        }
+        yield* Fiber.join(scanning);
+        yield* drain;
+
+        assert.deepEqual(yield* resumeCommandIds(threadId), []);
+        const runs = yield* runsOf(threadId);
+        for (const runId of order)
+          assert.equal(runs.find((run) => run.id === runId)?.status, "completed");
+        assert.equal(started.filter((entry) => order.includes(entry.turn.runId)).length, 2);
       }),
     ),
 );
