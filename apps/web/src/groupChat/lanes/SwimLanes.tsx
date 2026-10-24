@@ -463,8 +463,8 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   const field = useRef<HTMLDivElement>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const markdownObserver = useRef<IntersectionObserver | null>(null);
-  const layoutState = useRef<LayoutState>(null);
-  layoutState.current ??= {
+  // Built once in a state initializer so render never reads or writes the ref.
+  const [initialLayout] = useState<LayoutState>(() => ({
     cardEls: new Map(),
     field,
     scroller,
@@ -481,7 +481,8 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     setSliding,
     setDrawn,
     setLightBaseMs,
-  };
+  }));
+  const layoutState = useRef<LayoutState>(initialLayout);
   const olderPage = useRef<OlderPageState>(idleOlderPage);
   const [olderRetryAt, setOlderRetryAt] = useState<number | null>(null);
   const olderAnchor = useRef<{
@@ -512,7 +513,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   });
   const relayoutGeometry = useStableCallback((resized: boolean) => {
     const state = layoutState.current!;
-    if (resized) state.scrollPending ??= "auto";
+    if (resized && state.scrollPending === null) state.scrollPending = "auto";
     layoutGeometry(state, { selection, mode, model, focus });
     const element = scroller.current;
     if (element !== null && state.followingEnd && (!resized || selection === null)) {
