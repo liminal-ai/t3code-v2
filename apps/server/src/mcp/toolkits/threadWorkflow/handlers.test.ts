@@ -4,12 +4,17 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   ThreadId,
+  ThreadWorkflowTemplateId,
   type OrchestrationV2AppThread,
+  type ThreadWorkflowActor,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../../../config.ts";
@@ -135,6 +140,8 @@ const callPrinted = (line: string) => {
   return call(line.slice(0, space), JSON.parse(line.slice(space + 1)) as Record<string, unknown>);
 };
 
+const pane: ThreadWorkflowActor = { _tag: "user", clientSessionId: "pane" };
+
 const stage = (title: string) => ({ title, instructions: `Do ${title.toLowerCase()}.` });
 
 it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
@@ -164,7 +171,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         instanceId: "w1",
         progress: { total: 4, open: 4, currentPosition: 1 },
         currentStep: {
-          id: "w1.2",
+          id: "w1.1",
           title: "Groundwork",
           instructions: "Do groundwork.",
           waitsForUser: false,
@@ -172,10 +179,10 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       });
       const planned = structured(yield* call("thread_workflow_get", {}));
       assert.deepStrictEqual(stepsOf(planned), [
-        ["w1.2", "Groundwork", "open"],
-        ["w1.3", "Scope", "open"],
-        ["w1.4", "Build", "open"],
-        ["w1.1", "Confirm done with the user", "open"],
+        ["w1.1", "Groundwork", "open"],
+        ["w1.2", "Scope", "open"],
+        ["w1.3", "Build", "open"],
+        ["w1.4", "Confirm done with the user", "open"],
       ]);
       const note = planned.note ?? "";
       assert.match(note, /step 1 of 4: Groundwork/);
@@ -189,30 +196,30 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       });
       assert.match(
         (ticked.structuredContent as { next: string }).next,
-        /thread_workflow_tick \{"stepId":"w1.3"/,
+        /thread_workflow_tick \{"stepId":"w1.2"/,
       );
 
       const skipped = yield* call("thread_workflow_change", {
         action: "skip",
-        stepId: "w1.3",
+        stepId: "w1.2",
         reason: "already scoped",
       });
       assert.isFalse(skipped.isError, JSON.stringify(skipped.content));
       assert.deepInclude(skipped.structuredContent as object, {
         instanceId: "w1",
         progress: { total: 4, open: 2, currentPosition: 3 },
-        currentStep: { id: "w1.4", title: "Build", instructions: "Do build.", waitsForUser: true },
+        currentStep: { id: "w1.3", title: "Build", instructions: "Do build.", waitsForUser: true },
       });
       assert.isTrue(
         (skipped.structuredContent as { next: string }).next.startsWith(
-          `${WAITS_FOR_USER} thread_workflow_tick {"stepId":"w1.4"`,
+          `${WAITS_FOR_USER} thread_workflow_tick {"stepId":"w1.3"`,
         ),
       );
       assert.notProperty(skipped.structuredContent as object, "instance");
 
       const inserted = yield* call("thread_workflow_change", {
         action: "insert",
-        afterStepId: "w1.4",
+        afterStepId: "w1.3",
         title: "Verify in the app",
         instructions: "Open the app and check.",
         reason: "the goal needs a live check",
@@ -220,18 +227,18 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       assert.isFalse(inserted.isError, JSON.stringify(inserted.content));
       assert.deepStrictEqual(
         stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([id]) => id),
-        ["w1.2", "w1.3", "w1.4", "w1.5", "w1.1"],
+        ["w1.1", "w1.2", "w1.3", "w1.5", "w1.4"],
       );
 
       const reopened = yield* call("thread_workflow_change", {
         action: "reopen",
-        target: "w1.2",
+        target: "w1.1",
         reason: "the goal changed",
       });
       assert.isFalse(reopened.isError);
       assert.deepInclude(reopened.structuredContent as object, {
         currentStep: {
-          id: "w1.2",
+          id: "w1.1",
           title: "Groundwork",
           instructions: "Do groundwork.",
           waitsForUser: false,
@@ -264,12 +271,14 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
 
   it.effect("refuses a plan over the step cap before writing anything", () =>
     Effect.gen(function* () {
+      const revision = structured(yield* call("thread_workflow_get", {})).revision;
       const refused = yield* call("thread_workflow_start", {
         templateId: "open-ended",
         steps: Array.from({ length: 8 }, (_, index) => stage(`Stage ${index + 1}`)),
       });
-      assert.strictEqual(failure(refused)?.code, "invalid_request");
+      assert.strictEqual(failure(refused)?.code, "too_many_steps");
       assert.match(failure(refused)?.message ?? "", /at most 8 steps/);
+      assert.strictEqual(structured(yield* call("thread_workflow_get", {})).revision, revision);
       assert.isNull(structured(yield* call("thread_workflow_get", {})).activeInstanceId);
 
       const fits = yield* call("thread_workflow_start", {
@@ -317,6 +326,25 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       assert.deepStrictEqual(
         stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([, title]) => title),
         ["One", "Two", "Confirm done with the user"],
+      );
+
+      const top = yield* call("thread_workflow_change", {
+        action: "insert",
+        afterStepId: null,
+        title: "Zero",
+        instructions: "Do zero.",
+        reason: "found earlier work",
+      });
+      assert.isFalse(top.isError, JSON.stringify(top.content));
+      const afterInsert = yield* call("thread_workflow_start", args);
+      assert.isFalse(afterInsert.isError, JSON.stringify(afterInsert.content));
+      assert.strictEqual(
+        (afterInsert.structuredContent as { readonly instanceId: string }).instanceId,
+        (first.structuredContent as { readonly instanceId: string }).instanceId,
+      );
+      assert.deepStrictEqual(
+        stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([, title]) => title),
+        ["Zero", "One", "Two", "Confirm done with the user"],
       );
     }),
   );
@@ -372,7 +400,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
     }),
   );
 
-  it.effect("keeps refusing a planned start that converged on a workflow it did not create", () =>
+  it.effect("refuses a planned start against an open workflow it did not create, every time", () =>
     Effect.gen(function* () {
       const existing = yield* call("thread_workflow_start", {
         templateId: "open-ended",
@@ -396,6 +424,98 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       );
       assert.deepStrictEqual(stepsOf(structured(yield* call("thread_workflow_get", {}))), before);
       yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
+    }),
+  );
+
+  it.effect("takes a plan under a request id at the length cap", () =>
+    Effect.gen(function* () {
+      const args = {
+        templateId: "open-ended",
+        steps: [stage("One"), stage("Two")],
+        requestId: "r".repeat(128),
+      };
+      const first = yield* call("thread_workflow_start", args);
+      assert.isFalse(first.isError, JSON.stringify(first.content));
+      const again = yield* call("thread_workflow_start", args);
+      assert.deepStrictEqual(again.structuredContent, first.structuredContent);
+      const view = structured(yield* call("thread_workflow_get", {}));
+      assert.isNull(view.corruption);
+      assert.deepStrictEqual(
+        stepsOf(view).map(([, title]) => title),
+        ["One", "Two", "Confirm done with the user"],
+      );
+      const { instanceId } = first.structuredContent as { readonly instanceId: string };
+      yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
+    }),
+  );
+
+  it.effect("keeps a plan out of a workflow the pane restarted as soon as it opened", () =>
+    Effect.gen(function* () {
+      const service = yield* ThreadWorkflowService;
+      const plan = ["One", "Two", "Three", "Four", "Five"].map(stage);
+      const before = structured(yield* call("thread_workflow_get", {})).revision as number;
+      // The pane abandons the planned workflow on the first change that shows it open, and starts
+      // its own.
+      const otherClient = yield* service.subscribe(threadId).pipe(
+        Stream.filterMap((state) => {
+          const planned = state.view.instances.find(
+            (instance) => instance.title === "Raced" && instance.status._tag === "open",
+          );
+          return planned === undefined ? Result.failVoid : Result.succeed(planned.id);
+        }),
+        Stream.take(1),
+        Stream.runForEach((instanceId) =>
+          Effect.gen(function* () {
+            yield* service.apply(pane, threadId, {
+              _tag: "close",
+              instanceId,
+              outcome: "abandoned",
+              reason: "restart",
+            });
+            yield* service.apply(pane, threadId, {
+              _tag: "start",
+              templateId: ThreadWorkflowTemplateId.make("open-ended"),
+              title: "Restarted",
+            });
+          }),
+        ),
+        Effect.forkChild,
+      );
+      const planned = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        title: "Raced",
+        steps: plan,
+        requestId: "race-1",
+      });
+      assert.isFalse(planned.isError, JSON.stringify(planned.content));
+      // One record holds the plan, so no other write can land between its steps.
+      assert.strictEqual((planned.structuredContent as { revision: number }).revision, before + 1);
+      yield* Fiber.join(otherClient);
+
+      const { instances } = structured(yield* call("thread_workflow_get", {})) as {
+        readonly instances: ReadonlyArray<{
+          readonly id: string;
+          readonly title: string;
+          readonly steps: ReadonlyArray<{ readonly title: string }>;
+        }>;
+      };
+      const titlesOf = (title: string) =>
+        instances.find((instance) => instance.title === title)?.steps.map((step) => step.title);
+      assert.deepStrictEqual(titlesOf("Raced"), [
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Confirm done with the user",
+      ]);
+      assert.deepStrictEqual(titlesOf("Restarted"), ["Confirm done with the user"]);
+      const restarted = instances.find((instance) => instance.title === "Restarted")!;
+      yield* call("thread_workflow_close", {
+        instanceId: restarted.id,
+        outcome: "abandoned",
+        reason: "x",
+      });
     }),
   );
 

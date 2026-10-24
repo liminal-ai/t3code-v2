@@ -62,6 +62,15 @@ const insert = (fields: Record<string, unknown> = {}) => ({
   ...fields,
 });
 const start = { _tag: "start", templateId: "checklist" };
+const planned = (...titles: ReadonlyArray<string>) => ({
+  ...start,
+  steps: titles.map((title) => ({
+    title,
+    instructions: `Do ${title}.`,
+    proofLevel: "none",
+    waitsForUser: false,
+  })),
+});
 const userStarted = [started] as Setup;
 const allResolved: Setup = [
   started,
@@ -129,6 +138,34 @@ const rows: ReadonlyArray<Row> = [
     request: { _tag: "start", templateId: "nope" },
     expect: "unknown_template",
     mentions: ['"checklist"'],
+  },
+  {
+    name: "start with a plan the cap holds",
+    setup: [],
+    actor: agent,
+    request: planned("a", "b", "c", "d", "e"),
+    expect: "changed",
+  },
+  {
+    name: "start with a plan past the cap",
+    setup: [],
+    actor: agent,
+    request: planned("a", "b", "c", "d", "e", "f"),
+    expect: "too_many_steps",
+  },
+  {
+    name: "a retried plan start without a request id returns the instance it started",
+    setup: [[agent, planned("a")]],
+    actor: agent,
+    request: planned("a"),
+    expect: "unchanged",
+  },
+  {
+    name: "a plan start against a workflow started without that plan",
+    setup: userStarted,
+    actor: agent,
+    request: planned("a"),
+    expect: "instance_open",
   },
   // tick
   {
@@ -516,6 +553,32 @@ describe("decide", () => {
     if (row.omits !== undefined && applied.decision._tag === "ThreadWorkflowError") {
       for (const text of row.omits) expect(applied.decision.message).not.toContain(text);
     }
+  });
+
+  it("starts a planned instance with the plan before the template's steps, in one record", () => {
+    const { state, records } = given([agent, planned("Scope", "Build")]);
+    expect(records).toHaveLength(1);
+    expect(
+      state.instances[0]!.instance.steps.map((step) => [step.id, step.title, step.origin._tag]),
+    ).toEqual([
+      ["w1.1", "Scope", "template"],
+      ["w1.2", "Build", "template"],
+      ["w1.3", "Write it", "template"],
+      ["w1.4", "Ask the user", "template"],
+      ["w1.5", "Ship it", "template"],
+    ]);
+    expect(admits(emptyState(threadId), records[0]!)).toBeNull();
+    expect(outcomeOf(apply(state, agent, planned("Other"), { requestId: null }))).toBe(
+      "instance_open",
+    );
+  });
+
+  it("binds a request id to its plan", () => {
+    const { state } = given([agent, planned("Scope"), { requestId: "r1" }]);
+    expect(outcomeOf(apply(state, agent, planned("Scope"), { requestId: "r1" }))).toBe("replayed");
+    expect(outcomeOf(apply(state, agent, planned("Other"), { requestId: "r1" }))).toBe(
+      "request_id_reused",
+    );
   });
 
   it("refuses everything but the user's recover on a corrupt log", () => {

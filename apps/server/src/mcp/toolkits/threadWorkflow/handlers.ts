@@ -1,13 +1,11 @@
 import {
   OrchestratorMcpFailure,
   ProviderSessionId,
-  THREAD_WORKFLOW_LIMITS,
   ThreadWorkflowError,
   ThreadWorkflowRequest,
   type ThreadId,
   type ThreadWorkflowActor,
   type ThreadWorkflowInstanceId,
-  type ThreadWorkflowStepId,
   type ThreadWorkflowStepSummary,
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
@@ -15,8 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
-import { printedCall, progress, STEP_CAP_ADVICE } from "../../../threadWorkflow/domain.ts";
-import { builtInTemplates } from "../../../threadWorkflow/templates/index.ts";
+import { printedCall, progress } from "../../../threadWorkflow/domain.ts";
 import * as ThreadWorkflowService from "../../../threadWorkflow/ThreadWorkflowService.ts";
 import { turnNote, WAITS_FOR_USER } from "../../../threadWorkflow/turnNote.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -116,24 +113,15 @@ const changeRequest = (
   }
 };
 
-const PLANNED_AT_START = "Planned at start";
-
-type InsertRequest = Extract<ThreadWorkflowRequest, { readonly _tag: "insert" }>;
-
-/** A stage from the start call as an insert at the top; the handler re-anchors each one as it goes. */
-const plannedInsert = (step: ThreadWorkflowStartStep) =>
-  parseRequest({
-    _tag: "insert",
-    afterStepId: null,
-    step: present({
-      title: step.title,
-      instructions: step.instructions,
-      proofLevel: step.proofLevel ?? "none",
-      proofHint: step.proofHint,
-      waitsForUser: step.waitsForUser ?? false,
-    }),
-    reason: PLANNED_AT_START,
-  }).pipe(Effect.map((request) => request as InsertRequest));
+/** A stage from the start call as the seed the contract stores, with the insert defaults. */
+const plannedSeed = (step: ThreadWorkflowStartStep) =>
+  present({
+    title: step.title,
+    instructions: step.instructions,
+    proofLevel: step.proofLevel ?? "none",
+    proofHint: step.proofHint,
+    waitsForUser: step.waitsForUser ?? false,
+  });
 
 /** The tick call for the current step, after the turn note's ask-first line when the step waits for the user. */
 const tickNext = (step: ThreadWorkflowStepSummary) =>
@@ -207,60 +195,6 @@ const layerHandlers = Effect.gen(function* () {
     return ack(view, instanceId!);
   });
 
-  /**
-   * The template start, then one insert per planned stage, first at the top and each next one
-   * after the one before, so the plan sits above the template's own steps in the order given.
-   * No new event kind: an old build still decodes the log. A retry with the same requestId
-   * replays every write. The steps are not part of the start request, so a start that converged
-   * on an open instance it did not create is refused, on every retry, rather than planted with a
-   * second plan.
-   */
-  const startWithPlan = Effect.fn("threadWorkflow.mcp.startWithPlan")(function* (
-    raw: unknown,
-    steps: ReadonlyArray<ThreadWorkflowStartStep>,
-    requestId: string | undefined,
-  ) {
-    const { threadId, actor } = yield* callingThread("thread_workflow_start");
-    const start = yield* parseRequest(raw);
-    if (start._tag !== "start") return yield* invalid("Not a start request.");
-    const inserts = yield* Effect.forEach(steps, plannedInsert);
-    const templateSteps = builtInTemplates.get(start.templateId)?.steps.length ?? 0;
-    if (templateSteps + inserts.length > THREAD_WORKFLOW_LIMITS.steps) {
-      return yield* invalid(
-        `${inserts.length} steps plus the ${templateSteps} the template "${start.templateId}" carries is more than ${THREAD_WORKFLOW_LIMITS.steps}. ${STEP_CAP_ADVICE}`,
-      );
-    }
-    const started = yield* service.apply(actor, threadId, start, { requestId });
-    let view = started.view;
-    const instanceId = started.instanceId!;
-    // A converged start also leaves a receipt, so its retry replays too; only the instance's own
-    // start record shows this request created it.
-    const createdHere =
-      started.changed ||
-      (requestId !== undefined &&
-        (yield* service.view(threadId)).instances.find((candidate) => candidate.id === instanceId)
-          ?.history[0]?.requestId === requestId);
-    if (!createdHere) {
-      return yield* new ThreadWorkflowError({
-        code: "instance_open",
-        message: `Workflow ${instanceId} is already open from the same template and title, so your steps were not added. Read it with ${printedCall.get()}, or close it first with ${printedCall.close(instanceId, "abandoned")}.`,
-      });
-    }
-    let afterStepId: ThreadWorkflowStepId | null = null;
-    for (const [index, insert] of inserts.entries()) {
-      const applied = yield* service.apply(
-        actor,
-        threadId,
-        { ...insert, afterStepId },
-        { requestId: requestId === undefined ? undefined : `${requestId}/step/${index}` },
-      );
-      view = applied.view;
-      const instance = view.instances.find((candidate) => candidate.id === instanceId)!;
-      afterStepId = instance.steps[index]!.id;
-    }
-    return ack(view, instanceId);
-  });
-
   return {
     thread_workflow_get: McpToolAccess.readsAsCaller((params) =>
       Effect.gen(function* () {
@@ -269,9 +203,15 @@ const layerHandlers = Effect.gen(function* () {
       }),
     ),
     thread_workflow_start: McpToolAccess.actsAsCaller(({ requestId, steps, ...request }) =>
-      steps === undefined
-        ? applyThenAck({ _tag: "start", ...request }, { requestId }, "thread_workflow_start")
-        : startWithPlan({ _tag: "start", ...request }, steps, requestId),
+      applyThenAck(
+        {
+          _tag: "start",
+          ...request,
+          ...(steps === undefined ? {} : { steps: steps.map(plannedSeed) }),
+        },
+        { requestId },
+        "thread_workflow_start",
+      ),
     ),
     thread_workflow_tick: McpToolAccess.actsAsCaller(({ requestId, ...request }) =>
       Effect.gen(function* () {

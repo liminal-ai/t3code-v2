@@ -201,7 +201,7 @@ export const progress = (instance: Pick<ThreadWorkflowInstanceSummary, "steps">)
 export const plannedStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
   steps.filter((step) => step.state._tag === "open" || step.state._tag === "done").length;
 
-export const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
+const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
 
 const who = (stamp: ThreadWorkflowStamp) =>
   `${stamp.by._tag === "user" ? "the user" : "the agent"} at ${stamp.at}`;
@@ -350,6 +350,8 @@ const decideStart = (
   context: DecideContext,
 ): Decision | ThreadWorkflowError => {
   const open = openInstance(state);
+  // The plan is in the digest, so a start converges only on an instance an identical plan
+  // started; a different plan meets `instance_open` below.
   if (open !== undefined && open.startDigest === requestDigest(request)) return UNCHANGED;
   if (!context.enabled) {
     return fail(
@@ -379,6 +381,14 @@ const decideStart = (
     );
   }
   const { template, freshness } = resolved;
+  const plan = request.steps ?? [];
+  // A built-in template may carry more than the cap on its own; only a plan added to it is held to it.
+  if (plan.length > 0 && plan.length + template.steps.length > THREAD_WORKFLOW_LIMITS.steps) {
+    return fail(
+      "too_many_steps",
+      `${plan.length} planned steps plus the ${template.steps.length} the template "${template.id}" carries is more than ${THREAD_WORKFLOW_LIMITS.steps}. ${STEP_CAP_ADVICE}`,
+    );
+  }
   const instanceId = `w${state.nextInstanceNumber}` as ThreadWorkflowInstanceId;
   return changed(actor, {
     _tag: "started",
@@ -390,7 +400,7 @@ const decideStart = (
       source: template.source,
       staleAtStart: freshness === "stale",
     },
-    steps: template.steps.map((seed, index) => ({
+    steps: [...plan, ...template.steps].map((seed, index) => ({
       id: `${instanceId}.${index + 1}` as ThreadWorkflowStepId,
       ...seed,
     })),
