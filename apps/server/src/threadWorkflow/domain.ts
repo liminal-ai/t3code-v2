@@ -13,6 +13,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   isThreadWorkflowError,
+  THREAD_WORKFLOW_LIMITS,
   ThreadWorkflowError,
   type ThreadId,
   type ThreadWorkflowActor,
@@ -152,6 +153,8 @@ export const printedCall = {
       instructions: "<what to do>",
       reason: "<why>",
     }),
+  comment: (target: ThreadWorkflowTarget) =>
+    call("thread_workflow_change", { action: "comment", target, comment: "<the detail>" }),
   close: (instanceId: ThreadWorkflowInstanceId, outcome: ThreadWorkflowOutcome) =>
     call("thread_workflow_close", {
       instanceId,
@@ -160,7 +163,7 @@ export const printedCall = {
     }),
 };
 
-const instanceIdOfStep = (stepId: ThreadWorkflowStepId) =>
+export const instanceIdOfStep = (stepId: ThreadWorkflowStepId) =>
   stepId.slice(0, stepId.indexOf(".")) as ThreadWorkflowInstanceId;
 
 const isStepId = (target: ThreadWorkflowTarget): target is ThreadWorkflowStepId =>
@@ -191,6 +194,12 @@ export const progress = (instance: Pick<ThreadWorkflowInstanceSummary, "steps">)
     currentPosition: current === -1 ? null : current + 1,
   };
 };
+
+/** Steps that count against the cap: open or done. A skipped or removed step has left the plan. */
+export const plannedStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
+  steps.filter((step) => step.state._tag === "open" || step.state._tag === "done").length;
+
+export const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
 
 const who = (stamp: ThreadWorkflowStamp) =>
   `${stamp.by._tag === "user" ? "the user" : "the agent"} at ${stamp.at}`;
@@ -520,6 +529,13 @@ const decideInsert = (
     }
   }
   const { instance, nextStepNumber } = entry;
+  if (plannedStepCount(instance.steps) >= THREAD_WORKFLOW_LIMITS.steps) {
+    const target = instance.currentStepId ?? instance.id;
+    return fail(
+      "too_many_steps",
+      `Workflow ${instance.id} already holds ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. ${STEP_CAP_ADVICE} ${printedCall.comment(target)}`,
+    );
+  }
   return changed(actor, {
     _tag: "inserted",
     instanceId: instance.id,

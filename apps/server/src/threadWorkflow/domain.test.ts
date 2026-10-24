@@ -276,6 +276,25 @@ const rows: ReadonlyArray<Row> = [
     request: insert({ afterStepId: "w1.9" }),
     expect: "unknown_step",
   },
+  {
+    name: "insert a ninth step",
+    setup: [...userStarted, ...Array.from({ length: 5 }, () => [agent, insert()] as const)],
+    actor: agent,
+    request: insert(),
+    expect: "too_many_steps",
+    mentions: ['thread_workflow_change {"action":"comment","target":"w1.1"'],
+  },
+  {
+    name: "insert once a skipped step has left the plan",
+    setup: [
+      ...userStarted,
+      ...Array.from({ length: 5 }, () => [agent, insert()] as const),
+      [user, skip("w1.1")],
+    ],
+    actor: agent,
+    request: insert(),
+    expect: "changed",
+  },
   // remove
   {
     name: "remove an open step",

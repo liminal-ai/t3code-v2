@@ -67,6 +67,8 @@ export const THREAD_WORKFLOW_LIMITS = {
   proofHint: 120,
   templateId: 48,
   turnNote: 2_000,
+  /** Steps that are open or done. The pane is for a glance, so a plan is a few stages, not a task list. */
+  steps: 8,
 } as const;
 
 /** How much a step wants evidence. Advisory: it shapes the note and the pane and never refuses a tick. */
@@ -315,6 +317,7 @@ export const ThreadWorkflowErrorCode = Schema.Literals([
   "instance_closed",
   "invalid_transition",
   "steps_unresolved",
+  "too_many_steps",
   "comment_required",
   "user_only",
   "not_corrupt",
