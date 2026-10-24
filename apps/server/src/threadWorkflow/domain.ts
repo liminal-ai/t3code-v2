@@ -166,7 +166,7 @@ export const printedCall = {
 export const instanceIdOfStep = (stepId: ThreadWorkflowStepId) =>
   stepId.slice(0, stepId.indexOf(".")) as ThreadWorkflowInstanceId;
 
-const isStepId = (target: ThreadWorkflowTarget): target is ThreadWorkflowStepId =>
+export const isStepId = (target: ThreadWorkflowTarget): target is ThreadWorkflowStepId =>
   target.includes(".");
 
 /** The counter part of `w2` or `w2.4`. */

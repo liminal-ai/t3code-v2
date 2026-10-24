@@ -346,7 +346,7 @@ it.layer(makeLayerTest())("thread workflow module on the orchestration graph", (
       yield* createThread(threadId, projectId);
       yield* startWorkflow(threadId);
 
-      const blocker = /open workflow "Open-ended" \(w1, 3 of 3 steps open\)/;
+      const blocker = /open workflow "Open-ended" \(w1, 1 of 1 steps open\)/;
       const webSettle = yield* threads
         .dispatch({ type: "thread.settle", commandId: id(`${threadId}-settle`), threadId })
         .pipe(Effect.flip);

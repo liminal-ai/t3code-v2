@@ -319,7 +319,10 @@ const T3_MCP_TOOLS: Readonly<Record<string, T3McpToolDefinition>> = {
     ["Start", "Starting", "Started", "a thread workflow"],
     "thread-workflow",
   ),
-  thread_workflow_tick: tool(["Tick", "Ticking", "Ticked", "a workflow step"], "thread-workflow"),
+  thread_workflow_tick: tool(
+    ["Mark", "Marking", "Marked", "a workflow step done"],
+    "thread-workflow",
+  ),
   thread_workflow_change: tool(
     ["Change", "Changing", "Changed", "the thread workflow"],
     "thread-workflow",
