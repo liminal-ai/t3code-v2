@@ -23,7 +23,7 @@ import { Input } from "~/components/ui/input";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "~/components/ui/menu";
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
-import type { ThreadWorkflowFormIntent } from "./threadWorkflowForms";
+import { THREAD_WORKFLOW_FIELD_LIMITS, type ThreadWorkflowFormIntent } from "./threadWorkflowForms";
 
 /**
  * Where a step sits in the arc. `current` and `upcoming` split the open steps by position, so a
@@ -245,7 +245,7 @@ function DoneControls({
           aria-label="Note"
           placeholder="Note (optional)"
           value={note}
-          maxLength={4_000}
+          maxLength={THREAD_WORKFLOW_FIELD_LIMITS.comment}
           disabled={disabled}
           onChange={(event) => setNote(event.currentTarget.value)}
         />
