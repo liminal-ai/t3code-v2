@@ -18,6 +18,7 @@ import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandE
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ThreadWorkflow from "../../../threadWorkflow/layer.ts";
 import { ThreadWorkflowService } from "../../../threadWorkflow/ThreadWorkflowService.ts";
+import { WAITS_FOR_USER } from "../../../threadWorkflow/turnNote.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { liveThreadsLayer } from "../../McpToolAccess.testkit.ts";
@@ -162,7 +163,12 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       assert.deepInclude(started.structuredContent as object, {
         instanceId: "w1",
         progress: { total: 4, open: 4, currentPosition: 1 },
-        currentStep: { id: "w1.2", title: "Groundwork", instructions: "Do groundwork." },
+        currentStep: {
+          id: "w1.2",
+          title: "Groundwork",
+          instructions: "Do groundwork.",
+          waitsForUser: false,
+        },
       });
       const planned = structured(yield* call("thread_workflow_get", {}));
       assert.deepStrictEqual(stepsOf(planned), [
@@ -195,8 +201,13 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       assert.deepInclude(skipped.structuredContent as object, {
         instanceId: "w1",
         progress: { total: 4, open: 2, currentPosition: 3 },
-        currentStep: { id: "w1.4", title: "Build", instructions: "Do build." },
+        currentStep: { id: "w1.4", title: "Build", instructions: "Do build.", waitsForUser: true },
       });
+      assert.isTrue(
+        (skipped.structuredContent as { next: string }).next.startsWith(
+          `${WAITS_FOR_USER} thread_workflow_tick {"stepId":"w1.4"`,
+        ),
+      );
       assert.notProperty(skipped.structuredContent as object, "instance");
 
       const inserted = yield* call("thread_workflow_change", {
@@ -219,8 +230,14 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       });
       assert.isFalse(reopened.isError);
       assert.deepInclude(reopened.structuredContent as object, {
-        currentStep: { id: "w1.2", title: "Groundwork", instructions: "Do groundwork." },
+        currentStep: {
+          id: "w1.2",
+          title: "Groundwork",
+          instructions: "Do groundwork.",
+          waitsForUser: false,
+        },
       });
+      assert.notInclude((reopened.structuredContent as { next: string }).next, WAITS_FOR_USER);
 
       const unfinished = yield* call("thread_workflow_close", {
         instanceId: "w1",
@@ -301,6 +318,57 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([, title]) => title),
         ["One", "Two", "Confirm done with the user"],
       );
+    }),
+  );
+
+  it.effect("acks the instance a replayed start created, not the one open now", () =>
+    Effect.gen(function* () {
+      const open = structured(yield* call("thread_workflow_get", {})).activeInstanceId!;
+      yield* call("thread_workflow_close", { instanceId: open, outcome: "abandoned", reason: "x" });
+      const plannedAgain = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        steps: [stage("One"), stage("Two")],
+        requestId: "plan-1",
+      });
+      assert.isFalse(plannedAgain.isError, JSON.stringify(plannedAgain.content));
+      assert.deepInclude(plannedAgain.structuredContent as object, {
+        instanceId: open,
+        next: "thread_workflow_get {}",
+      });
+
+      const plainArgs = { templateId: "open-ended", title: "Plain", requestId: "plain-1" };
+      const plain = yield* call("thread_workflow_start", plainArgs);
+      assert.isFalse(plain.isError, JSON.stringify(plain.content));
+      const plainAck = plain.structuredContent as {
+        readonly instanceId: string;
+        readonly currentStep: { readonly id: string; readonly waitsForUser: boolean };
+        readonly next: string;
+      };
+      assert.isTrue(plainAck.currentStep.waitsForUser);
+      assert.isTrue(plainAck.next.startsWith(`${WAITS_FOR_USER} thread_workflow_tick `));
+      yield* call("thread_workflow_close", {
+        instanceId: plainAck.instanceId,
+        outcome: "abandoned",
+        reason: "x",
+      });
+      const other = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        title: "Other",
+      });
+      const otherId = (other.structuredContent as { readonly instanceId: string }).instanceId;
+      assert.notStrictEqual(otherId, plainAck.instanceId);
+
+      const plainAgain = yield* call("thread_workflow_start", plainArgs);
+      assert.isFalse(plainAgain.isError, JSON.stringify(plainAgain.content));
+      assert.deepInclude(plainAgain.structuredContent as object, {
+        instanceId: plainAck.instanceId,
+        next: "thread_workflow_get {}",
+      });
+      yield* call("thread_workflow_close", {
+        instanceId: otherId,
+        outcome: "abandoned",
+        reason: "x",
+      });
     }),
   );
 

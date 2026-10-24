@@ -5,10 +5,12 @@ import {
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
 
-import { printedCall, progress } from "./domain.ts";
+import { plannedStepCount, printedCall, progress } from "./domain.ts";
 
 const LIFECYCLE_RULE =
   "This thread cannot settle, archive or be deleted while the workflow is open.";
+export const WAITS_FOR_USER =
+  "This step waits for the user. Ask once with your question tool, then tick it with their answer in the comment.";
 const CUT_SUFFIX = " … (cut to fit; thread_workflow_get has the whole step)";
 
 const proofLine = (step: ThreadWorkflowStepSummary) =>
@@ -29,9 +31,7 @@ const stepLines = (
     `${header(instance)}, step ${currentPosition} of ${total}: ${step.title}`,
     instructions,
     proofLine(step),
-    step.waitsForUser
-      ? "This step waits for the user. Ask once with your question tool, then tick it with their answer in the comment."
-      : null,
+    step.waitsForUser ? WAITS_FOR_USER : null,
     "When it is done, tick it:",
     printedCall.tick(step),
     "If it should not be done, skip it with the reason your intent changed:",
@@ -43,8 +43,15 @@ const closeLines = (instance: ThreadWorkflowInstanceSummary) => [
   `${header(instance)}: every step is done, skipped or removed.`,
   "Close it:",
   printedCall.close(instance.id, "finished"),
-  "If the work is not finished, insert the step it still needs:",
-  printedCall.insert(instance.steps.at(-1)?.id),
+  ...(plannedStepCount(instance.steps) >= THREAD_WORKFLOW_LIMITS.steps
+    ? [
+        `If the work is not finished, the workflow already holds ${THREAD_WORKFLOW_LIMITS.steps} steps, so comment on it with what is left:`,
+        printedCall.comment(instance.id),
+      ]
+    : [
+        "If the work is not finished, insert the step it still needs:",
+        printedCall.insert(instance.steps.at(-1)?.id),
+      ]),
 ];
 
 const note = (lines: ReadonlyArray<string | null>) =>

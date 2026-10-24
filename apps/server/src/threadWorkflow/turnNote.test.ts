@@ -106,6 +106,26 @@ describe("turnNote", () => {
     expect(text).not.toContain("thread_workflow_tick");
   });
 
+  it("asks for a comment, not another step, when a finished plan is at the step cap", () => {
+    const extra = {
+      title: "Extra",
+      instructions: "Do more.",
+      proofLevel: "none",
+      waitsForUser: false,
+    };
+    const inserts = Array.from(
+      { length: THREAD_WORKFLOW_LIMITS.steps - 3 },
+      () => [agent, { _tag: "insert", step: extra, reason: "more work" }] as const,
+    );
+    const { state } = given(started, ...inserts);
+    const ticks = state.instances[0]!.instance.steps.map(
+      (step) => [agent, { _tag: "tick", stepId: step.id, comment: "done" }] as const,
+    );
+    const text = note(given(started, ...inserts, ...ticks).state);
+    expect(text).toContain('thread_workflow_change {"action":"comment","target":"w1"');
+    expect(text).not.toContain('"action":"insert"');
+  });
+
   it("tells the agent a corrupt log needs the user", () => {
     const text = note(markCorrupt(given(started).state, "line 2 of its log is not JSON"));
     expect(text).toContain("line 2 of its log is not JSON");

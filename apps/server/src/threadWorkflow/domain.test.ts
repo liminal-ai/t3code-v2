@@ -36,6 +36,8 @@ interface Row {
   readonly expect: Expected;
   /** Text the refusal must print, typed as the agent would type it. */
   readonly mentions?: ReadonlyArray<string>;
+  /** Text the refusal must not print. */
+  readonly omits?: ReadonlyArray<string>;
 }
 
 /** `null` sends no comment. */
@@ -285,6 +287,15 @@ const rows: ReadonlyArray<Row> = [
     mentions: ['thread_workflow_change {"action":"comment","target":"w1.1"'],
   },
   {
+    name: "the user inserting a ninth step reads a plain refusal",
+    setup: [...userStarted, ...Array.from({ length: 5 }, () => [agent, insert()] as const)],
+    actor: user,
+    request: insert(),
+    expect: "too_many_steps",
+    mentions: ["This workflow already has 8 stages. Combine two, or skip or remove one"],
+    omits: ["thread_workflow"],
+  },
+  {
     name: "insert once a skipped step has left the plan",
     setup: [
       ...userStarted,
@@ -501,6 +512,9 @@ describe("decide", () => {
     expect(outcomeOf(applied)).toBe(row.expect);
     if (row.mentions !== undefined && applied.decision._tag === "ThreadWorkflowError") {
       for (const text of row.mentions) expect(applied.decision.message).toContain(text);
+    }
+    if (row.omits !== undefined && applied.decision._tag === "ThreadWorkflowError") {
+      for (const text of row.omits) expect(applied.decision.message).not.toContain(text);
     }
   });
 

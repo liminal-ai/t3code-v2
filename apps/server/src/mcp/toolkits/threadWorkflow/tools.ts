@@ -79,9 +79,13 @@ export const ThreadWorkflowMutationAck = Schema.Struct({
       id: ThreadWorkflowStepId,
       title: Schema.String,
       instructions: Schema.String,
+      waitsForUser: Schema.Boolean,
     }),
   ),
-  /** The next printed call: tick the current step, close the workflow, or read it once closed. */
+  /**
+   * The next printed call: tick the current step, close the workflow, or read it once closed.
+   * A step that waits for the user puts the ask-first line in front of the tick.
+   */
   next: Schema.String,
 });
 export type ThreadWorkflowMutationAck = typeof ThreadWorkflowMutationAck.Type;

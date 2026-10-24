@@ -28,9 +28,11 @@ export const handlers = (clientSessionId: string) =>
         }),
       ),
     [WS_METHODS.threadWorkflowApply]: (input: ThreadWorkflowApplyInput) =>
-      service.apply({ _tag: "user", clientSessionId }, input.threadId, input.request, {
-        requestId: input.requestId,
-        expectedRevision: input.expectedRevision,
-      }),
+      service
+        .apply({ _tag: "user", clientSessionId }, input.threadId, input.request, {
+          requestId: input.requestId,
+          expectedRevision: input.expectedRevision,
+        })
+        .pipe(Effect.map(({ changed, replayed, view }) => ({ changed, replayed, view }))),
     [WS_METHODS.threadWorkflowTemplates]: () => service.templates,
   }));

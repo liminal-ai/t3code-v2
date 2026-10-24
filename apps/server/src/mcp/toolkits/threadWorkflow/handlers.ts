@@ -8,22 +8,17 @@ import {
   type ThreadWorkflowActor,
   type ThreadWorkflowInstanceId,
   type ThreadWorkflowStepId,
+  type ThreadWorkflowStepSummary,
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
-import {
-  instanceIdOfStep,
-  isStepId,
-  printedCall,
-  progress,
-  STEP_CAP_ADVICE,
-} from "../../../threadWorkflow/domain.ts";
+import { printedCall, progress, STEP_CAP_ADVICE } from "../../../threadWorkflow/domain.ts";
 import { builtInTemplates } from "../../../threadWorkflow/templates/index.ts";
 import * as ThreadWorkflowService from "../../../threadWorkflow/ThreadWorkflowService.ts";
-import { turnNote } from "../../../threadWorkflow/turnNote.ts";
+import { turnNote, WAITS_FOR_USER } from "../../../threadWorkflow/turnNote.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { unavailable } from "../../threadAccess.ts";
@@ -140,31 +135,9 @@ const plannedInsert = (step: ThreadWorkflowStartStep) =>
     reason: PLANNED_AT_START,
   }).pipe(Effect.map((request) => request as InsertRequest));
 
-/** The instance a request touched, read from the request itself; the open one for an unanchored insert. */
-const touchedInstanceId = (
-  request: ThreadWorkflowRequest,
-  view: ThreadWorkflowSubscriptionView,
-): ThreadWorkflowInstanceId | null => {
-  switch (request._tag) {
-    case "start":
-      return view.activeInstanceId;
-    case "tick":
-    case "skip":
-    case "remove":
-      return instanceIdOfStep(request.stepId);
-    case "reopen":
-    case "comment":
-      return isStepId(request.target) ? instanceIdOfStep(request.target) : request.target;
-    case "insert":
-      return typeof request.afterStepId === "string"
-        ? instanceIdOfStep(request.afterStepId)
-        : (request.instanceId ?? view.activeInstanceId);
-    case "close":
-      return request.instanceId;
-    case "recover":
-      return null;
-  }
-};
+/** The tick call for the current step, after the turn note's ask-first line when the step waits for the user. */
+const tickNext = (step: ThreadWorkflowStepSummary) =>
+  step.waitsForUser ? `${WAITS_FOR_USER} ${printedCall.tick(step)}` : printedCall.tick(step);
 
 const ack = (
   view: ThreadWorkflowSubscriptionView,
@@ -180,13 +153,18 @@ const ack = (
     currentStep:
       currentStep === null
         ? null
-        : { id: currentStep.id, title: currentStep.title, instructions: currentStep.instructions },
+        : {
+            id: currentStep.id,
+            title: currentStep.title,
+            instructions: currentStep.instructions,
+            waitsForUser: currentStep.waitsForUser,
+          },
     next:
       instance.status._tag === "closed"
         ? printedCall.get()
         : currentStep === null
           ? printedCall.close(instance.id, "finished")
-          : printedCall.tick(currentStep),
+          : tickNext(currentStep),
   };
 };
 
@@ -225,8 +203,8 @@ const layerHandlers = Effect.gen(function* () {
   ) {
     const { threadId, actor } = yield* callingThread(operation);
     const request = yield* parseRequest(raw);
-    const { view } = yield* service.apply(actor, threadId, request, options);
-    return ack(view, touchedInstanceId(request, view)!);
+    const { view, instanceId } = yield* service.apply(actor, threadId, request, options);
+    return ack(view, instanceId!);
   });
 
   /**
@@ -253,7 +231,7 @@ const layerHandlers = Effect.gen(function* () {
     }
     const started = yield* service.apply(actor, threadId, start, { requestId });
     let view = started.view;
-    const instanceId = view.activeInstanceId!;
+    const instanceId = started.instanceId!;
     if (!started.changed && !started.replayed) {
       return yield* new ThreadWorkflowError({
         code: "instance_open",
@@ -309,7 +287,7 @@ const layerHandlers = Effect.gen(function* () {
           next:
             currentStep === null
               ? printedCall.close(instance.id, "finished")
-              : printedCall.tick(currentStep),
+              : tickNext(currentStep),
         };
       }),
     ),

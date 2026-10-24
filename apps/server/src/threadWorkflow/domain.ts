@@ -163,10 +163,10 @@ export const printedCall = {
     }),
 };
 
-export const instanceIdOfStep = (stepId: ThreadWorkflowStepId) =>
+const instanceIdOfStep = (stepId: ThreadWorkflowStepId) =>
   stepId.slice(0, stepId.indexOf(".")) as ThreadWorkflowInstanceId;
 
-export const isStepId = (target: ThreadWorkflowTarget): target is ThreadWorkflowStepId =>
+const isStepId = (target: ThreadWorkflowTarget): target is ThreadWorkflowStepId =>
   target.includes(".");
 
 /** The counter part of `w2` or `w2.4`. */
@@ -196,7 +196,7 @@ export const progress = (instance: Pick<ThreadWorkflowInstanceSummary, "steps">)
 };
 
 /** Steps that count against the cap: open or done. A skipped or removed step has left the plan. */
-const plannedStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
+export const plannedStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
   steps.filter((step) => step.state._tag === "open" || step.state._tag === "done").length;
 
 export const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
@@ -533,7 +533,9 @@ const decideInsert = (
     const target = instance.currentStepId ?? instance.id;
     return fail(
       "too_many_steps",
-      `Workflow ${instance.id} already holds ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. ${STEP_CAP_ADVICE} ${printedCall.comment(target)}`,
+      actor._tag === "user"
+        ? `This workflow already has ${THREAD_WORKFLOW_LIMITS.steps} stages. Combine two, or skip or remove one, before adding another.`
+        : `Workflow ${instance.id} already holds ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. ${STEP_CAP_ADVICE} ${printedCall.comment(target)}`,
     );
   }
   return changed(actor, {
@@ -650,6 +652,45 @@ const decideClose = (
     outcome: request.outcome,
     reason: request.reason,
   });
+};
+
+/**
+ * The instance a request acted on, read from the state after it applied; null for a recovery.
+ * A start or an unanchored insert acts on whichever instance was open when it was recorded, so a
+ * replay reads that from its receipt, not from what is open now. One instance is open at a time,
+ * so it is the last one started at or before the receipt.
+ */
+export const instanceActedOn = (
+  state: ThreadWorkflowState,
+  request: ThreadWorkflowRequest,
+  requestId: string | null,
+): ThreadWorkflowInstanceId | null => {
+  const openWhenRecorded = () => {
+    const seq = requestId === null ? undefined : state.receipts.get(requestId)?.seq;
+    if (seq === undefined) return openInstance(state)?.instance.id ?? null;
+    return (
+      state.instances.findLast((entry) => entry.instance.started.seq <= seq)?.instance.id ?? null
+    );
+  };
+  switch (request._tag) {
+    case "start":
+      return openWhenRecorded();
+    case "tick":
+    case "skip":
+    case "remove":
+      return instanceIdOfStep(request.stepId);
+    case "reopen":
+    case "comment":
+      return isStepId(request.target) ? instanceIdOfStep(request.target) : request.target;
+    case "insert":
+      return typeof request.afterStepId === "string"
+        ? instanceIdOfStep(request.afterStepId)
+        : (request.instanceId ?? openWhenRecorded());
+    case "close":
+      return request.instanceId;
+    case "recover":
+      return null;
+  }
 };
 
 /**
