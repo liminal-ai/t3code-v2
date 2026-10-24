@@ -212,7 +212,8 @@ const layerHandlers = Effect.gen(function* () {
    * after the one before, so the plan sits above the template's own steps in the order given.
    * No new event kind: an old build still decodes the log. A retry with the same requestId
    * replays every write. The steps are not part of the start request, so a start that converged
-   * on an open instance without a request id is refused rather than planted with a second plan.
+   * on an open instance it did not create is refused, on every retry, rather than planted with a
+   * second plan.
    */
   const startWithPlan = Effect.fn("threadWorkflow.mcp.startWithPlan")(function* (
     raw: unknown,
@@ -232,7 +233,14 @@ const layerHandlers = Effect.gen(function* () {
     const started = yield* service.apply(actor, threadId, start, { requestId });
     let view = started.view;
     const instanceId = started.instanceId!;
-    if (!started.changed && !started.replayed) {
+    // A converged start also leaves a receipt, so its retry replays too; only the instance's own
+    // start record shows this request created it.
+    const createdHere =
+      started.changed ||
+      (requestId !== undefined &&
+        (yield* service.view(threadId)).instances.find((candidate) => candidate.id === instanceId)
+          ?.history[0]?.requestId === requestId);
+    if (!createdHere) {
       return yield* new ThreadWorkflowError({
         code: "instance_open",
         message: `Workflow ${instanceId} is already open from the same template and title, so your steps were not added. Read it with ${printedCall.get()}, or close it first with ${printedCall.close(instanceId, "abandoned")}.`,
