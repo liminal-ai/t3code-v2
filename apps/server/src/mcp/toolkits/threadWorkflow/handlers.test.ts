@@ -372,6 +372,51 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
     }),
   );
 
+  it.effect("acks the reopened instance an unanchored insert went into, not a later start", () =>
+    Effect.gen(function* () {
+      const startClosed = (title: string) =>
+        Effect.gen(function* () {
+          const result = yield* call("thread_workflow_start", { templateId: "open-ended", title });
+          const { instanceId } = result.structuredContent as { readonly instanceId: string };
+          yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
+          return instanceId;
+        });
+      const reopenedId = yield* startClosed("Reopened later");
+      const laterId = yield* startClosed("Started later");
+      const reopened = yield* call("thread_workflow_change", {
+        action: "reopen",
+        target: reopenedId,
+        reason: "more to do",
+      });
+      assert.isFalse(reopened.isError, JSON.stringify(reopened.content));
+
+      const insertArgs = {
+        action: "insert",
+        title: "Late step",
+        instructions: "Do it.",
+        reason: "found more work",
+        requestId: "insert-after-reopen",
+      };
+      const first = yield* call("thread_workflow_change", insertArgs);
+      assert.isFalse(first.isError, JSON.stringify(first.content));
+      assert.strictEqual(
+        (first.structuredContent as { readonly instanceId: string }).instanceId,
+        reopenedId,
+      );
+      const again = yield* call("thread_workflow_change", insertArgs);
+      assert.strictEqual(
+        (again.structuredContent as { readonly instanceId: string }).instanceId,
+        reopenedId,
+      );
+      assert.notStrictEqual(reopenedId, laterId);
+      yield* call("thread_workflow_close", {
+        instanceId: reopenedId,
+        outcome: "abandoned",
+        reason: "x",
+      });
+    }),
+  );
+
   it.effect("names the missing field when a change action is incomplete", () =>
     Effect.gen(function* () {
       const result = yield* call("thread_workflow_change", { action: "skip", stepId: "w1.1" });

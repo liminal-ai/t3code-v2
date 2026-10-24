@@ -54,6 +54,8 @@ interface InstanceState {
 interface Receipt {
   readonly inputDigest: string;
   readonly seq: number;
+  /** The instance the record acted on, or that was open for a bare receipt; null for a recovery. */
+  readonly instanceId: ThreadWorkflowInstanceId | null;
 }
 
 export interface ThreadWorkflowState {
@@ -657,8 +659,7 @@ const decideClose = (
 /**
  * The instance a request acted on, read from the state after it applied; null for a recovery.
  * A start or an unanchored insert acts on whichever instance was open when it was recorded, so a
- * replay reads that from its receipt, not from what is open now. One instance is open at a time,
- * so it is the last one started at or before the receipt.
+ * replay reads that from its receipt, not from what is open now.
  */
 export const instanceActedOn = (
   state: ThreadWorkflowState,
@@ -666,11 +667,8 @@ export const instanceActedOn = (
   requestId: string | null,
 ): ThreadWorkflowInstanceId | null => {
   const openWhenRecorded = () => {
-    const seq = requestId === null ? undefined : state.receipts.get(requestId)?.seq;
-    if (seq === undefined) return openInstance(state)?.instance.id ?? null;
-    return (
-      state.instances.findLast((entry) => entry.instance.started.seq <= seq)?.instance.id ?? null
-    );
+    const receipt = requestId === null ? undefined : state.receipts.get(requestId);
+    return receipt === undefined ? (openInstance(state)?.instance.id ?? null) : receipt.instanceId;
   };
   switch (request._tag) {
     case "start":
@@ -745,7 +743,12 @@ export const evolve = (
     return {
       ...state,
       lastSeq: record.seq,
-      receipts: withReceipt(state.receipts, record.requestId, record),
+      receipts: withReceipt(
+        state.receipts,
+        record.requestId,
+        record,
+        openInstance(state)?.instance.id ?? null,
+      ),
     };
   }
   const { event } = record;
@@ -757,7 +760,9 @@ export const evolve = (
       lastActivityAt: record.at,
       nextInstanceNumber: event.nextInstanceNumber,
       receipts:
-        record.requestId === null ? new Map() : withReceipt(new Map(), record.requestId, record),
+        record.requestId === null
+          ? new Map()
+          : withReceipt(new Map(), record.requestId, record, null),
     };
   }
   const base: ThreadWorkflowState = {
@@ -768,7 +773,12 @@ export const evolve = (
     receipts:
       record.requestId === null
         ? state.receipts
-        : withReceipt(state.receipts, record.requestId, record),
+        : withReceipt(
+            state.receipts,
+            record.requestId,
+            record,
+            event._tag === "started" ? event.instanceId : instanceIdOfEvent(event),
+          ),
   };
   const stamp: ThreadWorkflowStamp = { seq: record.seq, at: record.at, by: record.by };
 
@@ -922,8 +932,13 @@ const withReceipt = (
   receipts: ReadonlyMap<string, Receipt>,
   requestId: string,
   record: ThreadWorkflowRecord,
+  instanceId: ThreadWorkflowInstanceId | null,
 ): ReadonlyMap<string, Receipt> =>
-  new Map(receipts).set(requestId, { inputDigest: record.inputDigest, seq: record.seq });
+  new Map(receipts).set(requestId, {
+    inputDigest: record.inputDigest,
+    seq: record.seq,
+    instanceId,
+  });
 
 const instanceIdOfEvent = (
   event: Exclude<ThreadWorkflowEvent, { readonly _tag: "started" | "recovered" }>,
