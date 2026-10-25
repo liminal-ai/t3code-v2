@@ -3,7 +3,7 @@ import type { ExpoConfig } from "expo/config";
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
-type AppVariant = "development" | "preview" | "production";
+type AppVariant = "development" | "preview" | "production" | "lim";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
@@ -94,6 +94,17 @@ const VARIANT_CONFIG = {
     relyingParty: "clerk.t3.codes",
     assets: RELEASE_ASSETS,
   },
+  // The liminal-ai fork's own build, installed beside the App Store app and signed
+  // by whoever builds it. No relying party: it never joins T3 Connect, so it reaches
+  // a server only by pairing URL.
+  lim: {
+    appName: "T3 Code Lim",
+    scheme: "t3code-lim",
+    iosBundleIdentifier: "ai.liminal.t3code.lim.mobile",
+    androidPackage: "ai.liminal.t3code.lim.mobile",
+    relyingParty: null,
+    assets: PREVIEW_ASSETS,
+  },
 } as const;
 
 function resolveAppVariant(value: string | undefined): AppVariant {
@@ -101,6 +112,7 @@ function resolveAppVariant(value: string | undefined): AppVariant {
     case "development":
     case "preview":
     case "production":
+    case "lim":
       return value;
     default:
       return "production";
@@ -108,6 +120,9 @@ function resolveAppVariant(value: string | undefined): AppVariant {
 }
 
 const variant = VARIANT_CONFIG[APP_VARIANT];
+// Without a relying party there is no Clerk account to sign in with, so the relay,
+// the associated domains and EAS updates that assume T3's cloud all stay off.
+const t3Cloud = variant.relyingParty !== null;
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
   : variant.iosBundleIdentifier;
@@ -237,7 +252,7 @@ const config: ExpoConfig = {
   icon: variant.assets.appIcon,
   userInterfaceStyle: "automatic",
   updates: {
-    enabled: repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
+    enabled: t3Cloud && repoEnv.T3CODE_MOBILE_UPDATES_ENABLED !== "0",
     url: "https://u.expo.dev/d763fcb8-d37c-41ea-a773-b54a0ab4a454",
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
@@ -249,12 +264,21 @@ const config: ExpoConfig = {
     bundleIdentifier: iosBundleIdentifier,
     // Pin code signing to the T3 Tools team so non-interactive `expo run:ios`
     // does not fall back to a personal team (which cannot sign app groups,
-    // Sign in with Apple, or push notification entitlements).
-    appleTeamId: "ARK85ZXQ4Z",
-    associatedDomains: [
-      `applinks:${variant.relyingParty}`,
-      `webcredentials:${variant.relyingParty}`,
-    ],
+    // Sign in with Apple, or push notification entitlements). A Personal Team
+    // build is that fallback on purpose, so it takes its own team or lets Xcode ask.
+    ...(isIosPersonalTeamBuild
+      ? repoEnv.T3CODE_APPLE_TEAM_ID
+        ? { appleTeamId: repoEnv.T3CODE_APPLE_TEAM_ID }
+        : {}
+      : { appleTeamId: "ARK85ZXQ4Z" }),
+    ...(t3Cloud
+      ? {
+          associatedDomains: [
+            `applinks:${variant.relyingParty}`,
+            `webcredentials:${variant.relyingParty}`,
+          ],
+        }
+      : {}),
     entitlements: {
       "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
     },
@@ -316,6 +340,9 @@ const config: ExpoConfig = {
     favicon: variant.assets.appIcon,
   },
   plugins: [
+    // Listed first so its entitlements mod runs after every plugin that adds one, including
+    // expo-notifications' aps-environment (same-type mods run last-registered-first).
+    ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
     "expo-asset",
     "react-native-pdf-jsi",
     [
@@ -355,8 +382,8 @@ const config: ExpoConfig = {
         mode: APP_VARIANT === "development" ? "development" : "production",
       },
     ],
-    // appleSignIn must be gated here: withoutIosPersonalTeamCapabilities.cjs runs before
-    // plugins earlier in this array, so it cannot strip the entitlement Clerk would add.
+    // appleSignIn stays gated here too, so a Personal Team build never asks Clerk for a
+    // capability its team cannot hold, whatever strips the entitlement afterwards.
     ["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }],
     "expo-web-browser",
     [
@@ -460,17 +487,16 @@ const config: ExpoConfig = {
     "./plugins/withAndroidModernAlertDialog.cjs",
     "./plugins/withAndroidPredictiveBackCompat.cjs",
     "./plugins/withAndroidTabletOrientation.cjs",
-    ...(isIosPersonalTeamBuild ? ["./plugins/withoutIosPersonalTeamCapabilities.cjs"] : []),
   ],
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
-      url: repoEnv.T3CODE_RELAY_URL ?? null,
+      url: t3Cloud ? (repoEnv.T3CODE_RELAY_URL ?? null) : null,
     },
     clerk: {
-      publishableKey: repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? null,
-      jwtTemplate: repoEnv.EXPO_PUBLIC_CLERK_JWT_TEMPLATE ?? null,
+      publishableKey: t3Cloud ? (repoEnv.EXPO_PUBLIC_CLERK_PUBLISHABLE_KEY ?? null) : null,
+      jwtTemplate: t3Cloud ? (repoEnv.EXPO_PUBLIC_CLERK_JWT_TEMPLATE ?? null) : null,
     },
     // @clerk/expo reads these from `extra`
     // under their exact env-var names (not nested), and its config plugin reads
