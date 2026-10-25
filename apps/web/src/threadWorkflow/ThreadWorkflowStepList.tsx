@@ -255,7 +255,9 @@ function DoneControls({
 }
 
 function YourCall() {
-  return <span className="ms-2 text-warning-foreground/80 text-xs">your call</span>;
+  return (
+    <span className="ms-2 whitespace-nowrap text-warning-foreground/80 text-xs">your call</span>
+  );
 }
 
 const TITLE_CLASS: Record<StepPhase, string> = {
