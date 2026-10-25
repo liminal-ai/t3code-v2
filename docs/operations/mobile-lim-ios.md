@@ -14,9 +14,58 @@ and the share extension. The app config does this when `APP_VARIANT=lim` and
 
 - Xcode, with its iOS platform downloaded, and your Apple ID added under Xcode, Settings,
   Accounts. Agree to the developer agreement once at developer.apple.com.
-- CocoaPods (`brew install cocoapods`), Node 24 and `vp` (see the [root README](../../README.md)).
+- CocoaPods on your `PATH`. See [CocoaPods without Homebrew](#cocoapods-without-homebrew).
+- An Apple Development signing certificate for that Apple ID. See
+  [Signing certificate](#signing-certificate).
+- Node 24 and `vp` (see the [root README](../../README.md)).
 - The phone on a USB cable. On the phone, turn on Settings, Privacy & Security, Developer
   Mode, and restart when it asks.
+
+### CocoaPods without Homebrew
+
+`expo prebuild` runs `pod install`. When `pod` is not on the `PATH`, Expo tries `gem install`,
+then `sudo gem install`, then Homebrew. With the Ruby that ships with macOS, the first two
+need an administrator password, and the third needs Homebrew. Install CocoaPods for your user
+with that Ruby instead. This needs no administrator password.
+
+```sh
+gem install --user-install cocoapods
+echo 'export PATH="$(ruby -e "puts Gem.user_dir")/bin:$PATH"' >> ~/.zprofile
+source ~/.zprofile
+pod --version
+```
+
+The macOS Ruby is old. If `gem` stops with "The last version of NAME to support your Ruby &
+RubyGems was VERSION", install that version first and then run the CocoaPods install again:
+
+```sh
+gem install --user-install NAME -v VERSION
+gem install --user-install cocoapods
+```
+
+Repeat this for each gem that `gem` names. If `/usr/bin/ruby` is not on the Mac, this path
+does not work. Homebrew (`brew install cocoapods`) is the other path. Installing Homebrew
+needs Lee's administrator password, so that decision is his.
+
+### Signing certificate
+
+Adding an Apple ID to Xcode does not always create a development certificate on the Mac.
+Without one, `vp run ios:lim` stops with "No code signing certificates are available to use"
+before it asks which team signs the app.
+
+Create the certificate in Xcode. Open Settings, Accounts, select the Apple ID, and click
+Manage Certificates. Click the add button and choose Apple Development.
+
+Then confirm that the Mac has the certificate:
+
+```sh
+security find-identity -v -p codesigning
+```
+
+The output must list an identity that starts with `"Apple Development:`. If it does not, run
+`vp run ios:lim` once so that it generates `apps/mobile/ios`. Open the `.xcworkspace` file
+in that folder in Xcode. Select the app target, open Signing & Capabilities, and select the
+Personal Team. Xcode then creates the certificate. Run the `security` command again to check.
 
 ## First build and install
 
