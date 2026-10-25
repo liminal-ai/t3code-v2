@@ -8,11 +8,13 @@ import {
   type ThreadWorkflowSubscriptionState,
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
+import * as Stream from "effect/Stream";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPendingUserInput } from "./threadRequests.ts";
 import {
+  activeThreadWorkflowInstanceAtom,
   deriveThreadWorkflowAsks,
   threadWorkflowProgress,
   threadWorkflowRevisionAtom,
@@ -196,6 +198,28 @@ describe("step phase, result and stage line", () => {
         status: { _tag: "closed", outcome: "abandoned", stamp, reason: "superseded" },
       }),
     ).toBe("Abandoned · superseded");
+  });
+});
+
+describe("activeThreadWorkflowInstanceAtom", () => {
+  it("reads as no workflow once the subscription fails, not as its last snapshot", () => {
+    const open = instance("w1", [step("w1.1", "open")]);
+    const state = Atom.make(
+      Stream.concat(
+        Stream.make({
+          enabled: true,
+          visible: true,
+          unavailable: null,
+          view: view("w1", [open]),
+        } as ThreadWorkflowSubscriptionState),
+        Stream.fail("connection lost"),
+      ),
+    );
+    const registry = AtomRegistry.make();
+
+    expect(registry.get(activeThreadWorkflowInstanceAtom(state))).toBeNull();
+    expect(AsyncResult.isFailure(registry.get(state))).toBe(true);
+    registry.dispose();
   });
 });
 

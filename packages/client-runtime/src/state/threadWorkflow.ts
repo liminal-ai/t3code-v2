@@ -62,6 +62,19 @@ export function activeThreadWorkflowInstance(
   return view.instances.find((instance) => instance.id === view.activeInstanceId) ?? null;
 }
 
+/**
+ * The subscription's open workflow, or null. Only a live snapshot counts: `AsyncResult.value` keeps
+ * the last success through a failure, which would leave a dead subscription's workflow on screen.
+ */
+export function activeThreadWorkflowInstanceAtom(
+  state: Atom.Atom<AsyncResult.AsyncResult<ThreadWorkflowSubscriptionState, unknown>>,
+): Atom.Atom<ThreadWorkflowInstanceSummary | null> {
+  return Atom.make((get) => {
+    const result = get(state);
+    return AsyncResult.isSuccess(result) ? activeThreadWorkflowInstance(result.value.view) : null;
+  });
+}
+
 /** Removed steps keep their row but no number, so the numbers match the turn note. */
 export function threadWorkflowStepNumbers(
   steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "id" | "state">>,

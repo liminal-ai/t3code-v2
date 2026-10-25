@@ -1,12 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { parseScopedThreadKey, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
-  activeThreadWorkflowInstance,
+  activeThreadWorkflowInstanceAtom,
   createThreadWorkflowEnvironmentAtoms,
 } from "@t3tools/client-runtime/state/thread-workflow";
 import type { ScopedThreadRef, ThreadWorkflowInstanceSummary } from "@t3tools/contracts";
-import * as Option from "effect/Option";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 
@@ -21,20 +20,13 @@ const NO_INSTANCE_ATOM = Atom.make<ThreadWorkflowInstanceSummary | null>(null).p
 // thread screen is unchanged in every case but an open workflow.
 const activeInstanceFamily = Atom.family((threadKey: string) => {
   const ref = parseScopedThreadKey(threadKey);
-  return Atom.make((get) => {
-    if (ref === null) return null;
-    const state = Option.getOrNull(
-      AsyncResult.value(
-        get(
-          threadWorkflowEnvironment.state({
-            environmentId: ref.environmentId,
-            input: { threadId: ref.threadId },
-          }),
-        ),
-      ),
-    );
-    return state === null ? null : activeThreadWorkflowInstance(state.view);
-  }).pipe(Atom.withLabel(`mobile-thread-workflow:active:${threadKey}`));
+  if (ref === null) return NO_INSTANCE_ATOM;
+  return activeThreadWorkflowInstanceAtom(
+    threadWorkflowEnvironment.state({
+      environmentId: ref.environmentId,
+      input: { threadId: ref.threadId },
+    }),
+  ).pipe(Atom.withLabel(`mobile-thread-workflow:active:${threadKey}`));
 });
 
 function activeInstanceAtom(ref: ScopedThreadRef | null) {
