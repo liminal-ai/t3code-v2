@@ -38,5 +38,5 @@ Turning `threadWorkflowsEnabled` off stops new workflows and the daily question,
 
 ## Limits
 
-- The Workflow tab is on web and desktop. Mobile has no tab yet.
+- The Workflow tab is on web and desktop. On mobile, a thread with an open workflow has a **Workflow** button in its header that opens the same arc to read. Marking a stage done, the menus and starting a workflow stay on web and desktop for now.
 - Agents on Cursor Cloud have no workflow tools: they cannot start, mark done or close a workflow. Use the tab for those threads.
