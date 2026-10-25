@@ -6,6 +6,8 @@ import {
   type ThreadId,
   type ThreadWorkflowActor,
   type ThreadWorkflowInstanceId,
+  type ThreadWorkflowStepSummary,
+  type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -13,7 +15,7 @@ import * as Schema from "effect/Schema";
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import { printedCall, progress } from "../../../threadWorkflow/domain.ts";
 import * as ThreadWorkflowService from "../../../threadWorkflow/ThreadWorkflowService.ts";
-import { turnNote } from "../../../threadWorkflow/turnNote.ts";
+import { turnNote, WAITS_FOR_USER } from "../../../threadWorkflow/turnNote.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import * as McpToolAccess from "../../McpToolAccess.ts";
 import { unavailable } from "../../threadAccess.ts";
@@ -21,6 +23,8 @@ import {
   ThreadWorkflowToolkit,
   type ThreadWorkflowAgentView,
   type ThreadWorkflowChangeParams,
+  type ThreadWorkflowMutationAck,
+  type ThreadWorkflowStartStep,
 } from "./tools.ts";
 
 const decodeRequest = Schema.decodeUnknownEffect(ThreadWorkflowRequest);
@@ -109,6 +113,49 @@ const changeRequest = (
   }
 };
 
+/** A stage from the start call as the seed the contract stores, with the insert defaults. */
+const plannedSeed = (step: ThreadWorkflowStartStep) =>
+  present({
+    title: step.title,
+    instructions: step.instructions,
+    proofLevel: step.proofLevel ?? "none",
+    proofHint: step.proofHint,
+    waitsForUser: step.waitsForUser ?? false,
+  });
+
+/** The tick call for the current step, after the turn note's ask-first line when the step waits for the user. */
+const tickNext = (step: ThreadWorkflowStepSummary) =>
+  step.waitsForUser ? `${WAITS_FOR_USER} ${printedCall.tick(step)}` : printedCall.tick(step);
+
+const ack = (
+  view: ThreadWorkflowSubscriptionView,
+  instanceId: ThreadWorkflowInstanceId,
+): ThreadWorkflowMutationAck => {
+  const instance = view.instances.find((candidate) => candidate.id === instanceId)!;
+  const currentStep =
+    instance.steps.find((candidate) => candidate.id === instance.currentStepId) ?? null;
+  return {
+    revision: view.revision,
+    instanceId,
+    progress: progress(instance),
+    currentStep:
+      currentStep === null
+        ? null
+        : {
+            id: currentStep.id,
+            title: currentStep.title,
+            instructions: currentStep.instructions,
+            waitsForUser: currentStep.waitsForUser,
+          },
+    next:
+      instance.status._tag === "closed"
+        ? printedCall.get()
+        : currentStep === null
+          ? printedCall.close(instance.id, "finished")
+          : tickNext(currentStep),
+  };
+};
+
 const layerHandlers = Effect.gen(function* () {
   const service = yield* ThreadWorkflowService.ThreadWorkflowService;
 
@@ -137,14 +184,15 @@ const layerHandlers = Effect.gen(function* () {
     };
   });
 
-  const applyThenView = Effect.fn("threadWorkflow.mcp.applyThenView")(function* (
+  const applyThenAck = Effect.fn("threadWorkflow.mcp.applyThenAck")(function* (
     raw: unknown,
     options: ThreadWorkflowService.ThreadWorkflowApplyOptions,
     operation: string,
   ) {
     const { threadId, actor } = yield* callingThread(operation);
-    yield* service.apply(actor, threadId, yield* parseRequest(raw), options);
-    return yield* agentView(threadId);
+    const request = yield* parseRequest(raw);
+    const { view, instanceId } = yield* service.apply(actor, threadId, request, options);
+    return ack(view, instanceId!);
   });
 
   return {
@@ -154,8 +202,16 @@ const layerHandlers = Effect.gen(function* () {
         return yield* agentView(threadId, params.instanceId);
       }),
     ),
-    thread_workflow_start: McpToolAccess.actsAsCaller(({ requestId, ...request }) =>
-      applyThenView({ _tag: "start", ...request }, { requestId }, "thread_workflow_start"),
+    thread_workflow_start: McpToolAccess.actsAsCaller(({ requestId, steps, ...request }) =>
+      applyThenAck(
+        {
+          _tag: "start",
+          ...request,
+          ...(steps === undefined ? {} : { steps: steps.map(plannedSeed) }),
+        },
+        { requestId },
+        "thread_workflow_start",
+      ),
     ),
     thread_workflow_tick: McpToolAccess.actsAsCaller(({ requestId, ...request }) =>
       Effect.gen(function* () {
@@ -179,19 +235,19 @@ const layerHandlers = Effect.gen(function* () {
           next:
             currentStep === null
               ? printedCall.close(instance.id, "finished")
-              : printedCall.tick(currentStep),
+              : tickNext(currentStep),
         };
       }),
     ),
     thread_workflow_change: McpToolAccess.actsAsCaller((params) =>
       changeRequest(params).pipe(
         Effect.flatMap((request) =>
-          applyThenView(request, { requestId: params.requestId }, "thread_workflow_change"),
+          applyThenAck(request, { requestId: params.requestId }, "thread_workflow_change"),
         ),
       ),
     ),
     thread_workflow_close: McpToolAccess.actsAsCaller(({ requestId, ...request }) =>
-      applyThenView({ _tag: "close", ...request }, { requestId }, "thread_workflow_close"),
+      applyThenAck({ _tag: "close", ...request }, { requestId }, "thread_workflow_close"),
     ),
   } satisfies McpToolAccess.Handlers<typeof ThreadWorkflowToolkit.tools>;
 });

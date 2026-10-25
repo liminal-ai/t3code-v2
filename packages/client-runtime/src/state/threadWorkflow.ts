@@ -108,44 +108,14 @@ export function threadWorkflowProgress(
 }
 
 /**
- * One entry of the pane's pinned "Waiting on you" strip. A question leaves when its request
- * stops being pending; a step leaves when it is ticked, skipped or removed.
+ * The pane's pinned "Waiting on you" strip: the pending question-tool requests, oldest first. A
+ * step marked `waitsForUser` is a static property of the plan and never an ask by itself; it
+ * becomes one only when the agent asks through its question tool.
  */
-export type ThreadWorkflowAsk =
-  | { readonly kind: "question"; readonly request: ThreadPendingUserInput }
-  | {
-      readonly kind: "step";
-      readonly instance: ThreadWorkflowInstanceSummary;
-      readonly step: ThreadWorkflowStepSummary;
-      readonly stepNumber: number;
-    };
-
-export function deriveThreadWorkflowAsks(input: {
-  readonly pendingUserInputs: ReadonlyArray<ThreadPendingUserInput>;
-  readonly view: Pick<ThreadWorkflowSubscriptionView, "activeInstanceId" | "instances"> | null;
-}): ReadonlyArray<ThreadWorkflowAsk> {
-  const questions = [...input.pendingUserInputs]
-    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
-    .map((request): ThreadWorkflowAsk => ({ kind: "question", request }));
-  const instance = input.view === null ? null : activeThreadWorkflowInstance(input.view);
-  if (instance === null) return questions;
-  const numbers = threadWorkflowStepNumbers(instance.steps);
-  const steps = instance.steps.flatMap((step): ThreadWorkflowAsk[] =>
-    step.waitsForUser && step.state._tag === "open"
-      ? [{ kind: "step", instance, step, stepNumber: numbers.get(step.id) ?? 0 }]
-      : [],
+export function deriveThreadWorkflowAsks(
+  pendingUserInputs: ReadonlyArray<ThreadPendingUserInput>,
+): ReadonlyArray<ThreadPendingUserInput> {
+  return [...pendingUserInputs].sort((left, right) =>
+    left.createdAt.localeCompare(right.createdAt),
   );
-  return [...questions, ...steps];
-}
-
-export function countOpenThreadWorkflowAsks(input: {
-  readonly pendingUserInputCount: number;
-  readonly view: Pick<ThreadWorkflowSubscriptionView, "activeInstanceId" | "instances"> | null;
-}): number {
-  const instance = input.view === null ? null : activeThreadWorkflowInstance(input.view);
-  const waiting =
-    instance === null
-      ? 0
-      : instance.steps.filter((step) => step.waitsForUser && step.state._tag === "open").length;
-  return input.pendingUserInputCount + waiting;
 }

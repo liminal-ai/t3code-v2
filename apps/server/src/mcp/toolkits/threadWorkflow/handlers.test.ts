@@ -4,12 +4,17 @@ import {
   EnvironmentId,
   ProviderInstanceId,
   ThreadId,
+  ThreadWorkflowTemplateId,
   type OrchestrationV2AppThread,
+  type ThreadWorkflowActor,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { McpSchema, McpServer } from "effect/ai";
 
 import * as ServerConfig from "../../../config.ts";
@@ -18,6 +23,7 @@ import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandE
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ThreadWorkflow from "../../../threadWorkflow/layer.ts";
 import { ThreadWorkflowService } from "../../../threadWorkflow/ThreadWorkflowService.ts";
+import { WAITS_FOR_USER } from "../../../threadWorkflow/turnNote.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
 import { liveThreadsLayer } from "../../McpToolAccess.testkit.ts";
@@ -117,11 +123,16 @@ const structured = (result: McpSchema.CallToolResult) =>
     readonly instance?: {
       readonly steps: ReadonlyArray<{
         readonly id: string;
+        readonly title: string;
         readonly state: { readonly _tag: string };
       }>;
     } | null;
     readonly templates?: ReadonlyArray<{ readonly id: string }>;
   };
+
+/** The whole workflow as `get` returns it, since mutations no longer carry it. */
+const stepsOf = (view: ReturnType<typeof structured>) =>
+  (view.instance?.steps ?? []).map((step) => [step.id, step.title, step.state._tag]);
 
 /** `tool {"json"}` as the note prints it, called exactly as printed. */
 const callPrinted = (line: string) => {
@@ -129,93 +140,428 @@ const callPrinted = (line: string) => {
   return call(line.slice(0, space), JSON.parse(line.slice(space + 1)) as Record<string, unknown>);
 };
 
+const pane: ThreadWorkflowActor = { _tag: "user", clientSessionId: "pane" };
+
+const stage = (title: string) => ({ title, instructions: `Do ${title.toLowerCase()}.` });
+
 it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
-  it.effect(
-    "drives a workflow from start to close, calling the note's printed calls as typed",
-    () =>
-      Effect.gen(function* () {
-        const empty = structured(yield* call("thread_workflow_get", {}));
-        assert.isNull(empty.activeInstanceId);
-        assert.includeMembers(
-          (empty.templates ?? []).map((template) => template.id),
-          ["open-ended", "single-task"],
-        );
+  it.effect("writes the plan in one start call and answers every mutation with a short ack", () =>
+    Effect.gen(function* () {
+      const empty = structured(yield* call("thread_workflow_get", {}));
+      assert.isNull(empty.activeInstanceId);
+      assert.includeMembers(
+        (empty.templates ?? []).map((template) => template.id),
+        ["open-ended", "single-task"],
+      );
 
-        const started = yield* call("thread_workflow_start", { templateId: "open-ended" });
-        assert.isFalse(started.isError);
-        const note = structured(started).note ?? "";
-        assert.match(note, /^<thread-workflow>/);
-        const tickLine = note.split("\n").find((line) => line.startsWith("thread_workflow_tick "))!;
-        const ticked = yield* callPrinted(
-          tickLine
-            .replace("<what you did and how you know it worked>", "stated the goal in one line")
-            .replace(/<[^>]*>/, "the goal text"),
-        );
-        assert.isFalse(ticked.isError, JSON.stringify(ticked.content));
-        assert.deepInclude(ticked.structuredContent as object, {
-          progress: { total: 3, open: 2, currentPosition: 2 },
-        });
-        assert.match(
-          (ticked.structuredContent as { next: string }).next,
-          /thread_workflow_tick \{"stepId":"w1.2"/,
-        );
+      const started = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        title: "Slice 1",
+        steps: [stage("Groundwork"), stage("Scope"), { ...stage("Build"), waitsForUser: true }],
+      });
+      assert.isFalse(started.isError, JSON.stringify(started.content));
+      assert.deepStrictEqual(Object.keys(started.structuredContent as object).toSorted(), [
+        "currentStep",
+        "instanceId",
+        "next",
+        "progress",
+        "revision",
+      ]);
+      assert.deepInclude(started.structuredContent as object, {
+        instanceId: "w1",
+        progress: { total: 4, open: 4, currentPosition: 1 },
+        currentStep: {
+          id: "w1.1",
+          title: "Groundwork",
+          instructions: "Do groundwork.",
+          waitsForUser: false,
+        },
+      });
+      const planned = structured(yield* call("thread_workflow_get", {}));
+      assert.deepStrictEqual(stepsOf(planned), [
+        ["w1.1", "Groundwork", "open"],
+        ["w1.2", "Scope", "open"],
+        ["w1.3", "Build", "open"],
+        ["w1.4", "Confirm done with the user", "open"],
+      ]);
+      const note = planned.note ?? "";
+      assert.match(note, /step 1 of 4: Groundwork/);
+      const tickLine = note.split("\n").find((line) => line.startsWith("thread_workflow_tick "))!;
+      const ticked = yield* callPrinted(
+        tickLine.replace("<what you did and how you know it worked>", "repo and judge set up"),
+      );
+      assert.isFalse(ticked.isError, JSON.stringify(ticked.content));
+      assert.deepInclude(ticked.structuredContent as object, {
+        progress: { total: 4, open: 3, currentPosition: 2 },
+      });
+      assert.match(
+        (ticked.structuredContent as { next: string }).next,
+        /thread_workflow_tick \{"stepId":"w1.2"/,
+      );
 
-        const afterTick = structured(yield* call("thread_workflow_get", {})).note ?? "";
-        const skipLine = afterTick
-          .split("\n")
-          .find((line) => line.startsWith("thread_workflow_change "))!;
-        assert.include(skipLine, '"stepId":"w1.2"');
-        const skipped = yield* callPrinted(skipLine.replace("<why>", "already done"));
-        assert.isFalse(skipped.isError, JSON.stringify(skipped.content));
+      const skipped = yield* call("thread_workflow_change", {
+        action: "skip",
+        stepId: "w1.2",
+        reason: "already scoped",
+      });
+      assert.isFalse(skipped.isError, JSON.stringify(skipped.content));
+      assert.deepInclude(skipped.structuredContent as object, {
+        instanceId: "w1",
+        progress: { total: 4, open: 2, currentPosition: 3 },
+        currentStep: { id: "w1.3", title: "Build", instructions: "Do build.", waitsForUser: true },
+      });
+      assert.isTrue(
+        (skipped.structuredContent as { next: string }).next.startsWith(
+          `${WAITS_FOR_USER} thread_workflow_tick {"stepId":"w1.3"`,
+        ),
+      );
+      assert.notProperty(skipped.structuredContent as object, "instance");
 
-        const inserted = yield* call("thread_workflow_change", {
-          action: "insert",
-          afterStepId: "w1.2",
-          title: "Verify in the app",
-          instructions: "Open the app and check.",
-          reason: "the goal needs a live check",
-        });
-        assert.isFalse(inserted.isError, JSON.stringify(inserted.content));
-        const steps = structured(inserted).instance?.steps ?? [];
-        assert.deepStrictEqual(
-          steps.map((step) => [step.id, step.state._tag]),
-          [
-            ["w1.1", "done"],
-            ["w1.2", "skipped"],
-            ["w1.4", "open"],
-            ["w1.3", "open"],
-          ],
-        );
+      const inserted = yield* call("thread_workflow_change", {
+        action: "insert",
+        afterStepId: "w1.3",
+        title: "Verify in the app",
+        instructions: "Open the app and check.",
+        reason: "the goal needs a live check",
+      });
+      assert.isFalse(inserted.isError, JSON.stringify(inserted.content));
+      assert.deepStrictEqual(
+        stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([id]) => id),
+        ["w1.1", "w1.2", "w1.3", "w1.5", "w1.4"],
+      );
 
-        const commented = yield* call("thread_workflow_change", {
-          action: "comment",
-          target: "w1",
-          comment: "Continue after the idle check. Answered by the user.",
-        });
-        assert.isFalse(commented.isError);
-        const reopened = yield* call("thread_workflow_change", {
-          action: "reopen",
-          target: "w1.1",
-          reason: "the goal changed",
-        });
-        assert.isFalse(reopened.isError);
+      const reopened = yield* call("thread_workflow_change", {
+        action: "reopen",
+        target: "w1.1",
+        reason: "the goal changed",
+      });
+      assert.isFalse(reopened.isError);
+      assert.deepInclude(reopened.structuredContent as object, {
+        currentStep: {
+          id: "w1.1",
+          title: "Groundwork",
+          instructions: "Do groundwork.",
+          waitsForUser: false,
+        },
+      });
+      assert.notInclude((reopened.structuredContent as { next: string }).next, WAITS_FOR_USER);
 
-        const unfinished = yield* call("thread_workflow_close", {
-          instanceId: "w1",
-          outcome: "finished",
-          reason: "done",
+      const unfinished = yield* call("thread_workflow_close", {
+        instanceId: "w1",
+        outcome: "finished",
+        reason: "done",
+      });
+      assert.strictEqual(failure(unfinished)?.code, "steps_unresolved");
+      const abandoned = yield* call("thread_workflow_close", {
+        instanceId: "w1",
+        outcome: "abandoned",
+        reason: "scope moved to another thread",
+      });
+      assert.isFalse(abandoned.isError);
+      assert.deepInclude(abandoned.structuredContent as object, {
+        instanceId: "w1",
+        next: "thread_workflow_get {}",
+      });
+      const after = structured(yield* call("thread_workflow_get", {}));
+      assert.isNull(after.activeInstanceId);
+      const closedOne = structured(yield* call("thread_workflow_get", { instanceId: "w1" }));
+      assert.strictEqual(closedOne.instance?.steps.length, 5);
+    }),
+  );
+
+  it.effect("refuses a plan over the step cap before writing anything", () =>
+    Effect.gen(function* () {
+      const revision = structured(yield* call("thread_workflow_get", {})).revision;
+      const refused = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        steps: Array.from({ length: 8 }, (_, index) => stage(`Stage ${index + 1}`)),
+      });
+      assert.strictEqual(failure(refused)?.code, "too_many_steps");
+      assert.match(failure(refused)?.message ?? "", /at most 8 steps/);
+      assert.strictEqual(structured(yield* call("thread_workflow_get", {})).revision, revision);
+      assert.isNull(structured(yield* call("thread_workflow_get", {})).activeInstanceId);
+
+      const fits = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        steps: Array.from({ length: 7 }, (_, index) => stage(`Stage ${index + 1}`)),
+      });
+      assert.isFalse(fits.isError, JSON.stringify(fits.content));
+      assert.deepInclude(fits.structuredContent as object, {
+        progress: { total: 8, open: 8, currentPosition: 1 },
+      });
+      const ninth = yield* call("thread_workflow_change", {
+        action: "insert",
+        title: "One more",
+        instructions: "More.",
+        reason: "found more work",
+      });
+      assert.strictEqual(failure(ninth)?.code, "too_many_steps");
+      assert.match(failure(ninth)?.message ?? "", /"action":"comment"/);
+
+      const samePlanAgain = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        steps: [stage("Different")],
+      });
+      assert.strictEqual(failure(samePlanAgain)?.code, "instance_open");
+      yield* call("thread_workflow_close", {
+        instanceId: "w2",
+        outcome: "abandoned",
+        reason: "test over",
+      });
+    }),
+  );
+
+  it.effect("replays a planned start under the same request id without doubling the plan", () =>
+    Effect.gen(function* () {
+      const args = {
+        templateId: "open-ended",
+        steps: [stage("One"), stage("Two")],
+        requestId: "plan-1",
+      };
+      const first = yield* call("thread_workflow_start", args);
+      assert.isFalse(first.isError, JSON.stringify(first.content));
+      const again = yield* call("thread_workflow_start", args);
+      assert.isFalse(again.isError, JSON.stringify(again.content));
+      assert.deepStrictEqual(again.structuredContent, first.structuredContent);
+      assert.deepStrictEqual(
+        stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([, title]) => title),
+        ["One", "Two", "Confirm done with the user"],
+      );
+
+      const top = yield* call("thread_workflow_change", {
+        action: "insert",
+        afterStepId: null,
+        title: "Zero",
+        instructions: "Do zero.",
+        reason: "found earlier work",
+      });
+      assert.isFalse(top.isError, JSON.stringify(top.content));
+      const afterInsert = yield* call("thread_workflow_start", args);
+      assert.isFalse(afterInsert.isError, JSON.stringify(afterInsert.content));
+      assert.strictEqual(
+        (afterInsert.structuredContent as { readonly instanceId: string }).instanceId,
+        (first.structuredContent as { readonly instanceId: string }).instanceId,
+      );
+      assert.deepStrictEqual(
+        stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([, title]) => title),
+        ["Zero", "One", "Two", "Confirm done with the user"],
+      );
+    }),
+  );
+
+  it.effect("acks the instance a replayed start created, not the one open now", () =>
+    Effect.gen(function* () {
+      const open = structured(yield* call("thread_workflow_get", {})).activeInstanceId!;
+      yield* call("thread_workflow_close", { instanceId: open, outcome: "abandoned", reason: "x" });
+      const plannedAgain = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        steps: [stage("One"), stage("Two")],
+        requestId: "plan-1",
+      });
+      assert.isFalse(plannedAgain.isError, JSON.stringify(plannedAgain.content));
+      assert.deepInclude(plannedAgain.structuredContent as object, {
+        instanceId: open,
+        next: "thread_workflow_get {}",
+      });
+
+      const plainArgs = { templateId: "open-ended", title: "Plain", requestId: "plain-1" };
+      const plain = yield* call("thread_workflow_start", plainArgs);
+      assert.isFalse(plain.isError, JSON.stringify(plain.content));
+      const plainAck = plain.structuredContent as {
+        readonly instanceId: string;
+        readonly currentStep: { readonly id: string; readonly waitsForUser: boolean };
+        readonly next: string;
+      };
+      assert.isTrue(plainAck.currentStep.waitsForUser);
+      assert.isTrue(plainAck.next.startsWith(`${WAITS_FOR_USER} thread_workflow_tick `));
+      yield* call("thread_workflow_close", {
+        instanceId: plainAck.instanceId,
+        outcome: "abandoned",
+        reason: "x",
+      });
+      const other = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        title: "Other",
+      });
+      const otherId = (other.structuredContent as { readonly instanceId: string }).instanceId;
+      assert.notStrictEqual(otherId, plainAck.instanceId);
+
+      const plainAgain = yield* call("thread_workflow_start", plainArgs);
+      assert.isFalse(plainAgain.isError, JSON.stringify(plainAgain.content));
+      assert.deepInclude(plainAgain.structuredContent as object, {
+        instanceId: plainAck.instanceId,
+        next: "thread_workflow_get {}",
+      });
+      yield* call("thread_workflow_close", {
+        instanceId: otherId,
+        outcome: "abandoned",
+        reason: "x",
+      });
+    }),
+  );
+
+  it.effect("refuses a planned start against an open workflow it did not create, every time", () =>
+    Effect.gen(function* () {
+      const existing = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        title: "Taken",
+      });
+      const { instanceId } = existing.structuredContent as { readonly instanceId: string };
+      const before = stepsOf(structured(yield* call("thread_workflow_get", {})));
+      const args = {
+        templateId: "open-ended",
+        title: "Taken",
+        steps: [stage("Sneaked in")],
+        requestId: "converge-1",
+      };
+      assert.strictEqual(
+        failure(yield* call("thread_workflow_start", args))?.code,
+        "instance_open",
+      );
+      assert.strictEqual(
+        failure(yield* call("thread_workflow_start", args))?.code,
+        "instance_open",
+      );
+      assert.deepStrictEqual(stepsOf(structured(yield* call("thread_workflow_get", {}))), before);
+      yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
+    }),
+  );
+
+  it.effect("takes a plan under a request id at the length cap", () =>
+    Effect.gen(function* () {
+      const args = {
+        templateId: "open-ended",
+        steps: [stage("One"), stage("Two")],
+        requestId: "r".repeat(128),
+      };
+      const first = yield* call("thread_workflow_start", args);
+      assert.isFalse(first.isError, JSON.stringify(first.content));
+      const again = yield* call("thread_workflow_start", args);
+      assert.deepStrictEqual(again.structuredContent, first.structuredContent);
+      const view = structured(yield* call("thread_workflow_get", {}));
+      assert.isNull(view.corruption);
+      assert.deepStrictEqual(
+        stepsOf(view).map(([, title]) => title),
+        ["One", "Two", "Confirm done with the user"],
+      );
+      const { instanceId } = first.structuredContent as { readonly instanceId: string };
+      yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
+    }),
+  );
+
+  it.effect("keeps a plan out of a workflow the pane restarted as soon as it opened", () =>
+    Effect.gen(function* () {
+      const service = yield* ThreadWorkflowService;
+      const plan = ["One", "Two", "Three", "Four", "Five"].map(stage);
+      const before = structured(yield* call("thread_workflow_get", {})).revision as number;
+      // The pane abandons the planned workflow on the first change that shows it open, and starts
+      // its own.
+      const otherClient = yield* service.subscribe(threadId).pipe(
+        Stream.filterMap((state) => {
+          const planned = state.view.instances.find(
+            (instance) => instance.title === "Raced" && instance.status._tag === "open",
+          );
+          return planned === undefined ? Result.failVoid : Result.succeed(planned.id);
+        }),
+        Stream.take(1),
+        Stream.runForEach((instanceId) =>
+          Effect.gen(function* () {
+            yield* service.apply(pane, threadId, {
+              _tag: "close",
+              instanceId,
+              outcome: "abandoned",
+              reason: "restart",
+            });
+            yield* service.apply(pane, threadId, {
+              _tag: "start",
+              templateId: ThreadWorkflowTemplateId.make("open-ended"),
+              title: "Restarted",
+            });
+          }),
+        ),
+        Effect.forkChild,
+      );
+      const planned = yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        title: "Raced",
+        steps: plan,
+        requestId: "race-1",
+      });
+      assert.isFalse(planned.isError, JSON.stringify(planned.content));
+      // One record holds the plan, so no other write can land between its steps.
+      assert.strictEqual((planned.structuredContent as { revision: number }).revision, before + 1);
+      yield* Fiber.join(otherClient);
+
+      const { instances } = structured(yield* call("thread_workflow_get", {})) as {
+        readonly instances: ReadonlyArray<{
+          readonly id: string;
+          readonly title: string;
+          readonly steps: ReadonlyArray<{ readonly title: string }>;
+        }>;
+      };
+      const titlesOf = (title: string) =>
+        instances.find((instance) => instance.title === title)?.steps.map((step) => step.title);
+      assert.deepStrictEqual(titlesOf("Raced"), [
+        "One",
+        "Two",
+        "Three",
+        "Four",
+        "Five",
+        "Confirm done with the user",
+      ]);
+      assert.deepStrictEqual(titlesOf("Restarted"), ["Confirm done with the user"]);
+      const restarted = instances.find((instance) => instance.title === "Restarted")!;
+      yield* call("thread_workflow_close", {
+        instanceId: restarted.id,
+        outcome: "abandoned",
+        reason: "x",
+      });
+    }),
+  );
+
+  it.effect("acks the reopened instance an unanchored insert went into, not a later start", () =>
+    Effect.gen(function* () {
+      const startClosed = (title: string) =>
+        Effect.gen(function* () {
+          const result = yield* call("thread_workflow_start", { templateId: "open-ended", title });
+          const { instanceId } = result.structuredContent as { readonly instanceId: string };
+          yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
+          return instanceId;
         });
-        assert.strictEqual(failure(unfinished)?.code, "steps_unresolved");
-        const abandoned = yield* call("thread_workflow_close", {
-          instanceId: "w1",
-          outcome: "abandoned",
-          reason: "scope moved to another thread",
-        });
-        assert.isFalse(abandoned.isError);
-        assert.isNull(structured(abandoned).activeInstanceId);
-        const closedOne = structured(yield* call("thread_workflow_get", { instanceId: "w1" }));
-        assert.strictEqual(closedOne.instance?.steps.length, 4);
-      }),
+      const reopenedId = yield* startClosed("Reopened later");
+      const laterId = yield* startClosed("Started later");
+      const reopened = yield* call("thread_workflow_change", {
+        action: "reopen",
+        target: reopenedId,
+        reason: "more to do",
+      });
+      assert.isFalse(reopened.isError, JSON.stringify(reopened.content));
+
+      const insertArgs = {
+        action: "insert",
+        title: "Late step",
+        instructions: "Do it.",
+        reason: "found more work",
+        requestId: "insert-after-reopen",
+      };
+      const first = yield* call("thread_workflow_change", insertArgs);
+      assert.isFalse(first.isError, JSON.stringify(first.content));
+      assert.strictEqual(
+        (first.structuredContent as { readonly instanceId: string }).instanceId,
+        reopenedId,
+      );
+      const again = yield* call("thread_workflow_change", insertArgs);
+      assert.strictEqual(
+        (again.structuredContent as { readonly instanceId: string }).instanceId,
+        reopenedId,
+      );
+      assert.notStrictEqual(reopenedId, laterId);
+      yield* call("thread_workflow_close", {
+        instanceId: reopenedId,
+        outcome: "abandoned",
+        reason: "x",
+      });
+    }),
   );
 
   it.effect("names the missing field when a change action is incomplete", () =>

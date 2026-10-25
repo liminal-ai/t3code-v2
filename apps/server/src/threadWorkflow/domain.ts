@@ -13,6 +13,7 @@ import * as NodeCrypto from "node:crypto";
 
 import {
   isThreadWorkflowError,
+  THREAD_WORKFLOW_LIMITS,
   ThreadWorkflowError,
   type ThreadId,
   type ThreadWorkflowActor,
@@ -53,6 +54,8 @@ interface InstanceState {
 interface Receipt {
   readonly inputDigest: string;
   readonly seq: number;
+  /** The instance the record acted on, or that was open for a bare receipt; null for a recovery. */
+  readonly instanceId: ThreadWorkflowInstanceId | null;
 }
 
 export interface ThreadWorkflowState {
@@ -152,6 +155,8 @@ export const printedCall = {
       instructions: "<what to do>",
       reason: "<why>",
     }),
+  comment: (target: ThreadWorkflowTarget) =>
+    call("thread_workflow_change", { action: "comment", target, comment: "<the detail>" }),
   close: (instanceId: ThreadWorkflowInstanceId, outcome: ThreadWorkflowOutcome) =>
     call("thread_workflow_close", {
       instanceId,
@@ -191,6 +196,12 @@ export const progress = (instance: Pick<ThreadWorkflowInstanceSummary, "steps">)
     currentPosition: current === -1 ? null : current + 1,
   };
 };
+
+/** Steps that count against the cap: open or done. A skipped or removed step has left the plan. */
+export const plannedStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
+  steps.filter((step) => step.state._tag === "open" || step.state._tag === "done").length;
+
+const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
 
 const who = (stamp: ThreadWorkflowStamp) =>
   `${stamp.by._tag === "user" ? "the user" : "the agent"} at ${stamp.at}`;
@@ -339,6 +350,8 @@ const decideStart = (
   context: DecideContext,
 ): Decision | ThreadWorkflowError => {
   const open = openInstance(state);
+  // The plan is in the digest, so a start converges only on an instance an identical plan
+  // started; a different plan meets `instance_open` below.
   if (open !== undefined && open.startDigest === requestDigest(request)) return UNCHANGED;
   if (!context.enabled) {
     return fail(
@@ -368,6 +381,14 @@ const decideStart = (
     );
   }
   const { template, freshness } = resolved;
+  const plan = request.steps ?? [];
+  // A built-in template may carry more than the cap on its own; only a plan added to it is held to it.
+  if (plan.length > 0 && plan.length + template.steps.length > THREAD_WORKFLOW_LIMITS.steps) {
+    return fail(
+      "too_many_steps",
+      `${plan.length} planned steps plus the ${template.steps.length} the template "${template.id}" carries is more than ${THREAD_WORKFLOW_LIMITS.steps}. ${STEP_CAP_ADVICE}`,
+    );
+  }
   const instanceId = `w${state.nextInstanceNumber}` as ThreadWorkflowInstanceId;
   return changed(actor, {
     _tag: "started",
@@ -379,7 +400,7 @@ const decideStart = (
       source: template.source,
       staleAtStart: freshness === "stale",
     },
-    steps: template.steps.map((seed, index) => ({
+    steps: [...plan, ...template.steps].map((seed, index) => ({
       id: `${instanceId}.${index + 1}` as ThreadWorkflowStepId,
       ...seed,
     })),
@@ -520,6 +541,15 @@ const decideInsert = (
     }
   }
   const { instance, nextStepNumber } = entry;
+  if (plannedStepCount(instance.steps) >= THREAD_WORKFLOW_LIMITS.steps) {
+    const target = instance.currentStepId ?? instance.id;
+    return fail(
+      "too_many_steps",
+      actor._tag === "user"
+        ? `This workflow already has ${THREAD_WORKFLOW_LIMITS.steps} stages. Combine two, or skip or remove one, before adding another.`
+        : `Workflow ${instance.id} already holds ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. ${STEP_CAP_ADVICE} ${printedCall.comment(target)}`,
+    );
+  }
   return changed(actor, {
     _tag: "inserted",
     instanceId: instance.id,
@@ -637,6 +667,41 @@ const decideClose = (
 };
 
 /**
+ * The instance a request acted on, read from the state after it applied; null for a recovery.
+ * A start or an unanchored insert acts on whichever instance was open when it was recorded, so a
+ * replay reads that from its receipt, not from what is open now.
+ */
+export const instanceActedOn = (
+  state: ThreadWorkflowState,
+  request: ThreadWorkflowRequest,
+  requestId: string | null,
+): ThreadWorkflowInstanceId | null => {
+  const openWhenRecorded = () => {
+    const receipt = requestId === null ? undefined : state.receipts.get(requestId);
+    return receipt === undefined ? (openInstance(state)?.instance.id ?? null) : receipt.instanceId;
+  };
+  switch (request._tag) {
+    case "start":
+      return openWhenRecorded();
+    case "tick":
+    case "skip":
+    case "remove":
+      return instanceIdOfStep(request.stepId);
+    case "reopen":
+    case "comment":
+      return isStepId(request.target) ? instanceIdOfStep(request.target) : request.target;
+    case "insert":
+      return typeof request.afterStepId === "string"
+        ? instanceIdOfStep(request.afterStepId)
+        : (request.instanceId ?? openWhenRecorded());
+    case "close":
+      return request.instanceId;
+    case "recover":
+      return null;
+  }
+};
+
+/**
  * The record a decision writes, or null when nothing is written: a replay, or a convergent
  * request with no request id to bind.
  */
@@ -688,7 +753,12 @@ export const evolve = (
     return {
       ...state,
       lastSeq: record.seq,
-      receipts: withReceipt(state.receipts, record.requestId, record),
+      receipts: withReceipt(
+        state.receipts,
+        record.requestId,
+        record,
+        openInstance(state)?.instance.id ?? null,
+      ),
     };
   }
   const { event } = record;
@@ -700,7 +770,9 @@ export const evolve = (
       lastActivityAt: record.at,
       nextInstanceNumber: event.nextInstanceNumber,
       receipts:
-        record.requestId === null ? new Map() : withReceipt(new Map(), record.requestId, record),
+        record.requestId === null
+          ? new Map()
+          : withReceipt(new Map(), record.requestId, record, null),
     };
   }
   const base: ThreadWorkflowState = {
@@ -711,7 +783,12 @@ export const evolve = (
     receipts:
       record.requestId === null
         ? state.receipts
-        : withReceipt(state.receipts, record.requestId, record),
+        : withReceipt(
+            state.receipts,
+            record.requestId,
+            record,
+            event._tag === "started" ? event.instanceId : instanceIdOfEvent(event),
+          ),
   };
   const stamp: ThreadWorkflowStamp = { seq: record.seq, at: record.at, by: record.by };
 
@@ -865,8 +942,13 @@ const withReceipt = (
   receipts: ReadonlyMap<string, Receipt>,
   requestId: string,
   record: ThreadWorkflowRecord,
+  instanceId: ThreadWorkflowInstanceId | null,
 ): ReadonlyMap<string, Receipt> =>
-  new Map(receipts).set(requestId, { inputDigest: record.inputDigest, seq: record.seq });
+  new Map(receipts).set(requestId, {
+    inputDigest: record.inputDigest,
+    seq: record.seq,
+    instanceId,
+  });
 
 const instanceIdOfEvent = (
   event: Exclude<ThreadWorkflowEvent, { readonly _tag: "started" | "recovered" }>,

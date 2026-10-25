@@ -1,8 +1,8 @@
 # Thread workflows
 
-A thread workflow is a checklist attached to a thread. It holds the steps the work must go through, and who finished each one and when. The agent sees the current step at the start of every turn and ticks steps off as it goes. You can tick, skip, add, remove and reopen steps yourself in the **Workflow** tab of the right panel.
+A thread workflow is the arc of one thread's work: a few stages, in order, with who finished each one and when. The agent sees the current stage at the start of every turn and marks stages done as it goes. The **Workflow** tab of the right panel shows the whole arc at a glance: what is done, where the work is now, and what comes next.
 
-While a thread has an open workflow, the thread cannot be settled, archived or deleted. To change course, say so in the workflow: skip a step with a reason, close the workflow as finished once its steps are done, or abandon it with a reason. Each change is recorded with who made it, so a thread never quietly ends before its steps are done.
+While a thread has an open workflow, the thread cannot be settled, archived or deleted. To change course, say so in the workflow: skip a stage with a reason, close the workflow as finished once its stages are done, or abandon it with a reason. Each change is recorded with who made it, so a thread never quietly ends before its stages are done.
 
 ## Turn workflows on
 
@@ -10,9 +10,27 @@ Workflows are off by default. Set `"threadWorkflowsEnabled": true` in the server
 
 ## Start a workflow
 
-Open the **Workflow** tab and pick a template: **Single task**, **Orchestrate**, or **Open-ended**, which starts from a goal and lets you or the agent add steps. You can also ask the agent to start one.
+Open the **Workflow** tab and pick a template: **Single task**, **Orchestrate**, or **Open-ended**. You can also ask the agent to start one. An agent writes the whole plan in one call, as 4 to 7 stages at one level, and a workflow holds at most 8 stages that are not skipped or removed. Detail and side quests go in comments on the current stage, not in new stages.
 
-Steps that wait for you, and questions the agent is waiting on, stay pinned at the top of the tab. A workflow that sees no activity for a day asks you, through the agent, whether to carry on or close it.
+## Read the pane
+
+The tab is one list. Done stages show their title and a one-line result. The current stage is emphasized and carries the **Done** button. Upcoming stages are titles only. Skipped and removed stages stay in order, muted. The line under the title says where the work is, such as **Stage 3 of 5**.
+
+A stage that ends with your decision carries a small **your call** marker. It is not an alarm. **Waiting on you** appears at the top of the tab only when the agent has asked you a question and is waiting for the answer, and the count on the tab means the same thing.
+
+The agent's instructions for a stage, what proof it asked for, and who did what are behind the chevron on each row.
+
+## Mark a stage done
+
+Click **Done** on the current stage. The note beside it is optional. After Done, the stage shows **Undo**, which reopens it.
+
+Skip, comment, add a stage after, remove, reopen and unskip are in the menu on each row. Each one records your reason.
+
+## Manage the workflow
+
+The menu in the header holds everything about the workflow itself: switch to another workflow on the thread, start a new one when none is open, show the activity log, close the workflow as finished once every stage is done or skipped, abandon it, or reopen a closed one.
+
+A workflow that sees no activity for a day asks you, through the agent, whether to carry on or close it.
 
 ## Turn enforcement off
 
@@ -21,4 +39,4 @@ Turning `threadWorkflowsEnabled` off stops new workflows and the daily question,
 ## Limits
 
 - The Workflow tab is on web and desktop. Mobile has no tab yet.
-- Agents on Cursor Cloud have no workflow tools: they cannot start, tick or close a workflow. Use the tab for those threads.
+- Agents on Cursor Cloud have no workflow tools: they cannot start, mark done or close a workflow. Use the tab for those threads.

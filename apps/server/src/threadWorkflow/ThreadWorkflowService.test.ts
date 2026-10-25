@@ -311,6 +311,52 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
     ),
   );
 
+  it.effect("replays an unanchored insert after a reload as acting on the instance it hit", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        const close = (instanceId: string): ThreadWorkflowRequest => ({
+          _tag: "close",
+          instanceId: instanceId as never,
+          outcome: "abandoned",
+          reason: "test",
+        });
+        const insert: ThreadWorkflowRequest = {
+          _tag: "insert",
+          step: {
+            title: "Extra",
+            instructions: "Do more.",
+            proofLevel: "none",
+            waitsForUser: false,
+          },
+          reason: "found more work",
+        } as never;
+        const first = yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          yield* service.apply(user, threadId, start);
+          yield* service.apply(user, threadId, close("w1"));
+          yield* service.apply(user, threadId, start);
+          yield* service.apply(user, threadId, close("w2"));
+          yield* service.apply(user, threadId, {
+            _tag: "reopen",
+            target: "w1" as never,
+            reason: "test",
+          } as never);
+          return yield* service.apply(agent, threadId, insert, { requestId: "insert-1" });
+        }).pipe(Effect.provide(harness.layer));
+        assert.strictEqual(first.instanceId, "w1");
+
+        const retried = yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          return yield* service.apply(agent, threadId, insert, { requestId: "insert-1" });
+        }).pipe(Effect.provide(harness.layer));
+        assert.isTrue(retried.replayed);
+        assert.strictEqual(retried.view.revision, first.view.revision);
+        assert.strictEqual(retried.instanceId, "w1");
+      }),
+    ),
+  );
+
   it.effect("streams the view after each durable change and after the flag flips", () =>
     Effect.scoped(
       Effect.gen(function* () {

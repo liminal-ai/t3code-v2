@@ -1,9 +1,6 @@
 import { scopedThreadKey, parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
-import {
-  countOpenThreadWorkflowAsks,
-  createThreadWorkflowEnvironmentAtoms,
-} from "@t3tools/client-runtime/state/thread-workflow";
+import { createThreadWorkflowEnvironmentAtoms } from "@t3tools/client-runtime/state/thread-workflow";
 import type { ScopedThreadRef, ThreadWorkflowSubscriptionState } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -54,14 +51,9 @@ const openAskCountFamily = Atom.family((threadKey: string) => {
     const projection = Option.getOrNull(
       AsyncResult.value(get(environmentThreads.stateAtom(ref.environmentId, ref.threadId))),
     )?.data;
-    const pendingUserInputCount =
-      projection === undefined || Option.isNone(projection)
-        ? 0
-        : derivePendingThreadRequests(projection.value).userInputs.length;
-    return countOpenThreadWorkflowAsks({
-      pendingUserInputCount,
-      view: readThreadWorkflowState(get(threadWorkflowStateAtom(ref)))?.view ?? null,
-    });
+    return projection === undefined || Option.isNone(projection)
+      ? 0
+      : derivePendingThreadRequests(projection.value).userInputs.length;
   }).pipe(Atom.withLabel(`thread-workflow:asks:${threadKey}`));
 });
 
@@ -70,7 +62,7 @@ export function threadWorkflowVisibleAtom(ref: ScopedThreadRef | null) {
   return ref === null ? FALSE_ATOM : visibleFamily(scopedThreadKey(ref));
 }
 
-/** Pending question-tool requests plus open waits-for-user steps: the tab title's count. */
+/** Pending question-tool requests: the tab title's count and the pane's "Waiting on you" strip. */
 export function threadWorkflowOpenAskCountAtom(ref: ScopedThreadRef | null) {
   return ref === null ? ZERO_ATOM : openAskCountFamily(scopedThreadKey(ref));
 }
