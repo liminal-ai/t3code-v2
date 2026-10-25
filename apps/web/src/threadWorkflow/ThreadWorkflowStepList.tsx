@@ -1,3 +1,8 @@
+import {
+  threadWorkflowStepPhase,
+  threadWorkflowStepResult,
+  type ThreadWorkflowStepPhase,
+} from "@t3tools/client-runtime/state/thread-workflow";
 import type {
   ThreadWorkflowInstanceSummary,
   ThreadWorkflowStamp,
@@ -25,20 +30,6 @@ import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
 import { THREAD_WORKFLOW_FIELD_LIMITS, type ThreadWorkflowFormIntent } from "./threadWorkflowForms";
 
-/**
- * Where a step sits in the arc. `current` and `upcoming` split the open steps by position, so a
- * row's treatment is one lookup on this and never a pair of booleans that must agree.
- */
-export type StepPhase = "done" | "current" | "upcoming" | "skipped" | "removed";
-
-function stepPhase(
-  step: Pick<ThreadWorkflowStepSummary, "id" | "state">,
-  instance: Pick<ThreadWorkflowInstanceSummary, "currentStepId">,
-): StepPhase {
-  if (step.state._tag !== "open") return step.state._tag;
-  return step.id === instance.currentStepId ? "current" : "upcoming";
-}
-
 export function actorLabel(stamp: Pick<ThreadWorkflowStamp, "by">): string {
   return stamp.by._tag === "user" ? "you" : "agent";
 }
@@ -52,7 +43,7 @@ function Stamp({ verb, stamp }: { verb: string; stamp: ThreadWorkflowStamp }) {
   );
 }
 
-const DOT_CLASS: Record<StepPhase, string> = {
+const DOT_CLASS: Record<ThreadWorkflowStepPhase, string> = {
   done: "border-success bg-success text-white",
   current: "border-info ring-[3px] ring-info/20",
   upcoming: "border-border",
@@ -60,7 +51,7 @@ const DOT_CLASS: Record<StepPhase, string> = {
   removed: "border-border/60",
 };
 
-function StepDot({ phase }: { phase: StepPhase }) {
+function StepDot({ phase }: { phase: ThreadWorkflowStepPhase }) {
   return (
     <span
       aria-hidden
@@ -82,7 +73,13 @@ const PROOF_WORDS: Record<ThreadWorkflowStepSummary["proofLevel"], string | null
 };
 
 /** Agent-facing detail and the record of who did what, folded away so the arc reads at a glance. */
-function StepDetails({ step, phase }: { step: ThreadWorkflowStepSummary; phase: StepPhase }) {
+function StepDetails({
+  step,
+  phase,
+}: {
+  step: ThreadWorkflowStepSummary;
+  phase: ThreadWorkflowStepPhase;
+}) {
   const { state } = step;
   const proof = PROOF_WORDS[step.proofLevel];
   return (
@@ -129,7 +126,7 @@ function StepMenu({
   onOpenForm,
 }: {
   step: ThreadWorkflowStepSummary;
-  phase: StepPhase;
+  phase: ThreadWorkflowStepPhase;
   instanceOpen: boolean;
   disabled: boolean;
   onOpenForm: (intent: ThreadWorkflowFormIntent) => void;
@@ -260,7 +257,7 @@ function YourCall() {
   );
 }
 
-const TITLE_CLASS: Record<StepPhase, string> = {
+const TITLE_CLASS: Record<ThreadWorkflowStepPhase, string> = {
   done: "text-muted-foreground",
   current: "font-semibold",
   upcoming: "",
@@ -280,7 +277,7 @@ function StepRow({
   onUndo,
 }: {
   step: ThreadWorkflowStepSummary;
-  phase: StepPhase;
+  phase: ThreadWorkflowStepPhase;
   instanceOpen: boolean;
   disabled: boolean;
   undoable: boolean;
@@ -290,13 +287,7 @@ function StepRow({
   onUndo: (stepId: ThreadWorkflowStepId) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const { state } = step;
-  const result =
-    state._tag === "done"
-      ? (state.comment ?? state.proof)
-      : state._tag === "skipped" || state._tag === "removed"
-        ? state.reason
-        : null;
+  const result = threadWorkflowStepResult(step);
   return (
     <li
       data-step-id={step.id}
@@ -403,7 +394,7 @@ export function ThreadWorkflowStepList({
   return (
     <ol className="flex flex-col">
       {instance.steps.map((step) => {
-        const phase = stepPhase(step, instance);
+        const phase = threadWorkflowStepPhase(step, instance);
         return (
           <StepRow
             key={step.id}

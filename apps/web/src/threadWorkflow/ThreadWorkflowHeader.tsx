@@ -1,4 +1,7 @@
-import { threadWorkflowProgress } from "@t3tools/client-runtime/state/thread-workflow";
+import {
+  threadWorkflowProgress,
+  threadWorkflowStageLine,
+} from "@t3tools/client-runtime/state/thread-workflow";
 import type {
   ThreadWorkflowInstanceId,
   ThreadWorkflowInstanceSummary,
@@ -41,23 +44,6 @@ function outcomeLabel(instance: ThreadWorkflowInstanceSummary): string {
     : instance.status.outcome === "finished"
       ? "finished"
       : "abandoned";
-}
-
-/** "Stage 3 of 5", or where a finished or closed workflow ended up. */
-function stageLine(instance: ThreadWorkflowInstanceSummary): string {
-  const progress = threadWorkflowProgress(instance.steps);
-  if (instance.status._tag === "closed") {
-    return instance.status.outcome === "finished"
-      ? `Finished · ${progress.live} ${progress.live === 1 ? "stage" : "stages"}`
-      : `Abandoned · ${instance.status.reason}`;
-  }
-  if (instance.currentStepId === null) {
-    return progress.live === 0 ? "No stages yet" : `All ${progress.live} stages done`;
-  }
-  const position = instance.steps
-    .filter((step) => step.state._tag !== "removed")
-    .findIndex((step) => step.id === instance.currentStepId);
-  return `Stage ${position + 1} of ${progress.live}`;
 }
 
 /**
@@ -242,7 +228,7 @@ export function ThreadWorkflowHeader({
           </MenuPopup>
         </Menu>
       </div>
-      <p className="ps-6 text-muted-foreground text-xs">{stageLine(instance)}</p>
+      <p className="ps-6 text-muted-foreground text-xs">{threadWorkflowStageLine(instance)}</p>
     </header>
   );
 }

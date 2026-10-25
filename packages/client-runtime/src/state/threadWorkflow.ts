@@ -108,6 +108,53 @@ export function threadWorkflowProgress(
 }
 
 /**
+ * Where a step sits in the arc. `current` and `upcoming` split the open steps by position, so a
+ * row's treatment is one lookup on this and never a pair of booleans that must agree.
+ */
+export type ThreadWorkflowStepPhase = "done" | "current" | "upcoming" | "skipped" | "removed";
+
+export function threadWorkflowStepPhase(
+  step: Pick<ThreadWorkflowStepSummary, "id" | "state">,
+  instance: Pick<ThreadWorkflowInstanceSummary, "currentStepId">,
+): ThreadWorkflowStepPhase {
+  if (step.state._tag !== "open") return step.state._tag;
+  return step.id === instance.currentStepId ? "current" : "upcoming";
+}
+
+/** The line under a resolved step's title: a done step's note, else its proof; a skipped or removed step's reason. */
+export function threadWorkflowStepResult(
+  step: Pick<ThreadWorkflowStepSummary, "state">,
+): string | null {
+  const { state } = step;
+  switch (state._tag) {
+    case "open":
+      return null;
+    case "done":
+      return state.comment ?? state.proof;
+    case "skipped":
+    case "removed":
+      return state.reason;
+  }
+}
+
+/** "Stage 3 of 5", or where a finished or closed workflow ended up. */
+export function threadWorkflowStageLine(
+  instance: Pick<ThreadWorkflowInstanceSummary, "status" | "currentStepId" | "steps">,
+): string {
+  const progress = threadWorkflowProgress(instance.steps);
+  if (instance.status._tag === "closed") {
+    return instance.status.outcome === "finished"
+      ? `Finished · ${progress.live} ${progress.live === 1 ? "stage" : "stages"}`
+      : `Abandoned · ${instance.status.reason}`;
+  }
+  if (instance.currentStepId === null) {
+    return progress.live === 0 ? "No stages yet" : `All ${progress.live} stages done`;
+  }
+  const position = threadWorkflowStepNumbers(instance.steps).get(instance.currentStepId) ?? 0;
+  return `Stage ${position} of ${progress.live}`;
+}
+
+/**
  * The pane's pinned "Waiting on you" strip: the pending question-tool requests, oldest first. A
  * step marked `waitsForUser` is a static property of the plan and never an ask by itself; it
  * becomes one only when the agent asks through its question tool.
