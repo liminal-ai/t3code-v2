@@ -24,9 +24,9 @@ and the share extension. The app config does this when `APP_VARIANT=lim` and
 ### CocoaPods without Homebrew
 
 `expo prebuild` runs `pod install`. When `pod` is not on the `PATH`, Expo tries `gem install`,
-then `sudo gem install`, then Homebrew. With the Ruby that ships with macOS, the first two
-need an administrator password, and the third needs Homebrew. Install CocoaPods for your user
-with that Ruby instead. This needs no administrator password.
+then Homebrew; it runs non-interactively here, so it skips `sudo gem install`. With the Ruby that
+ships with macOS, `gem install` needs an administrator password, and Homebrew may not be there.
+Install CocoaPods for your user with that Ruby instead. This needs no administrator password.
 
 ```sh
 gem install --user-install cocoapods
