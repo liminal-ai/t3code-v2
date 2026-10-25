@@ -62,6 +62,19 @@ export function activeThreadWorkflowInstance(
   return view.instances.find((instance) => instance.id === view.activeInstanceId) ?? null;
 }
 
+/**
+ * The subscription's open workflow, or null. Only a live snapshot counts: `AsyncResult.value` keeps
+ * the last success through a failure, which would leave a dead subscription's workflow on screen.
+ */
+export function activeThreadWorkflowInstanceAtom(
+  state: Atom.Atom<AsyncResult.AsyncResult<ThreadWorkflowSubscriptionState, unknown>>,
+): Atom.Atom<ThreadWorkflowInstanceSummary | null> {
+  return Atom.make((get) => {
+    const result = get(state);
+    return AsyncResult.isSuccess(result) ? activeThreadWorkflowInstance(result.value.view) : null;
+  });
+}
+
 /** Removed steps keep their row but no number, so the numbers match the turn note. */
 export function threadWorkflowStepNumbers(
   steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "id" | "state">>,
@@ -105,6 +118,53 @@ export function threadWorkflowProgress(
     if (step.state._tag !== "open") resolved += 1;
   }
   return { live, resolved, skipped, inserted, removed };
+}
+
+/**
+ * Where a step sits in the arc. `current` and `upcoming` split the open steps by position, so a
+ * row's treatment is one lookup on this and never a pair of booleans that must agree.
+ */
+export type ThreadWorkflowStepPhase = "done" | "current" | "upcoming" | "skipped" | "removed";
+
+export function threadWorkflowStepPhase(
+  step: Pick<ThreadWorkflowStepSummary, "id" | "state">,
+  instance: Pick<ThreadWorkflowInstanceSummary, "currentStepId">,
+): ThreadWorkflowStepPhase {
+  if (step.state._tag !== "open") return step.state._tag;
+  return step.id === instance.currentStepId ? "current" : "upcoming";
+}
+
+/** The line under a resolved step's title: a done step's note, else its proof; a skipped or removed step's reason. */
+export function threadWorkflowStepResult(
+  step: Pick<ThreadWorkflowStepSummary, "state">,
+): string | null {
+  const { state } = step;
+  switch (state._tag) {
+    case "open":
+      return null;
+    case "done":
+      return state.comment ?? state.proof;
+    case "skipped":
+    case "removed":
+      return state.reason;
+  }
+}
+
+/** "Stage 3 of 5", or where a finished or closed workflow ended up. */
+export function threadWorkflowStageLine(
+  instance: Pick<ThreadWorkflowInstanceSummary, "status" | "currentStepId" | "steps">,
+): string {
+  const progress = threadWorkflowProgress(instance.steps);
+  if (instance.status._tag === "closed") {
+    return instance.status.outcome === "finished"
+      ? `Finished · ${progress.live} ${progress.live === 1 ? "stage" : "stages"}`
+      : `Abandoned · ${instance.status.reason}`;
+  }
+  if (instance.currentStepId === null) {
+    return progress.live === 0 ? "No stages yet" : `All ${progress.live} stages done`;
+  }
+  const position = threadWorkflowStepNumbers(instance.steps).get(instance.currentStepId) ?? 0;
+  return `Stage ${position} of ${progress.live}`;
 }
 
 /**

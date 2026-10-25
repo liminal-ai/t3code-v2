@@ -8,15 +8,20 @@ import {
   type ThreadWorkflowSubscriptionState,
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
+import * as Stream from "effect/Stream";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { ThreadPendingUserInput } from "./threadRequests.ts";
 import {
+  activeThreadWorkflowInstanceAtom,
   deriveThreadWorkflowAsks,
   threadWorkflowProgress,
   threadWorkflowRevisionAtom,
+  threadWorkflowStageLine,
   threadWorkflowStepNumbers,
+  threadWorkflowStepPhase,
+  threadWorkflowStepResult,
 } from "./threadWorkflow.ts";
 
 const stamp = {
@@ -125,6 +130,96 @@ describe("step numbering and progress", () => {
         step("w1.4", "open", { inserted: true }),
       ]),
     ).toEqual({ live: 3, resolved: 2, skipped: 1, inserted: 2, removed: 1 });
+  });
+});
+
+describe("step phase, result and stage line", () => {
+  it("splits open steps into the current one and the upcoming ones, and keeps resolved states", () => {
+    const steps = [
+      step("w1.1", "done"),
+      step("w1.2", "skipped"),
+      step("w1.3", "removed"),
+      step("w1.4", "open"),
+      step("w1.5", "open"),
+    ];
+    const arc = instance("w1", steps);
+    expect(steps.map((candidate) => threadWorkflowStepPhase(candidate, arc))).toEqual([
+      "done",
+      "skipped",
+      "removed",
+      "current",
+      "upcoming",
+    ]);
+  });
+
+  it("shows a done step's note over its proof, and a skipped or removed step's reason", () => {
+    const done = step("w1.1", "done");
+    expect(threadWorkflowStepResult(step("w1.1", "open"))).toBeNull();
+    expect(
+      threadWorkflowStepResult({
+        state: { _tag: "done", stamp, comment: null, proof: "vp test run passed" },
+      }),
+    ).toBe("vp test run passed");
+    expect(
+      threadWorkflowStepResult({
+        state: { _tag: "done", stamp, comment: "Shipped", proof: "vp test run passed" },
+      }),
+    ).toBe("Shipped");
+    expect(threadWorkflowStepResult(done)).toBeNull();
+    expect(threadWorkflowStepResult(step("w1.2", "skipped"))).toBe("because");
+    expect(threadWorkflowStepResult(step("w1.3", "removed"))).toBe("because");
+  });
+
+  it("counts the stage position among live steps only", () => {
+    expect(
+      threadWorkflowStageLine(
+        instance("w1", [
+          step("w1.1", "done"),
+          step("w1.2", "removed"),
+          step("w1.3", "skipped"),
+          step("w1.4", "open"),
+          step("w1.5", "open"),
+        ]),
+      ),
+    ).toBe("Stage 3 of 4");
+  });
+
+  it("says where a workflow with no current step stands", () => {
+    expect(threadWorkflowStageLine(instance("w1", [step("w1.1", "done")]))).toBe(
+      "All 1 stages done",
+    );
+    expect(threadWorkflowStageLine(instance("w1", []))).toBe("No stages yet");
+    expect(threadWorkflowStageLine(instance("w1", [step("w1.1", "done")], "closed"))).toBe(
+      "Finished · 1 stage",
+    );
+    expect(
+      threadWorkflowStageLine({
+        ...instance("w1", [step("w1.1", "done"), step("w1.2", "open")]),
+        status: { _tag: "closed", outcome: "abandoned", stamp, reason: "superseded" },
+      }),
+    ).toBe("Abandoned · superseded");
+  });
+});
+
+describe("activeThreadWorkflowInstanceAtom", () => {
+  it("reads as no workflow once the subscription fails, not as its last snapshot", () => {
+    const open = instance("w1", [step("w1.1", "open")]);
+    const state = Atom.make(
+      Stream.concat(
+        Stream.make({
+          enabled: true,
+          visible: true,
+          unavailable: null,
+          view: view("w1", [open]),
+        } as ThreadWorkflowSubscriptionState),
+        Stream.fail("connection lost"),
+      ),
+    );
+    const registry = AtomRegistry.make();
+
+    expect(registry.get(activeThreadWorkflowInstanceAtom(state))).toBeNull();
+    expect(AsyncResult.isFailure(registry.get(state))).toBe(true);
+    registry.dispose();
   });
 });
 

@@ -17,6 +17,8 @@ export function ThreadHeader(
     readonly onToggleInspector: () => void;
     readonly onOpenGitInspector: () => void;
     readonly onOpenFilesInspector: () => void;
+    /** Set only while the thread has an open workflow; the button appears with it. */
+    readonly onOpenWorkflow?: () => void;
   },
 ) {
   const goBack = useWorkspaceBackNavigation("threads");
@@ -49,6 +51,13 @@ export function ThreadHeader(
         onPress: () => onOpenTerminal(null),
       });
     }
+    if (props.onOpenWorkflow) {
+      actions.push({
+        accessibilityLabel: "Open workflow",
+        icon: "list.number",
+        onPress: props.onOpenWorkflow,
+      });
+    }
     actions.push({
       accessibilityLabel: "Open git controls",
       icon: "point.topleft.down.curvedto.point.bottomright.up",
@@ -69,6 +78,7 @@ export function ThreadHeader(
     onOpenTerminal,
     onMergeBack,
     props.onOpenGitInspector,
+    props.onOpenWorkflow,
     toggleAuxiliaryPane,
     props.onReturnToThread,
     props.hasThreadCwd,
