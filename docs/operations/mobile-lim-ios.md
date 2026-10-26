@@ -20,6 +20,16 @@ and the share extension. The app config does this when `APP_VARIANT=lim` and
 - Node 24 and `vp` (see the [root README](../../README.md)).
 - The phone on a USB cable, paired with the Mac and in Developer Mode. See [The phone](#the-phone).
 
+### Point the tools at Xcode
+
+If `xcode-select -p` prints `/Library/Developer/CommandLineTools`, `xcodebuild` and
+`xcrun devicectl` are not found. Point the tools at Xcode in every shell that runs the
+commands below, or switch them for good with `sudo xcode-select -s /Applications/Xcode.app`:
+
+```sh
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+```
+
 ### CocoaPods without Homebrew
 
 `expo prebuild` runs `pod install`. When `pod` is not on the `PATH`, Expo tries `gem install`,
@@ -99,14 +109,11 @@ echo 'T3CODE_APPLE_TEAM_ID=<team id>' >> .env.local
 ```
 
 Then, from the repository root, with the phone's UDID from `xcrun devicectl list devices` in
-place of `<udid>`. `DEVELOPER_DIR` points the tools at Xcode, in case `xcode-select` still
-names the Command Line Tools. `sudo xcode-select -s /Applications/Xcode.app` does the same
-for good.
+place of `<udid>`.
 
 ```sh
 vp i
 cd apps/mobile
-export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 export APP_VARIANT=lim T3CODE_IOS_PERSONAL_TEAM=1 \
   T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=ai.liminal.t3code.lim.mobile EXPO_NO_GIT_STATUS=1
 npx expo prebuild --clean --platform ios
