@@ -98,11 +98,15 @@ First set your team id, from Xcode, Settings, Apple Accounts, in the repository 
 echo 'T3CODE_APPLE_TEAM_ID=<team id>' >> .env.local
 ```
 
-Then, from the repository root, with the phone's UDID from `xcrun devicectl list devices`:
+Then, from the repository root, with the phone's UDID from `xcrun devicectl list devices` in
+place of `<udid>`. `DEVELOPER_DIR` points the tools at Xcode, in case `xcode-select` still
+names the Command Line Tools. `sudo xcode-select -s /Applications/Xcode.app` does the same
+for good.
 
 ```sh
 vp i
 cd apps/mobile
+export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 export APP_VARIANT=lim T3CODE_IOS_PERSONAL_TEAM=1 \
   T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=ai.liminal.t3code.lim.mobile EXPO_NO_GIT_STATUS=1
 npx expo prebuild --clean --platform ios
@@ -139,8 +143,9 @@ Each build reuses the same app id, so one Lim build counts once.
 ## Checking the configuration without a Mac
 
 `vp run config:lim` in `apps/mobile` prints the resolved Expo config. Check the name, the
-scheme, the bundle id, that `ios.associatedDomains` and `ios.appleTeamId` are absent, and
-that `updates.enabled` is `false`.
+scheme, the bundle id, that `ios.associatedDomains` is absent, and that `updates.enabled` is
+`false`. `ios.appleTeamId` is absent unless `.env.local` sets `T3CODE_APPLE_TEAM_ID`. Then it
+is that Personal Team id.
 
 ```sh
 cd apps/mobile
