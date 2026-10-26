@@ -101,6 +101,11 @@ asks. The setting appears only after the phone has connected to Xcode once.
 the new bundle id or a newly added phone. It stops with "No profiles for
 'ai.liminal.t3code.lim.mobile' were found". Build with `xcodebuild` directly instead.
 
+Run the build in a Terminal on the Mac's own screen, not over ssh. `codesign` reaches the
+private key in the login keychain only from the GUI login session. Over ssh it fails with
+`errSecInternalComponent`, after the whole compile. The first signing may ask to let `codesign`
+use the key. Enter the Mac password and click Always Allow.
+
 First set your team id, from Xcode, Settings, Apple Accounts, in the repository root
 `.env.local`:
 
@@ -122,11 +127,6 @@ xcodebuild -workspace T3CodeLim.xcworkspace -scheme T3CodeLim -configuration Rel
   -destination id=<udid> -derivedDataPath build -allowProvisioningUpdates build
 xcrun devicectl device install app --device <udid> build/Build/Products/Release-iphoneos/T3CodeLim.app
 ```
-
-Run the build in a Terminal on the Mac's own screen, not over ssh. `codesign` reaches the
-private key in the login keychain only from the GUI login session. Over ssh it fails with
-`errSecInternalComponent`, after the whole compile. The first signing may ask to let `codesign`
-use the key. Enter the Mac password and click Always Allow.
 
 A Release configuration embeds the JavaScript bundle, so the phone needs no Metro server
 afterwards.
