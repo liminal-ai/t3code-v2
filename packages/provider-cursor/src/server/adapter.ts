@@ -2431,11 +2431,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               : cursorMcpServers(yield* mcpSessions.read(turnInput.threadId));
             const pendingUpdates: Array<InteractionUpdate> = [];
             let context: ActiveCursorTurn | null = null;
-            // A cloud run keeps going on Cursor while T3 restarts. When T3
-            // continues the run it cut, follow that cloud run to its end instead
-            // of sending "continue" to an agent that never stopped. T3 continues
-            // only with continueThreadsAfterServerUpdate on; without it the cut
-            // run finishes on Cursor and its result never reaches the thread.
+            // A cloud run keeps going on Cursor while T3 restarts, so when T3 continues the run
+            // it cut (only with continueThreadsAfterServerUpdate on), follow that cloud run to its
+            // end instead of sending "continue" to an agent that never stopped.
             const headRef = turnInput.providerThread.nativeConversationHeadRef;
             const adoptedRunId =
               cloud &&

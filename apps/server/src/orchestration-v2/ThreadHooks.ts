@@ -13,19 +13,10 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 
 /**
- * What core asks of an optional thread module (the fork's workflow module).
- * The default is inert, so a build without the module behaves as before.
- *
- * Both methods read memory only (never disk) and never take the thread's
- * dispatch lock, which is not reentrant. The orchestrator asks `lifecycleBlocker`
- * under that lock, where its answer is authoritative; the settle sweep, the
- * agent's early self-settle check and the project-delete preflight ask without
- * it, as a prefilter the guard repeats. `turnNote` runs from the
- * `provider-turn.start` outbox handler without the lock, so it may show a step
- * that changed a moment ago, which is acceptable: the next turn shows the
- * current one. Neither may fail or stall: a module fault must not stop a turn
- * or wedge a lifecycle command. `failOpen` is that promise as a combinator, and
- * core applies it at each call site over whatever containment the module brings.
+ * What core asks of an optional thread module; the default is inert. Both methods read memory only
+ * and never take the thread's dispatch lock, which is not reentrant. Only the orchestrator's answer
+ * under that lock is authoritative; other callers prefilter. Neither may fail or stall a turn or a
+ * lifecycle command, so core wraps each call site in `failOpen`.
  */
 /** Core's side of the turn note: what anchors the agent's context, and what it has already read. */
 export interface TurnNoteInput {
@@ -82,13 +73,10 @@ export const lifecycleActionOf = {
 export const HOOK_DEADLINE: Duration.Input = "2 seconds";
 
 /**
- * Runs `effect` under a deadline that holds even when the work cannot be interrupted.
- * `Effect.timeout` interrupts the work and then waits for it to finish, and a filesystem call
- * inside `acquireRelease` finishes only when the OS answers, so a stalled disk would hold the
- * caller past any deadline. Here the work runs in its own detached fiber and the deadline stops
- * only the wait: `None` means the work did not finish in time. It is told to stop without being
- * waited for, so an uninterruptible region inside it runs to its end unobserved, and its result
- * is never read. Interrupting the caller does the same.
+ * Runs `effect` under a deadline that holds even when the work cannot be interrupted, as a stalled
+ * disk inside `acquireRelease` would hold `Effect.timeout` past it. The work runs in a detached
+ * fiber and the deadline stops only the wait: `None` means it did not finish in time, and it is
+ * told to stop without being waited for. Interrupting the caller does the same.
  */
 export const withinDeadline = Effect.fn("threadHooks.withinDeadline")(function* <A, E, R>(
   effect: Effect.Effect<A, E, R>,

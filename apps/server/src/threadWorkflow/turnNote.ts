@@ -126,11 +126,9 @@ export const noWorkflowNote = () =>
   ]);
 
 /**
- * The `<thread-workflow>` prefix for a turn, or "" with no instance open. The schema caps on
- * titles, instructions and hints keep the full form under 2,000 characters, except that the
- * printed tick call JSON-escapes the proof hint (a control character becomes six). When that puts
- * the note over, the listed question titles are clipped, then the instructions are cut; a printed
- * call is never cut.
+ * The `<thread-workflow>` prefix for a turn, or "" with no instance open. Schema caps keep it under
+ * 2,000 characters unless JSON-escaping the proof hint in the printed tick call pushes it over;
+ * then question titles are clipped, then the instructions cut. A printed call is never cut.
  */
 export const turnNote = (view: ThreadWorkflowSubscriptionView, form: TurnNoteForm): string => {
   if (view.corruption !== null) {

@@ -1,9 +1,7 @@
 /**
- * The module on the real orchestration graph (`runtimeLayer.ts`), the largest subgraph of
- * `server.ts` a test can build: orchestrator, thread management, project service, effect worker,
- * projections and the thread lock are the production layers; only the provider adapter, git and
- * workspace services are stubbed. The settlement sweep's pre-filter is covered with a hook mock in
- * ThreadSettlementService.test.ts; here its command, `thread.auto-settle`, meets the real hooks.
+ * The module on the real orchestration graph (`runtimeLayer.ts`): only the provider adapter, git
+ * and workspace services are stubbed. Here `thread.auto-settle` meets the real hooks; the settle
+ * sweep's prefilter is covered with a hook mock in ThreadSettlementService.test.ts.
  */
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";

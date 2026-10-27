@@ -1,9 +1,8 @@
 /**
- * Asks the agent, once per quiet day, whether an idle workflow should go on. A period is quiet
- * when nothing was recorded on the workflow and no run started on the thread for a day. The
- * command id carries when the quiet stretch began and how many days it has run, so a rescan or a
- * restart replays the receipt and sends nothing new, while a `continue` comment or a run (the
- * ping's own included) starts a fresh stretch with fresh ids.
+ * Asks the agent, once per quiet day, whether an idle workflow should go on. A day is quiet with no
+ * workflow record and no run on the thread. The command id carries the stretch's start and day
+ * count, so a rescan or restart replays the receipt, and a `continue` comment or any run (the
+ * ping's own included) starts a fresh stretch.
  */
 import {
   CommandId,
