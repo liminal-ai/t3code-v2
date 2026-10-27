@@ -10,21 +10,34 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { authoringASkill } from "./authoringASkill.ts";
 import { bugFix } from "./bugFix.ts";
+import { evalRun } from "./evalRun.ts";
 import { feature } from "./feature.ts";
 import { hillclimb } from "./hillclimb.ts";
 import { openEnded } from "./openEnded.ts";
 import { orchestrate } from "./orchestrate.ts";
 import { perfIssue } from "./perfIssue.ts";
+import { prototype } from "./prototype.ts";
 import { refactoring } from "./refactoring.ts";
+import { visualParity } from "./visualParity.ts";
 
 /** One per pstack playbook in use, in poteto-mode's order, then open-ended for work none fits. */
 export const builtInTemplates: ReadonlyMap<ThreadWorkflowTemplateId, ThreadWorkflowTemplate> =
   new Map(
-    [bugFix, perfIssue, hillclimb, feature, refactoring, orchestrate, openEnded].map((template) => [
-      template.id,
-      template,
-    ]),
+    [
+      bugFix,
+      perfIssue,
+      hillclimb,
+      feature,
+      refactoring,
+      prototype,
+      authoringASkill,
+      evalRun,
+      orchestrate,
+      visualParity,
+      openEnded,
+    ].map((template) => [template.id, template]),
   );
 
 /**
