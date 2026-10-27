@@ -149,7 +149,8 @@ it.layer(NodeServices.layer)("ThreadWorkflowIdleReactor", (it) => {
               assert.deepStrictEqual(command.dispatchMode, { type: "queue_after_active" });
               assert.deepStrictEqual(command.notification?.source, { kind: "system" });
               assert.match(command.text, /Open-ended.*\(w1\).*thread-idle/);
-              assert.match(command.text, /question tool/);
+              assert.match(command.text, /Ask the user whether to continue this workflow\./);
+              assert.notMatch(command.text, /question tool/);
               assert.match(
                 command.text,
                 /thread_workflow_change \{"action":"comment","target":"w1"/,

@@ -76,7 +76,7 @@ const idleMessage = (input: {
     step === undefined
       ? "Every step is done, skipped or removed."
       : `Its current step is ${step.id}: ${step.title}.`,
-    "Ask the user with your question tool whether to continue this workflow.",
+    "Ask the user whether to continue this workflow.",
     "If they say continue, record who answered:",
     printedCall.commentContinue(instance.id),
     "If they say stop, abandon it:",
