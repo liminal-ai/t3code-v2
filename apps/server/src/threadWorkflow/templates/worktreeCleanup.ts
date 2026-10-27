@@ -36,7 +36,7 @@ export const worktreeCleanup = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Confirmed set pruned",
       slug: "prune-worktrees",
       instructions:
-        "When a candidate has `wip:N` uncommitted edits, show its diff and put the drop on the workflow's open questions, or in chat where it has none: the user decides whether to drop it, before anything is removed. Name the `scratch:N` files. Remove the rest with `git worktree remove --force <path>`, `rm -rf` a dir that survives on ignored build artifacts, then `git worktree prune`.",
+        "When a candidate has `wip:N` uncommitted edits, show its diff and ask with `thread_workflow_ask`: the user decides whether to drop it, before anything is removed. Name the `scratch:N` files. Remove the rest with `git worktree remove --force <path>`, `rm -rf` a dir that survives on ignored build artifacts, then `git worktree prune`.",
       proofLevel: "required",
       proofHint: "the worktrees pruned and the user's answer on any wip",
       waitsForUser: false,

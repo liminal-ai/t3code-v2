@@ -38,7 +38,7 @@ export const orchestrate = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Units drained and landed",
       slug: "scale-and-land",
       instructions:
-        "Keep a rolling window of workers up to the in-flight cap, refill as children finish, and run the queue discipline at every drain. Land verified units continuously through the merge gate, keeping the frontier green before upper-stack work. Park each escalation in gates.md and on the workflow's questions, batched, and route work around it.",
+        "Keep a rolling window of workers up to the in-flight cap, refill as children finish, and run the queue discipline at every drain. Land verified units continuously through the merge gate, keeping the frontier green before upper-stack work. Park each escalation in gates.md and ask it with `thread_workflow_ask`, batched, and route work around it.",
       proofLevel: "required",
       proofHint: "the orch status lines and the ledger summary",
       waitsForUser: false,

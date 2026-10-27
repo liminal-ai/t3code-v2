@@ -20,7 +20,7 @@ export const prototype = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Decision scoped",
       slug: "scope-decision",
       instructions:
-        "Name the decision the prototype exists to make: a layout, an interaction, a density, or a behavior or timing fork. With no decision there is no prototype; route to Feature. When the design space is open, gather prior art and a short moodboard, and let the user pick directions on the workflow's open questions, or in chat where it has none, before building. Skip that when the direction is set.",
+        "Name the decision the prototype exists to make: a layout, an interaction, a density, or a behavior or timing fork. With no decision there is no prototype; route to Feature. When the design space is open, gather prior art and a short moodboard, and ask the user to pick directions with `thread_workflow_ask` before building. Skip that when the direction is set.",
       proofLevel: "required",
       proofHint: "the decision, in one sentence",
       waitsForUser: false,

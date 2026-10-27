@@ -19,7 +19,7 @@ export const feature = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Design grounded and data shape named",
       slug: "design-data-shape",
       instructions:
-        "Run how over the affected subsystem, then architect for parallel design exploration, and name the data shape and its organizing structure. Write the throughput checkpoint: blocking first steps, independent workstreams, shared mutable state, smallest safe decomposition, keeping each with n/a and a reason when it does not apply. If the design decides what the data is or who can do what, put that question on the workflow's open questions, or in chat where it has none, and go on with work that does not depend on it.",
+        "Run how over the affected subsystem, then architect for parallel design exploration, and name the data shape and its organizing structure. Write the throughput checkpoint: blocking first steps, independent workstreams, shared mutable state, smallest safe decomposition, keeping each with n/a and a reason when it does not apply. If the design decides what the data is or who can do what, ask it on the workflow with `thread_workflow_ask` and go on with work that does not depend on it.",
       proofLevel: "required",
       proofHint: "the named shape and the checkpoint",
       waitsForUser: false,
