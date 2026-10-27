@@ -13,7 +13,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
-import { printedCall, progress } from "../../../threadWorkflow/domain.ts";
+import { openQuestions, printedCall, progress } from "../../../threadWorkflow/domain.ts";
 import * as ThreadWorkflowService from "../../../threadWorkflow/ThreadWorkflowService.ts";
 import { turnNote, WAITS_FOR_USER } from "../../../threadWorkflow/turnNote.ts";
 import * as McpInvocationContext from "../../McpInvocationContext.ts";
@@ -22,6 +22,7 @@ import { unavailable } from "../../threadAccess.ts";
 import {
   ThreadWorkflowToolkit,
   type ThreadWorkflowAgentView,
+  type ThreadWorkflowAskResult,
   type ThreadWorkflowChangeParams,
   type ThreadWorkflowMutationAck,
   type ThreadWorkflowStartStep,
@@ -87,6 +88,19 @@ const changeRequest = (
       return Effect.all({
         _tag: Effect.succeed(action),
         target: needed(params.target, "target", action),
+        reason: needed(params.reason, "reason", action),
+      });
+    case "answer":
+      return Effect.all({
+        _tag: Effect.succeed(action),
+        questionId: needed(params.questionId, "questionId", action),
+        answer: needed(params.answer, "answer", action),
+        source: Effect.succeed("chat"),
+      });
+    case "withdraw":
+      return Effect.all({
+        _tag: Effect.succeed(action),
+        questionId: needed(params.questionId, "questionId", action),
         reason: needed(params.reason, "reason", action),
       });
     case "comment":
@@ -250,6 +264,23 @@ const layerHandlers = Effect.gen(function* () {
     ),
     thread_workflow_close: McpToolAccess.actsAsCaller(({ requestId, ...request }) =>
       applyThenAck({ _tag: "close", ...request }, { requestId }, "thread_workflow_close"),
+    ),
+    thread_workflow_ask: McpToolAccess.actsAsCaller(({ requestId, ...request }) =>
+      Effect.gen(function* () {
+        const { threadId, actor } = yield* callingThread("thread_workflow_ask");
+        const { view, instanceId, questionId } = yield* service.apply(
+          actor,
+          threadId,
+          yield* parseRequest({ _tag: "ask", ...request }),
+          { requestId },
+        );
+        const instance = view.instances.find((candidate) => candidate.id === instanceId)!;
+        return {
+          questionId: questionId!,
+          openQuestions: openQuestions(instance).length,
+          next: printedCall.answer(questionId!),
+        } satisfies ThreadWorkflowAskResult;
+      }),
     ),
   } satisfies McpToolAccess.Handlers<typeof ThreadWorkflowToolkit.tools>;
 });

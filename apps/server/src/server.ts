@@ -602,6 +602,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
     }),
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
   ThreadWorkflow.layerIdleReactorStart,
+  ThreadWorkflow.layerAnswerReactorStart,
   HeldQueueResumer.layerStart,
   GroupChat.layerEngineStart,
   ProviderUsageLimitsIngestion.layer,

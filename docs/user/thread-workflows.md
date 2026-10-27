@@ -16,9 +16,22 @@ Open the **Workflow** tab and pick a template: **Single task**, **Orchestrate**,
 
 The tab is one list. Done stages show their title and a one-line result. The current stage is emphasized and carries the **Done** button. Upcoming stages are titles only. Skipped and removed stages stay in order, muted. The line under the title says where the work is, such as **Stage 3 of 5**.
 
-A stage that ends with your decision carries a small **your call** marker. It is not an alarm. **Waiting on you** appears at the top of the tab only when the agent has asked you a question and is waiting for the answer, and the count on the tab means the same thing.
+A stage that ends with your decision carries a small **your call** marker. It is not an alarm. **Waiting on you** appears at the top of the tab only when the agent has asked you a question through its question tool and is waiting for the answer. The count on the tab is that plus the open questions on the workflow, described below.
 
 The agent's instructions for a stage, what proof it asked for, and who did what are behind the chevron on each row, under the stage's slug: the short name the agent's reminder calls it by.
+
+## Questions
+
+When the agent needs your decision but can keep working, it puts a question on the workflow instead of asking in chat, where the question would scroll away. Each question is one sentence, with a subline that holds the options or the agent's recommendation. Behind the chevron are the agent's reasoning, the options with the recommended one marked, and the stage that waits on the answer. That stage carries a **waiting on question** marker in the list.
+
+Open questions sit at the top of the tab, above the stages. While any question is open, the thread reads **Awaiting Input** in the sidebar, and a new question raises one **Input needed** notification, the same as a question-tool request. Both clear when the last open question is answered or withdrawn.
+
+Answer in the tab or in chat:
+
+- **In the tab.** Expand the question and click an option, or type an answer and press **Answer**. Your answer is posted into the thread as a message that quotes the question, so the agent reads both and starts a turn if it was idle, or sees it after its current turn.
+- **In chat.** Type the answer in the composer. The agent records it on the question, so the marker clears without you touching the tab.
+
+Answered and withdrawn questions fold into **Answered (n)** under the open ones, each with its answer and who gave it: **you** from the tab, or **agent (from chat)**. The agent withdraws a question that no longer matters, with a reason. **Reopen** puts a question back; only you can do that. Every change is recorded in the activity log.
 
 ## Mark a stage done
 
@@ -30,7 +43,7 @@ Skip, comment, add a stage after, remove, reopen and unskip are in the menu on e
 
 The menu in the header holds everything about the workflow itself: switch to another workflow on the thread, start a new one when none is open, show the activity log, close the workflow as finished once every stage is done or skipped, abandon it, or reopen a closed one.
 
-A workflow that sees no activity for a day asks you, through the agent, whether to carry on or close it.
+A workflow that sees no activity for a day asks you, through the agent, whether to carry on or close it. The agent puts that on the workflow as a question too.
 
 ## Turn enforcement off
 
@@ -38,5 +51,5 @@ Turning `threadWorkflowsEnabled` off stops new workflows and the daily question,
 
 ## Limits
 
-- The Workflow tab is on web and desktop. On mobile, a thread with an open workflow has a **Workflow** button in its header that opens the same arc to read. Marking a stage done, the menus and starting a workflow stay on web and desktop for now.
+- The Workflow tab is on web and desktop. On mobile, a thread with an open workflow has a **Workflow** button in its header that opens the same arc to read. Marking a stage done, the menus, starting a workflow and the questions stay on web and desktop for now, and the mobile thread list does not yet mark a thread with an open question.
 - Agents on Cursor Cloud have no workflow tools: they cannot start, mark done or close a workflow. Use the tab for those threads.

@@ -20,6 +20,7 @@ import {
   type ThreadWorkflowActor,
   type ThreadWorkflowAgent,
   type ThreadWorkflowAgentEvent,
+  type ThreadWorkflowAttentionEntry,
   type ThreadWorkflowChangeRecord,
   type ThreadWorkflowErrorCode,
   type ThreadWorkflowEvent,
@@ -27,6 +28,9 @@ import {
   type ThreadWorkflowInstanceId,
   type ThreadWorkflowInstanceSummary,
   type ThreadWorkflowOutcome,
+  type ThreadWorkflowQuestion,
+  type ThreadWorkflowQuestionId,
+  type ThreadWorkflowQuestionSummary,
   type ThreadWorkflowReceiptRecord,
   type ThreadWorkflowRecord,
   type ThreadWorkflowRequest,
@@ -50,6 +54,7 @@ import {
 interface InstanceState {
   readonly instance: ThreadWorkflowInstance;
   readonly nextStepNumber: number;
+  readonly nextQuestionNumber: number;
   /** Digest of the `start` request, so a retried start without a request id converges. */
   readonly startDigest: string;
 }
@@ -118,12 +123,30 @@ export const toSubscriptionView = (state: ThreadWorkflowState): ThreadWorkflowSu
   return {
     ...view,
     instances: view.instances.map(
-      ({ history: _history, steps, ...instance }): ThreadWorkflowInstanceSummary => ({
+      ({ history: _history, steps, questions, ...instance }): ThreadWorkflowInstanceSummary => ({
         ...instance,
         steps: steps.map(({ history: _stepHistory, ...step }): ThreadWorkflowStepSummary => step),
+        questions: questions.map(
+          ({ history: _questionHistory, ...question }): ThreadWorkflowQuestionSummary => question,
+        ),
       }),
     ),
   };
+};
+
+export const openQuestions = <Q extends Pick<ThreadWorkflowQuestionSummary, "state">>(instance: {
+  readonly questions: ReadonlyArray<Q>;
+}): Array<Q> => instance.questions.filter((question) => question.state._tag === "open");
+
+export const attentionOf = (state: ThreadWorkflowState): ThreadWorkflowAttentionEntry | null => {
+  if (state.corruption !== null) return null;
+  const open = openInstance(state);
+  if (open === undefined) return null;
+  const questions = openQuestions(open.instance);
+  const latest = questions.at(-1);
+  return latest === undefined
+    ? null
+    : { threadId: state.threadId, openQuestions: questions.length, latestQuestionId: latest.id };
 };
 
 const call = (tool: string, params: Record<string, unknown>) => `${tool} ${JSON.stringify(params)}`;
@@ -166,25 +189,53 @@ export const printedCall = {
       outcome,
       reason: outcome === "finished" ? "<why it is done>" : "<what changed>",
     }),
+  ask: () =>
+    call("thread_workflow_ask", {
+      title: "<one sentence>",
+      summary: "<options or your recommendation>",
+    }),
+  answer: (questionId: ThreadWorkflowQuestionId) =>
+    call("thread_workflow_change", {
+      action: "answer",
+      questionId,
+      answer: "<the user's answer, quoted>",
+    }),
+  withdraw: (questionId: ThreadWorkflowQuestionId) =>
+    call("thread_workflow_change", { action: "withdraw", questionId, reason: "<why>" }),
 };
 
-const instanceIdOfStep = (stepId: ThreadWorkflowStepId) =>
-  stepId.slice(0, stepId.indexOf(".")) as ThreadWorkflowInstanceId;
+const instanceIdOf = (id: ThreadWorkflowStepId | ThreadWorkflowQuestionId) =>
+  id.slice(0, id.indexOf(".")) as ThreadWorkflowInstanceId;
+
+const isQuestionId = (target: ThreadWorkflowTarget): target is ThreadWorkflowQuestionId =>
+  target.includes(".q");
 
 const isStepId = (target: ThreadWorkflowTarget): target is ThreadWorkflowStepId =>
-  target.includes(".");
+  target.includes(".") && !isQuestionId(target);
 
-/** The counter part of `w2` or `w2.4`. */
-const numberOf = (id: string) => Number(id.slice(id.includes(".") ? id.indexOf(".") + 1 : 1));
+const numberOf = (id: string) => Number(/\d+$/.exec(id)?.[0]);
 
 const findInstance = (state: ThreadWorkflowState, instanceId: ThreadWorkflowInstanceId) =>
   state.instances.find((entry) => entry.instance.id === instanceId);
 
 const findStep = (state: ThreadWorkflowState, stepId: ThreadWorkflowStepId) => {
-  const entry = findInstance(state, instanceIdOfStep(stepId));
+  const entry = findInstance(state, instanceIdOf(stepId));
   const step = entry?.instance.steps.find((candidate) => candidate.id === stepId);
   return entry && step ? { entry, step } : undefined;
 };
+
+const findQuestion = (state: ThreadWorkflowState, questionId: ThreadWorkflowQuestionId) => {
+  const entry = findInstance(state, instanceIdOf(questionId));
+  const question = entry?.instance.questions.find((candidate) => candidate.id === questionId);
+  return entry && question ? { entry, question } : undefined;
+};
+
+const targetExists = (state: ThreadWorkflowState, target: ThreadWorkflowTarget) =>
+  isStepId(target)
+    ? findStep(state, target) !== undefined
+    : isQuestionId(target)
+      ? findQuestion(state, target) !== undefined
+      : findInstance(state, target) !== undefined;
 
 const currentStepId = (steps: ReadonlyArray<ThreadWorkflowStepSummary>) =>
   steps.find((step) => step.state._tag === "open")?.id ?? null;
@@ -345,6 +396,12 @@ export const decide = (
       return decideComment(state, actor, request);
     case "close":
       return decideClose(state, actor, request);
+    case "ask":
+      return decideAsk(state, actor, request);
+    case "answer":
+      return decideAnswer(state, actor, request);
+    case "withdraw":
+      return decideWithdraw(state, actor, request);
   }
 };
 
@@ -601,6 +658,106 @@ const decideInsert = (
   });
 };
 
+const decideAsk = (
+  state: ThreadWorkflowState,
+  actor: ThreadWorkflowActor,
+  request: Extract<ThreadWorkflowRequest, { readonly _tag: "ask" }>,
+): Decision | ThreadWorkflowError => {
+  const entry = openInstance(state);
+  if (entry === undefined) {
+    return fail(
+      "no_open_instance",
+      `No workflow is open on this thread, so there is nothing to put the question on. Start one first: ${printedCall.start("open-ended")}`,
+    );
+  }
+  const { instance, nextQuestionNumber } = entry;
+  if (
+    request.blocksStepId !== undefined &&
+    !instance.steps.some((step) => step.id === request.blocksStepId)
+  ) {
+    return fail(
+      "unknown_step",
+      `No step ${request.blocksStepId} on workflow ${instance.id}, so the question cannot block it. See every step: ${printedCall.get()}`,
+    );
+  }
+  const { _tag: _ask, ...seed } = request;
+  return changed(actor, {
+    _tag: "asked",
+    instanceId: instance.id,
+    question: { id: `${instance.id}.q${nextQuestionNumber}` as ThreadWorkflowQuestionId, ...seed },
+  });
+};
+
+type LocatedQuestion =
+  | { readonly entry: InstanceState; readonly question: ThreadWorkflowQuestion }
+  | ThreadWorkflowError;
+
+const locateQuestion = (
+  state: ThreadWorkflowState,
+  questionId: ThreadWorkflowQuestionId,
+): LocatedQuestion =>
+  findQuestion(state, questionId) ??
+  fail(
+    "unknown_question",
+    `No question ${questionId} on this thread. See every workflow and its questions: ${printedCall.get()}`,
+  );
+
+const questionResolvedBy = (question: ThreadWorkflowQuestion) => {
+  switch (question.state._tag) {
+    case "open":
+      return "open";
+    case "answered":
+      return `answered ${question.state.source === "pane" ? "in the Workflow tab" : "from chat"} by ${who(question.state.stamp)}: "${question.state.answer}"`;
+    case "withdrawn":
+      return `withdrawn by ${who(question.state.stamp)}: "${question.state.reason}"`;
+  }
+};
+
+const locateOpenQuestion = (
+  state: ThreadWorkflowState,
+  questionId: ThreadWorkflowQuestionId,
+  verb: string,
+): LocatedQuestion => {
+  const located = locateQuestion(state, questionId);
+  if (isThreadWorkflowError(located)) return located;
+  if (located.question.state._tag !== "open") {
+    return fail(
+      "question_closed",
+      `Question ${questionId} was ${questionResolvedBy(located.question)}, so it cannot be ${verb}. Only the user can reopen it, from the Workflow tab: ${printedCall.reopen(questionId)}`,
+    );
+  }
+  return located;
+};
+
+const decideAnswer = (
+  state: ThreadWorkflowState,
+  actor: ThreadWorkflowActor,
+  request: Extract<ThreadWorkflowRequest, { readonly _tag: "answer" }>,
+): Decision | ThreadWorkflowError => {
+  const located = locateOpenQuestion(state, request.questionId, "answered again");
+  if (isThreadWorkflowError(located)) return located;
+  return changed(actor, {
+    _tag: "answered",
+    questionId: request.questionId,
+    answer: request.answer,
+    source: request.source ?? (actor._tag === "user" ? "pane" : "chat"),
+  });
+};
+
+const decideWithdraw = (
+  state: ThreadWorkflowState,
+  actor: ThreadWorkflowActor,
+  request: Extract<ThreadWorkflowRequest, { readonly _tag: "withdraw" }>,
+): Decision | ThreadWorkflowError => {
+  const located = locateOpenQuestion(state, request.questionId, "withdrawn");
+  if (isThreadWorkflowError(located)) return located;
+  return changed(actor, {
+    _tag: "withdrawn",
+    questionId: request.questionId,
+    reason: request.reason,
+  });
+};
+
 const decideReopen = (
   state: ThreadWorkflowState,
   actor: ThreadWorkflowActor,
@@ -608,6 +765,18 @@ const decideReopen = (
   reason: string,
   context: DecideContext,
 ): Decision | ThreadWorkflowError => {
+  if (isQuestionId(target)) {
+    if (actor._tag !== "user") {
+      return fail(
+        "user_only",
+        `Only the user reopens a question, from the Workflow tab. If the matter is open again, ask a new question: ${printedCall.ask()}`,
+      );
+    }
+    const located = locateQuestion(state, target);
+    if (isThreadWorkflowError(located)) return located;
+    if (located.question.state._tag === "open") return UNCHANGED;
+    return changed(actor, { _tag: "reopened", target, reason });
+  }
   if (isStepId(target)) {
     const located = locateEditableStep(state, target);
     if (isThreadWorkflowError(located)) return located;
@@ -659,13 +828,14 @@ const decideComment = (
   actor: ThreadWorkflowActor,
   request: Extract<ThreadWorkflowRequest, { readonly _tag: "comment" }>,
 ): Decision | ThreadWorkflowError => {
-  const exists = isStepId(request.target)
-    ? findStep(state, request.target) !== undefined
-    : findInstance(state, request.target) !== undefined;
-  if (!exists) {
+  if (!targetExists(state, request.target)) {
     return fail(
-      isStepId(request.target) ? "unknown_step" : "unknown_instance",
-      `Nothing named ${request.target} on this thread. See every workflow and step: ${printedCall.get()}`,
+      isStepId(request.target)
+        ? "unknown_step"
+        : isQuestionId(request.target)
+          ? "unknown_question"
+          : "unknown_instance",
+      `Nothing named ${request.target} on this thread. See every workflow, step and question: ${printedCall.get()}`,
     );
   }
   return changed(actor, {
@@ -733,23 +903,50 @@ export const instanceActedOn = (
   };
   switch (request._tag) {
     case "start":
+    case "ask":
       return openWhenRecorded();
     case "tick":
     case "skip":
     case "remove":
-      return instanceIdOfStep(request.stepId);
+      return instanceIdOf(request.stepId);
+    case "answer":
+    case "withdraw":
+      return instanceIdOf(request.questionId);
     case "reopen":
     case "comment":
-      return isStepId(request.target) ? instanceIdOfStep(request.target) : request.target;
+      return instanceIdOfTarget(request.target);
     case "insert":
       return typeof request.afterStepId === "string"
-        ? instanceIdOfStep(request.afterStepId)
+        ? instanceIdOf(request.afterStepId)
         : (request.instanceId ?? openWhenRecorded());
     case "close":
       return request.instanceId;
     case "recover":
       return null;
   }
+};
+
+const instanceIdOfTarget = (target: ThreadWorkflowTarget) =>
+  isStepId(target) || isQuestionId(target) ? instanceIdOf(target) : target;
+
+/**
+ * The question an `ask` created, read from the state after it applied. A request id finds the
+ * record it wrote, so a replay names the question it asked, not the newest one.
+ */
+export const questionAsked = (
+  state: ThreadWorkflowState,
+  request: ThreadWorkflowRequest,
+  requestId: string | null,
+): ThreadWorkflowQuestionId | null => {
+  if (request._tag !== "ask") return null;
+  const record =
+    requestId === null
+      ? undefined
+      : state.instances
+          .flatMap((entry) => entry.instance.history)
+          .find((candidate) => candidate.requestId === requestId);
+  if (record?.event._tag === "asked") return record.event.question.id;
+  return openInstance(state)?.instance.questions.at(-1)?.id ?? null;
 };
 
 /**
@@ -858,6 +1055,7 @@ export const evolve = (
         state: { _tag: "open" },
         history: [],
       })),
+      questions: [],
       history: [record],
     };
     return {
@@ -868,6 +1066,7 @@ export const evolve = (
         {
           instance,
           nextStepNumber: Math.max(1, ...event.steps.map((step) => numberOf(step.id) + 1)),
+          nextQuestionNumber: 1,
           startDigest: record.inputDigest,
         },
       ],
@@ -912,7 +1111,7 @@ export const admits = (state: ThreadWorkflowState, record: ThreadWorkflowRecord)
       const stepIds = new Set(event.steps.map((step) => step.id));
       if (
         stepIds.size !== event.steps.length ||
-        event.steps.some((step) => instanceIdOfStep(step.id) !== event.instanceId)
+        event.steps.some((step) => instanceIdOf(step.id) !== event.instanceId)
       ) {
         return `starts ${event.instanceId} with step ids that are not its own or repeat`;
       }
@@ -935,6 +1134,34 @@ export const admits = (state: ThreadWorkflowState, record: ThreadWorkflowRecord)
             : from !== "done" && from !== "removed";
       return legal ? null : `moves ${event.stepId} from ${from} to ${event._tag}`;
     }
+    case "asked": {
+      const entry = findInstance(state, event.instanceId);
+      if (entry === undefined) return `asks on ${event.instanceId}, which does not exist`;
+      if (entry.instance.status._tag === "closed") {
+        return `asks on ${event.instanceId}, which is closed`;
+      }
+      const { id, blocksStepId } = event.question;
+      if (
+        instanceIdOf(id) !== event.instanceId ||
+        entry.instance.questions.some((question) => question.id === id)
+      ) {
+        return `asks ${id}, an id ${event.instanceId} cannot take`;
+      }
+      if (
+        blocksStepId !== undefined &&
+        !entry.instance.steps.some((step) => step.id === blocksStepId)
+      ) {
+        return `asks ${id} blocking ${blocksStepId}, which does not exist`;
+      }
+      return null;
+    }
+    case "answered":
+    case "withdrawn": {
+      const found = findQuestion(state, event.questionId);
+      if (found === undefined) return `changes ${event.questionId}, which does not exist`;
+      const from = found.question.state._tag;
+      return from === "open" ? null : `moves ${event.questionId} from ${from} to ${event._tag}`;
+    }
     case "inserted": {
       const entry = findInstance(state, event.instanceId);
       if (entry === undefined) return `inserts into ${event.instanceId}, which does not exist`;
@@ -943,7 +1170,7 @@ export const admits = (state: ThreadWorkflowState, record: ThreadWorkflowRecord)
       }
       const { steps } = entry.instance;
       if (
-        instanceIdOfStep(event.step.id) !== event.instanceId ||
+        instanceIdOf(event.step.id) !== event.instanceId ||
         steps.some((step) => step.id === event.step.id)
       ) {
         return `inserts ${event.step.id}, an id ${event.instanceId} cannot take`;
@@ -953,13 +1180,18 @@ export const admits = (state: ThreadWorkflowState, record: ThreadWorkflowRecord)
       }
       return null;
     }
-    case "commented": {
-      const exists = isStepId(event.target)
-        ? findStep(state, event.target) !== undefined
-        : findInstance(state, event.target) !== undefined;
-      return exists ? null : `comments on ${event.target}, which does not exist`;
-    }
+    case "commented":
+      return targetExists(state, event.target)
+        ? null
+        : `comments on ${event.target}, which does not exist`;
     case "reopened": {
+      if (isQuestionId(event.target)) {
+        const found = findQuestion(state, event.target);
+        if (found === undefined) return `reopens ${event.target}, which does not exist`;
+        return found.question.state._tag === "open"
+          ? `reopens ${event.target}, which is open`
+          : null;
+      }
       if (isStepId(event.target)) {
         const found = findStep(state, event.target);
         if (found === undefined) return `reopens ${event.target}, which does not exist`;
@@ -1008,13 +1240,17 @@ const instanceIdOfEvent = (
     case "ticked":
     case "skipped":
     case "removed":
-      return instanceIdOfStep(event.stepId);
+      return instanceIdOf(event.stepId);
+    case "answered":
+    case "withdrawn":
+      return instanceIdOf(event.questionId);
     case "inserted":
     case "closed":
+    case "asked":
       return event.instanceId;
     case "commented":
     case "reopened":
-      return isStepId(event.target) ? instanceIdOfStep(event.target) : event.target;
+      return instanceIdOfTarget(event.target);
   }
 };
 
@@ -1027,12 +1263,12 @@ const applyToInstance = (
   const { instance } = entry;
   const touched = (
     next: Partial<ThreadWorkflowInstance>,
-    nextStepNumber = entry.nextStepNumber,
+    counters: Partial<Pick<InstanceState, "nextStepNumber" | "nextQuestionNumber">> = {},
   ) => {
     const steps = next.steps ?? instance.steps;
     return {
       ...entry,
-      nextStepNumber,
+      ...counters,
       instance: {
         ...instance,
         ...next,
@@ -1046,6 +1282,17 @@ const applyToInstance = (
     touched({
       steps: instance.steps.map((step) =>
         step.id === stepId ? { ...step, ...change, history: [...step.history, record] } : step,
+      ),
+    });
+  const onQuestion = (
+    questionId: ThreadWorkflowQuestionId,
+    change: Partial<ThreadWorkflowQuestion>,
+  ) =>
+    touched({
+      questions: instance.questions.map((question) =>
+        question.id === questionId
+          ? { ...question, ...change, history: [...question.history, record] }
+          : question,
       ),
     });
   const onInstance = (next: Partial<ThreadWorkflowInstance>) =>
@@ -1076,15 +1323,42 @@ const applyToInstance = (
       );
       return touched(
         { steps, history: [...instance.history, record] },
-        Math.max(entry.nextStepNumber, numberOf(event.step.id) + 1),
+        { nextStepNumber: Math.max(entry.nextStepNumber, numberOf(event.step.id) + 1) },
       );
     }
+    case "asked":
+      return touched(
+        {
+          questions: [
+            ...instance.questions,
+            { ...event.question, state: { _tag: "open" }, history: [] },
+          ],
+          history: [...instance.history, record],
+        },
+        {
+          nextQuestionNumber: Math.max(entry.nextQuestionNumber, numberOf(event.question.id) + 1),
+        },
+      );
+    case "answered":
+      return onQuestion(event.questionId, {
+        state: { _tag: "answered", stamp, answer: event.answer, source: event.source },
+      });
+    case "withdrawn":
+      return onQuestion(event.questionId, {
+        state: { _tag: "withdrawn", stamp, reason: event.reason },
+      });
     case "commented":
-      return isStepId(event.target) ? onStep(event.target, {}) : onInstance({});
+      return isStepId(event.target)
+        ? onStep(event.target, {})
+        : isQuestionId(event.target)
+          ? onQuestion(event.target, {})
+          : onInstance({});
     case "reopened":
       return isStepId(event.target)
         ? onStep(event.target, { state: { _tag: "open" } })
-        : onInstance({ status: { _tag: "open" } });
+        : isQuestionId(event.target)
+          ? onQuestion(event.target, { state: { _tag: "open" } })
+          : onInstance({ status: { _tag: "open" } });
     case "closed":
       return onInstance({
         status: { _tag: "closed", outcome: event.outcome, stamp, reason: event.reason },

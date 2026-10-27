@@ -2,9 +2,11 @@ import {
   EnvironmentId,
   ThreadId,
   ThreadWorkflowInstanceId,
+  ThreadWorkflowQuestionId,
   ThreadWorkflowStepId,
   ThreadWorkflowTemplateId,
   type ThreadWorkflowInstanceSummary,
+  type ThreadWorkflowQuestionSummary,
   type ThreadWorkflowRequest,
   type ThreadWorkflowStamp,
   type ThreadWorkflowStepSummary,
@@ -86,6 +88,7 @@ const abandoned = {
   started: stamp,
   lastChangeAt: stamp.at,
   steps: [step("w1.1", "Ground the subsystem", "open")],
+  questions: [],
 } as ThreadWorkflowInstanceSummary;
 
 const sliceOne = {
@@ -102,6 +105,35 @@ const sliceOne = {
     step("w2.3", "Plan slice 1", "open"),
     step("w2.4", "Build slice 1", "open", { waitsForUser: true }),
     step("w2.5", "Retro and close", "open", { waitsForUser: true }),
+  ],
+  questions: [],
+} as ThreadWorkflowInstanceSummary;
+
+const workflowQuestion = (
+  id: string,
+  title: string,
+  fields: Partial<Omit<ThreadWorkflowQuestionSummary, "id" | "title">> = {},
+) =>
+  ({
+    id: ThreadWorkflowQuestionId.make(id),
+    title,
+    state: { _tag: "open" },
+    ...fields,
+  }) as ThreadWorkflowQuestionSummary;
+
+const withQuestions = {
+  ...sliceOne,
+  questions: [
+    workflowQuestion("w2.q1", "Merge without a second review?", {
+      summary: "Yes (recommended) · No, wait for Sam",
+      details: "Sam is out until Monday. Waiting costs a day; merging now risks a revert.",
+      options: [{ label: "Yes", recommended: true }, { label: "No, wait for Sam" }],
+      blocksStepId: ThreadWorkflowStepId.make("w2.4"),
+    }),
+    workflowQuestion("w2.q2", "Ship to staging first?", { summary: "Staging is up again" }),
+    workflowQuestion("w2.q3", "Which base branch?", {
+      state: { _tag: "answered", stamp, answer: "main", source: "pane" },
+    }),
   ],
 } as ThreadWorkflowInstanceSummary;
 
@@ -168,6 +200,78 @@ describe("thread workflow pane", () => {
     await expect
       .poll(() => screen.container.textContent)
       .toContain("Agent brief for Plan slice 1.");
+  });
+
+  it("shows open questions collapsed above the steps and the answered ones folded away", async () => {
+    state.submit.mockReset().mockResolvedValue(true);
+    setWorkflow([withQuestions], withQuestions.id);
+    await using screen = await render(panel());
+
+    const section = screen.container.querySelector("[data-thread-workflow-questions]")!;
+    const rows = [...section.querySelectorAll<HTMLElement>("[data-question-id]")];
+    expect(rows.map((row) => row.dataset.questionId)).toEqual(["w2.q1", "w2.q2"]);
+    expect(
+      section.compareDocumentPosition(screen.container.querySelector("[data-step-id]")!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(section.textContent).toContain("Yes (recommended) · No, wait for Sam");
+    expect(section.textContent).not.toContain("Sam is out until Monday");
+    expect(section.textContent).toContain("Answered (1)");
+    expect(section.textContent).not.toContain("Answered by you");
+    expect(screen.getByRole("button", { name: "Answer" }).all()).toHaveLength(0);
+    expect(screen.getByText("waiting on question", { exact: true }).all()).toHaveLength(1);
+    expect(screen.container.querySelector('[data-step-id="w2.4"]')?.textContent).toContain(
+      "waiting on question",
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Answered questions" }));
+    await expect.poll(() => section.textContent).toContain("Answered by you · main");
+  });
+
+  it("expands a question in place and answers it from an option or in words", async () => {
+    state.submit.mockReset().mockResolvedValue(true);
+    setWorkflow([withQuestions], withQuestions.id);
+    await using screen = await render(panel());
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Details for Merge without a second review?" }),
+    );
+    const section = screen.container.querySelector("[data-thread-workflow-questions]")!;
+    await expect.poll(() => section.textContent).toContain("Sam is out until Monday");
+    expect(section.textContent).toContain("recommended");
+    expect(section.textContent).toContain("Waiting on this: Build slice 1");
+    expect(section.textContent).not.toContain("Staging is up again\n");
+
+    await userEvent.click(screen.getByRole("button", { name: "Yes", exact: true }));
+    expect(state.submit).toHaveBeenCalledWith({
+      _tag: "answer",
+      questionId: ThreadWorkflowQuestionId.make("w2.q1"),
+      answer: "Yes",
+      source: "pane",
+    } satisfies ThreadWorkflowRequest);
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Details for Ship to staging first?" }),
+    );
+    await userEvent.fill(
+      screen.getByLabelText("Answer to Ship to staging first?"),
+      "Yes, staging first",
+    );
+    await userEvent.click(screen.getByRole("button", { name: "Answer", exact: true }).nth(1));
+    expect(state.submit).toHaveBeenLastCalledWith({
+      _tag: "answer",
+      questionId: ThreadWorkflowQuestionId.make("w2.q2"),
+      answer: "Yes, staging first",
+      source: "pane",
+    } satisfies ThreadWorkflowRequest);
+
+    await userEvent.click(screen.getByRole("button", { name: "Answered questions" }));
+    await userEvent.click(screen.getByRole("button", { name: "Reopen" }));
+    expect(state.submit).toHaveBeenLastCalledWith({
+      _tag: "reopen",
+      target: ThreadWorkflowQuestionId.make("w2.q3"),
+      reason: "Reopened from the Workflow tab",
+    } satisfies ThreadWorkflowRequest);
   });
 
   it("pins a pending question above the list", async () => {

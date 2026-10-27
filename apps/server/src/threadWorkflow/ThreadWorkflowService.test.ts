@@ -4,6 +4,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   ThreadId,
   type OrchestrationV2AppThread,
+  type OrchestrationV2ServerCommand,
   type ServerSettings as ServerSettingsShape,
   type ThreadWorkflowActor,
   type ThreadWorkflowRequest,
@@ -23,6 +24,7 @@ import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
+import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import { ThreadHooks, type TurnNoteInput } from "../orchestration-v2/ThreadHooks.ts";
@@ -123,7 +125,19 @@ const makeHarness = (
       yield* fileSystem.writeFileString(logFile, options.seedLog);
     }
     const lifecycle = yield* Ref.make<ThreadLifecycle>(active);
-    const layer = ThreadWorkflow.layer.pipe(
+    const dispatched = yield* Queue.unbounded<OrchestrationV2ServerCommand>();
+    const answerReactor = ThreadWorkflow.layerAnswerReactorStart.pipe(
+      Layer.provide(
+        Layer.mock(Orchestrator.OrchestratorV2)({
+          dispatch: (command) =>
+            Queue.offer(dispatched, command).pipe(
+              Effect.as({ sequence: 1, replayed: false } as never),
+            ),
+        }),
+      ),
+      Layer.provide(ThreadWorkflow.layer),
+    );
+    const layer = Layer.merge(ThreadWorkflow.layer, answerReactor).pipe(
       Layer.provideMerge(ThreadCommandExecutor.layer),
       Layer.provideMerge(settingsWithChanges(options.enabled ?? true, options.stall)),
       Layer.provide(
@@ -141,8 +155,14 @@ const makeHarness = (
       ),
       Layer.provide(NodeServices.layer),
     );
-    return { baseDir, threadsDir, logFile, lifecycle, layer };
+    return { baseDir, threadsDir, logFile, lifecycle, dispatched, layer };
   });
+
+const askQuestion: ThreadWorkflowRequest = {
+  _tag: "ask",
+  title: "Merge without a second review?",
+  summary: "Yes (recommended) · No",
+};
 
 const makeStall = Effect.gen(function* () {
   const stall: SettingsStall = {
@@ -380,6 +400,128 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
           assert.deepStrictEqual(yield* Queue.take(states), { enabled: true, revision: 1 });
           yield* settings.updateSettings({ threadWorkflowsEnabled: false });
           assert.deepStrictEqual(yield* Queue.take(states), { enabled: false, revision: 1 });
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.effect("posts a pane answer into the thread once, and never a chat answer", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          yield* service.apply(agent, threadId, start);
+          yield* service.apply(agent, threadId, askQuestion);
+          yield* service.apply(agent, threadId, {
+            ...askQuestion,
+            title: "Ship to staging first?",
+          });
+
+          const answered = yield* service.apply(
+            user,
+            threadId,
+            { _tag: "answer", questionId: "w1.q1" as never, answer: "Yes, merge it" },
+            { requestId: "pane-answer-1", expectedRevision: 3 },
+          );
+          assert.isTrue(answered.changed);
+          const command = yield* Queue.take(harness.dispatched);
+          assert.strictEqual(command.type, "message.dispatch");
+          if (command.type !== "message.dispatch") return;
+          assert.strictEqual(command.threadId, threadId);
+          assert.strictEqual(
+            command.text,
+            'Answer to workflow question w1.q1, "Merge without a second review?":\nYes, merge it',
+          );
+          assert.strictEqual(command.createdBy, "user");
+          assert.strictEqual(command.creationSource, "web");
+          assert.deepStrictEqual(command.dispatchMode, { type: "queue_after_active" });
+          assert.strictEqual<string>(command.commandId, command.messageId);
+          assert.strictEqual(
+            command.commandId,
+            `server:thread-workflow-answer:${threadId}:w1.q1:${answered.view.revision}`,
+          );
+
+          const replayed = yield* service.apply(
+            user,
+            threadId,
+            { _tag: "answer", questionId: "w1.q1" as never, answer: "Yes, merge it" },
+            { requestId: "pane-answer-1", expectedRevision: 3 },
+          );
+          assert.isTrue(replayed.replayed);
+          const fromChat = yield* service.apply(agent, threadId, {
+            _tag: "answer",
+            questionId: "w1.q2" as never,
+            answer: "No, straight to prod",
+            source: "chat",
+          });
+          assert.isTrue(fromChat.changed);
+          yield* TestClock.adjust("1 second");
+          yield* Effect.yieldNow;
+          assert.strictEqual(yield* Queue.size(harness.dispatched), 0);
+        }).pipe(Effect.provide(harness.layer));
+      }),
+    ),
+  );
+
+  it.effect("streams every thread's open-question count after each change", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeHarness();
+        yield* Effect.gen(function* () {
+          const service = yield* ThreadWorkflowService;
+          const other = ThreadId.make("thread-service-other");
+          const seen = yield* Queue.unbounded<ReadonlyArray<string>>();
+          yield* service.attention.pipe(
+            Stream.runForEach((entries) =>
+              Queue.offer(
+                seen,
+                entries.map(
+                  (entry) => `${entry.threadId}:${entry.openQuestions}:${entry.latestQuestionId}`,
+                ),
+              ),
+            ),
+            Effect.forkScoped,
+          );
+          assert.deepStrictEqual(yield* Queue.take(seen), []);
+          yield* service.apply(agent, threadId, start);
+          assert.deepStrictEqual(yield* Queue.take(seen), []);
+          yield* service.apply(agent, threadId, askQuestion);
+          assert.deepStrictEqual(yield* Queue.take(seen), [`${threadId}:1:w1.q1`]);
+          yield* service.apply(agent, other, start);
+          assert.deepStrictEqual(yield* Queue.take(seen), [`${threadId}:1:w1.q1`]);
+          yield* service.apply(agent, other, askQuestion);
+          yield* service.apply(agent, threadId, { ...askQuestion, title: "Second?" });
+          assert.deepStrictEqual(yield* Queue.take(seen), [
+            `${threadId}:1:w1.q1`,
+            `${other}:1:w1.q1`,
+          ]);
+          assert.deepStrictEqual(yield* Queue.take(seen), [
+            `${threadId}:2:w1.q2`,
+            `${other}:1:w1.q1`,
+          ]);
+          yield* service.apply(user, threadId, {
+            _tag: "answer",
+            questionId: "w1.q2" as never,
+            answer: "Later",
+          });
+          assert.deepStrictEqual(yield* Queue.take(seen), [
+            `${threadId}:1:w1.q1`,
+            `${other}:1:w1.q1`,
+          ]);
+          yield* service.apply(agent, threadId, {
+            _tag: "withdraw",
+            questionId: "w1.q1" as never,
+            reason: "moot",
+          });
+          assert.deepStrictEqual(yield* Queue.take(seen), [`${other}:1:w1.q1`]);
+          yield* service.apply(user, other, {
+            _tag: "close",
+            instanceId: "w1" as never,
+            outcome: "abandoned",
+            reason: "test",
+          });
+          assert.deepStrictEqual(yield* Queue.take(seen), []);
         }).pipe(Effect.provide(harness.layer));
       }),
     ),

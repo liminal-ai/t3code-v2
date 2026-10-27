@@ -7,6 +7,7 @@ import { AsyncResult, Atom } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { environmentThreads } from "./threads";
+import { threadWorkflowAttentionAtom } from "./threadWorkflowAttention";
 
 export const threadWorkflowEnvironment =
   createThreadWorkflowEnvironmentAtoms(connectionAtomRuntime);
@@ -51,9 +52,12 @@ const openAskCountFamily = Atom.family((threadKey: string) => {
     const projection = Option.getOrNull(
       AsyncResult.value(get(environmentThreads.stateAtom(ref.environmentId, ref.threadId))),
     )?.data;
-    return projection === undefined || Option.isNone(projection)
-      ? 0
-      : derivePendingThreadRequests(projection.value).userInputs.length;
+    const questionTool =
+      projection === undefined || Option.isNone(projection)
+        ? 0
+        : derivePendingThreadRequests(projection.value).userInputs.length;
+    const workflow = get(threadWorkflowAttentionAtom(ref.environmentId)).get(ref.threadId);
+    return questionTool + (workflow?.openQuestions ?? 0);
   }).pipe(Atom.withLabel(`thread-workflow:asks:${threadKey}`));
 });
 
@@ -62,7 +66,6 @@ export function threadWorkflowVisibleAtom(ref: ScopedThreadRef | null) {
   return ref === null ? FALSE_ATOM : visibleFamily(scopedThreadKey(ref));
 }
 
-/** Pending question-tool requests: the tab title's count and the pane's "Waiting on you" strip. */
 export function threadWorkflowOpenAskCountAtom(ref: ScopedThreadRef | null) {
   return ref === null ? ZERO_ATOM : openAskCountFamily(scopedThreadKey(ref));
 }

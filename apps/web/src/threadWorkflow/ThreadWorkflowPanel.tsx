@@ -23,6 +23,7 @@ import { ThreadWorkflowActivity } from "./ThreadWorkflowActivity";
 import { ThreadWorkflowForm } from "./ThreadWorkflowForm";
 import { threadWorkflowFormStepId, type ThreadWorkflowFormIntent } from "./threadWorkflowForms";
 import { ThreadWorkflowHeader, ThreadWorkflowInstanceList } from "./ThreadWorkflowHeader";
+import { ThreadWorkflowQuestions } from "./ThreadWorkflowQuestions";
 import { ThreadWorkflowStart } from "./ThreadWorkflowStart";
 import { ThreadWorkflowStepList } from "./ThreadWorkflowStepList";
 import { ThreadWorkflowStrip } from "./ThreadWorkflowStrip";
@@ -312,6 +313,13 @@ export function ThreadWorkflowPanel({
           />
           {corruption}
           {form !== null && formStepId === null ? renderForm() : null}
+          {instance.questions.length > 0 ? (
+            <ThreadWorkflowQuestions
+              instance={instance}
+              disabled={disabled}
+              onSubmit={(request) => void submit(request)}
+            />
+          ) : null}
           <ThreadWorkflowStepList
             instance={instance}
             disabled={disabled}

@@ -10,7 +10,11 @@ import { isProviderNativeSubagentThread, OrchestrationV2ThreadShell } from "@t3t
 import * as Schema from "effect/Schema";
 import { Atom } from "effect/reactivity";
 
-import type { EnvironmentThreadShell, PendingSubagentRequest } from "./models.ts";
+import type {
+  EnvironmentThreadShell,
+  PendingSubagentRequest,
+  WorkflowAttention,
+} from "./models.ts";
 import { presentThreadShell, threadRuntimeIsActive } from "./models.ts";
 import { type EnvironmentCatalogState, enabledEnvironmentIds } from "./connections.ts";
 import {
@@ -26,6 +30,10 @@ const EMPTY_THREADS: ReadonlyArray<OrchestrationV2ThreadShell> = Object.freeze([
 const EMPTY_SCOPED_THREAD_REFS: ReadonlyArray<ScopedThreadRef> = Object.freeze([]);
 const EMPTY_THREAD_INDEX: ReadonlyMap<ThreadId, OrchestrationV2ThreadShell> = new Map();
 const EMPTY_SUBAGENT_REQUESTS: ReadonlyMap<ThreadId, PendingSubagentRequest> = new Map();
+const EMPTY_WORKFLOW_ATTENTION: ReadonlyMap<ThreadId, WorkflowAttention> = new Map();
+const NO_WORKFLOW_ATTENTION_ATOM = Atom.make(EMPTY_WORKFLOW_ATTENTION).pipe(
+  Atom.withLabel("environment-workflow-attention:none"),
+);
 const EMPTY_THREAD_REFS_BY_PROJECT: ReadonlyMap<
   ProjectId,
   ReadonlyArray<ScopedThreadRef>
@@ -106,6 +114,8 @@ function sameApartFromStreaming(
   if (
     previous.environmentId !== next.environmentId ||
     previous.pendingSubagentRequest !== next.pendingSubagentRequest ||
+    previous.openWorkflowQuestions !== next.openWorkflowQuestions ||
+    previous.latestWorkflowQuestionId !== next.latestWorkflowQuestionId ||
     !threadRuntimeIsActive(next.runtime)
   ) {
     return false;
@@ -133,7 +143,12 @@ export function createEnvironmentThreadShellAtoms(input: {
   readonly snapshotAtom: (
     environmentId: EnvironmentId,
   ) => Atom.Atom<OrchestrationV2ShellSnapshot | null>;
+  readonly workflowAttentionAtom?: (
+    environmentId: EnvironmentId,
+  ) => Atom.Atom<ReadonlyMap<ThreadId, WorkflowAttention>>;
 }) {
+  const workflowAttentionAtom = (environmentId: EnvironmentId) =>
+    input.workflowAttentionAtom?.(environmentId) ?? NO_WORKFLOW_ATTENTION_ATOM;
   // Point reads and aggregate lists share values without keeping an atom alive
   // for every listed thread. Replaced source objects can be collected.
   const scopedThreads = new WeakMap<
@@ -144,6 +159,7 @@ export function createEnvironmentThreadShellAtoms(input: {
     environmentId: EnvironmentId,
     thread: OrchestrationV2ThreadShell,
     subagentRequests: ReadonlyMap<ThreadId, PendingSubagentRequest>,
+    workflowAttention: ReadonlyMap<ThreadId, WorkflowAttention>,
   ) => {
     let byEnvironment = scopedThreads.get(thread);
     if (byEnvironment === undefined) {
@@ -151,10 +167,14 @@ export function createEnvironmentThreadShellAtoms(input: {
       scopedThreads.set(thread, byEnvironment);
     }
     const request = subagentRequests.get(thread.id) ?? null;
-    const key = request === null ? environmentId : `${environmentId}:${request}`;
+    const attention = workflowAttention.get(thread.id) ?? null;
+    const key =
+      request === null && attention === null
+        ? environmentId
+        : `${environmentId}:${request ?? ""}:${attention?.latestQuestionId ?? ""}:${attention?.openQuestions ?? 0}`;
     let value = byEnvironment.get(key);
     if (value === undefined) {
-      value = presentThreadShell(environmentId, thread, request);
+      value = presentThreadShell(environmentId, thread, request, attention);
       byEnvironment.set(key, value);
     }
     return value;
@@ -260,6 +280,7 @@ export function createEnvironmentThreadShellAtoms(input: {
             ref.environmentId,
             source,
             get(pendingSubagentRequestsAtom(ref.environmentId)),
+            get(workflowAttentionAtom(ref.environmentId)),
           );
     }).pipe(Atom.withLabel(`environment-thread-shell:${key}`));
   });
@@ -294,6 +315,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         else children.set(parent, [thread]);
       }
       const subagentRequests = get(pendingSubagentRequestsAtom(ref.environmentId));
+      const workflowAttention = get(workflowAttentionAtom(ref.environmentId));
       const seen = new Set<ThreadId>([ref.threadId]);
       const pending = [ref.threadId];
       const next: EnvironmentThreadShell[] = [];
@@ -303,7 +325,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           seen.add(child.id);
           pending.push(child.id);
           if (subagentRequest(child) !== null) {
-            next.push(scopedThread(ref.environmentId, child, subagentRequests));
+            next.push(scopedThread(ref.environmentId, child, subagentRequests, workflowAttention));
           }
         }
       }
@@ -339,6 +361,7 @@ export function createEnvironmentThreadShellAtoms(input: {
         if (refs.length === 0) continue;
         const threads = get(environmentThreadIndexAtom(projectRef.environmentId));
         const subagentRequests = get(pendingSubagentRequestsAtom(projectRef.environmentId));
+        const workflowAttention = get(workflowAttentionAtom(projectRef.environmentId));
         for (const ref of refs) {
           const key = threadKey(ref);
           if (seen.has(key)) {
@@ -347,7 +370,7 @@ export function createEnvironmentThreadShellAtoms(input: {
           seen.add(key);
           const thread = threads.get(ref.threadId);
           if (thread !== undefined) {
-            next.push(scopedThread(ref.environmentId, thread, subagentRequests));
+            next.push(scopedThread(ref.environmentId, thread, subagentRequests, workflowAttention));
           }
         }
       }
@@ -377,8 +400,9 @@ export function createEnvironmentThreadShellAtoms(input: {
     const next: EnvironmentThreadShell[] = [];
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
       const subagentRequests = get(pendingSubagentRequestsAtom(environmentId));
+      const workflowAttention = get(workflowAttentionAtom(environmentId));
       for (const thread of get(environmentThreadsAtom(environmentId))) {
-        next.push(scopedThread(environmentId, thread, subagentRequests));
+        next.push(scopedThread(environmentId, thread, subagentRequests, workflowAttention));
       }
     }
     if (arrayElementsEqual(previousThreadShells, next)) {
@@ -407,10 +431,11 @@ export function createEnvironmentThreadShellAtoms(input: {
     const next: EnvironmentThreadShell[] = [];
     for (const environmentId of enabledEnvironmentIds(get(input.catalogValueAtom))) {
       const subagentRequests = get(pendingSubagentRequestsAtom(environmentId));
+      const workflowAttention = get(workflowAttentionAtom(environmentId));
       for (const thread of get(environmentThreadsAtom(environmentId))) {
         if (thread.archivedAt !== null || thread.lineage.relationshipToParent === "subagent")
           continue;
-        next.push(scopedThread(environmentId, thread, subagentRequests));
+        next.push(scopedThread(environmentId, thread, subagentRequests, workflowAttention));
       }
     }
     if (arrayElementsEqual(previousNavigationShells, next)) return previousNavigationShells;

@@ -608,6 +608,7 @@ type ThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
+  | "openWorkflowQuestions"
   | "interactionMode"
   | "latestRun"
   | "runtime"
@@ -887,15 +888,29 @@ type SidebarThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
+  | "openWorkflowQuestions"
   | "runtime"
   | "blockedOnThreadWait"
 >;
+
+function awaitsInput(
+  thread: Pick<
+    SidebarThreadSummary,
+    "hasPendingUserInput" | "pendingSubagentRequest" | "openWorkflowQuestions"
+  >,
+): boolean {
+  return (
+    thread.hasPendingUserInput ||
+    thread.pendingSubagentRequest === "user_input" ||
+    (thread.openWorkflowQuestions ?? 0) > 0
+  );
+}
 
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
+  if (awaitsInput(thread)) {
     return "input";
   }
   if (thread.runtime?.status === "running" && thread.blockedOnThreadWait === true) {
@@ -1072,7 +1087,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
+  if (awaitsInput(thread)) {
     return {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",

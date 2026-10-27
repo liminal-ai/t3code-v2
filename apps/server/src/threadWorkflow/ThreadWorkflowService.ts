@@ -10,7 +10,10 @@ import {
   type ThreadId,
   type ThreadWorkflowActor,
   type ThreadWorkflowApplyResult,
+  type ThreadWorkflowAttention,
   type ThreadWorkflowInstanceId,
+  type ThreadWorkflowQuestionId,
+  type ThreadWorkflowRecord,
   type ThreadWorkflowRequest,
   type ThreadWorkflowSubscriptionState,
   type ThreadWorkflowTemplateId,
@@ -34,12 +37,15 @@ import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecuto
 import { withinDeadline } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import {
+  attentionOf,
   decide,
   instanceActedOn,
+  questionAsked,
   recordFor,
   toSubscriptionView,
   toView,
   type ResolvedTemplate,
+  type ThreadWorkflowState,
 } from "./domain.ts";
 import { ThreadWorkflowStore } from "./store.ts";
 import { builtInTemplates, freshness } from "./templates/index.ts";
@@ -54,6 +60,16 @@ export interface ThreadWorkflowApplyOptions {
 /** The pane's result, plus the instance the request acted on, which the agent's ack reports. */
 export interface ThreadWorkflowApplied extends ThreadWorkflowApplyResult {
   readonly instanceId: ThreadWorkflowInstanceId | null;
+  /** The question an `ask` created; null for every other request. */
+  readonly questionId: ThreadWorkflowQuestionId | null;
+}
+
+export interface ThreadWorkflowUserAnswer {
+  readonly threadId: ThreadId;
+  readonly seq: number;
+  readonly questionId: ThreadWorkflowQuestionId;
+  readonly title: string;
+  readonly answer: string;
 }
 
 export class ThreadWorkflowService extends Context.Service<
@@ -71,10 +87,33 @@ export class ThreadWorkflowService extends Context.Service<
     readonly state: (threadId: ThreadId) => Effect.Effect<ThreadWorkflowSubscriptionState>;
     /** `state` now, then again after every durable change to the thread or to the flag. */
     readonly subscribe: (threadId: ThreadId) => Stream.Stream<ThreadWorkflowSubscriptionState>;
+    readonly attention: Stream.Stream<ThreadWorkflowAttention>;
+    readonly answers: Stream.Stream<ThreadWorkflowUserAnswer>;
     readonly templates: Effect.Effect<ReadonlyArray<ThreadWorkflowTemplateSummary>>;
     readonly enabled: Effect.Effect<boolean>;
   }
 >()("t3/threadWorkflow/ThreadWorkflowService") {}
+
+const userAnswerIn = (
+  record: ThreadWorkflowRecord,
+  next: ThreadWorkflowState,
+): ThreadWorkflowUserAnswer | null => {
+  if (record.kind !== "change" || record.by._tag !== "user") return null;
+  const { event } = record;
+  if (event._tag !== "answered") return null;
+  const question = next.instances
+    .flatMap((entry) => entry.instance.questions)
+    .find((candidate) => candidate.id === event.questionId);
+  return question === undefined
+    ? null
+    : {
+        threadId: next.threadId,
+        seq: record.seq,
+        questionId: event.questionId,
+        title: question.title,
+        answer: event.answer,
+      };
+};
 
 const NO_TEMPLATES: ReadonlyMap<ThreadWorkflowTemplateId, ResolvedTemplate> = new Map();
 const templateList = [...builtInTemplates.values()];
@@ -99,6 +138,7 @@ const make = Effect.gen(function* () {
   const path = yield* Path.Path;
   const playbookDir = path.join(NodeOS.homedir(), ".agents", "skills");
   const changes = yield* PubSub.unbounded<ThreadId>();
+  const answers = yield* PubSub.unbounded<ThreadWorkflowUserAnswer>();
 
   const enabled = settings.getSettings.pipe(
     Effect.map((current) => current.threadWorkflowsEnabled),
@@ -211,12 +251,17 @@ const make = Effect.gen(function* () {
             at: DateTime.formatIso(yield* DateTime.now),
           });
           const next = record === null ? state : yield* store.append(threadId, record);
-          if (record !== null) yield* PubSub.publish(changes, threadId);
+          if (record !== null) {
+            yield* PubSub.publish(changes, threadId);
+            const answer = userAnswerIn(record, next);
+            if (answer !== null) yield* PubSub.publish(answers, answer);
+          }
           return {
             changed: decision._tag === "changed",
             replayed: decision._tag === "unchanged" && decision.replayed,
             view: toSubscriptionView(next),
             instanceId: instanceActedOn(next, request, options.requestId ?? null),
+            questionId: questionAsked(next, request, options.requestId ?? null),
           };
         }),
       ),
@@ -237,6 +282,25 @@ const make = Effect.gen(function* () {
         );
       }),
     );
+
+  const attentionNow = store.states.pipe(
+    Effect.map((states): ThreadWorkflowAttention =>
+      states.flatMap((state) => {
+        const entry = attentionOf(state);
+        return entry === null ? [] : [entry];
+      }),
+    ),
+  );
+
+  const attention: ThreadWorkflowService["Service"]["attention"] = Stream.unwrap(
+    Effect.gen(function* () {
+      const subscription = yield* PubSub.subscribe(changes);
+      return Stream.concat(
+        Stream.fromEffect(attentionNow),
+        Stream.fromSubscription(subscription).pipe(Stream.mapEffect(() => attentionNow)),
+      );
+    }),
+  );
 
   const templates = awaited("The workflow templates", resolveTemplates).pipe(
     Effect.catch((error) =>
@@ -261,6 +325,8 @@ const make = Effect.gen(function* () {
     view: (threadId) => whenAvailable(store.state(threadId).pipe(Effect.map(toView))),
     state: stateOf,
     subscribe,
+    attention,
+    answers: Stream.fromPubSub(answers),
     templates,
     enabled,
   });

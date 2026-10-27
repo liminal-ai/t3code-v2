@@ -7,6 +7,7 @@ import {
   ThreadWorkflowInstanceSummary,
   ThreadWorkflowOutcome,
   ThreadWorkflowProofLevel,
+  ThreadWorkflowQuestionId,
   ThreadWorkflowRequestId,
   ThreadWorkflowStepId,
   ThreadWorkflowStepSummary,
@@ -139,9 +140,11 @@ const TickTool = Tool.make("thread_workflow_tick", {
 
 /** Flat on purpose: some providers mangle `oneOf` parameters, so one struct covers every action. */
 export const ThreadWorkflowChangeParams = Schema.Struct({
-  action: Schema.Literals(["skip", "insert", "remove", "reopen", "comment"]),
+  action: Schema.Literals(["skip", "insert", "remove", "reopen", "comment", "answer", "withdraw"]),
   stepId: Schema.optionalKey(ThreadWorkflowStepId),
   target: Schema.optionalKey(ThreadWorkflowTarget),
+  questionId: Schema.optionalKey(ThreadWorkflowQuestionId),
+  answer: Schema.optionalKey(Schema.String),
   reason: Schema.optionalKey(Schema.String),
   comment: Schema.optionalKey(Schema.String),
   proof: Schema.optionalKey(Schema.String),
@@ -159,9 +162,37 @@ export type ThreadWorkflowChangeParams = typeof ThreadWorkflowChangeParams.Type;
 
 const ChangeTool = Tool.make("thread_workflow_change", {
   ...shared,
-  description: `Change the calling thread's workflow in a way that is not a tick. ${ABOUT} action skip (stepId, reason), remove (stepId, reason) and reopen (target, reason) move one step; reopen also reopens a closed workflow by its instance id when none is open. action comment (target, comment, proof) records a note on a step or a workflow without changing it: use it for progress, side quests and detail on the current step. action insert (title, instructions, reason; afterStepId or instanceId; slug derives from the title, proofLevel defaults to none, waitsForUser to false) adds a stage, an outcome at the same level as the others, and is refused past ${THREAD_WORKFLOW_LIMITS.steps} open steps. Every reason is recorded with who gave it. ${ACK}`,
+  description: `Change the calling thread's workflow in a way that is not a tick. ${ABOUT} action skip (stepId, reason), remove (stepId, reason) and reopen (target, reason) move one step; reopen also reopens a closed workflow by its instance id when none is open. action comment (target, comment, proof) records a note on a step, a question or a workflow without changing it: use it for progress, side quests and detail on the current step. action insert (title, instructions, reason; afterStepId or instanceId; slug derives from the title, proofLevel defaults to none, waitsForUser to false) adds a stage, an outcome at the same level as the others, and is refused past ${THREAD_WORKFLOW_LIMITS.steps} open steps. action answer (questionId, answer) records the user's answer to a workflow question they gave in chat, quoted; use it as soon as they answer, and never re-ask a question that is still open. action withdraw (questionId, reason) takes back a question that no longer matters. Only the user reopens a question. Every reason is recorded with who gave it. ${ACK}`,
   parameters: ThreadWorkflowChangeParams,
   success: ThreadWorkflowMutationAck,
+}).annotate(Tool.Destructive, false);
+
+export const ThreadWorkflowAskOption = Schema.Struct({
+  label: Schema.String,
+  recommended: Schema.optionalKey(Schema.Boolean),
+});
+
+export const ThreadWorkflowAskResult = Schema.Struct({
+  questionId: ThreadWorkflowQuestionId,
+  /** On the open workflow, this one included. */
+  openQuestions: Schema.Int,
+  /** The answer call to make when the user answers in chat. A pane answer arrives as a user message. */
+  next: Schema.String,
+});
+export type ThreadWorkflowAskResult = typeof ThreadWorkflowAskResult.Type;
+
+const AskTool = Tool.make("thread_workflow_ask", {
+  ...shared,
+  description: `Put a question for the user on the calling thread's workflow. ${ABOUT} The thread shows "input needed" until it is answered or withdrawn, and the user can answer in the Workflow tab or in chat. Ask here when you need their decision and can keep working. Use your question tool only when you are blocked and must stop. Never re-ask in chat; the question stays visible to the user. One sentence title (up to ${THREAD_WORKFLOW_LIMITS.questionTitle} characters); the summary is the row's one-line subline, the options or your recommendation; reasoning goes in details (markdown); options (up to ${THREAD_WORKFLOW_LIMITS.questionOptions}) with the recommended one marked; blocksStepId names the step that waits on the answer. Returns the question id, the count of open questions, and the call that records an answer given in chat.`,
+  parameters: Schema.Struct({
+    title: Schema.String,
+    summary: Schema.optionalKey(Schema.String),
+    details: Schema.optionalKey(Schema.String),
+    options: Schema.optionalKey(Schema.Array(ThreadWorkflowAskOption)),
+    blocksStepId: Schema.optionalKey(ThreadWorkflowStepId),
+    requestId,
+  }),
+  success: ThreadWorkflowAskResult,
 }).annotate(Tool.Destructive, false);
 
 const CloseTool = Tool.make("thread_workflow_close", {
@@ -182,4 +213,5 @@ export const ThreadWorkflowToolkit = Toolkit.make(
   TickTool,
   ChangeTool,
   CloseTool,
+  AskTool,
 );
