@@ -49,9 +49,14 @@ const ask = (overrides: Partial<TurnNoteInput> = {}): TurnNoteInput => ({
   ...overrides,
 });
 
+const WORKFLOWS_ON: ServerSettingsShape = {
+  ...DEFAULT_SERVER_SETTINGS,
+  threadWorkflowsEnabled: true,
+};
+
 const layerFor = (
   store: Partial<ThreadWorkflowStore["Service"]>,
-  getSettings: Effect.Effect<ServerSettingsShape, never> = Effect.succeed(DEFAULT_SERVER_SETTINGS),
+  getSettings: Effect.Effect<ServerSettingsShape, never> = Effect.succeed(WORKFLOWS_ON),
 ) =>
   layerThreadHooks.pipe(
     Layer.provide(
@@ -65,21 +70,28 @@ const layerFor = (
     Layer.provide(Layer.mock(ServerSettings.ServerSettingsService)({ getSettings })),
   );
 
-const withState = (initial: ThreadWorkflowState, marked: ReadonlySet<ThreadId> = new Set()) =>
+const withState = (
+  initial: ThreadWorkflowState,
+  marked: ReadonlySet<ThreadId> = new Set(),
+  settings: ServerSettingsShape = WORKFLOWS_ON,
+) =>
   Effect.gen(function* () {
     const state = yield* Ref.make(initial);
     const marks = yield* Ref.make(marked);
     const markCalls = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
     const hooks = yield* ThreadHooks.pipe(
       Effect.provide(
-        layerFor({
-          state: () => Ref.get(state),
-          pstackThreads: Ref.get(marks),
-          markPstackThread: (id) =>
-            Ref.update(markCalls, (calls) => [...calls, id]).pipe(
-              Effect.andThen(Ref.update(marks, (set) => new Set(set).add(id))),
-            ),
-        }),
+        layerFor(
+          {
+            state: () => Ref.get(state),
+            pstackThreads: Ref.get(marks),
+            markPstackThread: (id) =>
+              Ref.update(markCalls, (calls) => [...calls, id]).pipe(
+                Effect.andThen(Ref.update(marks, (set) => new Set(set).add(id))),
+              ),
+          },
+          Effect.succeed(settings),
+        ),
       ),
     );
     return {
@@ -235,6 +247,25 @@ it.effect(
         assert.deepStrictEqual(yield* hooks.markCalls, [threadId], message.text);
       }
     }),
+);
+
+it.effect("sends no reminder and marks nothing while thread workflows are off", () =>
+  Effect.gen(function* () {
+    const off = { ...WORKFLOWS_ON, threadWorkflowsEnabled: false };
+    const asking = userSaid("load poteto mode and fix the bug");
+    const unmarked = yield* withState(given().state, new Set(), off);
+    assert.strictEqual(yield* unmarked.note(ask({ message: asking })), "");
+    yield* letDetachedWorkRun;
+    assert.deepStrictEqual(yield* unmarked.markCalls, []);
+    const marked = yield* withState(given().state, new Set([threadId]), off);
+    assert.strictEqual(yield* marked.note(ask({ message: userSaid("fix the bug") })), "");
+    const closed = given(started, [
+      user,
+      { _tag: "close", instanceId: "w1", outcome: "abandoned", reason: "x" },
+    ]).state;
+    const after = yield* withState(closed, new Set(), off);
+    assert.strictEqual(yield* after.note(ask({ message: userSaid("fix the bug") })), "");
+  }),
 );
 
 it.effect("tells a thread the store has marked to start a workflow, without marking it again", () =>

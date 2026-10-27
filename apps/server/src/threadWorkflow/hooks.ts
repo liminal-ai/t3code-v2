@@ -88,6 +88,9 @@ export const layerThreadHooks = Layer.effect(
       : settings.getSettings.pipe(
           Effect.map((current) => current.threadWorkflowEnforcementDisabled),
         );
+    const workflowsEnabled = settings.getSettings.pipe(
+      Effect.map((current) => current.threadWorkflowsEnabled),
+    );
     const warned = yield* Ref.make<ReadonlySet<string>>(new Set());
     const lastFullNotes = yield* Ref.make<ReadonlyMap<ThreadId, LastFullNote>>(new Map());
 
@@ -119,6 +122,8 @@ export const layerThreadHooks = Layer.effect(
       if (current === null) {
         const note = turnNote(view, "full");
         if (note !== "") return note;
+        // The reminder names a start that `decideStart` refuses while the flag is off.
+        if (!(yield* workflowsEnabled)) return "";
         const marked = (yield* store.pstackThreads).has(input.threadId);
         if (state.instances.length > 0 || marked) return noWorkflowNote();
         if (!asksForPstack(input.message)) return "";
