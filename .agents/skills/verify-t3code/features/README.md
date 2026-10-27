@@ -42,7 +42,8 @@ Keep implementation details out of the map. Name only user paths, stable handles
 ## Features
 
 - [Start a thread and run a turn](./agent-turn.md) covers the composer, the model picker, and how a run ends.
-- [Workflow tab](./workflow-tab.md) covers starting a template, the agent's note, Done, and closing.
+- [Workflow tab](./workflow-tab.md) covers starting a template, the agent's note, Done, closing, and the settle refusal.
+- [Group chat](./group-chat.md) covers opening it, creating a group, a message and each member's reply, Back, and Escape.
 - [Projects](./projects.md) covers adding a local folder as a project and starting a thread in it.
 - [Settings for verification](./settings.md) covers `threadWorkflowsEnabled` and provider instances.
 - [Pair another browser](./pairing.md) covers a fresh pairing URL, the pairing page, and a second browser.

@@ -39,7 +39,7 @@ Ready means a thread can start. The first agent turn of a recipe proves it. The 
 
 The state is the worktree's ignored `.t3`. It outranks an ambient `T3CODE_HOME`, and only an explicit `--home-dir` beats it. The first start in a worktree seeds an empty database from `~/.t3/userdata/statev2.sqlite`, read-only. `--no-seed` or `T3CODE_DEV_SEED=0` skips that. This machine has no `~/.t3`, so here the first start begins empty, with one auto-created project named `server` on the worktree's `apps/server`. To start from real data, stop the server and run `vp run migrate-dev-db -- --source ~/lim-v2/service/t3code/prod/data/userdata/statev2.sqlite`. It snapshots the source read-only and keeps recent projects and stopped threads without their schedules, pending work or auth sessions. The proof run did not exercise it. Refresh `statev2.sqlite`, never `state.sqlite`, and copy `secrets` or `settings.json` in only when the flow needs them. Data flows into the sandbox, never back out.
 
-**From inside a T3 thread**, T3's own Browser panel drives the same server. Call `preview_open` with `profileId: "incognito"`, `reuseExistingTab: false` and the pairing URL from the scratch `pairing-url` file, then `preview_wait_for` with `locator: "role=navigation[name='Threads']"`. Use `preview_snapshot` and the interaction tools from there, passing the returned `tabId` on every call. The incognito profile keeps the dev cookie away from the profile you use for prod. A one-time token is spent once. `node $T3V pair` mints a fresh one into the same file through `node apps/server/src/bin.ts pair`.
+**From inside a T3 thread**, T3's own Browser panel drives the same server. Call `preview_open` with `profileId: "incognito"`, `reuseExistingTab: false` and the pairing URL from the scratch `pairing-url` file, then `preview_wait_for` with `locator: "role=navigation[name='Threads']"`. Use `preview_snapshot` and the interaction tools from there, passing the returned `tabId` on every call. Never pass `save: true` to `preview_snapshot`: it writes the PNG under the hosting T3's own data directory, which on this machine is prod's. The incognito profile keeps the dev cookie away from the profile you use for prod. A one-time token is spent once. `node $T3V pair` mints a fresh one into the same file through `node apps/server/src/bin.ts pair`.
 
 **Sharing over the tailnet** is `vp run dev --share` in the background. Wait for its `pairingUrl:` line, and give that whole URL to an unpaired browser. Do not wire `tailscale serve` by hand or spend the user's pairing link. `T3CODE_DEV_AUTH_TOKEN` in the main checkout's gitignored `.env` is a reusable dev credential across worktrees on one hostname (see `docs/operations/development.md`). This machine has none configured. Never commit or print a token or a pairing URL.
 
@@ -60,6 +60,7 @@ Every recipe in `features/` uses these commands. Target by ARIA role and accessi
 | Command                                                   | Does                                                                                                                                                                                             |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `browser click --role <role> --name <name> [--in <text>]` | Clicks the element with exactly that name, or with a name that starts with `--name-prefix <text>`. `--in` picks the innermost element that holds both the text and the target, such as one card. |
+| `browser hover --role <role> --name <name> [--in <text>]` | Moves the mouse over the element, for controls that appear only on hover, such as a thread card's `Settle thread`.                                                                               |
 | `browser click --text <text>` / `--at <x>,<y>`            | Clicks visible text, or a point from a screenshot.                                                                                                                                               |
 | `browser fill --role <role> --name <name> --value <text>` | Replaces an input's value.                                                                                                                                                                       |
 | `browser type <text>` / `browser press <key>`             | Types into whatever has focus, or presses Enter, Escape and so on.                                                                                                                               |
@@ -78,12 +79,13 @@ The other surfaces:
 
 Save proof under `proof/` with names in drive order. For a user-visible path, keep a screenshot of each action and of the state it produced, and the thread timeline (`browser text`). Exercise the real user path, never internal setters, direct SQLite writes or test-only endpoints. A screen alone is not proof of a change that stores something, so read the side effect too:
 
-| Outcome                              | Where it lives                                            | Read it with                               |
-| ------------------------------------ | --------------------------------------------------------- | ------------------------------------------ |
-| Workflow changes, with who made each | `.t3/userdata/thread-workflows/threads/<thread-id>.jsonl` | `node $T3V outcome workflow [<thread-id>]` |
-| The workflow note the agent was sent | `.t3/userdata/logs/provider/events.<thread-id>.log`       | `node $T3V outcome note <thread-id>`       |
-| Projects, threads, runs, messages    | `.t3/userdata/statev2.sqlite`, opened read-only           | `node $T3V outcome sql "<select>"`         |
-| Server behavior and errors           | the dev log in scratch                                    | `grep` it                                  |
+| Outcome                                 | Where it lives                                            | Read it with                               |
+| --------------------------------------- | --------------------------------------------------------- | ------------------------------------------ |
+| Workflow changes, with who made each    | `.t3/userdata/thread-workflows/threads/<thread-id>.jsonl` | `node $T3V outcome workflow [<thread-id>]` |
+| The workflow note the agent was sent    | `.t3/userdata/logs/provider/events.<thread-id>.log`       | `node $T3V outcome note <thread-id>`       |
+| Projects, threads, runs, messages       | `.t3/userdata/statev2.sqlite`, opened read-only           | `node $T3V outcome sql "<select>"`         |
+| A tool the agent called, and its result | `.t3/userdata/logs/provider/events.<thread-id>.log`       | `grep` it for `mcp__t3-code__<tool name>`  |
+| Server behavior and errors              | the dev log in scratch                                    | `grep` it                                  |
 
 The thread id is the last path segment of the thread's URL. Clients read projects from `projection_projects` and everything else from the `orchestration_v2_projection_*` tables. To seed SQLite fixtures, read [the fixtures reference](references/sqlite-fixtures.md), and stop the server before any write.
 
@@ -95,6 +97,16 @@ Two kinds of check prove a feature:
 ## Isolation
 
 Two worktrees run two dev servers side by side, because each derives its ports from its own path and keeps its state in its own `.t3`. Never run two servers on one state dir. `up` refuses when `server-runtime.json` names a live server, so drive that one or stop it. Never drive a server this run did not start.
+
+## Release check
+
+A dev server runs the worktree's source, so it cannot show a fault that only the packaged release has, such as a dependency the archive leaves out. Before a cutover question, run the release `t3-v2-deploy` built as a throwaway and complete one real turn on each provider prod uses. FORK.md "Test live without touching prod" holds the safety rules this follows.
+
+1. **Base dir.** Make `<run scratch>/<name>/base/userdata/` with a `settings.json` holding FORK.md's safety settings and the provider instances to check, copied from prod's `settings.json`, which holds no secrets. To time the first start's migrations against real data, add a copy of prod's database taken with `sqlite3 -readonly "file:<prod statev2.sqlite>?mode=ro" "VACUUM INTO '<copy>'"`, then run the safety list's SQL pass on the copy. `.backup` restarts on every prod write and never finishes.
+2. **Cursor sign-in.** Cursor signs in from its instance credential. Copy only `secrets/provider-auth-<sha256 of "6:cursor" followed by the instance id>.bin` from prod's `userdata/secrets/`, keep it mode 0600, never print it, and delete the copy at teardown. Claude and Codex use this machine's CLI logins.
+3. **Start.** `T3CODE_HOME=<base> T3CODE_NO_BROWSER=1 T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false T3CODE_TELEMETRY_ENABLED=false setsid nohup <release>/t3 serve --host 127.0.0.1 --port <free port> --base-dir <base> --no-browser > <base>/../serve.log 2>&1 &`. The log names each migration that ran and when the server listened. `$!` is the shell wrapper's PID, so find the server's with `ss -H -ltnp` on that port, and confirm its `/proc/<pid>/cwd` before you stop it.
+4. **Turns.** Add a disposable project with `<release>/t3 project add --base-dir <base> <folder>`, then from inside that folder run one turn per provider: `<release>/t3 thread start --base-dir <base> --provider <instance> --model <slug> --wait --json . "Reply with the single word pong. Do not call tools or change files."`. Each prints `"status":"completed"` and `"reply":"pong"`. Slugs in use here: `cursor` `grok-4.7`, `claudeAgent` `claude-haiku-5-5`, `codex` `gpt-6-astra`.
+5. **UI on the release.** t3v cannot attach to `t3 serve`. Open the pairing URL from the log in T3's Browser panel with `preview_open` (`profileId: "incognito"`), as above.
 
 ## Cleanup
 
