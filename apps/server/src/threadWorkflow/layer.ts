@@ -6,6 +6,7 @@ import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecuto
 import type * as ServerSettings from "../serverSettings.ts";
 import { layerThreadHooks } from "./hooks.ts";
 import * as ThreadWorkflowStore from "./store.ts";
+import * as AnswerReactor from "./ThreadWorkflowAnswerReactor.ts";
 import * as IdleReactor from "./ThreadWorkflowIdleReactor.ts";
 import * as ThreadWorkflowService from "./ThreadWorkflowService.ts";
 
@@ -38,3 +39,7 @@ export const layerForServer = <E, R>(
 export const layerIdleReactorStart = Layer.effectDiscard(
   Effect.flatMap(IdleReactor.ThreadWorkflowIdleReactor, (reactor) => reactor.start()),
 ).pipe(Layer.provide(IdleReactor.layer), Layer.provide(ProjectionStore.layer));
+
+export const layerAnswerReactorStart = Layer.effectDiscard(
+  Effect.flatMap(AnswerReactor.ThreadWorkflowAnswerReactor, (reactor) => reactor.start()),
+).pipe(Layer.provide(AnswerReactor.layer));

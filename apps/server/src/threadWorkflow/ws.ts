@@ -35,4 +35,5 @@ export const handlers = (clientSessionId: string) =>
         })
         .pipe(Effect.map(({ changed, replayed, view }) => ({ changed, replayed, view }))),
     [WS_METHODS.threadWorkflowTemplates]: () => service.templates,
+    [WS_METHODS.threadWorkflowAttention]: () => service.attention,
   }));

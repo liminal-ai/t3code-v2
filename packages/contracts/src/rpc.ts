@@ -296,6 +296,7 @@ import {} from "./previewAutomation.ts";
 import {
   ThreadWorkflowApplyInput,
   ThreadWorkflowApplyResult,
+  ThreadWorkflowAttention,
   ThreadWorkflowError,
   ThreadWorkflowGetInput,
   ThreadWorkflowInstance,
@@ -593,6 +594,7 @@ export const WS_METHODS = {
   threadWorkflowGet: "threadWorkflow.get",
   threadWorkflowApply: "threadWorkflow.apply",
   threadWorkflowTemplates: "threadWorkflow.templates",
+  threadWorkflowAttention: "threadWorkflow.attention",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
 } as const;
 
@@ -1910,6 +1912,12 @@ const WsThreadWorkflowTemplatesRpc = Rpc.make(WS_METHODS.threadWorkflowTemplates
   success: Schema.Array(ThreadWorkflowTemplateSummary),
   error: EnvironmentAuthorizationError,
 });
+const WsThreadWorkflowAttentionRpc = Rpc.make(WS_METHODS.threadWorkflowAttention, {
+  payload: Schema.Struct({}),
+  success: ThreadWorkflowAttention,
+  error: EnvironmentAuthorizationError,
+  stream: true,
+});
 
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
@@ -2103,6 +2111,7 @@ export const WsRpcGroup = RpcGroup.make(
   WsThreadWorkflowGetRpc,
   WsThreadWorkflowApplyRpc,
   WsThreadWorkflowTemplatesRpc,
+  WsThreadWorkflowAttentionRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2StopWorkflowRpc,

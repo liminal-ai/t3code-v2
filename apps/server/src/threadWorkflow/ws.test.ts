@@ -59,6 +59,7 @@ it("guards the pane's write with operate scope and its reads with read scope", (
     WS_METHODS.threadWorkflowSubscribe,
     WS_METHODS.threadWorkflowGet,
     WS_METHODS.threadWorkflowTemplates,
+    WS_METHODS.threadWorkflowAttention,
   ]) {
     assert.strictEqual(requiredScopeForRpcMethod(method), AuthOrchestrationReadScope);
     assert.deepStrictEqual(clientRpcRequiredScopes(method, undefined), []);
@@ -108,6 +109,46 @@ it.layer(layerTest)("thread workflow RPC handlers", (it) => {
       }).pipe(Effect.flip);
       assert.strictEqual(missing.code, "unknown_instance");
       assert.isTrue((yield* rpc[WS_METHODS.threadWorkflowTemplates]()).length >= 3);
+    }),
+  );
+
+  it.effect("streams which threads need the user, for every thread at once", () =>
+    Effect.gen(function* () {
+      const rpc = yield* handlers("client-session-8");
+      const other = ThreadId.make("thread-ws-other");
+      yield* rpc[WS_METHODS.threadWorkflowApply]({
+        threadId: other,
+        request: { _tag: "start", templateId: "single-task" as never },
+        requestId: "other-1",
+        expectedRevision: 0,
+      });
+      const seen = yield* Queue.unbounded<ReadonlyArray<string>>();
+      yield* rpc[WS_METHODS.threadWorkflowAttention]().pipe(
+        Stream.runForEach((entries) =>
+          Queue.offer(
+            seen,
+            entries.map(
+              (entry) => `${entry.threadId}:${entry.openQuestions}:${entry.latestQuestionId}`,
+            ),
+          ),
+        ),
+        Effect.forkScoped,
+      );
+      assert.deepStrictEqual(yield* Queue.take(seen), []);
+      const revision = (yield* rpc[WS_METHODS.threadWorkflowApply]({
+        threadId: other,
+        request: { _tag: "ask", title: "Which base branch?" },
+        requestId: "other-2",
+        expectedRevision: 1,
+      })).view.revision;
+      assert.deepStrictEqual(yield* Queue.take(seen), [`${other}:1:w1.q1`]);
+      yield* rpc[WS_METHODS.threadWorkflowApply]({
+        threadId: other,
+        request: { _tag: "answer", questionId: "w1.q1" as never, answer: "main" },
+        requestId: "other-3",
+        expectedRevision: revision,
+      });
+      assert.deepStrictEqual(yield* Queue.take(seen), []);
     }),
   );
 });
