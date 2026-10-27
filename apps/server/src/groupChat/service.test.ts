@@ -230,14 +230,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
           .dispatch({ _tag: "delivery.retry", deliveryId: unknown.id })
           .pipe(Effect.flip);
         assert.strictEqual(refused._tag, "GroupChatRefused");
-        for (
-          let looks = 0;
-          looks < 50 && (yield* latestDelivery(app, member(alpha).id))!.state !== "running";
-          looks++
-        ) {
-          yield* Effect.yieldNow;
-          yield* TestClock.adjust("10 millis");
-        }
+        yield* TestClock.adjust("500 millis");
         const running = yield* awaitState(app, member(alpha).id, "running");
         assert.strictEqual(running.attempt, 1);
         assert.strictEqual(running.runId, thread.runs[0]!.id);
@@ -799,13 +792,9 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       );
       (yield* fake.thread(alpha)).cancelFaults = 1;
       yield* app.dispatch({ _tag: "delivery.stop", deliveryId: queued.id });
-      const envelopeRun = () =>
-        Effect.map(fake.thread(alpha), (t) => t.runs.find((r) => r.id === queued.runId)!);
-      for (let looks = 0; looks < 20 && (yield* envelopeRun()).status !== "cancelled"; looks++) {
-        yield* Effect.yieldNow;
-        yield* TestClock.adjust("10 millis");
-      }
-      assert.strictEqual((yield* envelopeRun()).status, "cancelled", "the cancel was retried");
+      const envelopeRun = (yield* fake.thread(alpha)).runs.find((r) => r.id === queued.runId)!;
+      yield* TestClock.adjust("200 millis");
+      assert.strictEqual(envelopeRun.status, "cancelled", "the cancel was retried");
       yield* fake.complete(alpha, own.id, "own finished");
       const ended = yield* app.until(
         app.store.delivery(queued.id),
@@ -821,8 +810,10 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       const { group, member } = yield* createGroup(app, "streaming", [alpha]);
       yield* send(app, group.id, "hello", [member(alpha).id]);
       const running = yield* awaitState(app, member(alpha).id, "running");
+      const thread = yield* fake.thread(alpha);
+      thread.replyReached = yield* Deferred.make<void>();
       yield* fake.complete(alpha, running.runId!, "the whole reply", true);
-      while ((yield* fake.thread(alpha)).replyReads === 0) yield* Effect.yieldNow;
+      yield* Deferred.await(thread.replyReached);
       yield* fake.settleReply(alpha, running.runId!);
       const replied = yield* awaitState(app, member(alpha).id, "replied");
       const message = (yield* app.store.message(replied.replyMessageId!))!;
@@ -1321,11 +1312,9 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
       yield* Deferred.succeed(thread.sendGate, undefined);
       const envelope = thread.sends[0]!;
-      const envelopeRun = () => thread.runs.find((r) => r.messageId === envelope.messageId);
-      for (let looks = 0; looks < 200 && envelopeRun()?.status !== "cancelled"; looks++) {
-        yield* Effect.yieldNow;
-      }
-      assert.strictEqual(envelopeRun()?.status, "cancelled", "nobody is left to want this run");
+      const envelopeRun = thread.runs.find((r) => r.messageId === envelope.messageId)!;
+      yield* Deferred.await(envelopeRun.ended);
+      assert.strictEqual(envelopeRun.status, "cancelled", "nobody is left to want this run");
       assert.strictEqual(thread.sends.length, 1);
       assert.isNull(yield* app.store.group(group.id));
     }).pipe(Effect.scoped),
@@ -1340,6 +1329,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         const thread = yield* fake.thread(alpha);
         yield* fake.startOwnRun(alpha);
         thread.commitGate = yield* Deferred.make<void>();
+        thread.sendReached = yield* Deferred.make<void>();
         yield* send(app, group.id, "hello", [member(alpha).id]);
         yield* awaitDelivery(app, member(alpha).id, (d) => d.dispatch === "sending");
         yield* app.dispatch({ _tag: "group.delete", groupId: group.id });
@@ -1353,16 +1343,12 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
           "the cancel waits on the send",
         );
         yield* Deferred.succeed(thread.commitGate, undefined);
+        yield* Deferred.await(thread.sendReached);
         const envelope = thread.sends[0]!;
-        const envelopeRun = () => thread.runs.find((r) => r.messageId === envelope.messageId);
-        for (let looks = 0; looks < 200 && envelopeRun()?.status !== "cancelled"; looks++) {
-          yield* Effect.yieldNow;
-        }
-        assert.strictEqual(envelopeRun()?.status, "cancelled", "nobody is left to want this run");
+        const envelopeRun = thread.runs.find((r) => r.messageId === envelope.messageId)!;
+        yield* Deferred.await(envelopeRun.ended);
+        assert.strictEqual(envelopeRun.status, "cancelled", "nobody is left to want this run");
         assert.strictEqual(thread.sends.length, 1);
-        for (let looks = 0; looks < 200 && (yield* app.store.pendingCancels).length > 0; looks++) {
-          yield* Effect.yieldNow;
-        }
         assert.deepStrictEqual(
           yield* app.store.pendingCancels,
           [],
@@ -1576,12 +1562,9 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
       const thread = yield* fake.thread(alpha);
       thread.cancelFaults = 12;
       yield* app.dispatch({ _tag: "delivery.stop", deliveryId: queued.id });
-      const envelopeRun = () => thread.runs.find((r) => r.id === queued.runId)!;
-      for (let looks = 0; looks < 100 && envelopeRun().status !== "cancelled"; looks++) {
-        yield* Effect.yieldNow;
-        yield* TestClock.adjust("10 millis");
-      }
-      assert.strictEqual(envelopeRun().status, "cancelled", "the cancel outlasted the outage");
+      const envelopeRun = thread.runs.find((r) => r.id === queued.runId)!;
+      yield* TestClock.adjust("1 second");
+      assert.strictEqual(envelopeRun.status, "cancelled", "the cancel outlasted the outage");
       yield* fake.complete(alpha, own.id, "own finished");
       const ended = yield* app.until(
         app.store.delivery(queued.id),
@@ -1609,10 +1592,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         assert.strictEqual(run.status, "queued", "the cancel had not reached T3 at the crash");
         yield* app.shutdown;
         yield* boot(fake, baseDir);
-        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
-          yield* Effect.yieldNow;
-          yield* TestClock.adjust("10 millis");
-        }
+        yield* TestClock.adjust("1 second");
         assert.strictEqual(run.status, "cancelled");
         yield* fake.complete(alpha, own.id, "own finished");
         assert.isUndefined(thread.runs.find((r) => r.own && r.started));
@@ -1638,10 +1618,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         const run = thread.runs.find((r) => r.messageId === envelope.messageId)!;
         assert.strictEqual(run.status, "queued", "T3 took the envelope before the crash");
         yield* boot(fake, baseDir);
-        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
-          yield* Effect.yieldNow;
-          yield* TestClock.adjust("10 millis");
-        }
+        yield* TestClock.adjust("1 second");
         assert.strictEqual(run.status, "cancelled");
         yield* fake.complete(alpha, own.id, "own finished");
         assert.isUndefined(thread.runs.find((r) => r.own && r.started));
@@ -1673,10 +1650,7 @@ it.layer(NodeServices.layer)("group chat service", (it) => {
         const run = thread.runs.find((r) => r.messageId === envelope.messageId)!;
         assert.strictEqual(run.status, "queued", "T3 took the envelope before the crash");
         yield* boot(fake, baseDir);
-        for (let looks = 0; looks < 100 && run.status !== "cancelled"; looks++) {
-          yield* Effect.yieldNow;
-          yield* TestClock.adjust("10 millis");
-        }
+        yield* TestClock.adjust("1 second");
         assert.strictEqual(run.status, "cancelled");
         yield* fake.complete(alpha, own.id, "own finished");
         assert.isUndefined(thread.runs.find((r) => r.own && r.started));

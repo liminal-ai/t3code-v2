@@ -88,8 +88,8 @@ export interface FakeThread {
   readGate: Deferred.Deferred<void> | null;
   /** Resolved when a thread read reaches the gate, so a test knows the lane is parked there. */
   readReached: Deferred.Deferred<void> | null;
-  /** How many times the port read this thread's reply. */
-  replyReads: number;
+  /** Resolved when the port reads this thread's reply. */
+  replyReached: Deferred.Deferred<void> | null;
   readonly faults: SendFault[];
   /** Reads of the thread's runs that fail before one succeeds, as a transient store fault would. */
   readFaults: number;
@@ -182,7 +182,7 @@ export const makeFakeThreads = Effect.sync(() => {
         sendGate: null,
         readGate: null,
         readReached: null,
-        replyReads: 0,
+        replyReached: null,
         faults: [],
         readFaults: 0,
         threadReadFaults: 0,
@@ -364,12 +364,12 @@ export const makeFakeThreads = Effect.sync(() => {
         current = next;
       }
     }),
-    readReply: (input) =>
-      Effect.map(thread(input.threadId), (t) => {
-        const run = t.runs.find((candidate) => candidate.id === input.runId);
-        t.replyReads += 1;
-        return run?.reply == null ? null : { text: run.reply, streaming: run.streaming };
-      }),
+    readReply: Effect.fn("groupChat.testkit.readReply")(function* (input) {
+      const t = yield* thread(input.threadId);
+      const run = t.runs.find((candidate) => candidate.id === input.runId);
+      if (t.replyReached !== null) yield* Deferred.succeed(t.replyReached, undefined);
+      return run?.reply == null ? null : { text: run.reply, streaming: run.streaming };
+    }),
     blockingRun: (input) =>
       Effect.map(thread(input.threadId), (t): PortBlocking | null => {
         const active = t.runs.find(
