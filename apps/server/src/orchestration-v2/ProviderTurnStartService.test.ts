@@ -174,6 +174,7 @@ function startWithMissingWorktree(
                   m.role === "user" &&
                   (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
               ),
+              compactionCount: 0,
             });
           },
           getRuntimeRecoveryProjection: () => {
@@ -735,6 +736,7 @@ function makeLocalCommandHarness(input: {
           m.role === "user" &&
           (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
       ),
+      compactionCount: 0,
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
