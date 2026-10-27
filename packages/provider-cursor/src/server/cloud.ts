@@ -139,29 +139,29 @@ export function cursorCloudPrompt(input: {
     readonly text: string | undefined;
   }>;
 }): string {
-  // The environment note always goes, like the runtime instructions appended
-  // later. Only attachments compete for the input limit.
+  // The environment note and every attachment's note always go, as upstream's
+  // attachment notes do. Only inline text competes for the input limit.
   let prompt = [input.note, input.text]
     .filter((part) => part !== undefined && part.length > 0)
     .join("\n\n");
-  const appendFirstThatFits = (...parts: ReadonlyArray<string>) => {
-    const part = parts.find(
-      (candidate) =>
-        (prompt.length === 0 ? 0 : prompt.length + 2) + candidate.length <=
-        PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
-    );
-    if (part !== undefined) prompt = prompt.length === 0 ? part : `${prompt}\n\n${part}`;
+  const append = (part: string) => {
+    prompt = prompt.length === 0 ? part : `${prompt}\n\n${part}`;
   };
+  const fits = (part: string) =>
+    (prompt.length === 0 ? 0 : prompt.length + 2) + part.length <=
+    PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
   for (const { attachment, text } of input.attachments) {
     if (text === undefined) {
-      appendFirstThatFits(
+      append(
         `[Attached ${attachment.type} "${attachment.name}" was not sent: a Cursor Cloud VM cannot read files on the machine that started it. Only text files up to 100 KB travel inline.]`,
       );
       continue;
     }
-    appendFirstThatFits(
-      `[Attached file "${attachment.name}" follows inline.]\n${text}`,
-      `[Attached file "${attachment.name}" was not sent: the message was over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")}-character limit for inline attachments.]`,
+    const inline = `[Attached file "${attachment.name}" follows inline.]\n${text}`;
+    append(
+      fits(inline)
+        ? inline
+        : `[Attached file "${attachment.name}" was not sent: the message was over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")}-character limit for inline attachments.]`,
     );
   }
   return prompt;

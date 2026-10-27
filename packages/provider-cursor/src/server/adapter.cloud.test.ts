@@ -315,6 +315,7 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       assert.include(sent.message, '[Attached file "brief.txt" follows inline.]\npasted brief');
       assert.include(sent.message, '[Attached file "tool.bin" was not sent');
       assert.notInclude(sent.message, host.paths.attachmentsDir);
+      assert.notInclude(sent.message, "is unavailable");
       assert.include(sent.message, "through the Cursor Cloud harness");
       assert.notInclude(sent.message, "<t3_code_orchestration_instructions>");
       assert.isFalse(Object.hasOwn(sent.options as object, "mcpServers"));

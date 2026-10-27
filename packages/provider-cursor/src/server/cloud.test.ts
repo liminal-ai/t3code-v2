@@ -106,6 +106,23 @@ describe("resolveCursorCloudCheckout", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("names a GitHub origin in any case or form by its lower-case HTTPS URL", () =>
+    Effect.gen(function* () {
+      const { cwd } = yield* makeCheckout;
+      const urls: Array<string | undefined> = [];
+      for (const remote of [
+        "git@github.com:Liminal-AI/T3Code-v2.git",
+        "ssh://git@github.com/Liminal-AI/T3Code-v2",
+        "https://github.com/Liminal-AI/T3Code-v2.git/",
+      ]) {
+        git(cwd, "remote", "set-url", "origin", remote);
+        urls.push((yield* resolveCursorCloudCheckout(cwd)).repository?.url);
+      }
+
+      assert.deepStrictEqual(urls, Array(3).fill("https://github.com/liminal-ai/t3code-v2"));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("gives an empty VM to a thread outside a repository", () =>
     Effect.gen(function* () {
       const checkout = yield* resolveCursorCloudCheckout(null);
@@ -143,7 +160,7 @@ describe("cursorCloudEnvironmentNote", () => {
 });
 
 describe("cursorCloudPrompt", () => {
-  it("keeps attachment notes within the input limit when the text fills it", () => {
+  it("lists every attachment when the text fills the input limit, inlining none", () => {
     const text = "x".repeat(PROVIDER_SEND_TURN_MAX_INPUT_CHARS - 100);
     const attachments = Array.from({ length: 100 }, (_, index) => ({
       attachment: {
@@ -158,8 +175,11 @@ describe("cursorCloudPrompt", () => {
 
     const prompt = cursorCloudPrompt({ note: undefined, text, attachments });
 
-    assert.isAtMost(prompt.length, PROVIDER_SEND_TURN_MAX_INPUT_CHARS);
     assert.isTrue(prompt.startsWith(text));
+    for (let index = 0; index < 100; index++) {
+      assert.include(prompt, `[Attached file "file-${index}.txt" was not sent`);
+    }
+    assert.notInclude(prompt, "y".repeat(1_000));
   });
 });
 

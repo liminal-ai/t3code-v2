@@ -186,10 +186,11 @@ it.layer(layerTest)("CursorDriver", (it) => {
           prefix: "cursor-driver-workspace-",
         });
         for (const [root, name] of [
-          [workspace, "repo-skill"],
-          [home, "home-skill"],
+          [path.join(workspace, ".cursor", "skills"), "repo-skill"],
+          [path.join(home, ".cursor", "skills"), "home-skill"],
+          [path.join(home, ".cursor", "skills-cursor"), "builtin-skill"],
         ] as const) {
-          const directory = path.join(root, ".cursor", "skills", name);
+          const directory = path.join(root, name);
           yield* fileSystem.makeDirectory(directory, { recursive: true });
           yield* fileSystem.writeFileString(path.join(directory, "SKILL.md"), "---\n---\n");
         }
@@ -207,7 +208,7 @@ it.layer(layerTest)("CursorDriver", (it) => {
         const snapshot = yield* instance.snapshotForCwd!(workspace);
 
         expect(snapshot.skills?.map((skill) => skill.name)).toEqual(
-          runtime === "cloud" ? ["repo-skill"] : ["home-skill", "repo-skill"],
+          runtime === "cloud" ? ["repo-skill"] : ["builtin-skill", "home-skill", "repo-skill"],
         );
       }).pipe(Effect.scoped),
   );
