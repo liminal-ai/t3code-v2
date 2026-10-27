@@ -10,7 +10,7 @@ Workflows are off by default. Set `"threadWorkflowsEnabled": true` in the server
 
 ## Start a workflow
 
-Open the **Workflow** tab and pick a template: **Single task**, **Orchestrate**, or **Open-ended**. You can also ask the agent to start one. An agent writes the whole plan in one call, as 4 to 7 stages at one level, and a workflow holds at most 8 stages that are not skipped or removed. Detail and side quests go in comments on the current stage, not in new stages.
+Open the **Workflow** tab and pick a template: **Single task**, **Orchestrate**, or **Open-ended**. You can also ask the agent to start one. An agent writes the whole plan in one call, as 4 to 7 stages at one level, and a workflow holds at most 8 open stages. A stage that is done, skipped or removed has left the count, so a long thread can keep adding the next stage as it finishes the last. Detail and side quests go in comments on the current stage, not in new stages.
 
 ## Read the pane
 

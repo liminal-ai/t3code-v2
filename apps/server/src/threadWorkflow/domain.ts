@@ -197,11 +197,11 @@ export const progress = (instance: Pick<ThreadWorkflowInstanceSummary, "steps">)
   };
 };
 
-/** Steps that count against the cap: open or done. A skipped or removed step has left the plan. */
-export const plannedStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
-  steps.filter((step) => step.state._tag === "open" || step.state._tag === "done").length;
+/** Steps that count against the cap: the open ones. A finished, skipped or removed step has left the plan ahead. */
+export const openStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
+  steps.filter((step) => step.state._tag === "open").length;
 
-const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
+const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} open steps. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
 
 const who = (stamp: ThreadWorkflowStamp) =>
   `${stamp.by._tag === "user" ? "the user" : "the agent"} at ${stamp.at}`;
@@ -541,13 +541,13 @@ const decideInsert = (
     }
   }
   const { instance, nextStepNumber } = entry;
-  if (plannedStepCount(instance.steps) >= THREAD_WORKFLOW_LIMITS.steps) {
+  if (openStepCount(instance.steps) >= THREAD_WORKFLOW_LIMITS.steps) {
     const target = instance.currentStepId ?? instance.id;
     return fail(
       "too_many_steps",
       actor._tag === "user"
-        ? `This workflow already has ${THREAD_WORKFLOW_LIMITS.steps} stages. Combine two, or skip or remove one, before adding another.`
-        : `Workflow ${instance.id} already holds ${THREAD_WORKFLOW_LIMITS.steps} steps that are not skipped or removed. ${STEP_CAP_ADVICE} ${printedCall.comment(target)}`,
+        ? `This workflow already has ${THREAD_WORKFLOW_LIMITS.steps} open stages. Finish, combine, skip or remove one before adding another.`
+        : `Workflow ${instance.id} already holds ${THREAD_WORKFLOW_LIMITS.steps} open steps. ${STEP_CAP_ADVICE} ${printedCall.comment(target)}`,
     );
   }
   return changed(actor, {

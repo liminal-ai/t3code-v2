@@ -106,7 +106,7 @@ describe("turnNote", () => {
     expect(text).not.toContain("thread_workflow_tick");
   });
 
-  it("asks for a comment, not another step, when a finished plan is at the step cap", () => {
+  it("offers the next step when every step of a full plan is done, because done steps leave the cap", () => {
     const extra = {
       title: "Extra",
       instructions: "Do more.",
@@ -122,8 +122,9 @@ describe("turnNote", () => {
       (step) => [agent, { _tag: "tick", stepId: step.id, comment: "done" }] as const,
     );
     const text = note(given(started, ...inserts, ...ticks).state);
-    expect(text).toContain('thread_workflow_change {"action":"comment","target":"w1"');
-    expect(text).not.toContain('"action":"insert"');
+    expect(text).toContain('"action":"insert"');
+    expect(text).toContain('"afterStepId":"w1.8"');
+    expect(text).not.toContain('"action":"comment"');
   });
 
   it("tells the agent a corrupt log needs the user", () => {

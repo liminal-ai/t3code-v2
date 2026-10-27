@@ -329,8 +329,19 @@ const rows: ReadonlyArray<Row> = [
     actor: user,
     request: insert(),
     expect: "too_many_steps",
-    mentions: ["This workflow already has 8 stages. Combine two, or skip or remove one"],
+    mentions: ["This workflow already has 8 open stages. Finish, combine, skip or remove one"],
     omits: ["thread_workflow"],
+  },
+  {
+    name: "insert a ninth step once a step is done, because done steps leave the cap",
+    setup: [
+      ...userStarted,
+      ...Array.from({ length: 5 }, () => [agent, insert()] as const),
+      [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }],
+    ],
+    actor: agent,
+    request: insert(),
+    expect: "changed",
   },
   {
     name: "insert once a skipped step has left the plan",
