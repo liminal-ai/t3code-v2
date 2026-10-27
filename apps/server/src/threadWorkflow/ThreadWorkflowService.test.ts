@@ -31,6 +31,7 @@ import { ThreadHooks, type TurnNoteInput } from "../orchestration-v2/ThreadHooks
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadWorkflow from "./layer.ts";
 import { threadLogFileName } from "./store.ts";
+import { builtInTemplates } from "./templates/index.ts";
 import { given, started } from "./testkit.ts";
 import { ThreadWorkflowService } from "./ThreadWorkflowService.ts";
 
@@ -534,11 +535,10 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
         yield* Effect.gen(function* () {
           const service = yield* ThreadWorkflowService;
           const templates = yield* service.templates;
-          assert.deepStrictEqual(templates.map((template) => template.id).toSorted(), [
-            "open-ended",
-            "orchestrate",
-            "single-task",
-          ]);
+          assert.deepStrictEqual(
+            templates.map((template) => template.id),
+            [...builtInTemplates.keys()],
+          );
           assert.isTrue(templates.every((template) => template.stepCount > 0));
         }).pipe(Effect.provide(harness.layer));
       }),
@@ -641,14 +641,16 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
           yield* TestClock.adjust("5 seconds");
           assert.deepStrictEqual(
             (yield* Fiber.join(listing)).map((template) => template.freshness).toSorted(),
-            ["no-source", "source-missing", "source-missing"],
+            [...builtInTemplates.values()]
+              .map((template) => (template.source === null ? "no-source" : "source-missing"))
+              .toSorted(),
           );
           const refused = yield* Fiber.join(starting);
           assert.strictEqual(refused.code, "store_unavailable");
           assert.match(refused.message, /workflow templates did not answer/);
 
           yield* Deferred.succeed(gate, undefined);
-          assert.lengthOf(yield* service.templates, 3);
+          assert.lengthOf(yield* service.templates, builtInTemplates.size);
           assert.isNull((yield* service.view(ThreadId.make("thread-2"))).activeInstanceId);
         }).pipe(Effect.provide(harness.layer));
       }),

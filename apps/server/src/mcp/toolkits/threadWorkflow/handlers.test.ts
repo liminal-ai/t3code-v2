@@ -159,7 +159,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       assert.isNull(empty.activeInstanceId);
       assert.includeMembers(
         (empty.templates ?? []).map((template) => template.id),
-        ["open-ended", "single-task"],
+        ["open-ended", "feature"],
       );
 
       const started = yield* call("thread_workflow_start", {

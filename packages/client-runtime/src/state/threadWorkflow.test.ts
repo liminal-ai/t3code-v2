@@ -65,7 +65,7 @@ const instance = (
     id: ThreadWorkflowInstanceId.make(id),
     title: `Workflow ${id}`,
     template: {
-      id: ThreadWorkflowTemplateId.make("single-task"),
+      id: ThreadWorkflowTemplateId.make("feature"),
       version: 1,
       source: null,
       staleAtStart: false,

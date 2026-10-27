@@ -10,12 +10,54 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { authoringASkill } from "./authoringASkill.ts";
+import { autonomousRun } from "./autonomousRun.ts";
+import { autopilotFull } from "./autopilotFull.ts";
+import { babysit } from "./babysit.ts";
+import { bugFix } from "./bugFix.ts";
+import { evalRun } from "./evalRun.ts";
+import { feature } from "./feature.ts";
+import { forkSync } from "./forkSync.ts";
+import { hillclimb } from "./hillclimb.ts";
+import { investigation } from "./investigation.ts";
+import { multiPhasePlan } from "./multiPhasePlan.ts";
 import { openEnded } from "./openEnded.ts";
 import { orchestrate } from "./orchestrate.ts";
-import { singleTask } from "./singleTask.ts";
+import { perfIssue } from "./perfIssue.ts";
+import { prototype } from "./prototype.ts";
+import { refactoring } from "./refactoring.ts";
+import { retroRound } from "./retroRound.ts";
+import { sessionPickup } from "./sessionPickup.ts";
+import { shipping } from "./shipping.ts";
+import { visualParity } from "./visualParity.ts";
+import { worktreeCleanup } from "./worktreeCleanup.ts";
 
 export const builtInTemplates: ReadonlyMap<ThreadWorkflowTemplateId, ThreadWorkflowTemplate> =
-  new Map([singleTask, orchestrate, openEnded].map((template) => [template.id, template]));
+  new Map(
+    [
+      investigation,
+      bugFix,
+      perfIssue,
+      hillclimb,
+      feature,
+      refactoring,
+      prototype,
+      authoringASkill,
+      evalRun,
+      babysit,
+      shipping,
+      autonomousRun,
+      orchestrate,
+      autopilotFull,
+      sessionPickup,
+      multiPhasePlan,
+      worktreeCleanup,
+      visualParity,
+      forkSync,
+      retroRound,
+      openEnded,
+    ].map((template) => [template.id, template]),
+  );
 
 /**
  * Compares the installed playbook with the hash the template was derived from. A stale template

@@ -51,7 +51,7 @@ const instance = (steps: ThreadWorkflowStepSummary[]) =>
     id: ThreadWorkflowInstanceId.make("w1"),
     title: "Ship the variant",
     template: {
-      id: ThreadWorkflowTemplateId.make("single-task"),
+      id: ThreadWorkflowTemplateId.make("feature"),
       version: 1,
       source: null,
       staleAtStart: false,

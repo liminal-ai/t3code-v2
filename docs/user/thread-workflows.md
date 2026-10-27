@@ -10,7 +10,18 @@ Workflows are off by default. Set `"threadWorkflowsEnabled": true` in the server
 
 ## Start a workflow
 
-Open the **Workflow** tab and pick a template: **Single task**, **Orchestrate**, or **Open-ended**. You can also ask the agent to start one. An agent writes the whole plan in one call, as 4 to 7 stages at one level, and a workflow holds at most 8 open stages. A stage that is done, skipped or removed has left the count, so a long thread can keep adding the next stage as it finishes the last. Detail and side quests go in comments on the current stage, not in new stages.
+Open the **Workflow** tab and pick a template, or ask the agent to start one. The templates are the pstack playbooks, plus fork sync and the retro round:
+
+- **Build and fix:** Feature, Bug fix, Refactoring, Perf issue, Hillclimb, Visual parity and Prototype.
+- **Deliver:** Babysit drives a PR to merge-ready, and Shipping verifies a stack and lands it.
+- **Run larger work:** Autonomous run, Orchestrate, Autopilot-full and Multi-phase plan.
+- **Read and resume:** Investigation and Session pickup.
+- **Look after the tools:** Authoring a skill, Eval, Worktree cleanup, Fork sync (from `FORK.md`) and Retro round.
+- **Open-ended** is for work no playbook fits.
+
+A playbook template already holds its playbook's steps. Each opens by finding the project's verify skill and making the run folder, and closes with grouped tickets, a reflect, and cleanup. When a playbook changed after its template was built, the template shows **playbook changed**, and when the playbook is not installed on the server's machine, **playbook missing**. Either way it still starts.
+
+For open-ended work, the agent writes the whole plan in one call, as 4 to 7 stages at one level. A workflow holds at most 8 open stages. A stage that is done, skipped or removed has left the count, so a long thread can keep adding the next stage as it finishes the last. Detail and side quests go in comments on the current stage, not in new stages.
 
 ## Read the pane
 
