@@ -16,6 +16,7 @@ export const openEnded = Schema.decodeSync(ThreadWorkflowTemplate)({
   steps: [
     {
       title: "Confirm done with the user",
+      slug: "confirm-done",
       instructions:
         'Ask the user once whether the goal is met, and tick with their answer. If this is the only step, the plan is missing: add 4 to 7 stages above it, each an outcome at the same level as the others and titled for the user, the first with thread_workflow_change {"action":"insert","afterStepId":null,...} and each next one after the one before.',
       proofLevel: "required",

@@ -2,7 +2,8 @@
  * The thread workflow policy, pure. `decide` validates one request against the folded state and
  * returns the single change to record, `unchanged`, or a `ThreadWorkflowError` whose message
  * prints the corrective call. `evolve` applies one stored record; it is total and decides nothing,
- * because every derived value (assigned ids, copied steps) is already in the event.
+ * because every derived value (assigned ids, copied steps, slugs) is already in the event, except
+ * that a step stored before steps had slugs folds with a derived one.
  *
  * Downgrade policy: a log line with an unknown `v` or event kind marks its thread corrupt
  * (read-only) instead of being skipped, so a rollback to an older build never
@@ -32,7 +33,9 @@ import {
   type ThreadWorkflowSeq,
   type ThreadWorkflowStamp,
   type ThreadWorkflowStep,
+  type ThreadWorkflowStepDefinition,
   type ThreadWorkflowStepId,
+  type ThreadWorkflowStepSeed,
   type ThreadWorkflowStepSummary,
   type ThreadWorkflowSubscriptionView,
   type ThreadWorkflowTarget,
@@ -202,6 +205,42 @@ const openStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "sta
   steps.filter((step) => step.state._tag === "open").length;
 
 const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} open steps. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
+
+export const slugFor = (title: string): string => {
+  const words = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (words === "") return "step";
+  if (words.length <= THREAD_WORKFLOW_LIMITS.slug) return words;
+  const atHyphen = words.slice(0, THREAD_WORKFLOW_LIMITS.slug + 1).lastIndexOf("-");
+  return atHyphen > 0 ? words.slice(0, atHyphen) : words.slice(0, THREAD_WORKFLOW_LIMITS.slug);
+};
+
+const uniqueSlug = (wanted: string, taken: ReadonlySet<string>): string => {
+  if (!taken.has(wanted)) return wanted;
+  for (let n = 2; ; n += 1) {
+    const suffix = `-${n}`;
+    const base = wanted.slice(0, THREAD_WORKFLOW_LIMITS.slug - suffix.length).replace(/-+$/, "");
+    const candidate = `${base}${suffix}`;
+    if (!taken.has(candidate)) return candidate;
+  }
+};
+
+const withSlugs = <Seed extends ThreadWorkflowStepSeed>(
+  seeds: ReadonlyArray<Seed>,
+  taken: ReadonlySet<string> = new Set(),
+): Array<Seed & { readonly slug: string }> => {
+  const used = new Set(taken);
+  return seeds.map((seed) => {
+    const slug = uniqueSlug(seed.slug ?? slugFor(seed.title), used);
+    used.add(slug);
+    return { ...seed, slug };
+  });
+};
+
+const slugsOf = (steps: ReadonlyArray<Pick<ThreadWorkflowStepDefinition, "slug">>) =>
+  new Set(steps.flatMap((step) => (step.slug === undefined ? [] : [step.slug])));
 
 const who = (stamp: ThreadWorkflowStamp) =>
   `${stamp.by._tag === "user" ? "the user" : "the agent"} at ${stamp.at}`;
@@ -400,7 +439,7 @@ const decideStart = (
       source: template.source,
       staleAtStart: freshness === "stale",
     },
-    steps: [...plan, ...template.steps].map((seed, index) => ({
+    steps: withSlugs([...plan, ...template.steps]).map((seed, index) => ({
       id: `${instanceId}.${index + 1}` as ThreadWorkflowStepId,
       ...seed,
     })),
@@ -553,7 +592,10 @@ const decideInsert = (
   return changed(actor, {
     _tag: "inserted",
     instanceId: instance.id,
-    step: { id: `${instance.id}.${nextStepNumber}` as ThreadWorkflowStepId, ...request.step },
+    step: {
+      id: `${instance.id}.${nextStepNumber}` as ThreadWorkflowStepId,
+      ...withSlugs([request.step], slugsOf(instance.steps))[0]!,
+    },
     afterStepId: anchor === undefined ? (instance.steps.at(-1)?.id ?? null) : anchor,
     reason: request.reason,
   });
@@ -810,7 +852,7 @@ export const evolve = (
       currentStepId: event.steps[0]?.id ?? null,
       started: stamp,
       lastChangeAt: record.at,
-      steps: event.steps.map((step) => ({
+      steps: withSlugs(event.steps).map((step) => ({
         ...step,
         origin: { _tag: "template" },
         state: { _tag: "open" },
@@ -1020,7 +1062,7 @@ const applyToInstance = (
       return onStep(event.stepId, { state: { _tag: "removed", stamp, reason: event.reason } });
     case "inserted": {
       const step: ThreadWorkflowStep = {
-        ...event.step,
+        ...withSlugs([event.step], slugsOf(instance.steps))[0]!,
         origin: { _tag: "inserted", stamp, reason: event.reason },
         state: { _tag: "open" },
         history: [],

@@ -5,10 +5,11 @@ import * as Schema from "effect/Schema";
 import { markCorrupt, toSubscriptionView, toView } from "./domain.ts";
 import { builtInTemplates } from "./templates/index.ts";
 import { agent, apply, given, started, user } from "./testkit.ts";
-import { turnNote } from "./turnNote.ts";
+import { noWorkflowNote, turnNote, WAITS_FOR_USER, type TurnNoteForm } from "./turnNote.ts";
 
 const decodeTemplate = Schema.decodeSync(ThreadWorkflowTemplate);
-const note = (state: Parameters<typeof toView>[0]) => turnNote(toSubscriptionView(state));
+const note = (state: Parameters<typeof toView>[0], form: TurnNoteForm = "full") =>
+  turnNote(toSubscriptionView(state), form);
 
 /** Every printed call in a note, parsed the way an agent would copy it. */
 const printedCalls = (text: string) =>
@@ -47,9 +48,21 @@ const probeState = (proofHint: string) =>
     ],
   ).state;
 
+const DROPPED = [
+  "cannot settle, archive or be deleted",
+  "Whole workflow",
+  "thread_workflow_get {}",
+  '"action":"skip"',
+  "When it is done",
+  "If it should not be done",
+  "template checklist",
+  "question tool",
+];
+
 describe("turnNote", () => {
   it("is empty when no workflow is open", () => {
     expect(note(given().state)).toBe("");
+    expect(note(given().state, "short")).toBe("");
     expect(
       note(
         given(started, [
@@ -60,39 +73,61 @@ describe("turnNote", () => {
     ).toBe("");
   });
 
-  it("prints the current step with the exact tick and skip calls", () => {
-    const text = note(given(started).state);
-    expect(text.startsWith("<thread-workflow>\n")).toBe(true);
-    expect(text.endsWith("\n</thread-workflow>")).toBe(true);
-    expect(text).toContain('Workflow "Checklist" (w1, template checklist), step 1 of 3: Write it');
-    expect(text).toContain("Write the code.");
-    expect(text).toContain("Proof wanted (required): the commit SHA.");
-    expect(text).toContain(
-      'thread_workflow_tick {"stepId":"w1.1","comment":"<what you did and how you know it worked>","proof":"<the commit SHA>"}',
+  it("prints the whole step in the full form, with the slug and the Done call", () => {
+    expect(note(given(started).state)).toBe(
+      [
+        "<thread-workflow>",
+        'Workflow "Checklist" (w1), step 1 of 3: write-it (w1.1)',
+        "Write it",
+        "Write the code.",
+        "Proof wanted (required): the commit SHA.",
+        'Done: thread_workflow_tick {"stepId":"w1.1","comment":"<what you did and how you know it worked>","proof":"<the commit SHA>"}',
+        "</thread-workflow>",
+      ].join("\n"),
     );
-    expect(text).toContain(
-      'thread_workflow_change {"action":"skip","stepId":"w1.1","reason":"<why>"}',
-    );
-    expect(text).toContain("thread_workflow_get {}");
-    expect(text).toContain("cannot settle, archive or be deleted while the workflow is open");
-    expect(text).not.toContain("waits for the user");
   });
 
-  it("adds the wait-for-user line and drops the proof key for a step without proof", () => {
+  it("names the step in one line in the short form", () => {
+    const text = note(given(started).state, "short");
+    expect(text).toBe(
+      "<thread-workflow>\nWorkflow w1, step 1 of 3: write-it (w1.1)\n</thread-workflow>",
+    );
+    expect(text.length).toBeLessThan(200);
+  });
+
+  it("drops the lifecycle rule, the get and skip calls and the labels from every form", () => {
+    const state = given(started).state;
+    for (const text of [note(state), note(state, "short")]) {
+      for (const dropped of DROPPED) expect(text).not.toContain(dropped);
+    }
+  });
+
+  it("puts the user's-decision line before Done on a step that waits, and drops the proof key", () => {
     const text = note(
       given(started, [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }]).state,
     );
-    expect(text).toContain("step 2 of 3: Ask the user");
-    expect(text).toContain(
-      "This step waits for the user. Ask once with your question tool, then tick it with their answer in the comment.",
+    const lines = text.split("\n");
+    expect(lines[1]).toBe('Workflow "Checklist" (w1), step 2 of 3: ask-the-user (w1.2)');
+    expect(lines.indexOf(WAITS_FOR_USER)).toBe(lines.length - 3);
+    expect(lines.at(-2)).toBe(
+      'Done: thread_workflow_tick {"stepId":"w1.2","comment":"<what you did and how you know it worked>"}',
     );
-    expect(text).toContain(
-      'thread_workflow_tick {"stepId":"w1.2","comment":"<what you did and how you know it worked>"}',
-    );
+    expect(WAITS_FOR_USER).not.toContain("question tool");
     expect(text).not.toContain("Proof wanted");
+    expect(note(given(started).state)).not.toContain(WAITS_FOR_USER);
   });
 
-  it("prints the close call when no step is open", () => {
+  it("tells a thread under /poteto-mode with no workflow to start one", () => {
+    expect(noWorkflowNote()).toBe(
+      [
+        "<thread-workflow>",
+        'No workflow is open on this thread. Before task work, pick the playbook and start its workflow: thread_workflow_start {"templateId":"<template>"}. Templates: thread_workflow_get {}. Discussion and status replies need none.',
+        "</thread-workflow>",
+      ].join("\n"),
+    );
+  });
+
+  it("prints the close call when no step is open, in either form", () => {
     const { state } = given(
       started,
       [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }],
@@ -100,10 +135,13 @@ describe("turnNote", () => {
       [agent, { _tag: "skip", stepId: "w1.3", reason: "shipped elsewhere" }],
     );
     const text = note(state);
+    expect(note(state, "short")).toBe(text);
+    expect(text).toContain('Workflow "Checklist" (w1): every step is done, skipped or removed.');
     expect(text).toContain(
       'thread_workflow_close {"instanceId":"w1","outcome":"finished","reason":"<why it is done>"}',
     );
     expect(text).not.toContain("thread_workflow_tick");
+    for (const dropped of DROPPED) expect(text).not.toContain(dropped);
   });
 
   it("offers the next step when every step of a full plan is done, because done steps leave the cap", () => {
@@ -143,6 +181,7 @@ describe("turnNote", () => {
       steps: [
         {
           title: "S".repeat(THREAD_WORKFLOW_LIMITS.stepTitle),
+          slug: "s".repeat(THREAD_WORKFLOW_LIMITS.slug),
           instructions: "I".repeat(THREAD_WORKFLOW_LIMITS.instructions),
           proofLevel: "recommended",
           // Quotes double in the JSON of the printed tick call.
@@ -171,17 +210,18 @@ describe("turnNote", () => {
       })),
     };
     const view = { ...toView(state), activeInstanceId: "w999" as never };
-    const text = turnNote(view);
-    expect(text).toContain("waits for the user");
+    const text = turnNote(view, "full");
+    expect(text).toContain(WAITS_FOR_USER);
     expect(text.length).toBeLessThan(THREAD_WORKFLOW_LIMITS.turnNote);
+    expect(turnNote(view, "short").length).toBeLessThan(200);
   });
 
   it("cuts the instructions, never a printed call, when the escaped proof hint pushes it over the cap", () => {
     const hint = "\u0001".repeat(THREAD_WORKFLOW_LIMITS.proofHint);
     const text = note(probeState(hint));
     expect(text.length).toBeLessThanOrEqual(THREAD_WORKFLOW_LIMITS.turnNote);
-    expect(text).toContain("step 1 of 4: " + "S".repeat(THREAD_WORKFLOW_LIMITS.stepTitle));
-    expect(text).toContain("waits for the user");
+    expect(text).toContain("step 1 of 4: " + "s".repeat(THREAD_WORKFLOW_LIMITS.slug) + " (w1.4)");
+    expect(text).toContain(WAITS_FOR_USER);
     expect(text).toContain("I".repeat(150));
     expect(text).toContain("… (cut to fit; thread_workflow_get has the whole step)");
     expect(text).not.toContain("I".repeat(THREAD_WORKFLOW_LIMITS.instructions));
@@ -194,11 +234,6 @@ describe("turnNote", () => {
           proof: `<${hint}>`,
         },
       },
-      {
-        tool: "thread_workflow_change",
-        params: { action: "skip", stepId: "w1.4", reason: "<why>" },
-      },
-      { tool: "thread_workflow_get", params: {} },
     ]);
   });
 
@@ -209,7 +244,7 @@ describe("turnNote", () => {
     expect(text).not.toContain("cut to fit");
   });
 
-  it("stays under the cap for every step of every built-in template", () => {
+  it("stays under the caps for every step of every built-in template", () => {
     for (const template of builtInTemplates.values()) {
       let state = apply(
         given().state,
@@ -217,11 +252,13 @@ describe("turnNote", () => {
         { _tag: "start", templateId: template.id },
         { templates: new Map([[template.id, { template, freshness: "fresh" }]]) },
       ).state;
-      for (const step of template.steps.keys()) {
-        const text = note(state);
-        expect(text).toContain(`"stepId":"w1.${step + 1}"`);
-        expect(text.length).toBeLessThan(THREAD_WORKFLOW_LIMITS.turnNote);
-        state = apply(state, user, { _tag: "tick", stepId: `w1.${step + 1}` }).state;
+      for (const [index, step] of template.steps.entries()) {
+        const full = note(state);
+        expect(full).toContain(`: ${step.slug} (w1.${index + 1})`);
+        expect(full).toContain(`"stepId":"w1.${index + 1}"`);
+        expect(full.length).toBeLessThan(THREAD_WORKFLOW_LIMITS.turnNote);
+        expect(note(state, "short").length).toBeLessThan(200);
+        state = apply(state, user, { _tag: "tick", stepId: `w1.${index + 1}` }).state;
       }
     }
   });

@@ -60,11 +60,22 @@ const StepTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 const Instructions = TrimmedNonEmptyString.check(Schema.isMaxLength(640));
 const ProofHint = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 
+/**
+ * `ground-subsystem`, `open-pr`: the agent's handle for a step. Given with the step or derived
+ * from its title, unique within its instance.
+ */
+export const ThreadWorkflowSlug = Schema.String.check(
+  Schema.isPattern(/^[a-z0-9]+(-[a-z0-9]+)*$/),
+  Schema.isMaxLength(40),
+);
+export type ThreadWorkflowSlug = typeof ThreadWorkflowSlug.Type;
+
 export const THREAD_WORKFLOW_LIMITS = {
   instanceTitle: 120,
   stepTitle: 120,
   instructions: 640,
   proofHint: 120,
+  slug: 40,
   templateId: 48,
   turnNote: 2_000,
   /** Open steps. The pane is for a glance, so the work ahead is a few stages, not a task list; finished steps have left it. */
@@ -103,6 +114,8 @@ export type ThreadWorkflowActor = typeof ThreadWorkflowActor.Type;
 
 export const ThreadWorkflowStepSeed = Schema.Struct({
   title: StepTitle,
+  /** Derived from the title when omitted. */
+  slug: Schema.optionalKey(ThreadWorkflowSlug),
   instructions: Instructions,
   proofLevel: ThreadWorkflowProofLevel,
   /** What counts as proof, printed in the note: "PR URL", "test command and result". */
@@ -153,6 +166,7 @@ export const ThreadWorkflowTemplateSummary = Schema.Struct({
 });
 export type ThreadWorkflowTemplateSummary = typeof ThreadWorkflowTemplateSummary.Type;
 
+/** `slug` stays optional so records written before steps had slugs still decode. */
 export const ThreadWorkflowStepDefinition = Schema.Struct({
   id: ThreadWorkflowStepId,
   ...ThreadWorkflowStepSeed.fields,
@@ -366,6 +380,7 @@ export const ThreadWorkflowStepOrigin = Schema.Union([
 
 export const ThreadWorkflowStepSummary = Schema.Struct({
   ...ThreadWorkflowStepDefinition.fields,
+  slug: ThreadWorkflowSlug,
   origin: ThreadWorkflowStepOrigin,
   state: ThreadWorkflowStepState,
 });

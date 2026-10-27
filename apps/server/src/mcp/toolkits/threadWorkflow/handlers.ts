@@ -104,6 +104,7 @@ const changeRequest = (
         reason: needed(params.reason, "reason", action),
         step: Effect.all({
           title: needed(params.title, "title", action),
+          slug: Effect.succeed(params.slug),
           instructions: needed(params.instructions, "instructions", action),
           proofLevel: Effect.succeed(params.proofLevel ?? "none"),
           proofHint: Effect.succeed(params.proofHint),
@@ -117,6 +118,7 @@ const changeRequest = (
 const plannedSeed = (step: ThreadWorkflowStartStep) =>
   present({
     title: step.title,
+    slug: step.slug,
     instructions: step.instructions,
     proofLevel: step.proofLevel ?? "none",
     proofHint: step.proofHint,
@@ -180,7 +182,7 @@ const layerHandlers = Effect.gen(function* () {
       instance,
       instances: state.view.instances,
       templates: view.activeInstanceId === null ? yield* service.templates : [],
-      note: turnNote(state.view),
+      note: turnNote(state.view, "full"),
     };
   });
 

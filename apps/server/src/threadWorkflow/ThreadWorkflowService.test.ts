@@ -25,12 +25,26 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
-import { ThreadHooks } from "../orchestration-v2/ThreadHooks.ts";
+import { ThreadHooks, type TurnNoteInput } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as ThreadWorkflow from "./layer.ts";
 import { threadLogFileName } from "./store.ts";
 import { given, started } from "./testkit.ts";
 import { ThreadWorkflowService } from "./ThreadWorkflowService.ts";
+
+const noteInput = (compacting: boolean): TurnNoteInput => ({
+  threadId,
+  runId: "run-1" as never,
+  compacting,
+  context: {
+    providerThreadId: "provider-thread-1" as never,
+    nativeThreadId: null,
+    model: "codex/gpt-5.4",
+    compactions: 0,
+  },
+  completedRunIds: new Set(),
+  message: { role: "user", text: "Continue" },
+});
 
 const threadId = ThreadId.make("thread-service-test");
 const user: ThreadWorkflowActor = { _tag: "user", clientSessionId: "pane-1" };
@@ -205,16 +219,9 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
           assert.isFalse(state.enabled);
           assert.isTrue(state.visible);
           assert.isNotNull(yield* hooks.lifecycleBlocker({ threadId, action: "archive" }));
-          const note = yield* hooks.turnNote({
-            threadId,
-            runId: "run-1" as never,
-            compacting: false,
-          });
+          const note = yield* hooks.turnNote(noteInput(false));
           assert.match(note, /^<thread-workflow>/);
-          assert.strictEqual(
-            yield* hooks.turnNote({ threadId, runId: "run-1" as never, compacting: true }),
-            "",
-          );
+          assert.strictEqual(yield* hooks.turnNote(noteInput(true)), "");
 
           const ticked = yield* service.apply(agent, threadId, {
             _tag: "tick",
@@ -249,10 +256,7 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
           for (const action of ["settle", "archive", "delete"] as const) {
             assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action }));
           }
-          assert.match(
-            yield* hooks.turnNote({ threadId, runId: "run-1" as never, compacting: false }),
-            /cannot be trusted/,
-          );
+          assert.match(yield* hooks.turnNote(noteInput(false)), /cannot be trusted/);
           const pane = yield* service.state(threadId);
           assert.isTrue(pane.visible);
           assert.strictEqual(pane.view.corruption, "line 1 of its log is not JSON");
@@ -595,10 +599,7 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
           const service = yield* ThreadWorkflowService;
           const hooks = yield* ThreadHooks;
           assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action: "settle" }));
-          assert.strictEqual(
-            yield* hooks.turnNote({ threadId, runId: "run-1" as never, compacting: false }),
-            "",
-          );
+          assert.strictEqual(yield* hooks.turnNote(noteInput(false)), "");
           for (const refused of [
             yield* service.apply(user, threadId, start).pipe(Effect.flip),
             yield* service.view(threadId).pipe(Effect.flip),

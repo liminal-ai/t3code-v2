@@ -1,4 +1,9 @@
-import type { RunId, ThreadId } from "@t3tools/contracts";
+import type {
+  OrchestrationV2ConversationMessage,
+  ProviderThreadId,
+  RunId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -22,13 +27,29 @@ import * as Option from "effect/Option";
  * or wedge a lifecycle command. `failOpen` is that promise as a combinator, and
  * core applies it at each call site over whatever containment the module brings.
  */
+/** Core's side of the turn note: what anchors the agent's context, and what it has already read. */
+export interface TurnNoteInput {
+  readonly threadId: ThreadId;
+  readonly runId: RunId;
+  readonly compacting: boolean;
+  /** A change in any field means the agent may have lost what an earlier note carried. */
+  readonly context: {
+    readonly providerThreadId: ProviderThreadId;
+    readonly nativeThreadId: string | null;
+    /** The run's model selection as one string. */
+    readonly model: string;
+    /** Compaction turn items across the thread so far, plus typed /compact messages. */
+    readonly compactions: number;
+  };
+  /** Runs whose provider turn completed, so a note they carried was read. */
+  readonly completedRunIds: ReadonlySet<RunId>;
+  /** The run's own user message. */
+  readonly message: Pick<OrchestrationV2ConversationMessage, "role" | "text" | "context">;
+}
+
 export class ThreadHooks extends Context.Reference<{
   /** Prepended to the first provider turn of a root run, or "". */
-  readonly turnNote: (input: {
-    readonly threadId: ThreadId;
-    readonly runId: RunId;
-    readonly compacting: boolean;
-  }) => Effect.Effect<string>;
+  readonly turnNote: (input: TurnNoteInput) => Effect.Effect<string>;
   /**
    * Why the thread may not take this action, worded to follow "Thread <id> ",
    * or null. An implementation that cannot tell returns null: a module fault

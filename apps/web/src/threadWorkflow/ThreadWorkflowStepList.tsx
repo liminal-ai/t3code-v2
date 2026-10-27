@@ -84,6 +84,7 @@ function StepDetails({
   const proof = PROOF_WORDS[step.proofLevel];
   return (
     <div className="flex flex-col gap-1.5 text-muted-foreground text-xs">
+      <p className="font-mono">{step.slug}</p>
       <p className="whitespace-pre-wrap">{step.instructions}</p>
       {proof ? (
         <p>

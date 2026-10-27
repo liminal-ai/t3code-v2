@@ -1033,18 +1033,19 @@ export const layer: Layer.Layer<
         projection.providerTurns,
         projection.attempts,
       );
+      const compactionMessageIds = new Set(
+        projection.messages
+          .filter(
+            (candidate) =>
+              candidate.attachments.length === 0 &&
+              candidate.text.trim().toLowerCase() === "/compact",
+          )
+          .map((candidate) => candidate.id),
+      );
       const restartCancelledWork = pendingRestartCancelledBackgroundWork({
         runs: projection.runs,
         providerTurns: projection.providerTurns,
-        compactionMessageIds: new Set(
-          projection.messages
-            .filter(
-              (candidate) =>
-                candidate.attachments.length === 0 &&
-                candidate.text.trim().toLowerCase() === "/compact",
-            )
-            .map((candidate) => candidate.id),
-        ),
+        compactionMessageIds,
         run,
         attempts: projection.attempts,
       });
@@ -1052,6 +1053,11 @@ export const layer: Layer.Layer<
         restartCancelledWork.length === 0
           ? ""
           : restartCancelledBackgroundWorkNote(restartCancelledWork);
+      const completedAttemptIds = new Set(
+        projection.providerTurns
+          .filter((turn) => turn.status === "completed")
+          .map((turn) => turn.runAttemptId),
+      );
       // The run is already committed as running and the outbox retry skips a running run, so a
       // defect or stall escaping the hook here would strand it. Core bounds the hook itself, over
       // whatever containment the module brings, including a throw before it returns its effect.
@@ -1060,8 +1066,19 @@ export const layer: Layer.Layer<
           threadHooks.turnNote({
             threadId: projection.thread.id,
             runId: run.id,
-            compacting:
-              message.attachments.length === 0 && message.text.trim().toLowerCase() === "/compact",
+            compacting: compactionMessageIds.has(message.id),
+            context: {
+              providerThreadId: providerThread.id,
+              nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
+              model: `${run.modelSelection.instanceId}/${run.modelSelection.model}`,
+              compactions: projection.compactionCount + compactionMessageIds.size,
+            },
+            completedRunIds: new Set(
+              projection.attempts
+                .filter((attempt) => completedAttemptIds.has(attempt.id))
+                .map((attempt) => attempt.runId),
+            ),
+            message,
           }),
         ),
         {

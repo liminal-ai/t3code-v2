@@ -11,9 +11,10 @@
  * four threads by default, shared with everything core does, and a filesystem call holds one until
  * the OS answers, so a stalled disk under the module must cost core at most one of them.
  */
-import { ThreadWorkflowError, ThreadWorkflowRecord, type ThreadId } from "@t3tools/contracts";
+import { ThreadId, ThreadWorkflowError, ThreadWorkflowRecord } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
@@ -57,6 +58,14 @@ export class ThreadWorkflowStore extends Context.Service<
      * deadline never lets a second worker thread stall behind the first.
      */
     readonly onDisk: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+    /** Threads marked as pstack threads, from memory. */
+    readonly pstackThreads: Effect.Effect<ReadonlySet<ThreadId>>;
+    /**
+     * Marks the thread as a pstack thread, durably, and returns at once when it already is. Takes
+     * no thread lock and never fails: a write that fails or times out warns and keeps the mark in
+     * memory until the server restarts.
+     */
+    readonly markPstackThread: (threadId: ThreadId) => Effect.Effect<void>;
   }
 >()("t3/threadWorkflow/store/ThreadWorkflowStore") {}
 
@@ -115,6 +124,10 @@ const decodeJson = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown
 const decodeRecord = Schema.decodeUnknownExit(ThreadWorkflowRecord);
 const encodeLine = Schema.encodeEffect(Schema.fromJsonString(ThreadWorkflowRecord));
 
+const PstackMark = Schema.Struct({ v: Schema.Literal(1), threadId: ThreadId, at: Schema.String });
+const decodeMark = Schema.decodeUnknownExit(Schema.fromJsonString(PstackMark));
+const encodeMark = Schema.encodeEffect(Schema.fromJsonString(PstackMark));
+
 /** Every instance number any line mentions, readable or not, so a recovery never reuses one. */
 const highestInstanceNumber = (text: string) => {
   let highest = 0;
@@ -162,6 +175,7 @@ const make = Effect.gen(function* () {
   const { stateDir } = yield* ServerConfig.ServerConfig;
   const rootDir = path.join(stateDir, "thread-workflows");
   const threadsDir = path.join(rootDir, "threads");
+  const pstackFile = path.join(rootDir, "pstack-threads.jsonl");
   const permit = yield* Semaphore.make(1);
   const onDisk = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     permit.withPermit(Effect.uninterruptible(effect));
@@ -214,19 +228,43 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  const loadPstackThreads = Effect.gen(function* () {
+    const marks = new Set<ThreadId>();
+    if (!(yield* fileSystem.exists(pstackFile))) return marks;
+    const lines = (yield* fileSystem.readFileString(pstackFile)).split("\n");
+    if (lines.at(-1) !== "") return yield* Effect.fail("its last line has no newline");
+    for (const [index, line] of lines.slice(0, -1).entries()) {
+      const mark = decodeMark(line);
+      if (Exit.isFailure(mark)) {
+        return yield* Effect.fail(`line ${index + 1} is not a mark this build understands`);
+      }
+      marks.add(mark.value.threadId);
+    }
+    return marks;
+  }).pipe(
+    Effect.catch((cause) =>
+      Effect.logWarning("thread workflow pstack marks unreadable; no thread is marked", {
+        file: pstackFile,
+        cause,
+      }).pipe(Effect.as(new Set<ThreadId>())),
+    ),
+  );
+
   const loadAll = Effect.gen(function* () {
-    if (!(yield* fileSystem.exists(threadsDir))) return new Map<ThreadId, ThreadWorkflowState>();
+    const pstackThreads = yield* loadPstackThreads;
     const states = new Map<ThreadId, ThreadWorkflowState>();
+    if (!(yield* fileSystem.exists(threadsDir))) return { states, pstackThreads };
     for (const fileName of yield* fileSystem.readDirectory(threadsDir)) {
       const threadId = threadIdOfLogFileName(fileName);
       if (threadId === null) continue;
       states.set(threadId, yield* loadThread(threadId, path.join(threadsDir, fileName)));
     }
-    return states;
+    return { states, pstackThreads };
   });
 
   interface Loaded {
     readonly states: ReadonlyMap<ThreadId, ThreadWorkflowState>;
+    readonly pstackThreads: ReadonlySet<ThreadId>;
     readonly unavailable: string | null;
   }
   const disabled = (why: Record<string, unknown>): Effect.Effect<Loaded> =>
@@ -236,6 +274,7 @@ const make = Effect.gen(function* () {
     }).pipe(
       Effect.as({
         states: new Map<ThreadId, ThreadWorkflowState>(),
+        pstackThreads: new Set<ThreadId>(),
         unavailable: `The thread workflow logs in ${threadsDir} could not be loaded when the server started, so thread workflows are unavailable until it restarts.`,
       }),
     );
@@ -245,8 +284,7 @@ const make = Effect.gen(function* () {
       Option.match({
         onNone: () => disabled({ timeout: LOAD_DEADLINE }),
         onSome: Exit.match({
-          onSuccess: (states): Effect.Effect<Loaded> =>
-            Effect.succeed({ states, unavailable: null }),
+          onSuccess: (all): Effect.Effect<Loaded> => Effect.succeed({ ...all, unavailable: null }),
           onFailure: (cause) =>
             Cause.hasInterrupts(cause) ? Effect.interrupt : disabled({ cause }),
         }),
@@ -255,6 +293,7 @@ const make = Effect.gen(function* () {
   );
 
   const states = yield* Ref.make<ReadonlyMap<ThreadId, ThreadWorkflowState>>(loaded.states);
+  const pstackThreads = yield* Ref.make(loaded.pstackThreads);
   const directoriesReady = yield* Ref.make(false);
 
   const ensureDirectories = Effect.gen(function* () {
@@ -356,12 +395,48 @@ const make = Effect.gen(function* () {
     );
   });
 
+  const writeMark = Effect.fn("threadWorkflow.store.writeMark")(function* (threadId: ThreadId) {
+    yield* ensureDirectories;
+    const at = DateTime.formatIso(yield* DateTime.now);
+    const line = yield* encodeMark({ v: 1, threadId, at }).pipe(Effect.orDie);
+    const created = !(yield* fileSystem.exists(pstackFile));
+    yield* writeDurably(pstackFile, new TextEncoder().encode(`${line}\n`), "a");
+    if (created) yield* syncDirectory(rootDir);
+  });
+
+  const markPstackThread = Effect.fn("threadWorkflow.store.markPstackThread")(function* (
+    threadId: ThreadId,
+  ) {
+    // Memory first, so the next turn's hook sees the mark while the write still waits its turn
+    // for the disk permit; a repeated call then returns at once instead of writing a second line.
+    const already = yield* Ref.modify(pstackThreads, (set) =>
+      set.has(threadId) ? [true, set] : [false, new Set(set).add(threadId)],
+    );
+    if (already) return;
+    const problem = yield* withinDeadline(onDisk(writeMark(threadId)), WRITE_DEADLINE).pipe(
+      Effect.map(
+        Option.match({
+          onNone: () => ({ timeout: WRITE_DEADLINE }),
+          onSome: Exit.match({ onSuccess: () => null, onFailure: (cause) => ({ cause }) }),
+        }),
+      ),
+    );
+    if (problem !== null) {
+      yield* Effect.logWarning("thread workflow pstack mark did not complete; it holds in memory", {
+        threadId,
+        ...problem,
+      });
+    }
+  });
+
   return ThreadWorkflowStore.of({
     unavailable: loaded.unavailable,
     state: (threadId) => Ref.get(states).pipe(Effect.map((map) => stateOf(map, threadId))),
     states: Ref.get(states).pipe(Effect.map((map) => [...map.values()])),
     append,
     onDisk,
+    pstackThreads: Ref.get(pstackThreads),
+    markPstackThread,
   });
 });
 

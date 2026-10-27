@@ -476,7 +476,11 @@ export interface ProjectionStoreV2Shape {
       | "contextHandoffs"
       | "contextTransfers"
       | "turnItems"
-    > & { readonly hasConversation: boolean },
+    > & {
+      readonly hasConversation: boolean;
+      /** Compaction turn items across every run of the thread; `turnItems` holds this run's only. */
+      readonly compactionCount: number;
+    },
     ProjectionStoreV2Error
   >;
   readonly getTurnStartHistory: (
@@ -4255,8 +4259,13 @@ export const layer: Layer.Layer<ProjectionStoreV2, never, SqlClient.SqlClient> =
                       OR json_array_length(payload_json, '$.attachments') > 0)
               ) AS present
             `;
+            const compactions = yield* sql<{ count: number }>`
+              SELECT COUNT(*) AS count FROM orchestration_v2_projection_turn_items
+              WHERE thread_id = ${threadId} AND type = 'compaction'
+            `;
             return {
               hasConversation: conversation[0]?.present === 1,
+              compactionCount: compactions[0]?.count ?? 0,
               thread,
               runs,
               attempts,
@@ -7185,6 +7194,8 @@ export const layerMemory: Layer.Layer<ProjectionStoreV2> = Layer.effect(
                 (message.text.trim().toLowerCase() !== "/compact" ||
                   message.attachments.length > 0),
             ),
+            compactionCount: projection.turnItems.filter((item) => item.type === "compaction")
+              .length,
             turnItems: projection.turnItems.filter((item) => item.runId === runId),
           })),
         ),

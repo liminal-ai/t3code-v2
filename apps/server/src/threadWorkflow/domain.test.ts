@@ -1,4 +1,5 @@
 import {
+  THREAD_WORKFLOW_LIMITS,
   ThreadWorkflowChangeRecord,
   ThreadWorkflowRecord,
   type ThreadWorkflowErrorCode,
@@ -14,13 +15,13 @@ import {
   fold,
   lifecycleBlocker,
   markCorrupt,
+  slugFor,
   toSubscriptionView,
   toView,
   type DecideContext,
   type ThreadWorkflowState,
 } from "./domain.ts";
 import { agent, apply, given, started, threadId, user } from "./testkit.ts";
-
 const decodeRecord = Schema.decodeUnknownSync(ThreadWorkflowRecord);
 
 type Actor = typeof user | typeof agent;
@@ -803,6 +804,98 @@ describe("evolve", () => {
     expect(instance).not.toHaveProperty("history");
     expect(instance?.steps[0]).not.toHaveProperty("history");
     expect(instance?.steps[0]?.state._tag).toBe("done");
+  });
+});
+
+describe("slugs", () => {
+  const slugsOf = (state: ThreadWorkflowState) =>
+    toView(state).instances[0]?.steps.map((step) => step.slug) ?? [];
+
+  it.each([
+    ["Open the PR!", "open-the-pr"],
+    ["  Design   the data shape  ", "design-the-data-shape"],
+    ["Rebase, commit & push (again)", "rebase-commit-push-again"],
+    [
+      "Verify on the matching surface before the reviewer sees it",
+      "verify-on-the-matching-surface-before",
+    ],
+    ["x".repeat(60), "x".repeat(40)],
+    ["!!! ???", "step"],
+    ["", "step"],
+  ])("derives %j as %j", (title, slug) => {
+    expect(slugFor(title)).toBe(slug);
+  });
+
+  it("puts a slug on every started step, in the event, unique within the instance", () => {
+    const { state, records } = given([agent, planned("Build", "Build", "build", "Write it")]);
+    expect(slugsOf(state)).toEqual([
+      "build",
+      "build-2",
+      "build-3",
+      "write-it",
+      "write-it-2",
+      "ask-the-user",
+      "ship-it",
+    ]);
+    const event = records[0]!.kind === "change" ? records[0]!.event : null;
+    expect(event?._tag === "started" && event.steps.map((step) => step.slug)).toEqual(
+      slugsOf(state),
+    );
+  });
+
+  it("keeps a given slug and still makes it unique", () => {
+    const { state } = given([
+      agent,
+      {
+        ...planned("Scope"),
+        steps: [
+          {
+            title: "Scope",
+            slug: "ship-it",
+            instructions: "x",
+            proofLevel: "none",
+            waitsForUser: false,
+          },
+        ],
+      },
+    ]);
+    expect(slugsOf(state)).toEqual(["ship-it", "write-it", "ask-the-user", "ship-it-2"]);
+  });
+
+  it("gives an inserted step a slug clear of the instance's, and keeps it within the limit", () => {
+    const long = "v".repeat(THREAD_WORKFLOW_LIMITS.slug);
+    const { state, records } = given(
+      started,
+      [agent, insert({ step: { ...insert().step, title: "Write it" } })],
+      [agent, insert({ step: { ...insert().step, title: long } })],
+      [agent, insert({ step: { ...insert().step, title: long } })],
+    );
+    expect(slugsOf(state)).toEqual([
+      "write-it",
+      "ask-the-user",
+      "ship-it",
+      "write-it-2",
+      long,
+      `${"v".repeat(38)}-2`,
+    ]);
+    const inserted = records.at(-1)!;
+    expect(
+      inserted.kind === "change" && inserted.event._tag === "inserted" && inserted.event.step.slug,
+    ).toBe(`${"v".repeat(38)}-2`);
+  });
+
+  it("folds a record written before steps had slugs with derived ones", () => {
+    const { records } = given(started, [agent, insert({ afterStepId: "w1.1" })]);
+    const legacy = records.map((record) =>
+      decodeRecord(
+        JSON.parse(
+          JSON.stringify(record, (key, value: unknown) => (key === "slug" ? undefined : value)),
+        ),
+      ),
+    );
+    const folded = fold(threadId, legacy);
+    expect(slugsOf(folded)).toEqual(["write-it", "extra", "ask-the-user", "ship-it"]);
+    expect(admits(emptyState(threadId), legacy[0]!)).toBeNull();
   });
 });
 
