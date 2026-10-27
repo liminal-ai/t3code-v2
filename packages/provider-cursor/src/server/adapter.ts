@@ -2296,10 +2296,11 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               cursorSkillNames === undefined
                 ? rawText
                 : rewriteCursorSkillMentions(rawText, cursorSkillNames),
-            // Paths on this machine mean nothing on a cloud VM, and cursorCloudPrompt notes each attachment.
-            attachments: cloud ? [] : turnInput.message.attachments,
+            attachments: turnInput.message.attachments,
             resolveAttachmentPath: host.resolveAttachmentPath,
             resolveExtractedTextPath: host.resolveExtractedTextPath,
+            // Paths on this machine mean nothing on a cloud VM, and cursorCloudPrompt notes each attachment.
+            attachmentNotes: !cloud,
           });
           const cloudAttachments = cloud
             ? yield* Effect.forEach(

@@ -166,10 +166,12 @@ export const providerMessageTextWithAttachmentPaths = Effect.fn(
   readonly resolveExtractedTextPath?:
     | ((path: string) => Effect.Effect<string | undefined>)
     | undefined;
+  /** False for a caller that notes each attachment itself, such as a Cursor Cloud turn. */
+  readonly attachmentNotes?: boolean;
 }) {
   let text = input.text;
   // The text-input budget must never hide the existence of an attachment.
-  for (const attachment of input.attachments) {
+  for (const attachment of input.attachmentNotes === false ? [] : input.attachments) {
     const path = input.resolveAttachmentPath(attachment);
     const extracted =
       path === null || !input.resolveExtractedTextPath
