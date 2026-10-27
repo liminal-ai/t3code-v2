@@ -46,7 +46,9 @@ const make = Effect.gen(function* () {
         attachments: [],
         dispatchMode: { type: "queue_after_active" },
         createdBy: "user",
-        creationSource: "server",
+        // The pane that answers is the web app, and only a web or mobile user send releases a
+        // queue held after Stop; a server-created message would leave the answer held.
+        creationSource: "web",
       });
     },
     (effect, answer) =>

@@ -1,7 +1,7 @@
 import { RunId } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { threadAttentionKey, workflowQuestionNumber } from "./ThreadNotificationCoordinator.logic";
+import { laterWorkflowQuestion, threadAttentionKey } from "./ThreadNotificationCoordinator.logic";
 
 const run = (id: string) => ({
   runId: RunId.make(id),
@@ -16,10 +16,12 @@ const quiet = { hasPendingUserInput: false, pendingSubagentRequest: null };
 
 describe("threadAttentionKey", () => {
   it("keys workflow-only input on the highest question seen, not on the run", () => {
-    const first = threadAttentionKey("input", { ...quiet, latestRun: run("run-1") }, 1);
-    expect(first).toBe("workflow:1");
-    expect(threadAttentionKey("input", { ...quiet, latestRun: run("run-2") }, 1)).toBe(first);
-    expect(threadAttentionKey("input", { ...quiet, latestRun: run("run-2") }, 2)).not.toBe(first);
+    const first = threadAttentionKey("input", { ...quiet, latestRun: run("run-1") }, "w1.q1");
+    expect(first).toBe("workflow:w1.q1");
+    expect(threadAttentionKey("input", { ...quiet, latestRun: run("run-2") }, "w1.q1")).toBe(first);
+    expect(threadAttentionKey("input", { ...quiet, latestRun: run("run-2") }, "w1.q2")).not.toBe(
+      first,
+    );
   });
 
   it("keeps the run in the key for a question-tool ask, and nothing for a quiet thread", () => {
@@ -28,23 +30,35 @@ describe("threadAttentionKey", () => {
       pendingSubagentRequest: null,
       latestRun: run("run-1"),
     };
-    expect(threadAttentionKey("input", ask, 0)).toBe("run-1:input:0");
-    expect(threadAttentionKey("input", { ...ask, latestRun: run("run-2") }, 0)).toBe(
-      "run-2:input:0",
+    expect(threadAttentionKey("input", ask, null)).toBe("run-1:input:");
+    expect(threadAttentionKey("input", { ...ask, latestRun: run("run-2") }, null)).toBe(
+      "run-2:input:",
     );
-    expect(threadAttentionKey("approval", { ...quiet, latestRun: run("run-1") }, 3)).toBe(
-      "run-1:approval:3",
+    expect(threadAttentionKey("approval", { ...quiet, latestRun: run("run-1") }, "w1.q3")).toBe(
+      "run-1:approval:w1.q3",
     );
-    expect(threadAttentionKey("working", { ...quiet, latestRun: run("run-1") }, 3)).toBeNull();
-    expect(threadAttentionKey("ready", { ...quiet, latestRun: null }, 0)).toBeNull();
+    expect(
+      threadAttentionKey("working", { ...quiet, latestRun: run("run-1") }, "w1.q3"),
+    ).toBeNull();
+    expect(threadAttentionKey("ready", { ...quiet, latestRun: null }, null)).toBeNull();
   });
 });
 
-describe("workflowQuestionNumber", () => {
-  it("reads the counter of a question id and 0 for none", () => {
-    expect(workflowQuestionNumber("w1.q1")).toBe(1);
-    expect(workflowQuestionNumber("w12.q30")).toBe(30);
-    expect(workflowQuestionNumber(null)).toBe(0);
-    expect(workflowQuestionNumber(undefined)).toBe(0);
+describe("laterWorkflowQuestion", () => {
+  it("orders by workflow first, so a new workflow's first question comes after the old one's last", () => {
+    expect(laterWorkflowQuestion("w1.q5", "w2.q1")).toBe("w2.q1");
+    expect(laterWorkflowQuestion("w2.q1", "w1.q5")).toBe("w2.q1");
+    expect(laterWorkflowQuestion("w1.q2", "w1.q10")).toBe("w1.q10");
+    expect(laterWorkflowQuestion("w12.q3", "w9.q30")).toBe("w12.q3");
+  });
+
+  it("keeps the high-water mark when a question is answered and an earlier one stays open", () => {
+    expect(laterWorkflowQuestion("w1.q2", "w1.q1")).toBe("w1.q2");
+  });
+
+  it("takes whichever side is a question id, and null for none", () => {
+    expect(laterWorkflowQuestion(null, "w1.q1")).toBe("w1.q1");
+    expect(laterWorkflowQuestion("w1.q1", undefined)).toBe("w1.q1");
+    expect(laterWorkflowQuestion(null, undefined)).toBeNull();
   });
 });

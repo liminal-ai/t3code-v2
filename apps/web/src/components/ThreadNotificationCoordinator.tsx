@@ -29,7 +29,7 @@ import {
   unlockNotificationAudio,
 } from "../threadNotifications";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
-import { threadAttentionKey, workflowQuestionNumber } from "./ThreadNotificationCoordinator.logic";
+import { laterWorkflowQuestion, threadAttentionKey } from "./ThreadNotificationCoordinator.logic";
 import { toastManager } from "./ui/toast";
 
 export function ThreadNotificationCoordinator() {
@@ -100,7 +100,7 @@ interface NotificationState {
   readonly raw: OrchestrationV2ThreadShell;
   readonly subagentRequest: PendingSubagentRequest | null;
   readonly workflowAttention: WorkflowAttention | null;
-  readonly workflowHighWater: number;
+  readonly workflowHighWater: string | null;
   readonly attention: string | null;
   readonly completion: number | null;
 }
@@ -156,9 +156,9 @@ function EnvironmentNotifications({
       const thread = presentThreadShell(environmentId, rawThread, subagentRequest, attentionEntry);
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
-      const workflowHighWater = Math.max(
-        prior?.workflowHighWater ?? 0,
-        workflowQuestionNumber(attentionEntry?.latestQuestionId),
+      const workflowHighWater = laterWorkflowQuestion(
+        prior?.workflowHighWater,
+        attentionEntry?.latestQuestionId,
       );
       const attention = threadAttentionKey(status, thread, workflowHighWater);
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");

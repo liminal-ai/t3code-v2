@@ -434,7 +434,7 @@ it.layer(NodeServices.layer)("ThreadWorkflowService", (it) => {
             'Answer to workflow question w1.q1, "Merge without a second review?":\nYes, merge it',
           );
           assert.strictEqual(command.createdBy, "user");
-          assert.strictEqual(command.creationSource, "server");
+          assert.strictEqual(command.creationSource, "web");
           assert.deepStrictEqual(command.dispatchMode, { type: "queue_after_active" });
           assert.strictEqual<string>(command.commandId, command.messageId);
           assert.strictEqual(
