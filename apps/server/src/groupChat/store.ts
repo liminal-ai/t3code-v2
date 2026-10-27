@@ -27,6 +27,7 @@ import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
@@ -741,10 +742,8 @@ const makeWrites = (
 ): Writes => {
   const now = Effect.map(DateTime.now, DateTime.formatIso);
   const stored = <A>(label: string, read: Effect.Effect<A | null, StoreError>) =>
-    Effect.flatMap(read, (value) =>
-      value === null
-        ? Effect.die(new Error(`${label} vanished inside its own transaction`))
-        : Effect.succeed(value),
+    Effect.filterOrElse(read, Predicate.isNotNull, () =>
+      Effect.die(new Error(`${label} vanished inside its own transaction`)),
     );
   return {
     createGroup: Effect.fn("groupChat.store.createGroup")(function* (title) {

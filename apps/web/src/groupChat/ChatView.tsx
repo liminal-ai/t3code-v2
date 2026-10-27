@@ -79,6 +79,7 @@ function useFollowEnd(listRef: React.RefObject<LegendListRef | null>) {
   const onScroll = useStableCallback(() => apply({ kind: "scroll" }));
   const leave = useStableCallback(() => update(false));
 
+  // oxlint-disable-next-line t3code/react-effect-budget -- the list's DOM node and the document are the only sources of the reader's gestures.
   useEffect(() => {
     const node = listRef.current?.getScrollableNode();
     if (!node) return;
@@ -195,6 +196,7 @@ export function ChatView({
   const listRef = useRef<LegendListRef>(null);
   const follow = useFollowEnd(listRef);
   const [flashId, setFlashId] = useState<GroupChatMessageId | null>(null);
+  const flashTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [dismissed, setDismissed] = useState(() => readDismissed(groupId));
   if (dismissed.groupId !== groupId) setDismissed(readDismissed(groupId));
   const panel = panelDiscussion(view, dismissed.id);
@@ -204,12 +206,6 @@ export function ChatView({
   const activeMembers = [...view.members.values()]
     .filter((m) => m.removedAt === null)
     .sort((a, b) => a.addedAt.localeCompare(b.addedAt));
-
-  useEffect(() => {
-    if (flashId === null) return;
-    const timer = setTimeout(() => setFlashId(null), FLASH_MS);
-    return () => clearTimeout(timer);
-  }, [flashId]);
 
   const jumpTo = useStableCallback(async (messageId: GroupChatMessageId) => {
     for (let pages = 0; pages < MAX_PAGES_PER_JUMP; pages++) {
@@ -222,6 +218,8 @@ export function ChatView({
         follow.leave();
         await listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.4 });
         setFlashId(messageId);
+        clearTimeout(flashTimer.current);
+        flashTimer.current = setTimeout(() => setFlashId(null), FLASH_MS);
         return;
       }
       if (!(await loadOlder(groupId))) return;

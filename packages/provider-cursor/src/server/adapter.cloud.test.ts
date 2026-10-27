@@ -315,6 +315,7 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       assert.include(sent.message, '[Attached file "brief.txt" follows inline.]\npasted brief');
       assert.include(sent.message, '[Attached file "tool.bin" was not sent');
       assert.notInclude(sent.message, host.paths.attachmentsDir);
+      assert.notInclude(sent.message, "is unavailable");
       assert.include(sent.message, "through the Cursor Cloud harness");
       assert.notInclude(sent.message, "<t3_code_orchestration_instructions>");
       assert.isFalse(Object.hasOwn(sent.options as object, "mcpServers"));
@@ -348,6 +349,44 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       );
       assert.equal(linked[0]?.authorization, "Bearer thread-credential");
     }).pipe(Effect.scoped, Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps a window capture's app, title and text on a cloud turn, without a local path",
+    () =>
+      Effect.gen(function* () {
+        const host = yield* ProviderHost.ProviderHost;
+        const fileSystem = yield* FileSystem.FileSystem;
+        const capture = {
+          type: "image" as const,
+          id: "window-capture",
+          name: "window.png",
+          mimeType: "image/png",
+          sizeBytes: 4,
+          source: {
+            kind: "snap-shot" as const,
+            capturedAt: "2026-10-27T00:00:00.000Z",
+            appName: "Demo editor",
+            windowTitle: "Review window",
+            accessibleText: "Unique window accessibility text",
+          },
+        };
+        yield* fileSystem.writeFileString(host.resolveAttachmentPath(capture)!, "png!");
+        const { startTurn, eventsUntilTerminal, fake } = yield* setup((runId) => ({
+          wait: Effect.succeed(finished(runId)),
+          cancel: Effect.void,
+        }));
+
+        yield* startTurn({ runId: "t3-run-capture", attachments: [capture] });
+        yield* eventsUntilTerminal;
+
+        const sent = fake.sent[0]!.message;
+        assert.include(sent, "Untrusted captured-window data");
+        assert.include(sent, "Review window");
+        assert.include(sent, "Unique window accessibility text");
+        assert.notInclude(sent, "is unavailable");
+        assert.notInclude(sent, host.paths.attachmentsDir);
+      }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
   it.effect("inlines text attachments only while the prompt fits the input limit", () =>

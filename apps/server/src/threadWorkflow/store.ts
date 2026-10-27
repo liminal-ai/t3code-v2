@@ -1,15 +1,8 @@
 /**
  * One JSONL log per thread under `<stateDir>/thread-workflows/threads/`, folded into memory at
- * layer build so readers never touch disk.
- *
- * Locking contract: the store takes no lock. Every call for one thread (read `state`, decide,
- * `append`, publish) must run inside `ThreadCommandExecutor.withLock(threadId)`, the lock every
- * orchestration dispatch for that thread holds. Two unserialized appends to one thread would both
- * claim the next seq. Server ownership guarantees one process writes the directory.
- *
- * Disk work, the load included, runs one operation at a time under `onDisk`. Node's worker pool is
- * four threads by default, shared with everything core does, and a filesystem call holds one until
- * the OS answers, so a stalled disk under the module must cost core at most one of them.
+ * layer build. The store takes no lock: every call for one thread must run inside
+ * `ThreadCommandExecutor.withLock(threadId)`, or two appends claim one seq. Disk work runs one
+ * operation at a time under `onDisk`, so a stalled disk holds at most one of Node's worker threads.
  */
 import { ThreadId, ThreadWorkflowError, ThreadWorkflowRecord } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -431,7 +424,9 @@ const make = Effect.gen(function* () {
 
   return ThreadWorkflowStore.of({
     unavailable: loaded.unavailable,
-    state: (threadId) => Ref.get(states).pipe(Effect.map((map) => stateOf(map, threadId))),
+    state: Effect.fn("ThreadWorkflowStore.state")((threadId: ThreadId) =>
+      Ref.get(states).pipe(Effect.map((map) => stateOf(map, threadId))),
+    ),
     states: Ref.get(states).pipe(Effect.map((map) => [...map.values()])),
     append,
     onDisk,

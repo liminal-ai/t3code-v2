@@ -36,7 +36,7 @@ export function stripLeadingHandle(text: string, handles: ReadonlyArray<string>)
   if (names.length === 0) return text;
   const bold = "(?:\\*\\*|__)?";
   const re = new RegExp(
-    `^\\s*${bold}@?(?:${names.join("|")})${bold}(?:\\s*[:：](?!//)|\\s+[—–-]\\s)\\s*${bold}\\s*`,
+    `^\\s*${bold}@?(?:${names.join("|")})${bold}(?:\\s*[:：](?!//)|\\s+[\\u2014\\u2013-]\\s)\\s*${bold}\\s*`,
     "i",
   );
   const out = text.replace(re, "");

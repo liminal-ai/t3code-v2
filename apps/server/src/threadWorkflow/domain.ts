@@ -1,13 +1,8 @@
 /**
- * The thread workflow policy, pure. `decide` validates one request against the folded state and
- * returns the single change to record, `unchanged`, or a `ThreadWorkflowError` whose message
- * prints the corrective call. `evolve` applies one stored record; it is total and decides nothing,
- * because every derived value (assigned ids, copied steps, slugs) is already in the event, except
- * that a step stored before steps had slugs folds with a derived one.
- *
- * Downgrade policy: a log line with an unknown `v` or event kind marks its thread corrupt
- * (read-only) instead of being skipped, so a rollback to an older build never
- * silently drops intent. The user's `recover` sets the log aside and starts a fresh one.
+ * The thread workflow policy, pure. `decide` returns the one change to record, `unchanged`, or
+ * a `ThreadWorkflowError` that prints the corrective call. `evolve` is total and derives nothing
+ * but a legacy step's slug. A log line with an unknown `v` or event kind marks its thread corrupt
+ * (read-only) instead of being skipped, so a rollback never drops intent.
  */
 // @effect-diagnostics nodeBuiltinImport:off - decide is pure and synchronous; the Crypto service is not.
 import * as NodeCrypto from "node:crypto";

@@ -1,9 +1,4 @@
-/**
- * Cursor discovers Agent Skills recursively from user and project roots but
- * its ACP command catalog only appears after opening a real session. Scanning
- * the same roots avoids starting an agent and its MCP servers just to populate
- * a composer menu.
- */
+// Scan skills without opening an ACP session and starting its MCP servers.
 
 import type { ServerProviderSkill } from "@t3tools/contracts";
 import * as ByteSize from "effect/ByteSize";
@@ -126,9 +121,8 @@ function parseSkillFrontmatter(contents: string): CursorSkillFrontmatter | undef
 
 const discoverSkillsInRoot = Effect.fn("discoverCursorSkillsInRoot")(function* (input: {
   readonly directory: string;
-  readonly scope: "user" | "project";
+  readonly scope: "user" | "project" | "system";
   readonly budget: CursorSkillScanBudget;
-  /** Real paths of the roots already walked in this scan. */
   readonly scannedRoots: Set<string>;
 }): Effect.fn.Return<ReadonlyArray<ServerProviderSkill>, never, FileSystem.FileSystem | Path.Path> {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -137,8 +131,7 @@ const discoverSkillsInRoot = Effect.fn("discoverCursorSkillsInRoot")(function* (
   if (input.budget.exhausted) return skills;
   const rootDirectory = yield* orUndefined(fileSystem.realPath(input.directory), input.budget);
   if (!rootDirectory) return skills;
-  // A root linked to another one, such as `~/.agents/skills` pointing at `~/.claude/skills`,
-  // is the same tree: walking it again would charge the scan budget twice for nothing new.
+  // Symlinked roots may share a tree; do not charge its scan budget twice.
   if (input.scannedRoots.has(rootDirectory)) return skills;
   input.scannedRoots.add(rootDirectory);
   const visitedDirectories = new Set<string>();
@@ -156,9 +149,7 @@ const discoverSkillsInRoot = Effect.fn("discoverCursorSkillsInRoot")(function* (
       return;
     }
     visitedDirectories.add(resolvedDirectory);
-    // A symlink whose target lives outside the root is a skill package
-    // boundary: read its own SKILL.md so linked skill libraries show up, but
-    // never walk the target tree.
+    // Outside-root symlinks expose only their own SKILL.md; never traverse the target tree.
     const insideRoot =
       resolvedDirectory === rootDirectory ||
       resolvedDirectory.startsWith(`${rootDirectory}${path.sep}`);
@@ -237,7 +228,13 @@ const inspectCursorSkills = Effect.fn("inspectCursorSkills")(function* (
   const roots = [
     ...(cwd ? rootsBelow(cwd, "project") : []),
     // A cloud VM has only the cloned repository, never this machine's home.
-    ...(runtime === "cloud" ? [] : rootsBelow(userHome, "user")),
+    ...(runtime === "cloud"
+      ? []
+      : [
+          ...rootsBelow(userHome, "user"),
+          // Cursor syncs its built-in skills here; same-named user and project skills win.
+          { directory: path.join(userHome, ".cursor", "skills-cursor"), scope: "system" as const },
+        ]),
   ];
 
   const skillsByName = new Map<string, ServerProviderSkill>();

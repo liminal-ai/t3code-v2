@@ -319,11 +319,9 @@ export const GroupChatGroupQuery = Schema.Struct({
 export type GroupChatGroupQuery = typeof GroupChatGroupQuery.Type;
 
 /**
- * One page of a group. `messages` rise by seq and hold at most `GROUP_CHAT_PAGE_SIZE`. `deliveries`
- * belong to those messages, plus every open delivery when the page was not read with `before`, so
- * a client always sees what is still in flight and the question each one waits on. A delivery's
- * envelope comes from the delivery read. `olderBefore` is the `before` for the next older page, or
- * null at the first message.
+ * One page of a group. `messages` rise by seq, at most `GROUP_CHAT_PAGE_SIZE`. `deliveries` belong
+ * to those messages, plus every open delivery when read without `before`. Envelopes come from the
+ * delivery read. `olderBefore` is the next older page's `before`, or null at the first message.
  */
 export const GroupChatGroupPage = Schema.Struct({
   group: GroupChatGroup,

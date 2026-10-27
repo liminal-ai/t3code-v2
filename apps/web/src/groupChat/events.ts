@@ -59,6 +59,7 @@ export function useGroupChatEvents(enabled: boolean): void {
   const access = AsyncResult.isSuccess(result) ? result.value : null;
   // The stream has no replay, so whatever was committed between a read and the open, or while
   // the stream was down, is read again on every open.
+  // oxlint-disable-next-line t3code/react-effect-budget -- the EventSource and its reconnect timer live as long as the page wants events.
   useEffect(() => {
     if (!enabled || access === null) return;
     let reconnect: ReturnType<typeof setTimeout> | undefined;

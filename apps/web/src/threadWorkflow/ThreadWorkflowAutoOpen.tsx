@@ -17,6 +17,7 @@ import {
 export function ThreadWorkflowAutoOpen({ threadRef }: { threadRef: ScopedThreadRef }) {
   const snapshot = readThreadWorkflowState(useAtomValue(threadWorkflowStateAtom(threadRef)));
   const autoOpen = useRef(INITIAL_THREAD_WORKFLOW_AUTO_OPEN);
+  // oxlint-disable-next-line t3code/react-effect-budget -- the panel opens on a server-pushed snapshot, which no handler in this tree receives.
   useEffect(() => {
     const next = nextThreadWorkflowAutoOpen(autoOpen.current, snapshot);
     autoOpen.current = next.state;

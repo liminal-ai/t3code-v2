@@ -13,7 +13,7 @@ import {
   type ChatAttachment,
   type ChatFileAttachment,
 } from "@t3tools/contracts";
-import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
+import { parseGitRemoteRepository } from "@t3tools/shared/git";
 import { discardResponseBody, responsePayloads } from "@t3tools/shared/mcpResponsePayloads";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -57,8 +57,8 @@ export const resolveCursorCloudCheckout = Effect.fn("resolveCursorCloudCheckout"
   if (remote.length === 0) {
     return { repository: null, branch: null, unpushedCommits: 0, uncommittedChanges: false };
   }
-  const nameWithOwner = parseGitHubRepositoryNameWithOwnerFromRemoteUrl(remote);
-  const url = nameWithOwner === null ? remote : `https://github.com/${nameWithOwner}`;
+  const parsed = parseGitRemoteRepository(remote);
+  const url = parsed?.host === "github.com" ? `https://github.com/${parsed.path}` : remote;
   const branch = (yield* git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"])) || null;
   const onOrigin =
     branch !== null &&
@@ -139,29 +139,29 @@ export function cursorCloudPrompt(input: {
     readonly text: string | undefined;
   }>;
 }): string {
-  // The environment note always goes, like the runtime instructions appended
-  // later. Only attachments compete for the input limit.
+  // The environment note and every attachment's note always go, as upstream's
+  // attachment notes do. Only inline text competes for the input limit.
   let prompt = [input.note, input.text]
     .filter((part) => part !== undefined && part.length > 0)
     .join("\n\n");
-  const appendFirstThatFits = (...parts: ReadonlyArray<string>) => {
-    const part = parts.find(
-      (candidate) =>
-        (prompt.length === 0 ? 0 : prompt.length + 2) + candidate.length <=
-        PROVIDER_SEND_TURN_MAX_INPUT_CHARS,
-    );
-    if (part !== undefined) prompt = prompt.length === 0 ? part : `${prompt}\n\n${part}`;
+  const append = (part: string) => {
+    prompt = prompt.length === 0 ? part : `${prompt}\n\n${part}`;
   };
+  const fits = (part: string) =>
+    (prompt.length === 0 ? 0 : prompt.length + 2) + part.length <=
+    PROVIDER_SEND_TURN_MAX_INPUT_CHARS;
   for (const { attachment, text } of input.attachments) {
     if (text === undefined) {
-      appendFirstThatFits(
+      append(
         `[Attached ${attachment.type} "${attachment.name}" was not sent: a Cursor Cloud VM cannot read files on the machine that started it. Only text files up to 100 KB travel inline.]`,
       );
       continue;
     }
-    appendFirstThatFits(
-      `[Attached file "${attachment.name}" follows inline.]\n${text}`,
-      `[Attached file "${attachment.name}" was not sent: the message was over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")}-character limit for inline attachments.]`,
+    const inline = `[Attached file "${attachment.name}" follows inline.]\n${text}`;
+    append(
+      fits(inline)
+        ? inline
+        : `[Attached file "${attachment.name}" was not sent: the message was over the ${PROVIDER_SEND_TURN_MAX_INPUT_CHARS.toLocaleString("en-US")}-character limit for inline attachments.]`,
     );
   }
   return prompt;

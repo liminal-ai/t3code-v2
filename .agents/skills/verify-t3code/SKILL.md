@@ -57,15 +57,15 @@ The state is the worktree's ignored `.t3`. It outranks an ambient `T3CODE_HOME`,
 
 Every recipe in `features/` uses these commands. Target by ARIA role and accessible name, as the recipes give them. Fall back to visible text, and use coordinates only in a user-only check.
 
-| Command                                                   | Does                                                                                                                                     |
-| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `browser click --role <role> --name <name> [--in <text>]` | Clicks the element with exactly that name. `--in` picks the innermost element that holds both the text and the target, such as one card. |
-| `browser click --text <text>` / `--at <x>,<y>`            | Clicks visible text, or a point from a screenshot.                                                                                       |
-| `browser fill --role <role> --name <name> --value <text>` | Replaces an input's value.                                                                                                               |
-| `browser type <text>` / `browser press <key>`             | Types into whatever has focus, or presses Enter, Escape and so on.                                                                       |
-| `browser wait --text <text>` / `--gone <text>`            | Waits for text to appear, or for an exact text such as `Working` to leave. Default 15 s, `--timeout <ms>`.                               |
-| `browser goto <path>`                                     | Loads a path on the web origin, such as `/settings/providers`.                                                                           |
-| `browser shot <name>` / `aria <name>` / `text`            | A screenshot or ARIA snapshot under proof, or the page's text on stdout.                                                                 |
+| Command                                                   | Does                                                                                                                                                                                             |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `browser click --role <role> --name <name> [--in <text>]` | Clicks the element with exactly that name, or with a name that starts with `--name-prefix <text>`. `--in` picks the innermost element that holds both the text and the target, such as one card. |
+| `browser click --text <text>` / `--at <x>,<y>`            | Clicks visible text, or a point from a screenshot.                                                                                                                                               |
+| `browser fill --role <role> --name <name> --value <text>` | Replaces an input's value.                                                                                                                                                                       |
+| `browser type <text>` / `browser press <key>`             | Types into whatever has focus, or presses Enter, Escape and so on.                                                                                                                               |
+| `browser wait --text <text>` / `--gone <text>`            | Waits for text to appear, or for an exact text such as `Working` to leave. Default 15 s, `--timeout <ms>`.                                                                                       |
+| `browser goto <path>`                                     | Loads a path on the web origin, such as `/settings/providers`.                                                                                                                                   |
+| `browser shot <name>` / `aria <name>` / `text`            | A screenshot or ARIA snapshot under proof, or the page's text on stdout.                                                                                                                         |
 
 A turn ends when `Working` leaves the page. `browser wait --text` matches your own message too, so never wait on a word you sent.
 

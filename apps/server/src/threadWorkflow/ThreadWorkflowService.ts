@@ -322,7 +322,9 @@ const make = Effect.gen(function* () {
 
   return ThreadWorkflowService.of({
     apply,
-    view: (threadId) => whenAvailable(store.state(threadId).pipe(Effect.map(toView))),
+    view: Effect.fn("ThreadWorkflowService.view")((threadId: ThreadId) =>
+      whenAvailable(store.state(threadId).pipe(Effect.map(toView))),
+    ),
     state: stateOf,
     subscribe,
     attention,

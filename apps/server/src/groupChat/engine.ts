@@ -38,6 +38,7 @@ import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
+import * as Predicate from "effect/Predicate";
 import * as Fiber from "effect/Fiber";
 import { HttpClient } from "effect/http";
 import * as Queue from "effect/Queue";
@@ -1619,12 +1620,10 @@ export const makeEngine = Effect.fn("groupChat.engine.makeEngine")(function* (
   });
 
   const requireGroup = (tx: Tx, groupId: GroupChatGroupId) =>
-    Effect.flatMap(tx.group(groupId), (group) =>
-      group === null ? notFound("group", groupId) : Effect.succeed(group),
-    );
+    Effect.filterOrElse(tx.group(groupId), Predicate.isNotNull, () => notFound("group", groupId));
   const requireMember = (tx: Tx, memberId: GroupChatMemberId) =>
-    Effect.flatMap(tx.member(memberId), (member) =>
-      member === null ? notFound("member", memberId) : Effect.succeed(member),
+    Effect.filterOrElse(tx.member(memberId), Predicate.isNotNull, () =>
+      notFound("member", memberId),
     );
 
   const validTitle = (input: string) => {

@@ -14,7 +14,6 @@ import {
 } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
-import { useEscapeToGoBack } from "../hooks/useNavigateBack";
 import { cn } from "../lib/utils";
 import {
   attempt,
@@ -173,6 +172,7 @@ function GroupBody({ groupId, viewKind }: { groupId: GroupChatGroupId; viewKind:
     readonly message: string;
   } | null>(null);
   const failure = failed?.groupId === groupId ? failed.message : null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- the group's live view is held while this group is on screen and released when it leaves.
   useEffect(() => {
     let alive = true;
     showGroup(groupId).catch((error: unknown) => {
@@ -221,7 +221,6 @@ function GroupBody({ groupId, viewKind }: { groupId: GroupChatGroupId; viewKind:
 }
 
 export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
-  useEscapeToGoBack();
   const snapshot = useGroupChatSnapshot();
   useGroupChatEvents(snapshot.status === "ready");
   const group =

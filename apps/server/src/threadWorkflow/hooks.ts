@@ -18,6 +18,8 @@ import {
   type TurnNoteInput,
 } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
+
+type LifecycleInput = Parameters<(typeof ThreadHooks)["Service"]["lifecycleBlocker"]>[0];
 import { lifecycleBlocker, toSubscriptionView } from "./domain.ts";
 import { ThreadWorkflowStore } from "./store.ts";
 import { noWorkflowNote, openStep, turnNote } from "./turnNote.ts";
@@ -60,18 +62,10 @@ const asksForPstack = (message: TurnNoteInput["message"]) =>
     (message.context?.records ?? []).some((record) => isSkillRecord(record, "poteto-mode")));
 
 /**
- * Core's view of the module. Both hooks read the store's memory and never take the thread lock:
- * the orchestrator's guard holds it already, and the turn note runs without it and may lag a write
- * by a moment. The flag plays no part here: an open instance keeps blocking lifecycle actions and
- * keeps reaching the agent after the flag turns off.
- *
- * The module must never stop a turn or trap a thread, so any fault in either hook (a defect
- * included) and any stall past `HOOK_DEADLINE` fall back to no note and no blocker, with a warning.
- * Interruption still passes through.
- *
- * The operator can switch enforcement off without a rebuild: `threadWorkflowEnforcementDisabled`
- * in settings, read on every check, or `T3CODE_THREAD_WORKFLOW_ENFORCEMENT=off` in the
- * environment, which works even when settings cannot be edited or read.
+ * Core's view of the module. Both hooks read memory without the thread lock, and an open instance
+ * keeps blocking after the flag turns off. A fault or a stall past `HOOK_DEADLINE`, never an
+ * interrupt, gives no note and no blocker, with a warning. `threadWorkflowEnforcementDisabled` in
+ * settings or `T3CODE_THREAD_WORKFLOW_ENFORCEMENT=off` stops enforcement without a rebuild.
  */
 export const layerThreadHooks = Layer.effect(
   ThreadHooks,
@@ -153,38 +147,41 @@ export const layerThreadHooks = Layer.effect(
     });
 
     return {
-      turnNote: (input) =>
+      turnNote: Effect.fn("ThreadHooks.turnNote")((input: TurnNoteInput) =>
         guarded(
           "",
           "thread workflow turn note failed; the turn goes without it",
           input.threadId,
           () => (input.compacting ? Effect.succeed("") : noteFor(input)),
         ),
-      lifecycleBlocker: ({ threadId, action }) =>
-        guarded<string | null, unknown>(
-          null,
-          "thread workflow lifecycle check failed; the thread is not blocked",
-          threadId,
-          () =>
-            Effect.gen(function* () {
-              const state = yield* store.state(threadId);
-              if (state.corruption !== null) {
+      ),
+      lifecycleBlocker: Effect.fn("ThreadHooks.lifecycleBlocker")(
+        ({ threadId, action }: LifecycleInput) =>
+          guarded<string | null, unknown>(
+            null,
+            "thread workflow lifecycle check failed; the thread is not blocked",
+            threadId,
+            () =>
+              Effect.gen(function* () {
+                const state = yield* store.state(threadId);
+                if (state.corruption !== null) {
+                  yield* warnOnce(
+                    `corrupt:${threadId}`,
+                    "thread workflow log is corrupt; it does not block the thread's lifecycle",
+                    threadId,
+                  );
+                }
+                const blocker = lifecycleBlocker(state, action);
+                if (blocker === null || !(yield* enforcementOff)) return blocker;
                 yield* warnOnce(
-                  `corrupt:${threadId}`,
-                  "thread workflow log is corrupt; it does not block the thread's lifecycle",
+                  `bypassed:${threadId}`,
+                  "thread workflow enforcement is off; an open workflow does not block the thread",
                   threadId,
                 );
-              }
-              const blocker = lifecycleBlocker(state, action);
-              if (blocker === null || !(yield* enforcementOff)) return blocker;
-              yield* warnOnce(
-                `bypassed:${threadId}`,
-                "thread workflow enforcement is off; an open workflow does not block the thread",
-                threadId,
-              );
-              return null;
-            }),
-        ),
+                return null;
+              }),
+          ),
+      ),
     };
   }),
 );
