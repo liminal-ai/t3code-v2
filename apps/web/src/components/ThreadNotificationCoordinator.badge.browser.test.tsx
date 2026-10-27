@@ -42,6 +42,7 @@ vi.mock(import("../state/environments"), async (original) => ({
 }));
 vi.mock("../state/threadWorkflowAttention", () => ({
   threadWorkflowAttentionAtom: (id: string) => attentionAtom(id),
+  threadWorkflowAttentionReadyAtom: (id: string) => attentionReadyAtom(id),
 }));
 vi.mock(import("../hooks/useSettings"), async (original) => ({
   ...(await original()),
@@ -64,6 +65,7 @@ const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const attentionAtom = Atom.family((_id: string) =>
   Atom.make<ReadonlyMap<string, { openQuestions: number; latestQuestionId: string }>>(new Map()),
 );
+const attentionReadyAtom = Atom.family((_id: string) => Atom.make(true));
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
 const setAttention = (id: string, questions: ReadonlyArray<readonly [number, string]>) =>
   registry.set(
@@ -231,6 +233,21 @@ it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(
     expect(notification.close).toHaveBeenCalled();
   },
 );
+
+it("remembers nothing until the attention snapshot is live, so an old open question does not notify at startup", async () => {
+  await using app = setup();
+  registry.set(attentionReadyAtom("one"), false);
+  await app.render();
+  setAttention("one", [[1, "w1.q1"]]);
+  await app.render();
+  expect(TestNotification.sent).toHaveLength(0);
+  registry.set(attentionReadyAtom("one"), true);
+  await app.render();
+  expect(TestNotification.sent).toHaveLength(0);
+  setAttention("one", [[2, "w1.q2"]]);
+  await app.render();
+  expect(TestNotification.sent).toHaveLength(1);
+});
 
 it("notifies once per open workflow question and clears when the last is answered", async () => {
   await using app = setup();

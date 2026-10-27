@@ -19,7 +19,10 @@ import { useEffect, useRef } from "react";
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
 import { useEnvironmentIds } from "../state/environments";
 import { environmentShell } from "../state/shell";
-import { threadWorkflowAttentionAtom } from "../state/threadWorkflowAttention";
+import {
+  threadWorkflowAttentionAtom,
+  threadWorkflowAttentionReadyAtom,
+} from "../state/threadWorkflowAttention";
 import {
   hasDesktopNotifications,
   hasNotificationSound,
@@ -123,6 +126,7 @@ function EnvironmentNotifications({
   const threads =
     shell.status === "live" && Option.isSome(shell.snapshot) ? shell.snapshot.value.threads : null;
   const workflowAttention = useAtomValue(threadWorkflowAttentionAtom(environmentId));
+  const workflowAttentionReady = useAtomValue(threadWorkflowAttentionReadyAtom(environmentId));
   const mode = useClientSettings((settings) => settings.notificationMode);
   const inAppNotificationsEnabled = useClientSettings(
     (settings) => settings.inAppNotificationsEnabled,
@@ -134,7 +138,9 @@ function EnvironmentNotifications({
   const previous = useRef(new Map<ThreadId, NotificationState>());
 
   useEffect(() => {
-    if (threads === null) {
+    // A baseline recorded before the attention snapshot arrives would make every open question
+    // look new once it does, so both snapshots have to be live before anything is remembered.
+    if (threads === null || !workflowAttentionReady) {
       previous.current.clear();
       return;
     }
@@ -275,6 +281,7 @@ function EnvironmentNotifications({
     onNotification,
     threads,
     workflowAttention,
+    workflowAttentionReady,
   ]);
 
   return null;
