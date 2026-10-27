@@ -133,9 +133,23 @@ async function up() {
   console.log(runner);
   const { port } = runtime();
   const origin = webOrigin();
-  if ((await httpStatus(`http://127.0.0.1:${port}/.well-known/t3/environment`)) !== 200)
-    fail(`server port ${port} does not answer`);
-  if ((await httpStatus(`${origin}/`)) !== 200) fail(`web origin ${origin} does not answer`);
+  // The server prints its pairing URL before Vite listens, so both ports are polled to the deadline.
+  const pending = new Map([
+    [`server port ${port}`, `http://127.0.0.1:${port}/.well-known/t3/environment`],
+    [`web origin ${origin}`, `${origin}/`],
+  ]);
+  while (pending.size > 0) {
+    for (const [what, url] of pending) {
+      if ((await httpStatus(url)) === 200) pending.delete(what);
+    }
+    if (pending.size === 0) break;
+    if (Date.now() > deadline)
+      fail(
+        `${[...pending.keys()].join(" and ")} did not answer 200 by the startup deadline; read ${files.devLog}`,
+      );
+    if (!alive(child.pid)) fail(`dev server exited; read ${files.devLog}`);
+    await sleep(1000);
+  }
   console.log(`ready: server ${port}, web ${origin}, pairing URL in ${files.pairingUrl}`);
 }
 
