@@ -1,11 +1,12 @@
-import { ThreadWorkflowTemplate } from "@t3tools/contracts";
+import { THREAD_WORKFLOW_LIMITS, ThreadWorkflowTemplate } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 
+import { installedSha256 } from "./derive.ts";
 import { builtInTemplates, freshness } from "./index.ts";
 
 const PLAYBOOK = "poteto-mode/playbooks/example.md";
@@ -66,30 +67,78 @@ it.layer(NodeServices.layer)("thread workflow templates", (it) => {
       assert.strictEqual(yield* freshness(openEnded, "/nonexistent"), "no-source");
     }),
   );
-
-  it("gives every built-in step a hand-written slug, unique within its template", () => {
-    for (const template of builtInTemplates.values()) {
-      const slugs = template.steps.map((step) => step.slug);
-      assert.notInclude(slugs, undefined, template.id);
-      assert.lengthOf(new Set(slugs), slugs.length, template.id);
-    }
-  });
-
-  it("ships single-task, orchestrate and open-ended with user steps where the addendum puts them", () => {
-    assert.deepStrictEqual(
-      [...builtInTemplates.keys()],
-      ["single-task", "orchestrate", "open-ended"],
-    );
-    const waits = (id: string) =>
-      builtInTemplates
-        .get(id as never)
-        ?.steps.filter((step) => step.waitsForUser)
-        .map((step) => step.title);
-    assert.deepStrictEqual(waits("single-task"), [
-      "Talk it through with the user",
-      "Merge to main",
-    ]);
-    assert.deepStrictEqual(waits("orchestrate"), ["Approve the program plan", "Land continuously"]);
-    assert.deepStrictEqual(waits("open-ended"), ["Confirm done with the user"]);
-  });
 });
+
+// Read-only work opens with its playbook's own first step instead of the verify-skill check.
+const READ_ONLY = new Set(["investigation", "retro-round", "worktree-cleanup", "session-pickup"]);
+const VERIFY_SKILL = "project's verify skill";
+
+const playbookTemplates = [...builtInTemplates.values()].filter(
+  (template) => template.id !== "open-ended",
+);
+
+describe.each(playbookTemplates.map((template) => [template.id, template] as const))(
+  "the %s template",
+  (_id, template) => {
+    const { steps } = template;
+    const slugs = steps.map((step) => step.slug);
+
+    it("fits the step cap with a unique hand-written slug on every step", () => {
+      assert.isAtMost(steps.length, THREAD_WORKFLOW_LIMITS.steps);
+      assert.notInclude(slugs, undefined);
+      assert.lengthOf(new Set(slugs), slugs.length);
+    });
+
+    it("pins its playbook by commit and hash, or has none only for fork-sync", () => {
+      if (template.id === "fork-sync") return assert.isNull(template.source);
+      assert.match(template.source?.commit ?? "", /^[0-9a-f]{40}$/);
+      assert.match(template.source?.sha256 ?? "", /^[0-9a-f]{64}$/);
+    });
+
+    it("opens by making the run folder and closes with close-out, reflect, then cleanup", () => {
+      assert.include(steps[0]?.instructions, ".pstack/runs/<run>/");
+      assert.include(steps[0]?.instructions, "references/cleanup-protocol.md");
+      assert.strictEqual(slugs.at(-1), "cleanup");
+      assert.include(steps.at(-1)?.instructions, "references/cleanup-protocol.md");
+      assert.isTrue(steps.some((step) => step.instructions.includes("Linear project")));
+      assert.isTrue(steps.some((step) => step.instructions.includes("`/reflect`")));
+    });
+
+    it.skipIf(READ_ONLY.has(template.id))(
+      "checks for the project's verify skill first and drives every verify step through it",
+      () => {
+        assert.strictEqual(slugs[0], "find-verify-skill");
+        assert.include(steps[0]?.instructions, VERIFY_SKILL);
+        for (const step of steps) {
+          if (/\bverify\b/i.test(`${step.title} ${step.instructions}`)) {
+            assert.include(step.instructions, VERIFY_SKILL, step.slug);
+          }
+        }
+      },
+    );
+
+    it("asks the user only on a condition, and names the decision a waiting step ends with", () => {
+      for (const step of steps) {
+        if (/\bask (Lee|the user)\b/i.test(step.instructions)) {
+          assert.match(step.instructions, /\b(if|when|only|otherwise)\b/i, step.slug);
+        }
+        if (step.waitsForUser) assert.match(step.instructions, /\bThe user decides\b/, step.slug);
+      }
+    });
+
+    const source = template.source;
+    const installed = source === null ? null : installedSha256(source.playbook);
+    it.skipIf(source === null || installed === null)(
+      source !== null && installed === null
+        ? `matches the installed playbook (skipped: ~/.agents/skills/${source.playbook} is not installed here)`
+        : "matches the installed playbook",
+      () => {
+        assert.strictEqual(
+          source?.sha256,
+          installed,
+          `${source?.playbook} changed since this template was derived; refresh it and rerun derive.ts`,
+        );
+      },
+    );
+  },
+);

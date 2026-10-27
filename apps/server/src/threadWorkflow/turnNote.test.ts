@@ -257,6 +257,7 @@ describe("turnNote", () => {
         expect(full).toContain(`: ${step.slug} (w1.${index + 1})`);
         expect(full).toContain(`"stepId":"w1.${index + 1}"`);
         expect(full.length).toBeLessThan(THREAD_WORKFLOW_LIMITS.turnNote);
+        expect(full).toContain(step.instructions);
         expect(note(state, "short").length).toBeLessThan(200);
         state = apply(state, user, { _tag: "tick", stepId: `w1.${index + 1}` }).state;
       }

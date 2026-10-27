@@ -1224,7 +1224,7 @@ effectIt.effect("prefixes the prompt with the module's note for the thread's ope
     const service = Context.get(module, ThreadWorkflowService);
     yield* service.apply({ _tag: "user" }, ThreadId.make("thread-native-account-command"), {
       _tag: "start",
-      templateId: "single-task" as never,
+      templateId: "feature" as never,
     });
     const harness = makeLocalCommandHarness({
       text: "Continue",
@@ -1235,7 +1235,7 @@ effectIt.effect("prefixes the prompt with the module's note for the thread's ope
 
     expect(harness.prompts).toHaveLength(1);
     expect(harness.prompts[0]).toMatch(
-      /^<thread-workflow>\nWorkflow "Single task" \(w1\), step 1 of \d+: ground-subsystem \(w1\.1\)\nGround the affected subsystem\n/,
+      /^<thread-workflow>\nWorkflow "Feature" \(w1\), step 1 of \d+: find-verify-skill \(w1\.1\)\nVerify skill named and run folder made\n/,
     );
     expect(harness.prompts[0]).toContain('thread_workflow_tick {"stepId":"w1.1"');
     expect(harness.prompts[0]?.endsWith("</thread-workflow>\n\nUser message:\nContinue")).toBe(

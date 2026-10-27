@@ -10,12 +10,22 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
+import { bugFix } from "./bugFix.ts";
+import { feature } from "./feature.ts";
+import { hillclimb } from "./hillclimb.ts";
 import { openEnded } from "./openEnded.ts";
 import { orchestrate } from "./orchestrate.ts";
-import { singleTask } from "./singleTask.ts";
+import { perfIssue } from "./perfIssue.ts";
+import { refactoring } from "./refactoring.ts";
 
+/** One per pstack playbook in use, in poteto-mode's order, then open-ended for work none fits. */
 export const builtInTemplates: ReadonlyMap<ThreadWorkflowTemplateId, ThreadWorkflowTemplate> =
-  new Map([singleTask, orchestrate, openEnded].map((template) => [template.id, template]));
+  new Map(
+    [bugFix, perfIssue, hillclimb, feature, refactoring, orchestrate, openEnded].map((template) => [
+      template.id,
+      template,
+    ]),
+  );
 
 /**
  * Compares the installed playbook with the hash the template was derived from. A stale template

@@ -79,7 +79,7 @@ it.layer(layerTest)("thread workflow RPC handlers", (it) => {
 
       const applied = yield* rpc[WS_METHODS.threadWorkflowApply]({
         threadId,
-        request: { _tag: "start", templateId: "single-task" as never },
+        request: { _tag: "start", templateId: "feature" as never },
         requestId: "pane-1",
         expectedRevision: 0,
       });
