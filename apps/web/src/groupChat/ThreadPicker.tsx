@@ -20,6 +20,7 @@ const STATUS_BADGE: Record<
 > = {
   approval: { label: "needs approval", variant: "warning" },
   input: { label: "needs answer", variant: "warning" },
+  request: { label: "guest request", variant: "warning" },
   working: { label: "working", variant: "info" },
   waiting: { label: "idle", variant: "outline" },
   failed: { label: "failed", variant: "error" },

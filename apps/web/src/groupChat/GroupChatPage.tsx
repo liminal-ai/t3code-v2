@@ -14,7 +14,6 @@ import {
 } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { isElectron } from "../env";
-import { useEscapeToGoBack } from "../hooks/useNavigateBack";
 import { cn } from "../lib/utils";
 import {
   attempt,
@@ -221,7 +220,6 @@ function GroupBody({ groupId, viewKind }: { groupId: GroupChatGroupId; viewKind:
 }
 
 export function GroupChatPage({ groupId }: { readonly groupId?: string }) {
-  useEscapeToGoBack();
   const snapshot = useGroupChatSnapshot();
   useGroupChatEvents(snapshot.status === "ready");
   const group =

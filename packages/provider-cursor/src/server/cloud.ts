@@ -13,7 +13,7 @@ import {
   type ChatAttachment,
   type ChatFileAttachment,
 } from "@t3tools/contracts";
-import { parseGitHubRepositoryNameWithOwnerFromRemoteUrl } from "@t3tools/shared/git";
+import { parseGitRemoteRepository } from "@t3tools/shared/git";
 import { discardResponseBody, responsePayloads } from "@t3tools/shared/mcpResponsePayloads";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -57,8 +57,8 @@ export const resolveCursorCloudCheckout = Effect.fn("resolveCursorCloudCheckout"
   if (remote.length === 0) {
     return { repository: null, branch: null, unpushedCommits: 0, uncommittedChanges: false };
   }
-  const nameWithOwner = parseGitHubRepositoryNameWithOwnerFromRemoteUrl(remote);
-  const url = nameWithOwner === null ? remote : `https://github.com/${nameWithOwner}`;
+  const parsed = parseGitRemoteRepository(remote);
+  const url = parsed?.host === "github.com" ? `https://github.com/${parsed.path}` : remote;
   const branch = (yield* git(cwd, ["symbolic-ref", "--quiet", "--short", "HEAD"])) || null;
   const onOrigin =
     branch !== null &&

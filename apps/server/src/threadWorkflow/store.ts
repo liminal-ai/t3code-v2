@@ -431,7 +431,9 @@ const make = Effect.gen(function* () {
 
   return ThreadWorkflowStore.of({
     unavailable: loaded.unavailable,
-    state: (threadId) => Ref.get(states).pipe(Effect.map((map) => stateOf(map, threadId))),
+    state: Effect.fn("ThreadWorkflowStore.state")((threadId: ThreadId) =>
+      Ref.get(states).pipe(Effect.map((map) => stateOf(map, threadId))),
+    ),
     states: Ref.get(states).pipe(Effect.map((map) => [...map.values()])),
     append,
     onDisk,
