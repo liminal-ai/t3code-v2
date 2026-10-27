@@ -16,12 +16,12 @@ const USAGE = `t3v.mjs [--run <name>] <command>
   browser shot <name>        screenshot to proof/<name>.png
   browser aria <name>        ARIA snapshot to proof/<name>.aria.txt
   browser text               print the page's visible text
-  browser click (--role <role> --name <name> | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>]
+  browser click (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>]
   browser fill --role <role> --name <name> --value <text>
   browser type <text>        type into whatever has focus
   browser scroll <dy> [--at <x>,<y>]  mouse wheel, down when dy is positive
   browser press <key>        Enter, Escape, Tab, Control+Enter, ...
-  browser wait (--text <text> | --gone <text> | --role <role> --name <name>) [--timeout <ms>]
+  browser wait (--text <text> | --gone <text> | --role <role> (--name <name> | --name-prefix <text>)) [--timeout <ms>]
   browser close
   outcome workflow [<thread-id>]   read-only: the thread workflow logs
   outcome note <thread-id>         read-only: each workflow note the provider was sent
@@ -279,11 +279,15 @@ async function withPage(action) {
 const locate = (page) => {
   const role = flag("role");
   const name = flag("name");
+  const prefix = flag("name-prefix");
   const text = flag("text");
   const within = flag("in");
   const nth = Number(flag("nth") ?? 0);
   const target = role
-    ? page.getByRole(role, { name, exact: true })
+    ? page.getByRole(
+        role,
+        prefix ? { name: new RegExp(`^${RegExp.escape(prefix)}`) } : { name, exact: true },
+      )
     : text
       ? page.getByText(text, { exact: true }).filter({ visible: true })
       : fail("give --role and --name, or --text");
