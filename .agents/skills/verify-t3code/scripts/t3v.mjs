@@ -411,11 +411,15 @@ async function browser(sub) {
   }
 }
 
-const providerLogLinesFromSharedSessions = (nativeIds) => {
+// Codex records name the native thread; Claude records name the provider session, which
+// carries the T3 thread id. Every provider logs into the file of whichever thread opened its
+// session first, so read them all.
+const providerLogLinesForThread = (threadId, nativeIds) => {
   const dir = NodePath.join(stateDir, "logs", "provider");
+  const marks = [`:thread:${threadId}:`, ...nativeIds.map((id) => `"threadId":"${id}"`)];
   return NodeFS.readdirSync(dir)
     .flatMap((name) => NodeFS.readFileSync(NodePath.join(dir, name), "utf8").split("\n"))
-    .filter((line) => nativeIds.some((id) => line.includes(`"threadId":"${id}"`)));
+    .filter((line) => marks.some((mark) => line.includes(mark)));
 };
 
 function outcome(sub) {
@@ -444,14 +448,13 @@ function outcome(sub) {
     const nativeIds = rows.flatMap(
       (row) => /"nativeId":"([^"]+)"/.exec(row.payload_json)?.[1] ?? [],
     );
-    if (nativeIds.length === 0) fail(`thread ${argv[0]} has no provider thread yet`);
     const notes = new Set(
-      providerLogLinesFromSharedSessions(nativeIds).flatMap(
+      providerLogLinesForThread(argv[0], nativeIds).flatMap(
         (line) => line.match(/<thread-workflow>.*?<\/thread-workflow>/g) ?? [],
       ),
     );
     for (const note of notes) console.log(`${JSON.parse(`"${note}"`)}\n`);
-    if (notes.size === 0) console.log(`no workflow note sent to ${nativeIds.join(", ")}`);
+    if (notes.size === 0) console.log(`no workflow note sent to thread ${argv[0]}`);
     return;
   }
   if (sub === "sql") {
