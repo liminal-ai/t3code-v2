@@ -2,11 +2,11 @@
 
 This repository is Lee's fork of `pingdotgg/t3code`. It builds the T3 Code server that runs as v2 prod on this machine. Read this file before you merge from upstream, before you push, when you set up a PR, and before you merge one.
 
-Last synced: upstream nightly `v0.1.4-nightly.20261027.3766` (`e109dc8d89`), merged as `611a236ed0` on the branch of PR #39. It is a nightly because it carries upstream's UI design overhaul as the only design (#24865, made the only design by #25778), which no stable tag carries yet. The sync before it was stable `v0.1.2` (PR #27). Update this line in the PR that lands the next sync.
+Last synced: upstream nightly `v0.1.4-nightly.20261027.3770` (`7c3b3b3605`), merged as `7916969d50` on the branch of PR #40. PR #39 synced to `v0.1.4-nightly.20261027.3766` (`e109dc8d89`, merged as `611a236ed0`), and #40 moved four commits forward for upstream #25841, without which the packaged server lacks the `zod` that `@cursor/sdk` 1.0.38 needs. It is a nightly because it carries upstream's UI design overhaul as the only design (#24865, made the only design by #25778), which no stable tag carries yet. The sync before it was stable `v0.1.2` (PR #27). Update this line in the PR that lands the next sync.
 
 ## What the fork adds
 
-Everything else is upstream. `git diff --stat v0.1.4-nightly.20261027.3766 main` lists every file that differs, and that list should match this section.
+Everything else is upstream. `git diff --stat v0.1.4-nightly.20261027.3770 main` lists every file that differs, and that list should match this section.
 
 - **The preview browser keyring fix** (in `apps/server/src/htmlRender/headlessChrome.ts`). The headless shell behind `html_preview` and `html_render` starts with `--password-store=basic`. Without it, Chrome asks the desktop keyring over D-Bus before its first network request. On a headless Linux host that call can wait forever on a prompt to create a keyring, so every capture times out after 20 seconds. The Browser panel already passes the flag through Playwright.
 - **Cursor Cloud** (PR #2, merged as `40b0206f85`). A Cursor provider instance with **Runs on** set to **Cursor Cloud** runs each thread on a Cursor VM that clones the project's GitHub repository. Prod has one such instance, `cursor-cloud`, configured in settings rather than code. The code is in `packages/provider-cursor/src/`. `server/cloud.ts` is ours. `server/adapter.ts`, `server/CursorAgentSdk.ts`, `server/skills.ts`, `server/driver.ts` and `settings.ts` are upstream files we changed, and so is `packages/provider-core/src/server/attachmentPrompt.ts` (its `attachmentNotes` field). The fixes for PR #2's review threads (PR #6) added the cap on inline attachments and the skills rule. The user guide's Cursor Cloud section is in `docs/user/cursor.md`.
@@ -51,7 +51,7 @@ Sync to a published tag, not to upstream `main`. A tag is a build upstream shipp
 2. List what upstream changed in the files we changed. Read each of those commits before you merge.
 
    ```bash
-   OLD=v0.1.4-nightly.20261027.3766   # the "Last synced" tag above
+   OLD=v0.1.4-nightly.20261027.3770   # the "Last synced" tag above
    NEW=<new tag>
    git log --oneline $OLD..$NEW -- $(git diff --name-only $OLD main)
    ```
@@ -104,7 +104,7 @@ Run a throwaway T3 from a built release on a free port, with its own base direct
 After every upstream merge, list the upstream commits that touched the upstream files we changed. Read each one against the tables below.
 
 ```bash
-OLD=v0.1.4-nightly.20261027.3766   # the "Last synced" tag
+OLD=v0.1.4-nightly.20261027.3770   # the "Last synced" tag
 NEW=<new tag>
 git log --oneline $OLD..$NEW -- $(git diff --diff-filter=M --name-only $OLD main)
 git diff --diff-filter=A --name-only $OLD main | xargs -r git log --oneline $OLD..$NEW --   # upstream created a file we own
