@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+T3V="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/t3v.mjs"
+DIR="${T3V_USER_DIR:-user-only}"
+case "${1:-}" in
+  shot) node "$T3V" browser shot "$DIR/$2" ;;
+  click) node "$T3V" browser click --at "$2,$3" ;;
+  click-text) node "$T3V" browser click --text "$2" ;;
+  type) shift; node "$T3V" browser type "$*" ;;
+  press) node "$T3V" browser press "$2" ;;
+  scroll) node "$T3V" browser scroll "$2" ${3:+--at "$3,$4"} ;;
+  *)
+    echo "usage: user-only shot <name> | click <x> <y> | click-text <visible text> | type <text> | press <key> | scroll <dy> [<x> <y>]"
+    exit 1
+    ;;
+esac

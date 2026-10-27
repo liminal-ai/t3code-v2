@@ -33,7 +33,8 @@ Everything else is upstream. `git diff --stat v0.1.2 main` lists every file that
 3. If the change touches a file in [Seams to re-check](#seams-to-re-check), run the tests listed there.
 4. `AGENTS.md` is owned by the fork and points here. Upstream's agent rules do not apply to this repository. Keep conventional commit titles and focused tests, and run no repo-wide checks.
 5. Get an independent verdict from a model family other than the author's before you merge. The pstack Shipping playbook covers how.
-6. Merge through the merge gate with `--method merge`. A merge changes nothing in prod until a cutover, and only Lee runs or approves a cutover.
+6. The verdict drives the change through the verify skill, `.agents/skills/verify-t3code/`.
+7. Merge through the merge gate with `--method merge`. `.agents/merge-brief.md` lists this repository's gates, and the gate prints it on every run. A merge changes nothing in prod until a cutover, and only Lee runs or approves a cutover.
 
 ## Sync from upstream
 
@@ -94,7 +95,7 @@ To roll back, point `prod/current` at the previous release and restart the unit.
 
 ## Test live without touching prod
 
-Never start a server against `~/.t3/userdata`, the live install; read it and copy from it only. Never set `VITE_HTTP_URL` or `VITE_WS_URL` for dev; dev is single-origin and Vite proxies `/api`, `/ws`, `/oauth` and `/.well-known`, so setting them bakes localhost into the bundle and breaks every remote browser. Both rules move into the fork's verify skill when it lands.
+Drive a dev server from a worktree with `.agents/skills/verify-t3code/SKILL.md`, which holds the rules that keep it off the live install.
 
 Run a throwaway T3 from a built release on a free port, with its own base directory. Take its data from a WAL-safe snapshot and follow every step of the safety list in `~/lim-v2/notes/cursor-cloud-evidence/verification-20261017-sync3238-r2/safety-audit.md`. That list says which files to leave out, the SQL that stops copied threads from waking, and the settings to use. Read the live ports with `ss -H -ltnp` first. 13987 is v2 prod, 13977 is the older `~/lim` T3, and 13995 is the deploy script's smoke test.
 

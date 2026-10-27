@@ -1,0 +1,4 @@
+interface:
+  display_name: "T3 Code verification"
+  short_description: "Launch, drive and prove T3 Code's web and desktop UI"
+  default_prompt: "Use $verify-t3code to verify the affected web or desktop flow and capture its proof."

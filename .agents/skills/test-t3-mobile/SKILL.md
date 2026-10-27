@@ -23,7 +23,7 @@ from the dev-runner output. Use the worktree's ignored `.t3` state. Never run
 against `~/.t3/userdata`. The Browser panel is not required for this workflow.
 
 Test with meaningful project and thread data. Read the shared
-[SQLite fixture reference](../test-t3-app/references/sqlite-fixtures.md) only
+[SQLite fixture reference](../verify-t3code/references/sqlite-fixtures.md) only
 when inspecting or seeding SQLite. Stop the test server before fixture writes.
 
 ## Launch T3 Code Dev
