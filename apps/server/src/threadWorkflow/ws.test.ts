@@ -118,7 +118,7 @@ it.layer(layerTest)("thread workflow RPC handlers", (it) => {
       const other = ThreadId.make("thread-ws-other");
       yield* rpc[WS_METHODS.threadWorkflowApply]({
         threadId: other,
-        request: { _tag: "start", templateId: "single-task" as never },
+        request: { _tag: "start", templateId: "feature" as never },
         requestId: "other-1",
         expectedRevision: 0,
       });
