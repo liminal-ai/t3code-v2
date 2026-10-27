@@ -3,10 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
-/**
- * Derived from FORK.md's "Sync from upstream" in this repo. It has no `source` because freshness
- * reads only `~/.agents/skills`; change this template in the PR that changes that section.
- */
+/** Source: FORK.md "Sync from upstream". Freshness reads only `~/.agents/skills`, so `source` is null. */
 export const forkSync = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "fork-sync",
   version: 1,

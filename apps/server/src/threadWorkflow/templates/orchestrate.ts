@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
-/** Version 1 asked the user before starting and before the first merge; gates.md holds those now. */
 export const orchestrate = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "orchestrate",
   version: 2,

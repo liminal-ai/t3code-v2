@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - drives derive.ts as the bare-node CLI it is.
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
@@ -9,7 +9,7 @@ import { assert, it } from "@effect/vitest";
 import { installedSha256 } from "./derive.ts";
 
 const PLAYBOOK = "poteto-mode/playbooks/example.md";
-// sha256 of "# Example\n".
+const EXAMPLE_CONTENTS = "# Example\n";
 const EXAMPLE_SHA = "8ef0b048ad51a9d2ccaf9177716d7c83159a1d8c22fd37aa2b7d03c11b21b40d";
 const COMMIT = "a".repeat(40);
 
@@ -18,7 +18,7 @@ const withHome = (run: (home: string) => void) => {
   try {
     const file = NodePath.join(home, ".agents", "skills", PLAYBOOK);
     NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
-    NodeFS.writeFileSync(file, "# Example\n");
+    NodeFS.writeFileSync(file, EXAMPLE_CONTENTS);
     run(home);
   } finally {
     NodeFS.rmSync(home, { recursive: true, force: true });

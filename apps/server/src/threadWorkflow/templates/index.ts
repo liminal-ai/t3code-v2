@@ -32,7 +32,6 @@ import { shipping } from "./shipping.ts";
 import { visualParity } from "./visualParity.ts";
 import { worktreeCleanup } from "./worktreeCleanup.ts";
 
-/** One per pstack playbook in use, in poteto-mode's order, then open-ended for work none fits. */
 export const builtInTemplates: ReadonlyMap<ThreadWorkflowTemplateId, ThreadWorkflowTemplate> =
   new Map(
     [

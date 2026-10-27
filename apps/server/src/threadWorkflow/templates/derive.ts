@@ -1,13 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off globalConsole:off - a CLI that runs under bare node, outside the Effect runtime.
-/**
- * Prints the `source` block for a template built from an installed pstack playbook:
- *
- *   node apps/server/src/threadWorkflow/templates/derive.ts poteto-mode/playbooks/feature.md [--commit <sha>]
- *
- * The path is relative to `~/.agents/skills`. Without `--commit`, the commit is the last one on
- * pstack-lim's `origin/lim` that touched the playbook. Only node builtins are imported, so the
- * script runs without a build.
- */
+// @effect-diagnostics nodeBuiltinImport:off globalConsole:off
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -23,7 +14,6 @@ const PSTACK_LIM = NodePath.join(
   "pstack-lim",
 );
 
-/** The installed playbook's sha256, or null when it is not installed on this machine. */
 export const installedSha256 = (playbook: string, skillsDir = SKILLS_DIR): string | null => {
   const file = NodePath.join(skillsDir, playbook);
   if (!NodeFS.existsSync(file)) return null;

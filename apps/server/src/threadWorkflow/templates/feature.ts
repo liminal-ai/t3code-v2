@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill, mergeThroughGate } from "./shared.ts";
 
-/** Replaces single-task, which was derived from this playbook. */
 export const feature = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "feature",
   version: 1,

@@ -1,10 +1,5 @@
 import type { ThreadWorkflowStepSeed } from "@t3tools/contracts";
 
-/**
- * The steps every project workflow opens and closes with, from poteto-mode's Playbooks section
- * ("Every project workflow opens and closes the same way"). A template spreads them around its
- * playbook's own arc so the shared wording changes in one place.
- */
 type Step = (typeof ThreadWorkflowStepSeed)["Encoded"];
 
 export const RUN_FOLDER =
@@ -67,5 +62,4 @@ export const cleanup: Step = {
   waitsForUser: false,
 };
 
-/** Close-out, reflect and upkeep, then cleanup last. */
 export const closingSteps = [closeOut, reflectAndUpkeep, cleanup];

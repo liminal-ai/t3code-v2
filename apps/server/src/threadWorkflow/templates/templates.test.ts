@@ -107,8 +107,12 @@ it("ships the twenty playbook templates in poteto-mode's order, then open-ended"
   ]);
 });
 
-// Read-only work opens with its playbook's own first step instead of the verify-skill check.
-const READ_ONLY = new Set(["investigation", "retro-round", "worktree-cleanup", "session-pickup"]);
+const OPENS_WITHOUT_VERIFY_SKILL = new Set([
+  "investigation",
+  "retro-round",
+  "worktree-cleanup",
+  "session-pickup",
+]);
 const VERIFY_SKILL = "project's verify skill";
 
 const playbookTemplates = [...builtInTemplates.values()].filter(
@@ -142,7 +146,7 @@ describe.each(playbookTemplates.map((template) => [template.id, template] as con
       assert.isTrue(steps.some((step) => step.instructions.includes("`/reflect`")));
     });
 
-    it.skipIf(READ_ONLY.has(template.id))(
+    it.skipIf(OPENS_WITHOUT_VERIFY_SKILL.has(template.id))(
       "checks for the project's verify skill first and drives every verify step through it",
       () => {
         assert.strictEqual(slugs[0], "find-verify-skill");

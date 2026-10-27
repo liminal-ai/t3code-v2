@@ -3,7 +3,6 @@ import * as Schema from "effect/Schema";
 
 import { cleanup, reflectAndUpkeep, RUN_FOLDER } from "./shared.ts";
 
-/** Derived from the reflect skill's "Retro rounds" and the shape of the 2026-10-26 round. */
 export const retroRound = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "retro-round",
   version: 1,
