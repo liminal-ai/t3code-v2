@@ -194,8 +194,11 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         ["groundwork", "scope-it", "build", "confirm-done"],
       );
       const note = planned.note ?? "";
-      assert.match(note, /step 1 of 4: Groundwork/);
-      const tickLine = note.split("\n").find((line) => line.startsWith("thread_workflow_tick "))!;
+      assert.match(note, /step 1 of 4: groundwork \(w1\.1\)\nGroundwork\n/);
+      const tickLine = note
+        .split("\n")
+        .find((line) => line.startsWith("Done: thread_workflow_tick "))!
+        .slice("Done: ".length);
       const ticked = yield* callPrinted(
         tickLine.replace("<what you did and how you know it worked>", "repo and judge set up"),
       );

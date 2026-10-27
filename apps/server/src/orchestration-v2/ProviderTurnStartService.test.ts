@@ -1181,7 +1181,7 @@ effectIt.effect("prefixes the prompt with the module's note for the thread's ope
 
     expect(harness.prompts).toHaveLength(1);
     expect(harness.prompts[0]).toMatch(
-      /^<thread-workflow>\nWorkflow "Single task" \(w1, template single-task\), step 1 of \d+: Ground the affected subsystem\n/,
+      /^<thread-workflow>\nWorkflow "Single task" \(w1\), step 1 of \d+: ground-subsystem \(w1\.1\)\nGround the affected subsystem\n/,
     );
     expect(harness.prompts[0]).toContain('thread_workflow_tick {"stepId":"w1.1"');
     expect(harness.prompts[0]?.endsWith("</thread-workflow>\n\nUser message:\nContinue")).toBe(

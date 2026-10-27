@@ -182,7 +182,7 @@ const layerHandlers = Effect.gen(function* () {
       instance,
       instances: state.view.instances,
       templates: view.activeInstanceId === null ? yield* service.templates : [],
-      note: turnNote(state.view),
+      note: turnNote(state.view, "full"),
     };
   });
 

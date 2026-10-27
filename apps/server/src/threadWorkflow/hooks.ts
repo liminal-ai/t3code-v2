@@ -69,7 +69,7 @@ export const layerThreadHooks = Layer.effect(
             ? Effect.succeed("")
             : store
                 .state(threadId)
-                .pipe(Effect.map((state) => turnNote(toSubscriptionView(state)))),
+                .pipe(Effect.map((state) => turnNote(toSubscriptionView(state), "full"))),
         ),
       lifecycleBlocker: ({ threadId, action }) =>
         guarded<string | null, unknown>(
