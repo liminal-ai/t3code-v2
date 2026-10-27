@@ -38,7 +38,7 @@ export const multiPhasePlan = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Plan handed back",
       slug: "hand-back",
       instructions:
-        "Post the plan path and the check script's output. If the request already gave the go to build, start the execution playbook the plan names; its PRs declare the plan with a `pstack-plan:` line in their bodies. Otherwise the user decides whether to build: ask for the go with `thread_workflow_ask` and stop.",
+        "Post the plan path and the check script's output. If the request already gave the go to build, skip the closing steps below with the reason that the execution workflow carries them, close this workflow, and start the execution playbook the plan names; its PRs declare the plan with a `pstack-plan:` line in their bodies. Otherwise the user decides whether to build: ask for the go with `thread_workflow_ask` and stop.",
       proofLevel: "required",
       proofHint: "the go, quoted, or where it came from",
       waitsForUser: false,
