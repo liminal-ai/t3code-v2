@@ -67,8 +67,8 @@ export function ThreadWorkflowStart({
       <div>
         <h2 className="font-semibold text-sm">Start a workflow</h2>
         <p className="text-muted-foreground text-xs">
-          The agent gets the current step at the start of every turn. The thread cannot settle while
-          a workflow is open.
+          The agent gets the whole current step when it changes, and a one-line reminder on every
+          turn. The thread cannot settle while a workflow is open.
         </p>
       </div>
       {templates.error ? (

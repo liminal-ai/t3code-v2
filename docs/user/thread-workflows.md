@@ -1,6 +1,6 @@
 # Thread workflows
 
-A thread workflow is the arc of one thread's work: a few stages, in order, with who finished each one and when. The agent sees the current stage at the start of every turn and marks stages done as it goes. The **Workflow** tab of the right panel shows the whole arc at a glance: what is done, where the work is now, and what comes next.
+A thread workflow is the arc of one thread's work: a few stages, in order, with who finished each one and when. The agent gets the whole current stage when it changes, a one-line reminder of it on every other turn, and marks stages done as it goes. The **Workflow** tab of the right panel shows the whole arc at a glance: what is done, where the work is now, and what comes next.
 
 While a thread has an open workflow, the thread cannot be settled, archived or deleted. To change course, say so in the workflow: skip a stage with a reason, close the workflow as finished once its stages are done, or abandon it with a reason. Each change is recorded with who made it, so a thread never quietly ends before its stages are done.
 
@@ -18,7 +18,7 @@ The tab is one list. Done stages show their title and a one-line result. The cur
 
 A stage that ends with your decision carries a small **your call** marker. It is not an alarm. **Waiting on you** appears at the top of the tab only when the agent has asked you a question and is waiting for the answer, and the count on the tab means the same thing.
 
-The agent's instructions for a stage, what proof it asked for, and who did what are behind the chevron on each row.
+The agent's instructions for a stage, what proof it asked for, and who did what are behind the chevron on each row, under the stage's slug: the short name the agent's reminder calls it by.
 
 ## Mark a stage done
 
