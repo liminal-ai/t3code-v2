@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-import { spawn, execFileSync } from "node:child_process";
-import { createRequire } from "node:module";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeFS from "node:fs";
+import * as NodeModule from "node:module";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+import * as NodeSqlite from "node:sqlite";
 
 const USAGE = `t3v.mjs [--run <name>] <command>
   up                         start \`vp run dev\` here, wait for the pairing URL and both ports
@@ -39,32 +39,35 @@ const flag = (name) => {
 };
 
 const git = (...args) =>
-  execFileSync("git", args, { cwd: import.meta.dirname, encoding: "utf8" }).trim();
+  NodeChildProcess.execFileSync("git", args, { cwd: import.meta.dirname, encoding: "utf8" }).trim();
 const worktree = git("rev-parse", "--show-toplevel");
-const mainCheckout = path.dirname(path.resolve(worktree, git("rev-parse", "--git-common-dir")));
+const mainCheckout = NodePath.dirname(
+  NodePath.resolve(worktree, git("rev-parse", "--git-common-dir")),
+);
 const runName = flag("run") ?? process.env.T3V_RUN ?? "verify-t3code";
-const runDir = path.join(mainCheckout, ".pstack", "runs", runName);
-const scratch = path.join(runDir, "scratch", "t3v", path.basename(worktree));
-const proof = path.join(runDir, "proof");
-const stateDir = path.join(worktree, ".t3", "userdata");
+const runDir = NodePath.join(mainCheckout, ".pstack", "runs", runName);
+const scratch = NodePath.join(runDir, "scratch", "t3v", NodePath.basename(worktree));
+const proof = NodePath.join(runDir, "proof");
+const stateDir = NodePath.join(worktree, ".t3", "userdata");
 const files = {
-  devLog: path.join(scratch, "dev.log"),
-  devPgid: path.join(scratch, "dev.pgid"),
-  pairingUrl: path.join(scratch, "pairing-url"),
-  browser: path.join(scratch, "browser.json"),
-  profile: path.join(scratch, "browser-profile"),
-  runtime: path.join(stateDir, "server-runtime.json"),
+  devLog: NodePath.join(scratch, "dev.log"),
+  devPgid: NodePath.join(scratch, "dev.pgid"),
+  pairingUrl: NodePath.join(scratch, "pairing-url"),
+  browser: NodePath.join(scratch, "browser.json"),
+  profile: NodePath.join(scratch, "browser-profile"),
+  runtime: NodePath.join(stateDir, "server-runtime.json"),
 };
 const LIVE_STATE_DIRS = [
-  path.join(os.homedir(), ".t3", "userdata"),
-  path.join(os.homedir(), "lim-v2", "service", "t3code", "prod", "data"),
+  NodePath.join(NodeOS.homedir(), ".t3", "userdata"),
+  NodePath.join(NodeOS.homedir(), "lim-v2", "service", "t3code", "prod", "data"),
 ];
 
 const fail = (message) => {
   console.error(`t3v: ${message}`);
   process.exit(1);
 };
-const readJson = (file) => (fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : null);
+const readJson = (file) =>
+  NodeFS.existsSync(file) ? JSON.parse(NodeFS.readFileSync(file, "utf8")) : null;
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
@@ -82,7 +85,7 @@ const httpStatus = async (url) => {
     return null;
   }
 };
-const listeners = () => execFileSync("ss", ["-H", "-ltnp"], { encoding: "utf8" });
+const listeners = () => NodeChildProcess.execFileSync("ss", ["-H", "-ltnp"], { encoding: "utf8" });
 const portOwner = (port) => {
   const line = listeners()
     .split("\n")
@@ -106,14 +109,14 @@ async function up() {
   for (const name of ["VITE_HTTP_URL", "VITE_WS_URL"]) {
     if (process.env[name]) fail(`${name} is set; unset it, dev is single-origin`);
   }
-  fs.mkdirSync(scratch, { recursive: true });
-  const log = fs.openSync(files.devLog, "w", 0o600);
-  const child = spawn("vp", ["run", "dev"], {
+  NodeFS.mkdirSync(scratch, { recursive: true });
+  const log = NodeFS.openSync(files.devLog, "w", 0o600);
+  const child = NodeChildProcess.spawn("vp", ["run", "dev"], {
     cwd: worktree,
     detached: true,
     stdio: ["ignore", log, log],
   });
-  fs.writeFileSync(files.devPgid, String(child.pid));
+  NodeFS.writeFileSync(files.devPgid, String(child.pid));
   child.unref();
   console.log(`dev server pid ${child.pid} (process group), log ${files.devLog}`);
 
@@ -122,11 +125,11 @@ async function up() {
   while (!pairingUrl) {
     if (Date.now() > deadline) fail(`no pairing URL after 180s; read ${files.devLog}`);
     if (!alive(child.pid)) fail(`dev server exited; read ${files.devLog}`);
-    pairingUrl = /pairingUrl: (\S+)/.exec(fs.readFileSync(files.devLog, "utf8"))?.[1];
+    pairingUrl = /pairingUrl: (\S+)/.exec(NodeFS.readFileSync(files.devLog, "utf8"))?.[1];
     await sleep(1000);
   }
-  fs.writeFileSync(files.pairingUrl, pairingUrl, { mode: 0o600 });
-  const runner = /\[dev-runner\] mode=\S+ .*/.exec(fs.readFileSync(files.devLog, "utf8"))?.[0];
+  NodeFS.writeFileSync(files.pairingUrl, pairingUrl, { mode: 0o600 });
+  const runner = /\[dev-runner\] mode=\S+ .*/.exec(NodeFS.readFileSync(files.devLog, "utf8"))?.[0];
   console.log(runner);
   const { port } = runtime();
   const origin = webOrigin();
@@ -143,26 +146,30 @@ async function doctor() {
     problems.push(message);
     console.log(`FAIL ${message}`);
   };
+  const check = (pass, good, failure) => (pass ? ok(good) : bad(failure));
   const info = runtime();
   if (!info) {
     bad(`no ${files.runtime}: no dev server has started on this worktree's .t3`);
     process.exit(1);
   }
-  alive(info.pid) ? ok(`server pid ${info.pid} is alive`) : bad(`server pid ${info.pid} is gone`);
+  check(alive(info.pid), `server pid ${info.pid} is alive`, `server pid ${info.pid} is gone`);
   const owner = portOwner(info.port);
-  owner === info.pid
-    ? ok(`port ${info.port} is owned by pid ${info.pid}`)
-    : bad(`port ${info.port} is owned by ${owner ?? "nobody"}, not pid ${info.pid}`);
+  check(
+    owner === info.pid,
+    `port ${info.port} is owned by pid ${info.pid}`,
+    `port ${info.port} is owned by ${owner ?? "nobody"}, not pid ${info.pid}`,
+  );
   try {
-    const cwd = fs.readlinkSync(`/proc/${info.pid}/cwd`);
-    cwd.startsWith(worktree)
-      ? ok(`server cwd ${cwd}`)
-      : bad(`server cwd ${cwd} is outside ${worktree}`);
-    const open = fs
-      .readdirSync(`/proc/${info.pid}/fd`)
+    const cwd = NodeFS.readlinkSync(`/proc/${info.pid}/cwd`);
+    check(
+      cwd.startsWith(worktree),
+      `server cwd ${cwd}`,
+      `server cwd ${cwd} is outside ${worktree}`,
+    );
+    const open = NodeFS.readdirSync(`/proc/${info.pid}/fd`)
       .map((fd) => {
         try {
-          return fs.readlinkSync(`/proc/${info.pid}/fd/${fd}`);
+          return NodeFS.readlinkSync(`/proc/${info.pid}/fd/${fd}`);
         } catch {
           return "";
         }
@@ -170,24 +177,24 @@ async function doctor() {
       .filter((target) => target.endsWith(".sqlite"));
     const live = open.filter((target) => LIVE_STATE_DIRS.some((dir) => target.startsWith(dir)));
     if (live.length > 0) bad(`server has the live install open: ${live.join(", ")}`);
-    else if (open.some((target) => target === path.join(stateDir, "statev2.sqlite")))
+    else if (open.some((target) => target === NodePath.join(stateDir, "statev2.sqlite")))
       ok(`state is ${stateDir}`);
     else
       bad(
-        `server has no ${path.join(stateDir, "statev2.sqlite")} open (${open.join(", ") || "none"})`,
+        `server has no ${NodePath.join(stateDir, "statev2.sqlite")} open (${open.join(", ") || "none"})`,
       );
   } catch (error) {
     bad(`cannot read /proc/${info.pid}: ${error.message}`);
   }
   const envStatus = await httpStatus(`http://127.0.0.1:${info.port}/.well-known/t3/environment`);
-  envStatus === 200
-    ? ok(`server answers on ${info.port}`)
-    : bad(`server on ${info.port} answered ${envStatus}`);
+  check(
+    envStatus === 200,
+    `server answers on ${info.port}`,
+    `server on ${info.port} answered ${envStatus}`,
+  );
   const origin = webOrigin();
   const webStatus = await httpStatus(`${origin}/`);
-  webStatus === 200
-    ? ok(`web answers on ${origin}`)
-    : bad(`web on ${origin} answered ${webStatus}`);
+  check(webStatus === 200, `web answers on ${origin}`, `web on ${origin} answered ${webStatus}`);
   console.log(
     `info server ${info.serverVersion}, worktree HEAD ${git("rev-parse", "--short", "HEAD")}`,
   );
@@ -196,19 +203,23 @@ async function doctor() {
     const session = await withPage((page) =>
       page.evaluate(() => fetch("/api/auth/session").then((r) => r.json())),
     );
-    session.authenticated
-      ? ok("the t3v browser is paired")
-      : bad("the t3v browser is not paired; run `t3v.mjs pair`, then `browser open`");
+    check(
+      session.authenticated,
+      "the t3v browser is paired",
+      "the t3v browser is not paired; run `t3v.mjs pair`, then `browser open`",
+    );
   } else {
-    fs.existsSync(files.pairingUrl)
-      ? ok(`pairing URL saved in ${files.pairingUrl} (unused until \`browser open\`)`)
-      : bad("no pairing URL saved; run `t3v.mjs pair`");
+    check(
+      NodeFS.existsSync(files.pairingUrl),
+      `pairing URL saved in ${files.pairingUrl} (unused until \`browser open\`)`,
+      "no pairing URL saved; run `t3v.mjs pair`",
+    );
   }
   if (problems.length > 0) process.exit(1);
 }
 
 function settings() {
-  const file = path.join(stateDir, "settings.json");
+  const file = NodePath.join(stateDir, "settings.json");
   const current = readJson(file) ?? {};
   for (const assignment of argv) {
     const at = assignment.indexOf("=");
@@ -216,27 +227,27 @@ function settings() {
     current[assignment.slice(0, at)] = JSON.parse(assignment.slice(at + 1));
   }
   if (argv.length > 0) {
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(file, `${JSON.stringify(current, null, 2)}\n`);
+    NodeFS.mkdirSync(stateDir, { recursive: true });
+    NodeFS.writeFileSync(file, `${JSON.stringify(current, null, 2)}\n`);
   }
   console.log(`${file}\n${JSON.stringify(current, null, 2)}`);
 }
 
 function pair() {
-  const out = execFileSync(
+  const out = NodeChildProcess.execFileSync(
     process.execPath,
-    ["apps/server/src/bin.ts", "pair", "--base-dir", path.join(worktree, ".t3")],
+    ["apps/server/src/bin.ts", "pair", "--base-dir", NodePath.join(worktree, ".t3")],
     { cwd: worktree, encoding: "utf8" },
   );
   const url = /https?:\/\/\S+#token=\S+/.exec(out)?.[0];
   if (!url) fail(`bin.ts pair printed no pairing URL:\n${out}`);
-  fs.mkdirSync(scratch, { recursive: true });
-  fs.writeFileSync(files.pairingUrl, url, { mode: 0o600 });
+  NodeFS.mkdirSync(scratch, { recursive: true });
+  NodeFS.writeFileSync(files.pairingUrl, url, { mode: 0o600 });
   console.log(`fresh pairing URL in ${files.pairingUrl}`);
 }
 
 const playwright = () =>
-  createRequire(path.join(worktree, "apps", "web", "package.json"))("playwright");
+  NodeModule.createRequire(NodePath.join(worktree, "apps", "web", "package.json"))("playwright");
 
 async function withPage(action) {
   const state = readJson(files.browser);
@@ -282,25 +293,30 @@ async function browserServe() {
 async function browserOpen() {
   const existing = readJson(files.browser);
   if (existing && alive(existing.pid)) fail(`t3v browser already runs (pid ${existing.pid})`);
-  if (!fs.existsSync(files.pairingUrl)) fail("no pairing URL; run `t3v.mjs up` or `t3v.mjs pair`");
-  fs.rmSync(path.join(files.profile, "DevToolsActivePort"), { force: true });
-  const child = spawn(process.execPath, [process.argv[1], "--run", runName, "__serve"], {
-    cwd: worktree,
-    detached: true,
-    stdio: "ignore",
-  });
+  if (!NodeFS.existsSync(files.pairingUrl))
+    fail("no pairing URL; run `t3v.mjs up` or `t3v.mjs pair`");
+  NodeFS.rmSync(NodePath.join(files.profile, "DevToolsActivePort"), { force: true });
+  const child = NodeChildProcess.spawn(
+    process.execPath,
+    [process.argv[1], "--run", runName, "__serve"],
+    {
+      cwd: worktree,
+      detached: true,
+      stdio: "ignore",
+    },
+  );
   child.unref();
-  const portFile = path.join(files.profile, "DevToolsActivePort");
-  for (let i = 0; i < 60 && !fs.existsSync(portFile); i++) await sleep(500);
-  if (!fs.existsSync(portFile)) fail("Chromium did not start");
-  const cdp = `http://127.0.0.1:${fs.readFileSync(portFile, "utf8").split("\n")[0]}`;
-  fs.writeFileSync(files.browser, JSON.stringify({ pid: child.pid, cdp }));
-  const pairingUrl = fs.readFileSync(files.pairingUrl, "utf8").trim();
+  const portFile = NodePath.join(files.profile, "DevToolsActivePort");
+  for (let i = 0; i < 60 && !NodeFS.existsSync(portFile); i++) await sleep(500);
+  if (!NodeFS.existsSync(portFile)) fail("Chromium did not start");
+  const cdp = `http://127.0.0.1:${NodeFS.readFileSync(portFile, "utf8").split("\n")[0]}`;
+  NodeFS.writeFileSync(files.browser, JSON.stringify({ pid: child.pid, cdp }));
+  const pairingUrl = NodeFS.readFileSync(files.pairingUrl, "utf8").trim();
   await withPage(async (page) => {
     await page.goto(pairingUrl);
     await page.getByRole("navigation", { name: "Threads" }).waitFor({ timeout: 60_000 });
   });
-  fs.rmSync(files.pairingUrl);
+  NodeFS.rmSync(files.pairingUrl);
   console.log(`browser pid ${child.pid}, paired, on ${webOrigin()}`);
 }
 
@@ -312,7 +328,7 @@ async function browser(sub) {
     case "close": {
       const state = readJson(files.browser);
       if (state && alive(state.pid)) process.kill(state.pid, "SIGTERM");
-      fs.rmSync(files.browser, { force: true });
+      NodeFS.rmSync(files.browser, { force: true });
       return console.log("browser closed");
     }
     case "goto":
@@ -322,16 +338,16 @@ async function browser(sub) {
       });
     case "shot":
       return withPage(async (page) => {
-        const file = path.join(proof, `${argv[0] ?? "shot"}.png`);
-        fs.mkdirSync(path.dirname(file), { recursive: true });
+        const file = NodePath.join(proof, `${argv[0] ?? "shot"}.png`);
+        NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
         await page.screenshot({ path: file });
         console.log(file);
       });
     case "aria":
       return withPage(async (page) => {
-        const file = path.join(proof, `${argv[0] ?? "page"}.aria.txt`);
-        fs.mkdirSync(path.dirname(file), { recursive: true });
-        fs.writeFileSync(file, await page.locator("body").ariaSnapshot());
+        const file = NodePath.join(proof, `${argv[0] ?? "page"}.aria.txt`);
+        NodeFS.mkdirSync(NodePath.dirname(file), { recursive: true });
+        NodeFS.writeFileSync(file, await page.locator("body").ariaSnapshot());
         console.log(file);
       });
     case "text":
@@ -396,28 +412,29 @@ async function browser(sub) {
 }
 
 const providerLogLinesFromSharedSessions = (nativeIds) => {
-  const dir = path.join(stateDir, "logs", "provider");
-  return fs
-    .readdirSync(dir)
-    .flatMap((name) => fs.readFileSync(path.join(dir, name), "utf8").split("\n"))
+  const dir = NodePath.join(stateDir, "logs", "provider");
+  return NodeFS.readdirSync(dir)
+    .flatMap((name) => NodeFS.readFileSync(NodePath.join(dir, name), "utf8").split("\n"))
     .filter((line) => nativeIds.some((id) => line.includes(`"threadId":"${id}"`)));
 };
 
 function outcome(sub) {
   if (sub === "workflow") {
-    const dir = path.join(stateDir, "thread-workflows", "threads");
-    if (!fs.existsSync(dir)) return console.log(`no workflow logs under ${dir}`);
+    const dir = NodePath.join(stateDir, "thread-workflows", "threads");
+    if (!NodeFS.existsSync(dir)) return console.log(`no workflow logs under ${dir}`);
     const wanted = argv[0];
-    for (const name of fs.readdirSync(dir).sort()) {
+    for (const name of NodeFS.readdirSync(dir).sort()) {
       if (wanted && name !== `${wanted}.jsonl`) continue;
-      console.log(`# ${path.join(dir, name)}`);
-      process.stdout.write(fs.readFileSync(path.join(dir, name), "utf8"));
+      console.log(`# ${NodePath.join(dir, name)}`);
+      process.stdout.write(NodeFS.readFileSync(NodePath.join(dir, name), "utf8"));
     }
     return;
   }
   if (sub === "note") {
     if (!argv[0]) fail("outcome note needs a thread id");
-    const db = new DatabaseSync(path.join(stateDir, "statev2.sqlite"), { readOnly: true });
+    const db = new NodeSqlite.DatabaseSync(NodePath.join(stateDir, "statev2.sqlite"), {
+      readOnly: true,
+    });
     const rows = db
       .prepare(
         "SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE thread_id = ?",
@@ -441,7 +458,9 @@ function outcome(sub) {
     const sql = argv.join(" ");
     if (!/^\s*(select|pragma|with)\b/i.test(sql))
       fail("outcome sql runs SELECT, WITH or PRAGMA only");
-    const db = new DatabaseSync(path.join(stateDir, "statev2.sqlite"), { readOnly: true });
+    const db = new NodeSqlite.DatabaseSync(NodePath.join(stateDir, "statev2.sqlite"), {
+      readOnly: true,
+    });
     console.log(JSON.stringify(db.prepare(sql).all(), null, 2));
     db.close();
     return;
@@ -455,16 +474,16 @@ function down() {
     process.kill(state.pid, "SIGTERM");
     console.log(`stopped browser pid ${state.pid}`);
   }
-  fs.rmSync(files.browser, { force: true });
-  const devPgid = fs.existsSync(files.devPgid)
-    ? Number(fs.readFileSync(files.devPgid, "utf8"))
+  NodeFS.rmSync(files.browser, { force: true });
+  const devPgid = NodeFS.existsSync(files.devPgid)
+    ? Number(NodeFS.readFileSync(files.devPgid, "utf8"))
     : null;
   if (devPgid && alive(devPgid)) {
     process.kill(-devPgid, "SIGTERM");
     console.log(`stopped dev server process group ${devPgid}`);
   } else console.log("no dev server started by t3v is running");
-  fs.rmSync(files.devPgid, { force: true });
-  fs.rmSync(files.pairingUrl, { force: true });
+  NodeFS.rmSync(files.devPgid, { force: true });
+  NodeFS.rmSync(files.pairingUrl, { force: true });
   console.log(`proof kept in ${proof}`);
 }
 
