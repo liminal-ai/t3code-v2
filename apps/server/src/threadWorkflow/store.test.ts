@@ -47,14 +47,23 @@ const setup = Effect.gen(function* () {
   });
   const threadsDir = path.join(baseDir, "userdata", "thread-workflows", "threads");
   const logFile = path.join(threadsDir, threadLogFileName(threadId));
+  const pstackFile = path.join(baseDir, "userdata", "thread-workflows", "pstack-threads.jsonl");
   const lines = (records: ReadonlyArray<ThreadWorkflowRecord>) =>
     records.map((record) => `${JSON.stringify(record)}\n`).join("");
   const seed = (text: string) =>
     fileSystem
       .makeDirectory(threadsDir, { recursive: true })
       .pipe(Effect.andThen(fileSystem.writeFileString(logFile, text)));
-  return { fileSystem, path, baseDir, threadsDir, logFile, lines, seed };
+  return { fileSystem, path, baseDir, threadsDir, logFile, pstackFile, lines, seed };
 });
+
+const captureWarnings = () => {
+  const warnings: Array<unknown> = [];
+  const logger = Logger.make(({ logLevel, message }) => {
+    if (logLevel === "Warn") warnings.push(message);
+  });
+  return { warnings, layer: Logger.layer([logger], { mergeWithExisting: false }) };
+};
 
 const appendAll = (
   store: ThreadWorkflowStore["Service"],
@@ -393,4 +402,84 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
       assert.strictEqual(yield* fileSystem.readFileString(`${threadsDir}/${aside[0]}`), broken);
     }),
   );
+
+  it.effect("loads the pstack marks from their file", () =>
+    Effect.gen(function* () {
+      const { baseDir, fileSystem, path, pstackFile } = yield* setup;
+      yield* fileSystem.makeDirectory(path.dirname(pstackFile), { recursive: true });
+      yield* fileSystem.writeFileString(
+        pstackFile,
+        `{"v":1,"threadId":"${threadId}","at":"2026-10-27T00:00:00.000Z"}\n{"v":1,"threadId":"other","at":"2026-10-27T00:00:01.000Z"}\n`,
+      );
+      const marked = yield* withStore(baseDir, (store) => store.pstackThreads);
+      assert.deepStrictEqual([...marked].sort(), ["other", threadId].sort());
+    }),
+  );
+
+  it.effect("marks a pstack thread once, across repeated calls and a reload", () =>
+    Effect.gen(function* () {
+      const { baseDir, fileSystem, pstackFile } = yield* setup;
+      yield* withStore(baseDir, (store) =>
+        Effect.gen(function* () {
+          assert.isFalse((yield* store.pstackThreads).has(threadId));
+          yield* store.markPstackThread(threadId);
+          yield* store.markPstackThread(threadId);
+          assert.isTrue((yield* store.pstackThreads).has(threadId));
+        }),
+      );
+      const reloaded = yield* withStore(baseDir, (store) =>
+        Effect.gen(function* () {
+          const before = yield* store.pstackThreads;
+          yield* store.markPstackThread(threadId);
+          return before;
+        }),
+      );
+      assert.isTrue(reloaded.has(threadId));
+      const text = yield* fileSystem.readFileString(pstackFile);
+      const lines = text.split("\n").slice(0, -1);
+      assert.lengthOf(lines, 1);
+      assert.deepInclude(JSON.parse(lines[0]!), { v: 1, threadId });
+    }),
+  );
+
+  it.effect("keeps a mark in memory, with a warning, when its write fails", () => {
+    const log = captureWarnings();
+    return Effect.gen(function* () {
+      const { baseDir, fileSystem, pstackFile } = yield* setup;
+      yield* withStore(baseDir, (store) =>
+        Effect.gen(function* () {
+          // A directory where the file should be makes the append fail after a clean load.
+          yield* fileSystem.makeDirectory(pstackFile, { recursive: true });
+          yield* store.markPstackThread(threadId);
+          assert.isTrue((yield* store.pstackThreads).has(threadId));
+          assert.isNull(store.unavailable);
+        }),
+      );
+      assert.lengthOf(log.warnings, 1);
+      assert.match(String(log.warnings[0]), /pstack mark did not complete/);
+    }).pipe(Effect.provide(log.layer));
+  });
+
+  it.effect("marks no thread from a malformed file, warns once, and keeps working", () => {
+    const log = captureWarnings();
+    return Effect.gen(function* () {
+      const { baseDir, fileSystem, path, pstackFile } = yield* setup;
+      yield* fileSystem.makeDirectory(path.dirname(pstackFile), { recursive: true });
+      yield* fileSystem.writeFileString(
+        pstackFile,
+        `{"v":1,"threadId":"${threadId}","at":"2026-10-27T00:00:00.000Z"}\nnot a mark\n`,
+      );
+      yield* withStore(baseDir, (store) =>
+        Effect.gen(function* () {
+          assert.strictEqual((yield* store.pstackThreads).size, 0);
+          assert.isNull(store.unavailable);
+          const [first] = twoRecords.records;
+          assert.isDefined(first);
+          assert.strictEqual((yield* store.append(threadId, first)).lastSeq, 1);
+        }),
+      );
+      assert.lengthOf(log.warnings, 1);
+      assert.match(String(log.warnings[0]), /pstack marks unreadable/);
+    }).pipe(Effect.provide(log.layer));
+  });
 });
