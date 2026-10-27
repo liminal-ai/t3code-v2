@@ -67,6 +67,7 @@ describe("createInboxReturnTracker", () => {
     tracker.observe([thread("a", true)]);
     tracker.observe([thread("a", false)]);
     expect(isThreadWorking(thread("a", false))).toBe(false);
+    expect(isThreadWorking({ ...thread("a", true), openWorkflowQuestions: 1 })).toBe(false);
     expect(tracker.isWorking(thread("a", false))).toBe(true);
     vi.advanceTimersByTime(1_999);
     tracker.observe([thread("a", false)]);
@@ -100,6 +101,7 @@ describe("createInboxReturnTracker", () => {
   it.each([
     { hasPendingApprovals: true },
     { hasPendingUserInput: true },
+    { openWorkflowQuestions: 1 },
     { pendingSubagentRequest: "approval" as const },
     { pendingSubagentRequest: "user_input" as const },
     { pendingGuestMessageCount: 1 },
