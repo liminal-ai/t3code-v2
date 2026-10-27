@@ -127,6 +127,13 @@ const structured = (result: McpSchema.CallToolResult) =>
         readonly slug: string;
         readonly state: { readonly _tag: string };
       }>;
+      readonly questions: ReadonlyArray<{
+        readonly id: string;
+        readonly title: string;
+        readonly summary?: string;
+        readonly blocksStepId?: string;
+        readonly state: Record<string, unknown>;
+      }>;
     } | null;
     readonly templates?: ReadonlyArray<{ readonly id: string }>;
   };
@@ -575,6 +582,104 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         instanceId: reopenedId,
         outcome: "abandoned",
         reason: "x",
+      });
+    }),
+  );
+
+  it.effect("puts a question on the workflow, records a chat answer, and withdraws one", () =>
+    Effect.gen(function* () {
+      const noWorkflow = yield* call("thread_workflow_ask", {
+        title: "Merge without a second review?",
+      });
+      assert.strictEqual(failure(noWorkflow)?.code, "no_open_instance");
+
+      const { instanceId } = (yield* call("thread_workflow_start", {
+        templateId: "open-ended",
+        steps: [stage("Build"), stage("Ship")],
+      })).structuredContent as { instanceId: string };
+      const asked = yield* call("thread_workflow_ask", {
+        title: "Merge without a second review?",
+        summary: "Yes (recommended) · No, wait for Sam",
+        details: "Sam is out until Monday. Waiting costs a day; merging now risks a revert.",
+        options: [{ label: "Yes", recommended: true }, { label: "No, wait for Sam" }],
+        blocksStepId: `${instanceId}.2`,
+      });
+      assert.isFalse(asked.isError, JSON.stringify(asked.content));
+      assert.deepStrictEqual(asked.structuredContent, {
+        questionId: `${instanceId}.q1`,
+        openQuestions: 1,
+        next: `thread_workflow_change {"action":"answer","questionId":"${instanceId}.q1","answer":"<the user's answer, quoted>"}`,
+      });
+      const view = structured(yield* call("thread_workflow_get", {}));
+      assert.deepInclude(view.instance?.questions[0], {
+        id: `${instanceId}.q1`,
+        title: "Merge without a second review?",
+        summary: "Yes (recommended) · No, wait for Sam",
+        blocksStepId: `${instanceId}.2`,
+        state: { _tag: "open" },
+      });
+      assert.include(
+        view.note,
+        `Open questions (1): ${instanceId}.q1 Merge without a second review?`,
+      );
+
+      const answered = yield* callPrinted(
+        (asked.structuredContent as { next: string }).next.replace(
+          "<the user's answer, quoted>",
+          "Yes, merge it",
+        ),
+      );
+      assert.isFalse(answered.isError, JSON.stringify(answered.content));
+      assert.deepInclude(answered.structuredContent as object, { instanceId });
+      const afterAnswer = structured(yield* call("thread_workflow_get", {})).instance?.questions;
+      assert.deepInclude(afterAnswer?.[0]?.state, {
+        _tag: "answered",
+        answer: "Yes, merge it",
+        source: "chat",
+      });
+      assert.notInclude(structured(yield* call("thread_workflow_get", {})).note, "Open questions");
+
+      const again = yield* call("thread_workflow_change", {
+        action: "answer",
+        questionId: `${instanceId}.q1`,
+        answer: "No",
+      });
+      assert.strictEqual(failure(again)?.code, "question_closed");
+      assert.include(failure(again)?.message, `"action":"reopen","target":"${instanceId}.q1"`);
+
+      const second = yield* call("thread_workflow_ask", { title: "Ship to staging first?" });
+      assert.deepInclude(second.structuredContent as object, {
+        questionId: `${instanceId}.q2`,
+        openQuestions: 1,
+      });
+      const withdrawn = yield* call("thread_workflow_change", {
+        action: "withdraw",
+        questionId: `${instanceId}.q2`,
+        reason: "staging is gone",
+      });
+      assert.isFalse(withdrawn.isError, JSON.stringify(withdrawn.content));
+      const reopen = yield* call("thread_workflow_change", {
+        action: "reopen",
+        target: `${instanceId}.q2`,
+        reason: "staging is back",
+      });
+      assert.strictEqual(failure(reopen)?.code, "user_only");
+
+      const missing = yield* call("thread_workflow_change", {
+        action: "answer",
+        questionId: `${instanceId}.q1`,
+      });
+      assert.strictEqual(failure(missing)?.code, "invalid_request");
+      assert.include(failure(missing)?.message, "action answer needs answer.");
+      const badStep = yield* call("thread_workflow_ask", {
+        title: "Blocked?",
+        blocksStepId: `${instanceId}.9`,
+      });
+      assert.strictEqual(failure(badStep)?.code, "unknown_step");
+      yield* call("thread_workflow_close", {
+        instanceId,
+        outcome: "abandoned",
+        reason: "test done",
       });
     }),
   );
