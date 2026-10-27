@@ -17,20 +17,26 @@ import { babysit } from "./babysit.ts";
 import { bugFix } from "./bugFix.ts";
 import { evalRun } from "./evalRun.ts";
 import { feature } from "./feature.ts";
+import { forkSync } from "./forkSync.ts";
 import { hillclimb } from "./hillclimb.ts";
+import { investigation } from "./investigation.ts";
 import { multiPhasePlan } from "./multiPhasePlan.ts";
 import { openEnded } from "./openEnded.ts";
 import { orchestrate } from "./orchestrate.ts";
 import { perfIssue } from "./perfIssue.ts";
 import { prototype } from "./prototype.ts";
 import { refactoring } from "./refactoring.ts";
+import { retroRound } from "./retroRound.ts";
+import { sessionPickup } from "./sessionPickup.ts";
 import { shipping } from "./shipping.ts";
 import { visualParity } from "./visualParity.ts";
+import { worktreeCleanup } from "./worktreeCleanup.ts";
 
 /** One per pstack playbook in use, in poteto-mode's order, then open-ended for work none fits. */
 export const builtInTemplates: ReadonlyMap<ThreadWorkflowTemplateId, ThreadWorkflowTemplate> =
   new Map(
     [
+      investigation,
       bugFix,
       perfIssue,
       hillclimb,
@@ -44,8 +50,12 @@ export const builtInTemplates: ReadonlyMap<ThreadWorkflowTemplateId, ThreadWorkf
       autonomousRun,
       orchestrate,
       autopilotFull,
+      sessionPickup,
       multiPhasePlan,
+      worktreeCleanup,
       visualParity,
+      forkSync,
+      retroRound,
       openEnded,
     ].map((template) => [template.id, template]),
   );

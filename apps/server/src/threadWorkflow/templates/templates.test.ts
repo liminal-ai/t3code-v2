@@ -69,6 +69,44 @@ it.layer(NodeServices.layer)("thread workflow templates", (it) => {
   );
 });
 
+it("ships the twenty playbook templates in poteto-mode's order, then open-ended", () => {
+  assert.deepStrictEqual(
+    [...builtInTemplates.keys()],
+    [
+      "investigation",
+      "bug-fix",
+      "perf-issue",
+      "hillclimb",
+      "feature",
+      "refactoring",
+      "prototype",
+      "authoring-a-skill",
+      "eval",
+      "babysit",
+      "shipping",
+      "autonomous-run",
+      "orchestrate",
+      "autopilot-full",
+      "session-pickup",
+      "multi-phase-plan",
+      "worktree-cleanup",
+      "visual-parity",
+      "fork-sync",
+      "retro-round",
+      "open-ended",
+    ],
+  );
+  const waiting = [...builtInTemplates.values()].flatMap((template) =>
+    template.steps.filter((step) => step.waitsForUser).map((step) => `${template.id}/${step.slug}`),
+  );
+  assert.deepStrictEqual(waiting, [
+    "multi-phase-plan/hand-back",
+    "worktree-cleanup/prune-worktrees",
+    "retro-round/record-decisions",
+    "open-ended/confirm-done",
+  ]);
+});
+
 // Read-only work opens with its playbook's own first step instead of the verify-skill check.
 const READ_ONLY = new Set(["investigation", "retro-round", "worktree-cleanup", "session-pickup"]);
 const VERIFY_SKILL = "project's verify skill";
@@ -122,7 +160,7 @@ describe.each(playbookTemplates.map((template) => [template.id, template] as con
         if (/\bask (Lee|the user)\b/i.test(step.instructions)) {
           assert.match(step.instructions, /\b(if|when|only|otherwise)\b/i, step.slug);
         }
-        if (step.waitsForUser) assert.match(step.instructions, /\bThe user decides\b/, step.slug);
+        if (step.waitsForUser) assert.match(step.instructions, /\bthe user decides\b/i, step.slug);
       }
     });
 
