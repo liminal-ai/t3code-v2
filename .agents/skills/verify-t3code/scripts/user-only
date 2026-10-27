@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# The only door a user-only check gets into the app: screenshots, the mouse and the keyboard.
-# Screenshots go to <run>/proof/<T3V_USER_DIR, default user-only>/<name>.png.
 set -euo pipefail
 T3V="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/t3v.mjs"
 DIR="${T3V_USER_DIR:-user-only}"

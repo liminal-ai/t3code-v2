@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// t3v.mjs: launch, check, drive and tear down a T3 Code dev server from this worktree.
-// Usage is in ../SKILL.md. It always drives the worktree that holds this copy of the script.
 import { spawn, execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
@@ -51,7 +49,7 @@ const proof = path.join(runDir, "proof");
 const stateDir = path.join(worktree, ".t3", "userdata");
 const files = {
   devLog: path.join(scratch, "dev.log"),
-  devPid: path.join(scratch, "dev.pid"),
+  devPgid: path.join(scratch, "dev.pgid"),
   pairingUrl: path.join(scratch, "pairing-url"),
   browser: path.join(scratch, "browser.json"),
   profile: path.join(scratch, "browser-profile"),
@@ -115,7 +113,7 @@ async function up() {
     detached: true,
     stdio: ["ignore", log, log],
   });
-  fs.writeFileSync(files.devPid, String(child.pid));
+  fs.writeFileSync(files.devPgid, String(child.pid));
   child.unref();
   console.log(`dev server pid ${child.pid} (process group), log ${files.devLog}`);
 
@@ -264,11 +262,11 @@ const locate = (page) => {
     : text
       ? page.getByText(text, { exact: true }).filter({ visible: true })
       : fail("give --role and --name, or --text");
-  if (!within) return target.nth(nth);
-  // The innermost element holding both the text and the target, such as one card in a list.
-  const scope = page.locator("*").filter({ hasText: within }).filter({ has: target }).last();
-  return scope.locator(target).nth(nth);
+  return (within ? innermostContaining(page, within, target).locator(target) : target).nth(nth);
 };
+
+const innermostContaining = (page, text, target) =>
+  page.locator("*").filter({ hasText: text }).filter({ has: target }).last();
 
 async function browserServe() {
   const context = await playwright().chromium.launchPersistentContext(files.profile, {
@@ -277,7 +275,6 @@ async function browserServe() {
     args: ["--remote-debugging-port=0"],
     handleSIGTERM: false,
   });
-  // This process owns the browser, so `down` stops both through this PID.
   process.on("SIGTERM", () => context.close().finally(() => process.exit(0)));
   setInterval(() => {}, 1 << 30);
 }
@@ -398,6 +395,14 @@ async function browser(sub) {
   }
 }
 
+const providerLogLinesFromSharedSessions = (nativeIds) => {
+  const dir = path.join(stateDir, "logs", "provider");
+  return fs
+    .readdirSync(dir)
+    .flatMap((name) => fs.readFileSync(path.join(dir, name), "utf8").split("\n"))
+    .filter((line) => nativeIds.some((id) => line.includes(`"threadId":"${id}"`)));
+};
+
 function outcome(sub) {
   if (sub === "workflow") {
     const dir = path.join(stateDir, "thread-workflows", "threads");
@@ -423,16 +428,11 @@ function outcome(sub) {
       (row) => /"nativeId":"([^"]+)"/.exec(row.payload_json)?.[1] ?? [],
     );
     if (nativeIds.length === 0) fail(`thread ${argv[0]} has no provider thread yet`);
-    // A shared provider session logs every thread it serves into the file of the first one.
-    const dir = path.join(stateDir, "logs", "provider");
-    const notes = new Set();
-    for (const name of fs.readdirSync(dir)) {
-      for (const line of fs.readFileSync(path.join(dir, name), "utf8").split("\n")) {
-        if (!nativeIds.some((id) => line.includes(`"threadId":"${id}"`))) continue;
-        for (const note of line.match(/<thread-workflow>.*?<\/thread-workflow>/g) ?? [])
-          notes.add(note);
-      }
-    }
+    const notes = new Set(
+      providerLogLinesFromSharedSessions(nativeIds).flatMap(
+        (line) => line.match(/<thread-workflow>.*?<\/thread-workflow>/g) ?? [],
+      ),
+    );
     for (const note of notes) console.log(`${JSON.parse(`"${note}"`)}\n`);
     if (notes.size === 0) console.log(`no workflow note sent to ${nativeIds.join(", ")}`);
     return;
@@ -456,14 +456,14 @@ function down() {
     console.log(`stopped browser pid ${state.pid}`);
   }
   fs.rmSync(files.browser, { force: true });
-  const pid = fs.existsSync(files.devPid) ? Number(fs.readFileSync(files.devPid, "utf8")) : null;
-  if (pid && alive(pid)) {
-    // `up` started the dev server as its own process group, so this reaches vp, the runner,
-    // the server and Vite, and nothing else.
-    process.kill(-pid, "SIGTERM");
-    console.log(`stopped dev server process group ${pid}`);
+  const devPgid = fs.existsSync(files.devPgid)
+    ? Number(fs.readFileSync(files.devPgid, "utf8"))
+    : null;
+  if (devPgid && alive(devPgid)) {
+    process.kill(-devPgid, "SIGTERM");
+    console.log(`stopped dev server process group ${devPgid}`);
   } else console.log("no dev server started by t3v is running");
-  fs.rmSync(files.devPid, { force: true });
+  fs.rmSync(files.devPgid, { force: true });
   fs.rmSync(files.pairingUrl, { force: true });
   console.log(`proof kept in ${proof}`);
 }
