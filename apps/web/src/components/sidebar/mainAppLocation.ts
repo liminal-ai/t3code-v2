@@ -7,12 +7,13 @@ export function isAppModalPage(pathname: string) {
   return pathname === "/settings" || pathname.startsWith("/settings/") || pathname === "/usage";
 }
 
+export function isGroupChatPath(pathname: string) {
+  return pathname === "/group-chat" || pathname.startsWith("/group-chat/");
+}
+
 export function isSidebarUtilityPage(pathname: string) {
   return (
-    pathname.startsWith("/projects/") ||
-    pathname === "/group-chat" ||
-    pathname.startsWith("/group-chat/") ||
-    pathname === "/pull-requests"
+    pathname.startsWith("/projects/") || isGroupChatPath(pathname) || pathname === "/pull-requests"
   );
 }
 

@@ -41,7 +41,7 @@ import LegacyThreadSidebar from "./LegacySidebar";
 import ThreadSidebar from "./Sidebar";
 import { GroupChatSidebar } from "../groupChat/GroupChatSidebar";
 import { SidebarBrandWidthProbe, SidebarChromeHeader } from "./sidebar/SidebarChrome";
-import { isAppModalPage } from "./sidebar/mainAppLocation";
+import { isAppModalPage, isGroupChatPath } from "./sidebar/mainAppLocation";
 import type { SidebarRouteReveal } from "./sidebar/routeReveal";
 import { useSidebarStageBackdropVariant } from "./SidebarStageBackdrop";
 import {
@@ -171,15 +171,16 @@ export function registerNavigationHistoryCommands(router: AnyRouter): () => void
   );
 }
 
-// Escape leaves the pull requests page when no scope (a selection, a dialog,
-// a drag) claimed it, so it observes after every other scope.
+// Escape leaves the pull requests page, and the fork's group chat, when no scope
+// (a selection, a dialog, a drag) claimed it, so it observes after every other scope.
 function registerPullRequestsEscapeCommand(router: AnyRouter): () => void {
   return registerCommands(
     {},
     {
       observe: (event, consumed) => {
         if (consumed || event.repeat || event.isComposing || event.key !== "Escape") return;
-        if (router.state.location.pathname !== "/pull-requests") return;
+        const { pathname } = router.state.location;
+        if (pathname !== "/pull-requests" && !isGroupChatPath(pathname)) return;
         event.preventDefault();
         const activeElement = document.activeElement;
         if (activeElement instanceof HTMLElement) activeElement.blur();
@@ -385,7 +386,7 @@ export function AppSidebarLayout({ children }: { children: ReactNode }) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
-  const isOnGroupChat = pathname === "/group-chat" || pathname.startsWith("/group-chat/");
+  const isOnGroupChat = isGroupChatPath(pathname);
   const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // A clamped drag may not change width, so viewport changes need a separate subscription.
