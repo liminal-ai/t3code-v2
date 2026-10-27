@@ -390,3 +390,26 @@ it.effect("stops blocking when the settings read dies", () => {
     ),
   );
 });
+
+it.effect(
+  "keeps the short form when a question is asked or answered, since the step is unchanged",
+  () =>
+    Effect.gen(function* () {
+      const hooks = yield* withState(openState);
+      yield* hooks.note(ask());
+      const asked = given(started, [agent, { _tag: "ask", title: "Merge without review?" }]).state;
+      yield* hooks.set(asked);
+      const settled = ask({ runId: run2, completedRunIds: new Set([runId]) });
+      const text = yield* hooks.note(settled);
+      assert.strictEqual(text, short(asked));
+      assert.include(text, "Open questions (1): w1.q1 Merge without review?");
+      yield* hooks.set(
+        given(
+          started,
+          [agent, { _tag: "ask", title: "Merge without review?" }],
+          [user, { _tag: "answer", questionId: "w1.q1", answer: "Yes" }],
+        ).state,
+      );
+      assert.strictEqual(yield* hooks.note(settled), short(openState));
+    }),
+);

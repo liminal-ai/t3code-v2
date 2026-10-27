@@ -263,3 +263,134 @@ describe("turnNote", () => {
     }
   });
 });
+
+describe("open questions", () => {
+  const ask = (title: string, fields: Record<string, unknown> = {}) =>
+    [agent, { _tag: "ask", title, ...fields }] as const;
+  const asked = given(
+    started,
+    ask("Merge without a second review?"),
+    ask("Ship to staging first?"),
+  );
+
+  it("ends both forms with the open questions, and leaves the line out when none is open", () => {
+    const line =
+      "Open questions (2): w1.q1 Merge without a second review? · w1.q2 Ship to staging first?";
+    const full = note(asked.state);
+    const short = note(asked.state, "short");
+    expect(full.split("\n").at(-2)).toBe(line);
+    expect(short.split("\n").at(-2)).toBe(line);
+    expect(full).toContain("Done: thread_workflow_tick");
+    expect(short.split("\n")).toHaveLength(4);
+    const answered = apply(asked.state, user, {
+      _tag: "answer",
+      questionId: "w1.q1",
+      answer: "Yes",
+    });
+    expect(note(answered.state)).toContain("Open questions (1): w1.q2 Ship to staging first?\n");
+    const none = apply(answered.state, agent, {
+      _tag: "withdraw",
+      questionId: "w1.q2",
+      reason: "moot",
+    });
+    expect(note(none.state)).not.toContain("Open questions");
+    expect(note(none.state, "short")).toBe(note(given(started).state, "short"));
+  });
+
+  it("lists five titles and counts the rest", () => {
+    const seven = given(
+      started,
+      ...Array.from({ length: 7 }, (_, index) => ask(`Question ${index + 1}?`)),
+    );
+    const text = note(seven.state, "short");
+    expect(text).toContain(
+      "Open questions (7): w1.q1 Question 1? · w1.q2 Question 2? · w1.q3 Question 3? · w1.q4 Question 4? · w1.q5 Question 5? · and 2 more",
+    );
+    expect(text).not.toContain("Question 6?");
+  });
+
+  it("keeps the questions on the close form", () => {
+    const { state } = given(
+      started,
+      [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }],
+      [agent, { _tag: "tick", stepId: "w1.2", comment: "user said go" }],
+      [agent, { _tag: "skip", stepId: "w1.3", reason: "shipped elsewhere" }],
+      ask("Close it now?"),
+    );
+    const text = note(state);
+    expect(text).toContain('thread_workflow_close {"instanceId":"w1","outcome":"finished"');
+    expect(text.split("\n").at(-2)).toBe("Open questions (1): w1.q1 Close it now?");
+  });
+
+  it("clips the listed titles before the instructions when the note is over the cap", () => {
+    const long = "Q".repeat(THREAD_WORKFLOW_LIMITS.questionTitle);
+    const state = given(
+      [
+        user,
+        {
+          _tag: "start",
+          templateId: "checklist",
+          title: "T".repeat(THREAD_WORKFLOW_LIMITS.instanceTitle),
+        },
+      ],
+      [
+        user,
+        {
+          _tag: "insert",
+          afterStepId: null,
+          step: {
+            title: "S".repeat(THREAD_WORKFLOW_LIMITS.stepTitle),
+            instructions: "I".repeat(THREAD_WORKFLOW_LIMITS.instructions),
+            proofLevel: "recommended",
+            proofHint: "H".repeat(THREAD_WORKFLOW_LIMITS.proofHint),
+            waitsForUser: true,
+          },
+          reason: "probe",
+        },
+      ],
+      ...Array.from({ length: 6 }, () => ask(long)),
+    ).state;
+    const text = note(state);
+    expect(text.length).toBeLessThanOrEqual(THREAD_WORKFLOW_LIMITS.turnNote);
+    expect(text).toContain("I".repeat(THREAD_WORKFLOW_LIMITS.instructions));
+    expect(text).not.toContain("cut to fit");
+    const line = text.split("\n").at(-2) ?? "";
+    expect(line.startsWith("Open questions (6): w1.q1 Q")).toBe(true);
+    expect(line.endsWith("… · and 1 more")).toBe(true);
+    expect(line).not.toContain(long);
+    expect(printedCalls(text).map((entry) => entry.tool)).toEqual(["thread_workflow_tick"]);
+    const short = note(state, "short");
+    expect(short.length).toBeLessThanOrEqual(THREAD_WORKFLOW_LIMITS.turnNote);
+    expect(short).toContain(long);
+  });
+
+  it("cuts the instructions once every listed title is at its floor", () => {
+    const hint = "\u0001".repeat(THREAD_WORKFLOW_LIMITS.proofHint);
+    const state = given(
+      ...([
+        [user, { _tag: "start", templateId: "checklist", title: "T".repeat(120) }],
+        [
+          user,
+          {
+            _tag: "insert",
+            afterStepId: null,
+            step: {
+              title: "S".repeat(THREAD_WORKFLOW_LIMITS.stepTitle),
+              instructions: "I".repeat(THREAD_WORKFLOW_LIMITS.instructions),
+              proofLevel: "recommended",
+              proofHint: hint,
+              waitsForUser: true,
+            },
+            reason: "probe",
+          },
+        ],
+      ] as const),
+      ...Array.from({ length: 5 }, () => ask("Q".repeat(THREAD_WORKFLOW_LIMITS.questionTitle))),
+    ).state;
+    const text = note(state);
+    expect(text.length).toBeLessThanOrEqual(THREAD_WORKFLOW_LIMITS.turnNote);
+    expect(text).toContain("cut to fit");
+    expect(text).toContain("Open questions (5): w1.q1 " + "Q".repeat(23) + "…");
+    expect(printedCalls(text)).toHaveLength(1);
+  });
+});
