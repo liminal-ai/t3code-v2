@@ -1,7 +1,6 @@
 /**
  * One JSONL log per thread under `<stateDir>/thread-workflows/threads/`, folded into memory at
- * layer build so readers never touch disk. Beside that directory, `pstack-threads.jsonl` marks
- * the threads the turn note treats as pstack threads, one line per thread, loaded the same way.
+ * layer build so readers never touch disk.
  *
  * Locking contract: the store takes no lock. Every call for one thread (read `state`, decide,
  * `append`, publish) must run inside `ThreadCommandExecutor.withLock(threadId)`, the lock every
@@ -62,9 +61,9 @@ export class ThreadWorkflowStore extends Context.Service<
     /** Threads marked as pstack threads, from memory. */
     readonly pstackThreads: Effect.Effect<ReadonlySet<ThreadId>>;
     /**
-     * Marks the thread as a pstack thread, durably, and returns at once when it already is. The
-     * mark takes no thread lock. A write that fails or times out leaves the mark in memory only,
-     * with a warning, so the thread stays marked until the server restarts.
+     * Marks the thread as a pstack thread, durably, and returns at once when it already is. Takes
+     * no thread lock and never fails: a write that fails or times out warns and keeps the mark in
+     * memory until the server restarts.
      */
     readonly markPstackThread: (threadId: ThreadId) => Effect.Effect<void>;
   }
@@ -125,7 +124,6 @@ const decodeJson = Schema.decodeUnknownExit(Schema.fromJsonString(Schema.Unknown
 const decodeRecord = Schema.decodeUnknownExit(ThreadWorkflowRecord);
 const encodeLine = Schema.encodeEffect(Schema.fromJsonString(ThreadWorkflowRecord));
 
-/** One line of `pstack-threads.jsonl`: a thread the turn note treats as a pstack thread. */
 const PstackMark = Schema.Struct({ v: Schema.Literal(1), threadId: ThreadId, at: Schema.String });
 const decodeMark = Schema.decodeUnknownExit(Schema.fromJsonString(PstackMark));
 const encodeMark = Schema.encodeEffect(Schema.fromJsonString(PstackMark));
@@ -230,7 +228,6 @@ const make = Effect.gen(function* () {
       ),
   );
 
-  // A file this build cannot read marks no thread, and never turns the module off.
   const loadPstackThreads = Effect.gen(function* () {
     const marks = new Set<ThreadId>();
     if (!(yield* fileSystem.exists(pstackFile))) return marks;

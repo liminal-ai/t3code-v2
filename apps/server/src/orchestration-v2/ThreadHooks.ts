@@ -43,7 +43,7 @@ export interface TurnNoteInput {
   };
   /** Runs whose provider turn completed, so a note they carried was read. */
   readonly completedRunIds: ReadonlySet<RunId>;
-  /** The run's own user message, so the module can tell what the user asked for this turn. */
+  /** The run's own user message. */
   readonly message: Pick<OrchestrationV2ConversationMessage, "role" | "text" | "context">;
 }
 

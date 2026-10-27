@@ -54,7 +54,8 @@ const setup = Effect.gen(function* () {
     fileSystem
       .makeDirectory(threadsDir, { recursive: true })
       .pipe(Effect.andThen(fileSystem.writeFileString(logFile, text)));
-  return { fileSystem, path, baseDir, threadsDir, logFile, pstackFile, lines, seed };
+  const breakWritesTo = (file: string) => fileSystem.makeDirectory(file, { recursive: true });
+  return { fileSystem, path, baseDir, threadsDir, logFile, pstackFile, lines, seed, breakWritesTo };
 });
 
 const captureWarnings = () => {
@@ -445,11 +446,10 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
   it.effect("keeps a mark in memory, with a warning, when its write fails", () => {
     const log = captureWarnings();
     return Effect.gen(function* () {
-      const { baseDir, fileSystem, pstackFile } = yield* setup;
+      const { baseDir, breakWritesTo, pstackFile } = yield* setup;
       yield* withStore(baseDir, (store) =>
         Effect.gen(function* () {
-          // A directory where the file should be makes the append fail after a clean load.
-          yield* fileSystem.makeDirectory(pstackFile, { recursive: true });
+          yield* breakWritesTo(pstackFile);
           yield* store.markPstackThread(threadId);
           assert.isTrue((yield* store.pstackThreads).has(threadId));
           assert.isNull(store.unavailable);

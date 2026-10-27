@@ -65,7 +65,6 @@ const layerFor = (
     Layer.provide(Layer.mock(ServerSettings.ServerSettingsService)({ getSettings })),
   );
 
-/** The hooks over a mutable state and a store whose pstack marks start as `marked`. */
 const withState = (initial: ThreadWorkflowState, marked: ReadonlySet<ThreadId> = new Set()) =>
   Effect.gen(function* () {
     const state = yield* Ref.make(initial);
@@ -86,10 +85,11 @@ const withState = (initial: ThreadWorkflowState, marked: ReadonlySet<ThreadId> =
     return {
       note: (input: TurnNoteInput) => hooks.turnNote(input),
       set: (next: ThreadWorkflowState) => Ref.set(state, next),
-      /** Every `markPstackThread` call so far. */
       markCalls: Ref.get(markCalls),
     };
   });
+
+const letDetachedWorkRun = Effect.yieldNow;
 
 const full = (state: ThreadWorkflowState) => turnNote(toSubscriptionView(state), "full");
 const short = (state: ThreadWorkflowState) => turnNote(toSubscriptionView(state), "short");
@@ -227,8 +227,7 @@ it.effect(
       ]) {
         const hooks = yield* withState(given().state);
         assert.strictEqual(yield* hooks.note(ask({ message })), expected, message.text);
-        // The mark runs detached from the hook, so the hook never waits on it.
-        yield* Effect.yieldNow;
+        yield* letDetachedWorkRun;
         assert.deepStrictEqual(yield* hooks.markCalls, [threadId], message.text);
         const plain = ask({ runId: run2, message: userSaid("fix the bug") });
         assert.strictEqual(yield* hooks.note(plain), expected, message.text);

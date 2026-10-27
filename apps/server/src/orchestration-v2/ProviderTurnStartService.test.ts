@@ -285,7 +285,6 @@ function makeLocalCommandHarness(input: {
   readonly turnNote?: string;
   /** A real `ThreadHooks` implementation, in place of the fixed `turnNote`. */
   readonly threadHooks?: Layer.Layer<never>;
-  /** What the projection reports as the thread's compaction turn items across every run. */
   readonly compactionCount?: number;
   readonly previousTurn?: {
     readonly runStatus: "failed" | "completed";

@@ -18,7 +18,7 @@ import {
   type TurnNoteInput,
 } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { lifecycleBlocker, toSubscriptionView, type ThreadWorkflowState } from "./domain.ts";
+import { lifecycleBlocker, toSubscriptionView } from "./domain.ts";
 import { ThreadWorkflowStore } from "./store.ts";
 import { noWorkflowNote, openStep, turnNote } from "./turnNote.ts";
 
@@ -111,22 +111,6 @@ export const layerThreadHooks = Layer.effect(
         annotations: { threadId },
       });
 
-    /**
-     * A pstack thread has had a workflow, carries the store's mark, or asks for the mode in this
-     * turn's message. That message marks the thread, detached, so the hook's deadline never waits
-     * on disk and the next turn finds the mark in memory.
-     */
-    const isPstackThread = Effect.fn("threadWorkflow.hooks.isPstackThread")(function* (
-      state: ThreadWorkflowState,
-      input: TurnNoteInput,
-    ) {
-      if (state.instances.length > 0) return true;
-      if ((yield* store.pstackThreads).has(input.threadId)) return true;
-      if (!asksForPstack(input.message)) return false;
-      yield* Effect.forkDetach(store.markPstackThread(input.threadId));
-      return true;
-    });
-
     const noteFor = Effect.fn("threadWorkflow.hooks.noteFor")(function* (input: TurnNoteInput) {
       const state = yield* store.state(input.threadId);
       const view = toSubscriptionView(state);
@@ -135,7 +119,11 @@ export const layerThreadHooks = Layer.effect(
       if (current === null) {
         const note = turnNote(view, "full");
         if (note !== "") return note;
-        return (yield* isPstackThread(state, input)) ? noWorkflowNote() : "";
+        const marked = (yield* store.pstackThreads).has(input.threadId);
+        if (state.instances.length > 0 || marked) return noWorkflowNote();
+        if (!asksForPstack(input.message)) return "";
+        yield* Effect.forkDetach(store.markPstackThread(input.threadId));
+        return noWorkflowNote();
       }
       const key = {
         instanceId: current.instance.id,
