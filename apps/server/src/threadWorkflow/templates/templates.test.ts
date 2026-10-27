@@ -67,6 +67,14 @@ it.layer(NodeServices.layer)("thread workflow templates", (it) => {
     }),
   );
 
+  it("gives every built-in step a hand-written slug, unique within its template", () => {
+    for (const template of builtInTemplates.values()) {
+      const slugs = template.steps.map((step) => step.slug);
+      assert.notInclude(slugs, undefined, template.id);
+      assert.lengthOf(new Set(slugs), slugs.length, template.id);
+    }
+  });
+
   it("ships single-task, orchestrate and open-ended with user steps where the addendum puts them", () => {
     assert.deepStrictEqual(
       [...builtInTemplates.keys()],
