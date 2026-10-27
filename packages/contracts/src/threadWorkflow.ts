@@ -67,7 +67,7 @@ export const THREAD_WORKFLOW_LIMITS = {
   proofHint: 120,
   templateId: 48,
   turnNote: 2_000,
-  /** Steps that are open or done. The pane is for a glance, so a plan is a few stages, not a task list. */
+  /** Open steps. The pane is for a glance, so the work ahead is a few stages, not a task list; finished steps have left it. */
   steps: 8,
 } as const;
 

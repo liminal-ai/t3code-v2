@@ -5,7 +5,7 @@ import {
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
 
-import { plannedStepCount, printedCall, progress } from "./domain.ts";
+import { printedCall, progress } from "./domain.ts";
 
 const LIFECYCLE_RULE =
   "This thread cannot settle, archive or be deleted while the workflow is open.";
@@ -39,19 +39,13 @@ const stepLines = (
   ];
 };
 
+// No step is open here, so the cap on open steps never stops the insert.
 const closeLines = (instance: ThreadWorkflowInstanceSummary) => [
   `${header(instance)}: every step is done, skipped or removed.`,
   "Close it:",
   printedCall.close(instance.id, "finished"),
-  ...(plannedStepCount(instance.steps) >= THREAD_WORKFLOW_LIMITS.steps
-    ? [
-        `If the work is not finished, the workflow already holds ${THREAD_WORKFLOW_LIMITS.steps} steps, so comment on it with what is left:`,
-        printedCall.comment(instance.id),
-      ]
-    : [
-        "If the work is not finished, insert the step it still needs:",
-        printedCall.insert(instance.steps.at(-1)?.id),
-      ]),
+  "If the work is not finished, insert the step it still needs:",
+  printedCall.insert(instance.steps.at(-1)?.id),
 ];
 
 const note = (lines: ReadonlyArray<string | null>) =>

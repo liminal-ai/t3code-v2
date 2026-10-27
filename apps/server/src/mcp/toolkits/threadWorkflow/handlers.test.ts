@@ -277,7 +277,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         steps: Array.from({ length: 8 }, (_, index) => stage(`Stage ${index + 1}`)),
       });
       assert.strictEqual(failure(refused)?.code, "too_many_steps");
-      assert.match(failure(refused)?.message ?? "", /at most 8 steps/);
+      assert.match(failure(refused)?.message ?? "", /at most 8 open steps/);
       assert.strictEqual(structured(yield* call("thread_workflow_get", {})).revision, revision);
       assert.isNull(structured(yield* call("thread_workflow_get", {})).activeInstanceId);
 
