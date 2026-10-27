@@ -407,7 +407,12 @@ const make = Effect.gen(function* () {
   const markPstackThread = Effect.fn("threadWorkflow.store.markPstackThread")(function* (
     threadId: ThreadId,
   ) {
-    if ((yield* Ref.get(pstackThreads)).has(threadId)) return;
+    // Memory first, so the next turn's hook sees the mark while the write still waits its turn
+    // for the disk permit; a repeated call then returns at once instead of writing a second line.
+    const already = yield* Ref.modify(pstackThreads, (set) =>
+      set.has(threadId) ? [true, set] : [false, new Set(set).add(threadId)],
+    );
+    if (already) return;
     const problem = yield* withinDeadline(onDisk(writeMark(threadId)), WRITE_DEADLINE).pipe(
       Effect.map(
         Option.match({
@@ -422,7 +427,6 @@ const make = Effect.gen(function* () {
         ...problem,
       });
     }
-    yield* Ref.update(pstackThreads, (set) => new Set(set).add(threadId));
   });
 
   return ThreadWorkflowStore.of({

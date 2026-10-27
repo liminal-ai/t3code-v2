@@ -443,6 +443,27 @@ it.layer(NodeServices.layer)("ThreadWorkflowStore", (it) => {
     }),
   );
 
+  it.effect("holds a mark in memory before its write gets the disk permit", () =>
+    Effect.gen(function* () {
+      const { baseDir, fileSystem, pstackFile } = yield* setup;
+      yield* withStore(baseDir, (store) =>
+        Effect.gen(function* () {
+          const release = yield* Deferred.make<void>();
+          const holding = yield* store.onDisk(Deferred.await(release)).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          const marking = yield* store.markPstackThread(threadId).pipe(Effect.forkChild);
+          yield* Effect.yieldNow;
+          assert.isTrue((yield* store.pstackThreads).has(threadId));
+          assert.isFalse(yield* fileSystem.exists(pstackFile));
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(holding);
+          yield* Fiber.join(marking);
+          assert.isTrue(yield* fileSystem.exists(pstackFile));
+        }),
+      );
+    }),
+  );
+
   it.effect("keeps a mark in memory, with a warning, when its write fails", () => {
     const log = captureWarnings();
     return Effect.gen(function* () {
