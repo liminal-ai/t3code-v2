@@ -122,8 +122,9 @@ export const layerThreadHooks = Layer.effect(
       if (current === null) {
         const note = turnNote(view, "full");
         if (note !== "") return note;
-        // The reminder names a start that `decideStart` refuses while the flag is off.
-        if (!(yield* workflowsEnabled)) return "";
+        // The reminder names a start the service refuses while the flag is off or the store
+        // could not load its logs.
+        if (store.unavailable !== null || !(yield* workflowsEnabled)) return "";
         const marked = (yield* store.pstackThreads).has(input.threadId);
         if (state.instances.length > 0 || marked) return noWorkflowNote();
         if (!asksForPstack(input.message)) return "";

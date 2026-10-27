@@ -268,6 +268,25 @@ it.effect("sends no reminder and marks nothing while thread workflows are off", 
   }),
 );
 
+it.effect("sends no reminder and marks nothing while the store is unavailable", () =>
+  Effect.gen(function* () {
+    const markCalls = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
+    const hooks = yield* ThreadHooks.pipe(
+      Effect.provide(
+        layerFor({
+          unavailable: "The thread workflow logs could not be loaded when the server started.",
+          state: () => Effect.succeed(given().state),
+          pstackThreads: Effect.succeed(new Set([threadId])),
+          markPstackThread: (id) => Ref.update(markCalls, (calls) => [...calls, id]),
+        }),
+      ),
+    );
+    assert.strictEqual(yield* hooks.turnNote(ask({ message: userSaid("load poteto mode") })), "");
+    yield* letDetachedWorkRun;
+    assert.deepStrictEqual(yield* Ref.get(markCalls), []);
+  }),
+);
+
 it.effect("tells a thread the store has marked to start a workflow, without marking it again", () =>
   Effect.gen(function* () {
     const hooks = yield* withState(given().state, new Set([threadId]));
