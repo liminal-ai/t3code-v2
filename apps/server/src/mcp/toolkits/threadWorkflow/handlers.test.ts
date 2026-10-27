@@ -124,6 +124,7 @@ const structured = (result: McpSchema.CallToolResult) =>
       readonly steps: ReadonlyArray<{
         readonly id: string;
         readonly title: string;
+        readonly slug: string;
         readonly state: { readonly _tag: string };
       }>;
     } | null;
@@ -157,7 +158,11 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       const started = yield* call("thread_workflow_start", {
         templateId: "open-ended",
         title: "Slice 1",
-        steps: [stage("Groundwork"), stage("Scope"), { ...stage("Build"), waitsForUser: true }],
+        steps: [
+          stage("Groundwork"),
+          { ...stage("Scope"), slug: "scope-it" },
+          { ...stage("Build"), waitsForUser: true },
+        ],
       });
       assert.isFalse(started.isError, JSON.stringify(started.content));
       assert.deepStrictEqual(Object.keys(started.structuredContent as object).toSorted(), [
@@ -184,6 +189,10 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         ["w1.3", "Build", "open"],
         ["w1.4", "Confirm done with the user", "open"],
       ]);
+      assert.deepStrictEqual(
+        planned.instance?.steps.map((step) => step.slug),
+        ["groundwork", "scope-it", "build", "confirm-done"],
+      );
       const note = planned.note ?? "";
       assert.match(note, /step 1 of 4: Groundwork/);
       const tickLine = note.split("\n").find((line) => line.startsWith("thread_workflow_tick "))!;
@@ -221,14 +230,17 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         action: "insert",
         afterStepId: "w1.3",
         title: "Verify in the app",
+        slug: "build",
         instructions: "Open the app and check.",
         reason: "the goal needs a live check",
       });
       assert.isFalse(inserted.isError, JSON.stringify(inserted.content));
+      const afterInsert = structured(yield* call("thread_workflow_get", {}));
       assert.deepStrictEqual(
-        stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([id]) => id),
+        stepsOf(afterInsert).map(([id]) => id),
         ["w1.1", "w1.2", "w1.3", "w1.5", "w1.4"],
       );
+      assert.strictEqual(afterInsert.instance?.steps[3]?.slug, "build-2");
 
       const reopened = yield* call("thread_workflow_change", {
         action: "reopen",
