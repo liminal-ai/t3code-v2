@@ -1071,16 +1071,14 @@ export const layer: Layer.Layer<
               providerThreadId: providerThread.id,
               nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
               model: `${run.modelSelection.instanceId}/${run.modelSelection.model}`,
-              compactions:
-                projection.turnItems.filter((item) => item.type === "compaction").length +
-                compactionMessageIds.size,
+              compactions: projection.compactionCount + compactionMessageIds.size,
             },
             completedRunIds: new Set(
               projection.attempts
                 .filter((attempt) => completedAttemptIds.has(attempt.id))
                 .map((attempt) => attempt.runId),
             ),
-            messages: projection.messages,
+            message,
           }),
         ),
         {

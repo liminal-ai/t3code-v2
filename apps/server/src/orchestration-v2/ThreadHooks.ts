@@ -38,14 +38,13 @@ export interface TurnNoteInput {
     readonly nativeThreadId: string | null;
     /** The run's model selection as one string. */
     readonly model: string;
-    /** Compaction turn items so far, plus typed /compact messages. */
+    /** Compaction turn items across the thread so far, plus typed /compact messages. */
     readonly compactions: number;
   };
   /** Runs whose provider turn completed, so a note they carried was read. */
   readonly completedRunIds: ReadonlySet<RunId>;
-  readonly messages: ReadonlyArray<
-    Pick<OrchestrationV2ConversationMessage, "role" | "text" | "context">
-  >;
+  /** The run's own user message, so the module can tell what the user asked for this turn. */
+  readonly message: Pick<OrchestrationV2ConversationMessage, "role" | "text" | "context">;
 }
 
 export class ThreadHooks extends Context.Reference<{

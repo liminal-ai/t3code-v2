@@ -285,6 +285,8 @@ function makeLocalCommandHarness(input: {
   readonly turnNote?: string;
   /** A real `ThreadHooks` implementation, in place of the fixed `turnNote`. */
   readonly threadHooks?: Layer.Layer<never>;
+  /** What the projection reports as the thread's compaction turn items across every run. */
+  readonly compactionCount?: number;
   readonly previousTurn?: {
     readonly runStatus: "failed" | "completed";
     readonly turnStatus: "running" | "completed" | "interrupted";
@@ -736,7 +738,7 @@ function makeLocalCommandHarness(input: {
           m.role === "user" &&
           (m.text.trim().toLowerCase() !== "/compact" || m.attachments.length > 0),
       ),
-      compactionCount: 0,
+      compactionCount: input.compactionCount ?? 0,
     }),
   );
   const layer = ProviderTurnStart.layer.pipe(
@@ -1161,6 +1163,8 @@ effectIt.effect(
     Effect.gen(function* () {
       const harness = makeLocalCommandHarness({
         text: "Continue",
+        previousMessages: ["/compact"],
+        compactionCount: 2,
         turnNote: "<thread-workflow>Step 4</thread-workflow>",
         previousTurn: {
           runStatus: "completed",
@@ -1177,10 +1181,11 @@ effectIt.effect(
         providerThreadId: "new-provider-thread",
         nativeThreadId: "existing-native-conversation",
         model: "codex-personal/gpt-5.4",
-        compactions: 0,
+        compactions: 3,
       });
       expect([...request.completedRunIds]).toEqual(["previous-failed-run"]);
-      expect(request.messages).toBe(projection.messages);
+      expect(request.message).toBe(projection.messages.at(-1));
+      expect(request.message.text).toBe("Continue");
     }),
 );
 

@@ -43,7 +43,7 @@ const noteInput = (compacting: boolean): TurnNoteInput => ({
     compactions: 0,
   },
   completedRunIds: new Set(),
-  messages: [],
+  message: { role: "user", text: "Continue" },
 });
 
 const threadId = ThreadId.make("thread-service-test");

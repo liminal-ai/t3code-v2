@@ -3,6 +3,7 @@ import {
   DEFAULT_SERVER_SETTINGS,
   type OrchestrationMessageContext,
   type ServerSettings as ServerSettingsShape,
+  type ThreadId,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -30,22 +31,22 @@ const context: TurnNoteInput["context"] = {
   model: "claudeAgent/claude-opus-5-5",
   compactions: 0,
 };
+const userSaid = (
+  text: string,
+  records: ReadonlyArray<unknown> = [],
+): TurnNoteInput["message"] => ({
+  role: "user",
+  text,
+  context: { version: 1, records } as OrchestrationMessageContext,
+});
 const ask = (overrides: Partial<TurnNoteInput> = {}): TurnNoteInput => ({
   threadId,
   runId,
   compacting: false,
   context,
   completedRunIds: new Set(),
-  messages: [],
+  message: userSaid("Continue"),
   ...overrides,
-});
-const userSaid = (
-  text: string,
-  records: ReadonlyArray<unknown> = [],
-): TurnNoteInput["messages"][number] => ({
-  role: "user",
-  text,
-  context: { version: 1, records } as OrchestrationMessageContext,
 });
 
 const layerFor = (
@@ -53,19 +54,40 @@ const layerFor = (
   getSettings: Effect.Effect<ServerSettingsShape, never> = Effect.succeed(DEFAULT_SERVER_SETTINGS),
 ) =>
   layerThreadHooks.pipe(
-    Layer.provide(Layer.mock(ThreadWorkflowStore)({ unavailable: null, ...store })),
+    Layer.provide(
+      Layer.mock(ThreadWorkflowStore)({
+        unavailable: null,
+        pstackThreads: Effect.succeed(new Set<ThreadId>()),
+        markPstackThread: () => Effect.void,
+        ...store,
+      }),
+    ),
     Layer.provide(Layer.mock(ServerSettings.ServerSettingsService)({ getSettings })),
   );
 
-const withState = (initial: ThreadWorkflowState) =>
+/** The hooks over a mutable state and a store whose pstack marks start as `marked`. */
+const withState = (initial: ThreadWorkflowState, marked: ReadonlySet<ThreadId> = new Set()) =>
   Effect.gen(function* () {
     const state = yield* Ref.make(initial);
+    const marks = yield* Ref.make(marked);
+    const markCalls = yield* Ref.make<ReadonlyArray<ThreadId>>([]);
     const hooks = yield* ThreadHooks.pipe(
-      Effect.provide(layerFor({ state: () => Ref.get(state) })),
+      Effect.provide(
+        layerFor({
+          state: () => Ref.get(state),
+          pstackThreads: Ref.get(marks),
+          markPstackThread: (id) =>
+            Ref.update(markCalls, (calls) => [...calls, id]).pipe(
+              Effect.andThen(Ref.update(marks, (set) => new Set(set).add(id))),
+            ),
+        }),
+      ),
     );
     return {
       note: (input: TurnNoteInput) => hooks.turnNote(input),
       set: (next: ThreadWorkflowState) => Ref.set(state, next),
+      /** Every `markPstackThread` call so far. */
+      markCalls: Ref.get(markCalls),
     };
   });
 
@@ -193,39 +215,60 @@ it.effect("sends the close form in full every turn once every step is resolved",
 );
 
 it.effect(
-  "tells a thread under /poteto-mode with no workflow to start one, and a plain thread nothing",
+  "tells a thread under /poteto-mode with no workflow to start one, on that turn and the next",
   () =>
     Effect.gen(function* () {
-      const hooks = yield* withState(given().state);
       const expected = noWorkflowNote();
-      for (const messages of [
-        [userSaid("$poteto-mode", [{ kind: "skill", name: "poteto-mode", label: "$poteto-mode" }])],
-        [userSaid("hi"), userSaid("Load /poteto-mode and run recall")],
-        [userSaid("load Poteto Mode and run recall")],
-        [userSaid("poteto-mode, then fix the bug")],
+      for (const message of [
+        userSaid("$poteto-mode", [{ kind: "skill", name: "poteto-mode", label: "$poteto-mode" }]),
+        userSaid("Load /poteto-mode and run recall"),
+        userSaid("load Poteto Mode and run recall"),
+        userSaid("poteto-mode, then fix the bug"),
       ]) {
-        assert.strictEqual(
-          yield* hooks.note(ask({ messages })),
-          expected,
-          JSON.stringify(messages),
-        );
+        const hooks = yield* withState(given().state);
+        assert.strictEqual(yield* hooks.note(ask({ message })), expected, message.text);
+        // The mark runs detached from the hook, so the hook never waits on it.
+        yield* Effect.yieldNow;
+        assert.deepStrictEqual(yield* hooks.markCalls, [threadId], message.text);
+        const plain = ask({ runId: run2, message: userSaid("fix the bug") });
+        assert.strictEqual(yield* hooks.note(plain), expected, message.text);
+        assert.strictEqual(yield* hooks.note(ask({ runId: run3, message })), expected);
+        assert.deepStrictEqual(yield* hooks.markCalls, [threadId], message.text);
       }
-      for (const messages of [
-        [],
-        [userSaid("fix the bug")],
-        [{ role: "assistant", text: "I run under poteto mode." } as const],
-        [userSaid("use the skill", [{ kind: "skill", name: "pinchtab", label: "$pinchtab" }])],
-      ]) {
-        assert.strictEqual(yield* hooks.note(ask({ messages })), "", JSON.stringify(messages));
-      }
-      const closed = given(started, [
-        user,
-        { _tag: "close", instanceId: "w1", outcome: "abandoned", reason: "x" },
-      ]).state;
-      yield* hooks.set(closed);
-      assert.strictEqual(yield* hooks.note(ask()), expected);
-      assert.strictEqual(yield* hooks.note(ask({ compacting: true })), "");
     }),
+);
+
+it.effect("tells a thread the store has marked to start a workflow, without marking it again", () =>
+  Effect.gen(function* () {
+    const hooks = yield* withState(given().state, new Set([threadId]));
+    assert.strictEqual(
+      yield* hooks.note(ask({ message: userSaid("fix the bug") })),
+      noWorkflowNote(),
+    );
+    assert.deepStrictEqual(yield* hooks.markCalls, []);
+  }),
+);
+
+it.effect("tells a plain thread nothing, and a thread whose workflow closed to start one", () =>
+  Effect.gen(function* () {
+    const hooks = yield* withState(given().state);
+    for (const message of [
+      userSaid("fix the bug"),
+      { role: "assistant", text: "I run under poteto mode." } as const,
+      userSaid("use the skill", [{ kind: "skill", name: "pinchtab", label: "$pinchtab" }]),
+    ]) {
+      assert.strictEqual(yield* hooks.note(ask({ message })), "", message.text);
+    }
+    assert.deepStrictEqual(yield* hooks.markCalls, []);
+    const closed = given(started, [
+      user,
+      { _tag: "close", instanceId: "w1", outcome: "abandoned", reason: "x" },
+    ]).state;
+    yield* hooks.set(closed);
+    assert.strictEqual(yield* hooks.note(ask()), noWorkflowNote());
+    assert.strictEqual(yield* hooks.note(ask({ compacting: true })), "");
+    assert.deepStrictEqual(yield* hooks.markCalls, []);
+  }),
 );
 
 it.effect("gives no note and no blocker when the store throws while the hook is built", () => {

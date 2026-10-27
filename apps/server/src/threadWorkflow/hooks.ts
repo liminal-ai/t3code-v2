@@ -54,14 +54,10 @@ const isSkillRecord = (record: unknown, name: string) =>
   "name" in record &&
   record.name === name;
 
-const isPstackThread = (state: ThreadWorkflowState, messages: TurnNoteInput["messages"]) =>
-  state.instances.length > 0 ||
-  messages.some(
-    (message) =>
-      message.role === "user" &&
-      (PSTACK_TEXT.test(message.text) ||
-        (message.context?.records ?? []).some((record) => isSkillRecord(record, "poteto-mode"))),
-  );
+const asksForPstack = (message: TurnNoteInput["message"]) =>
+  message.role === "user" &&
+  (PSTACK_TEXT.test(message.text) ||
+    (message.context?.records ?? []).some((record) => isSkillRecord(record, "poteto-mode")));
 
 /**
  * Core's view of the module. Both hooks read the store's memory and never take the thread lock:
@@ -115,6 +111,22 @@ export const layerThreadHooks = Layer.effect(
         annotations: { threadId },
       });
 
+    /**
+     * A pstack thread has had a workflow, carries the store's mark, or asks for the mode in this
+     * turn's message. That message marks the thread, detached, so the hook's deadline never waits
+     * on disk and the next turn finds the mark in memory.
+     */
+    const isPstackThread = Effect.fn("threadWorkflow.hooks.isPstackThread")(function* (
+      state: ThreadWorkflowState,
+      input: TurnNoteInput,
+    ) {
+      if (state.instances.length > 0) return true;
+      if ((yield* store.pstackThreads).has(input.threadId)) return true;
+      if (!asksForPstack(input.message)) return false;
+      yield* Effect.forkDetach(store.markPstackThread(input.threadId));
+      return true;
+    });
+
     const noteFor = Effect.fn("threadWorkflow.hooks.noteFor")(function* (input: TurnNoteInput) {
       const state = yield* store.state(input.threadId);
       const view = toSubscriptionView(state);
@@ -122,7 +134,8 @@ export const layerThreadHooks = Layer.effect(
       const current = openStep(view);
       if (current === null) {
         const note = turnNote(view, "full");
-        return note === "" && isPstackThread(state, input.messages) ? noWorkflowNote() : note;
+        if (note !== "") return note;
+        return (yield* isPstackThread(state, input)) ? noWorkflowNote() : "";
       }
       const key = {
         instanceId: current.instance.id,
