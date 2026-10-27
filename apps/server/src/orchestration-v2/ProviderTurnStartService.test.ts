@@ -49,7 +49,7 @@ import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as ProviderTurnStart from "./ProviderTurnStartService.ts";
 import * as RunExecutionService from "./RunExecutionService.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
-import { HOOK_DEADLINE, ThreadHooks } from "./ThreadHooks.ts";
+import { HOOK_DEADLINE, ThreadHooks, type TurnNoteInput } from "./ThreadHooks.ts";
 import * as ThreadWorkflow from "../threadWorkflow/layer.ts";
 import { layerThreadHooks } from "../threadWorkflow/hooks.ts";
 import { ThreadWorkflowStore } from "../threadWorkflow/store.ts";
@@ -287,6 +287,7 @@ function makeLocalCommandHarness(input: {
   readonly previousTurn?: {
     readonly runStatus: "failed" | "completed";
     readonly turnStatus: "running" | "completed" | "interrupted";
+    readonly recordPreviousAttempt?: boolean;
     readonly differentThread?: boolean;
     readonly liveSession?: boolean;
     readonly interruptFailure?: boolean;
@@ -499,6 +500,24 @@ function makeLocalCommandHarness(input: {
         },
         run,
       ],
+      attempts: [
+        ...(input.previousTurn.recordPreviousAttempt
+          ? [
+              {
+                ...projection.attempts[0]!,
+                id: previousAttemptId,
+                runId: previousRunId,
+                nativeThreadId: "existing-native-conversation",
+                providerThreadId: previousProviderThreadId,
+                providerTurnId: previousTurnId,
+                status: "completed" as const,
+                startedAt: now,
+                completedAt: now,
+              },
+            ]
+          : []),
+        ...projection.attempts,
+      ],
       providerThreads: [
         {
           ...providerThread,
@@ -553,15 +572,15 @@ function makeLocalCommandHarness(input: {
     (turnNote === undefined
       ? Layer.empty
       : Layer.succeed(ThreadHooks, {
-          turnNote: ({ runId: noteRunId, compacting }) =>
+          turnNote: (request) =>
             Effect.sync(() => {
-              noteRequests.push({ runId: noteRunId, compacting });
-              return compacting ? "" : turnNote;
+              noteRequests.push(request);
+              return request.compacting ? "" : turnNote;
             }),
           lifecycleBlocker: () => Effect.succeed(null),
         }));
   const prompts: Array<string> = [];
-  const noteRequests: Array<{ readonly runId: RunId; readonly compacting: boolean }> = [];
+  const noteRequests: Array<TurnNoteInput> = [];
   const interruptRun = () => {
     projection = {
       ...projection,
@@ -1128,10 +1147,39 @@ effectIt.effect("prefixes a root run's prompt with the thread's turn note", () =
     yield* harness.start;
 
     expect(harness.prompts).toEqual([`${note}\n\nUser message:\nContinue`]);
-    expect(harness.noteRequests).toEqual([
+    expect(harness.noteRequests).toMatchObject([
       { runId: harness.projection().runs.at(-1)!.id, compacting: false },
     ]);
   }),
+);
+
+effectIt.effect(
+  "tells the turn note hook what anchors the agent's context and which runs completed",
+  () =>
+    Effect.gen(function* () {
+      const harness = makeLocalCommandHarness({
+        text: "Continue",
+        turnNote: "<thread-workflow>Step 4</thread-workflow>",
+        previousTurn: {
+          runStatus: "completed",
+          turnStatus: "completed",
+          recordPreviousAttempt: true,
+        },
+      });
+
+      yield* harness.start;
+
+      const projection = harness.projection();
+      const request = harness.noteRequests[0]!;
+      expect(request.context).toEqual({
+        providerThreadId: "new-provider-thread",
+        nativeThreadId: "existing-native-conversation",
+        model: "codex-personal/gpt-5.4",
+        compactions: 0,
+      });
+      expect([...request.completedRunIds]).toEqual(["previous-failed-run"]);
+      expect(request.messages).toBe(projection.messages);
+    }),
 );
 
 effectIt.effect("sends the user's text unchanged when the turn note is empty", () =>
@@ -1308,6 +1356,7 @@ effectIt.effect("asks for the turn note as compacting on /compact and sends none
     yield* harness.start;
 
     expect(harness.noteRequests.map((request) => request.compacting)).toEqual([true]);
+    expect(harness.noteRequests[0]?.context.compactions).toBe(1);
     expect(harness.prompts).toEqual(["/compact"]);
   }),
 );

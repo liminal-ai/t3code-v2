@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   DEFAULT_SERVER_SETTINGS,
+  type OrchestrationMessageContext,
   type ServerSettings as ServerSettingsShape,
 } from "@t3tools/contracts";
 import * as Deferred from "effect/Deferred";
@@ -11,14 +12,41 @@ import * as Logger from "effect/Logger";
 import * as Ref from "effect/Ref";
 import * as TestClock from "effect/testing/TestClock";
 
-import { HOOK_DEADLINE, ThreadHooks } from "../orchestration-v2/ThreadHooks.ts";
+import { HOOK_DEADLINE, ThreadHooks, type TurnNoteInput } from "../orchestration-v2/ThreadHooks.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { toSubscriptionView, type ThreadWorkflowState } from "./domain.ts";
 import { layerThreadHooks } from "./hooks.ts";
 import { ThreadWorkflowStore } from "./store.ts";
-import { given, started, threadId } from "./testkit.ts";
+import { agent, given, started, threadId, user } from "./testkit.ts";
+import { noWorkflowNote, turnNote } from "./turnNote.ts";
 
 const runId = "run-1" as never;
+const run2 = "run-2" as never;
+const run3 = "run-3" as never;
 const openState = given(started).state;
+const context: TurnNoteInput["context"] = {
+  providerThreadId: "provider-thread-1" as never,
+  nativeThreadId: "native-1",
+  model: "claudeAgent/claude-opus-5-5",
+  compactions: 0,
+};
+const ask = (overrides: Partial<TurnNoteInput> = {}): TurnNoteInput => ({
+  threadId,
+  runId,
+  compacting: false,
+  context,
+  completedRunIds: new Set(),
+  messages: [],
+  ...overrides,
+});
+const userSaid = (
+  text: string,
+  records: ReadonlyArray<unknown> = [],
+): TurnNoteInput["messages"][number] => ({
+  role: "user",
+  text,
+  context: { version: 1, records } as OrchestrationMessageContext,
+});
 
 const layerFor = (
   store: Partial<ThreadWorkflowStore["Service"]>,
@@ -29,6 +57,21 @@ const layerFor = (
     Layer.provide(Layer.mock(ServerSettings.ServerSettingsService)({ getSettings })),
   );
 
+const withState = (initial: ThreadWorkflowState) =>
+  Effect.gen(function* () {
+    const state = yield* Ref.make(initial);
+    const hooks = yield* ThreadHooks.pipe(
+      Effect.provide(layerFor({ state: () => Ref.get(state) })),
+    );
+    return {
+      note: (input: TurnNoteInput) => hooks.turnNote(input),
+      set: (next: ThreadWorkflowState) => Ref.set(state, next),
+    };
+  });
+
+const full = (state: ThreadWorkflowState) => turnNote(toSubscriptionView(state), "full");
+const short = (state: ThreadWorkflowState) => turnNote(toSubscriptionView(state), "short");
+
 const captureWarnings = () => {
   const warnings: Array<unknown> = [];
   const logger = Logger.make(({ logLevel, message }) => {
@@ -37,11 +80,159 @@ const captureWarnings = () => {
   return { warnings, layer: Logger.layer([logger], { mergeWithExisting: false }) };
 };
 
+it.effect("sends the whole step once, then one line while that run's turn completed", () =>
+  Effect.gen(function* () {
+    const hooks = yield* withState(openState);
+    assert.strictEqual(yield* hooks.note(ask()), full(openState));
+    assert.strictEqual(
+      yield* hooks.note(ask({ runId: run2, completedRunIds: new Set([runId]) })),
+      short(openState),
+    );
+    assert.strictEqual(
+      yield* hooks.note(ask({ runId: run3, completedRunIds: new Set([runId, run2]) })),
+      short(openState),
+    );
+  }),
+);
+
+it.effect("sends the whole step again while the run that carried it has no completed turn", () =>
+  Effect.gen(function* () {
+    const hooks = yield* withState(openState);
+    assert.strictEqual(yield* hooks.note(ask()), full(openState));
+    assert.strictEqual(yield* hooks.note(ask({ runId: run2 })), full(openState));
+    assert.strictEqual(
+      yield* hooks.note(ask({ runId: run3, completedRunIds: new Set([runId]) })),
+      full(openState),
+    );
+    assert.strictEqual(
+      yield* hooks.note(ask({ runId: "run-4" as never, completedRunIds: new Set([run3]) })),
+      short(openState),
+    );
+  }),
+);
+
+it.effect("sends the whole step again after the step changes or its text is edited", () =>
+  Effect.gen(function* () {
+    const hooks = yield* withState(openState);
+    yield* hooks.note(ask());
+    const settled = ask({ runId: run2, completedRunIds: new Set([runId, run2]) });
+    assert.strictEqual(yield* hooks.note(settled), short(openState));
+
+    const ticked = given(started, [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }]).state;
+    yield* hooks.set(ticked);
+    assert.strictEqual(yield* hooks.note(settled), full(ticked));
+    assert.strictEqual(yield* hooks.note(settled), short(ticked));
+
+    const edited: ThreadWorkflowState = {
+      ...ticked,
+      instances: ticked.instances.map((entry) => ({
+        ...entry,
+        instance: {
+          ...entry.instance,
+          steps: entry.instance.steps.map((step) =>
+            step.id === "w1.2" ? { ...step, instructions: "Ask whether to ship today." } : step,
+          ),
+        },
+      })),
+    };
+    yield* hooks.set(edited);
+    const resent = yield* hooks.note(settled);
+    assert.strictEqual(resent, full(edited));
+    assert.include(resent, "ship today");
+    assert.strictEqual(yield* hooks.note(settled), short(edited));
+  }),
+);
+
+it.effect(
+  "sends the whole step again after a compaction, a new provider thread, native thread or model",
+  () =>
+    Effect.gen(function* () {
+      const hooks = yield* withState(openState);
+      const completed = new Set([runId]);
+      yield* hooks.note(ask());
+      assert.strictEqual(yield* hooks.note(ask({ completedRunIds: completed })), short(openState));
+      for (const changed of [
+        { ...context, compactions: 1 },
+        { ...context, providerThreadId: "provider-thread-2" as never },
+        { ...context, nativeThreadId: "native-2" },
+        { ...context, nativeThreadId: null },
+        { ...context, model: "codex/gpt-6.1-sol" },
+      ]) {
+        const input = ask({ context: changed, completedRunIds: completed });
+        assert.strictEqual(yield* hooks.note(input), full(openState), JSON.stringify(changed));
+        assert.strictEqual(yield* hooks.note(input), short(openState), JSON.stringify(changed));
+      }
+    }),
+);
+
+it.effect("sends nothing on a compacting turn and records nothing", () =>
+  Effect.gen(function* () {
+    const hooks = yield* withState(openState);
+    assert.strictEqual(yield* hooks.note(ask({ compacting: true })), "");
+    assert.strictEqual(
+      yield* hooks.note(ask({ runId: run2, completedRunIds: new Set([runId]) })),
+      full(openState),
+    );
+  }),
+);
+
+it.effect("sends the close form in full every turn once every step is resolved", () =>
+  Effect.gen(function* () {
+    const resolved = given(
+      started,
+      [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }],
+      [agent, { _tag: "tick", stepId: "w1.2", comment: "go" }],
+      [agent, { _tag: "skip", stepId: "w1.3", reason: "elsewhere" }],
+    ).state;
+    const hooks = yield* withState(resolved);
+    yield* hooks.note(ask());
+    const again = yield* hooks.note(ask({ runId: run2, completedRunIds: new Set([runId]) }));
+    assert.strictEqual(again, full(resolved));
+    assert.include(again, "thread_workflow_close");
+  }),
+);
+
+it.effect(
+  "tells a thread under /poteto-mode with no workflow to start one, and a plain thread nothing",
+  () =>
+    Effect.gen(function* () {
+      const hooks = yield* withState(given().state);
+      const expected = noWorkflowNote();
+      for (const messages of [
+        [userSaid("$poteto-mode", [{ kind: "skill", name: "poteto-mode", label: "$poteto-mode" }])],
+        [userSaid("hi"), userSaid("Load /poteto-mode and run recall")],
+        [userSaid("load Poteto Mode and run recall")],
+        [userSaid("poteto-mode, then fix the bug")],
+      ]) {
+        assert.strictEqual(
+          yield* hooks.note(ask({ messages })),
+          expected,
+          JSON.stringify(messages),
+        );
+      }
+      for (const messages of [
+        [],
+        [userSaid("fix the bug")],
+        [{ role: "assistant", text: "I run under poteto mode." } as const],
+        [userSaid("use the skill", [{ kind: "skill", name: "pinchtab", label: "$pinchtab" }])],
+      ]) {
+        assert.strictEqual(yield* hooks.note(ask({ messages })), "", JSON.stringify(messages));
+      }
+      const closed = given(started, [
+        user,
+        { _tag: "close", instanceId: "w1", outcome: "abandoned", reason: "x" },
+      ]).state;
+      yield* hooks.set(closed);
+      assert.strictEqual(yield* hooks.note(ask()), expected);
+      assert.strictEqual(yield* hooks.note(ask({ compacting: true })), "");
+    }),
+);
+
 it.effect("gives no note and no blocker when the store throws while the hook is built", () => {
   const log = captureWarnings();
   return Effect.gen(function* () {
     const hooks = yield* ThreadHooks;
-    assert.strictEqual(yield* hooks.turnNote({ threadId, runId, compacting: false }), "");
+    assert.strictEqual(yield* hooks.turnNote(ask()), "");
     assert.isNull(yield* hooks.lifecycleBlocker({ threadId, action: "settle" }));
     assert.lengthOf(log.warnings, 2);
   }).pipe(
