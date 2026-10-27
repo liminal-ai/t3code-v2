@@ -271,11 +271,14 @@ const locate = (page) => {
 };
 
 async function browserServe() {
-  await playwright().chromium.launchPersistentContext(files.profile, {
+  const context = await playwright().chromium.launchPersistentContext(files.profile, {
     headless: true,
     viewport: { width: 1440, height: 900 },
     args: ["--remote-debugging-port=0"],
+    handleSIGTERM: false,
   });
+  // This process owns the browser, so `down` stops both through this PID.
+  process.on("SIGTERM", () => context.close().finally(() => process.exit(0)));
   setInterval(() => {}, 1 << 30);
 }
 

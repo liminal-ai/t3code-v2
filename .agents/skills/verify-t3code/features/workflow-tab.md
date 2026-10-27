@@ -37,3 +37,12 @@ Preconditions:
 - Open-ended has one stage, `Confirm done with the user`, and its note tells the agent to add 4 to 7 stages above it. If the agent follows that, the stage counts above change, so keep the drive's prompts to questions.
 - A workflow closes as finished only once every stage is done or skipped (`docs/user/thread-workflows.md`), and `Close workflow` stays disabled until the required reason has text.
 - The `Single task` and `Orchestrate` cards can carry a `playbook changed` badge. Open-ended starts the same either way.
+
+The user-only check of the proof run (`proof/t5/user-only/report.md` of run `retro-1026-t3-fork`) reached every step from screenshots and `docs/user/thread-workflows.md`. These are the gaps it found in the app and its guide:
+
+- The guide says "Open the **Workflow** tab" but not where it is. The user found it by opening the far-right panel toggle and reading `Open a surface`.
+- The template cards count "steps" (`10 steps`, `1 step`), while the pane and the guide say "stages".
+- The Open-ended card says to start it with 4 to 7 stages before the sign-off step, but starting it from the tab gives only the sign-off stage, and nothing asks the user for stages.
+- Nothing explains the `playbook changed` badge.
+- The heading reads `All 1 stages done`, a grammar slip.
+- `Undo` leaves the stage once the workflow is closed, and the guide does not say so.
