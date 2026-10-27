@@ -570,6 +570,15 @@ const decideReopen = (
     const located = locateEditableStep(state, target);
     if (isThreadWorkflowError(located)) return located;
     if (located.step.state._tag === "open") return UNCHANGED;
+    // A reopen adds an open step, so the cap on open steps applies to it as it does to an insert.
+    if (openStepCount(located.entry.instance.steps) >= THREAD_WORKFLOW_LIMITS.steps) {
+      return fail(
+        "too_many_steps",
+        actor._tag === "user"
+          ? `This workflow already has ${THREAD_WORKFLOW_LIMITS.steps} open stages. Finish, skip or remove one before reopening another.`
+          : `Workflow ${located.entry.instance.id} already holds ${THREAD_WORKFLOW_LIMITS.steps} open steps, so ${target} cannot reopen. Skip or finish one first: ${printedCall.skip(located.entry.instance.currentStepId ?? target)}`,
+      );
+    }
     return changed(actor, { _tag: "reopened", target, reason });
   }
   const entry = findInstance(state, target);

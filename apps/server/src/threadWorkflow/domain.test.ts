@@ -395,6 +395,43 @@ const rows: ReadonlyArray<Row> = [
     expect: "changed",
   })),
   {
+    name: "reopen a done step while 8 steps are open",
+    setup: [
+      ...userStarted,
+      ...Array.from({ length: 5 }, () => [agent, insert()] as const),
+      [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }],
+      [agent, insert()],
+    ],
+    actor: user,
+    request: reopen("w1.1"),
+    expect: "too_many_steps",
+    mentions: ["8 open stages"],
+  },
+  {
+    name: "the agent reopening a done step while 8 steps are open reads the skip call",
+    setup: [
+      ...userStarted,
+      ...Array.from({ length: 5 }, () => [agent, insert()] as const),
+      [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }],
+      [agent, insert()],
+    ],
+    actor: agent,
+    request: reopen("w1.1"),
+    expect: "too_many_steps",
+    mentions: ['"action":"skip"'],
+  },
+  {
+    name: "reopen a done step while 7 steps are open",
+    setup: [
+      ...userStarted,
+      ...Array.from({ length: 5 }, () => [agent, insert()] as const),
+      [agent, { _tag: "tick", stepId: "w1.1", comment: "done" }],
+    ],
+    actor: user,
+    request: reopen("w1.1"),
+    expect: "changed",
+  },
+  {
     name: "reopen an open step converges",
     setup: userStarted,
     actor: agent,
