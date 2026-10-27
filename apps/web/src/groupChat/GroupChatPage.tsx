@@ -172,6 +172,7 @@ function GroupBody({ groupId, viewKind }: { groupId: GroupChatGroupId; viewKind:
     readonly message: string;
   } | null>(null);
   const failure = failed?.groupId === groupId ? failed.message : null;
+  // oxlint-disable-next-line t3code/react-effect-budget -- the group's live view is held while this group is on screen and released when it leaves.
   useEffect(() => {
     let alive = true;
     showGroup(groupId).catch((error: unknown) => {

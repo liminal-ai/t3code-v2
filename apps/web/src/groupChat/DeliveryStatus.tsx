@@ -287,6 +287,7 @@ interface EnvelopeRead {
  */
 export function useEnvelope(delivery: GroupChatPageDelivery) {
   const [read, setRead] = useState<EnvelopeRead | null>(null);
+  // oxlint-disable-next-line t3code/react-effect-budget -- the body is fetched again whenever the delivery's head moves while the dialog is open.
   useEffect(() => {
     let alive = true;
     const head = delivery.updatedAt;
