@@ -17,6 +17,7 @@ const USAGE = `t3v.mjs [--run <name>] <command>
   browser aria <name>        ARIA snapshot to proof/<name>.aria.txt
   browser text               print the page's visible text
   browser click (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>]
+  browser hover (--role <role> (--name <name> | --name-prefix <text>) | --text <text>) [--in <text>] [--nth <n>]
   browser fill --role <role> --name <name> --value <text>
   browser type <text>        type into whatever has focus
   browser scroll <dy> [--at <x>,<y>]  mouse wheel, down when dy is positive
@@ -381,6 +382,12 @@ async function browser(sub) {
         console.log(`clicked; now ${page.url()}`);
       });
     }
+    case "hover":
+      return withPage(async (page) => {
+        await locate(page).hover({ timeout });
+        await page.waitForTimeout(300);
+        console.log("hovered");
+      });
     case "fill": {
       const value = flag("value");
       return withPage(async (page) => {
