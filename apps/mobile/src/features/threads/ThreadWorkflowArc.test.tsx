@@ -61,6 +61,7 @@ const instance = (steps: ThreadWorkflowStepSummary[]) =>
     started: stamp,
     lastChangeAt: stamp.at,
     steps,
+    questions: [],
   }) as ThreadWorkflowInstanceSummary;
 
 let root: Root | null = null;

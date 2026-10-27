@@ -2,7 +2,10 @@
 // `./threadWorkflows.ts`, which covers Claude workflow runs and queued turns.
 import {
   WS_METHODS,
+  type ThreadId,
+  type ThreadWorkflowAttention,
   type ThreadWorkflowInstanceSummary,
+  type ThreadWorkflowQuestionSummary,
   type ThreadWorkflowStepId,
   type ThreadWorkflowStepSummary,
   type ThreadWorkflowSubscriptionState,
@@ -12,6 +15,7 @@ import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
 import type { EnvironmentRegistry } from "../connection/registry.ts";
+import type { WorkflowAttention } from "./models.ts";
 import {
   createEnvironmentRpcCommand,
   createEnvironmentRpcQueryAtomFamily,
@@ -46,6 +50,55 @@ export function createThreadWorkflowEnvironmentAtoms<R, E>(
       tag: WS_METHODS.threadWorkflowApply,
     }),
   };
+}
+
+/** One subscription per environment: every thread with an open question, after each change on any thread. */
+export function createThreadWorkflowAttentionAtoms<R, E>(
+  runtime: Atom.AtomRuntime<EnvironmentRegistry | R, E>,
+) {
+  return createEnvironmentRpcSubscriptionAtomFamily(runtime, {
+    label: "environment-data:thread-workflow:attention",
+    tag: WS_METHODS.threadWorkflowAttention,
+  });
+}
+
+export const EMPTY_THREAD_WORKFLOW_ATTENTION: ReadonlyMap<ThreadId, WorkflowAttention> = new Map();
+
+/**
+ * The attention list as a map by thread, or `previous` itself when the list says the same thing,
+ * so the shell atoms stay quiet while other threads change. Only a live snapshot counts.
+ */
+export function nextThreadWorkflowAttention(
+  previous: ReadonlyMap<ThreadId, WorkflowAttention>,
+  result: AsyncResult.AsyncResult<ThreadWorkflowAttention, unknown>,
+): ReadonlyMap<ThreadId, WorkflowAttention> {
+  const entries = AsyncResult.isSuccess(result) ? result.value : [];
+  if (
+    entries.length === previous.size &&
+    entries.every((entry) => {
+      const known = previous.get(entry.threadId);
+      return (
+        known !== undefined &&
+        known.openQuestions === entry.openQuestions &&
+        known.latestQuestionId === entry.latestQuestionId
+      );
+    })
+  ) {
+    return previous;
+  }
+  if (entries.length === 0) return EMPTY_THREAD_WORKFLOW_ATTENTION;
+  return new Map(
+    entries.map((entry) => [
+      entry.threadId,
+      { openQuestions: entry.openQuestions, latestQuestionId: entry.latestQuestionId },
+    ]),
+  );
+}
+
+export function openThreadWorkflowQuestions(
+  instance: Pick<ThreadWorkflowInstanceSummary, "questions">,
+): ReadonlyArray<ThreadWorkflowQuestionSummary> {
+  return instance.questions.filter((question) => question.state._tag === "open");
 }
 
 /** The subscription's revision, or null before its first snapshot. Unchanged revisions signal nothing. */

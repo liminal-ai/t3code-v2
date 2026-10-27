@@ -16,6 +16,14 @@ function describe(record: ThreadWorkflowChangeRecord, instance: ThreadWorkflowIn
   const { event } = record;
   const stepTitle = (stepId: string) =>
     instance.steps.find((step) => step.id === stepId)?.title ?? stepId;
+  const questionTitle = (questionId: string) =>
+    `"${instance.questions.find((question) => question.id === questionId)?.title ?? questionId}"`;
+  const targetTitle = (target: string) =>
+    target.includes(".q")
+      ? `the question ${questionTitle(target)}`
+      : target.includes(".")
+        ? stepTitle(target)
+        : "the workflow";
   switch (event._tag) {
     case "started":
       return `started "${event.title}"`;
@@ -28,13 +36,19 @@ function describe(record: ThreadWorkflowChangeRecord, instance: ThreadWorkflowIn
     case "removed":
       return `removed ${stepTitle(event.stepId)}: ${event.reason}`;
     case "commented":
-      return `commented on ${event.target.includes(".") ? stepTitle(event.target) : "the workflow"}`;
+      return `commented on ${targetTitle(event.target)}`;
     case "reopened":
-      return `reopened ${event.target.includes(".") ? stepTitle(event.target) : "the workflow"}: ${event.reason}`;
+      return `reopened ${targetTitle(event.target)}: ${event.reason}`;
     case "closed":
       return `closed as ${event.outcome}: ${event.reason}`;
     case "recovered":
       return `recovered the log: ${event.reason}`;
+    case "asked":
+      return `asked "${event.question.title}"`;
+    case "answered":
+      return `answered ${questionTitle(event.questionId)}${event.source === "chat" ? " from chat" : ""}`;
+    case "withdrawn":
+      return `withdrew ${questionTitle(event.questionId)}: ${event.reason}`;
   }
 }
 
@@ -42,6 +56,7 @@ function recordComment(record: ThreadWorkflowChangeRecord): string | null {
   const { event } = record;
   if (event._tag === "ticked" || event._tag === "commented") return event.comment;
   if (event._tag === "started") return event.comment;
+  if (event._tag === "answered") return event.answer;
   return null;
 }
 
@@ -65,7 +80,11 @@ export function ThreadWorkflowActivity({
   const records =
     instance === null
       ? []
-      : [...instance.history, ...instance.steps.flatMap((step) => step.history)]
+      : [
+          ...instance.history,
+          ...instance.steps.flatMap((step) => step.history),
+          ...instance.questions.flatMap((question) => question.history),
+        ]
           .filter(
             (record, index, all) => all.findIndex((other) => other.seq === record.seq) === index,
           )

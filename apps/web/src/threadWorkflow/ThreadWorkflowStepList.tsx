@@ -1,4 +1,5 @@
 import {
+  openThreadWorkflowQuestions,
   threadWorkflowStepPhase,
   threadWorkflowStepResult,
   type ThreadWorkflowStepPhase,
@@ -258,6 +259,14 @@ function YourCall() {
   );
 }
 
+function WaitingOnQuestion() {
+  return (
+    <span className="ms-2 whitespace-nowrap text-warning-foreground/80 text-xs">
+      waiting on question
+    </span>
+  );
+}
+
 const TITLE_CLASS: Record<ThreadWorkflowStepPhase, string> = {
   done: "text-muted-foreground",
   current: "font-semibold",
@@ -272,6 +281,7 @@ function StepRow({
   instanceOpen,
   disabled,
   undoable,
+  blockedByQuestion,
   form,
   onOpenForm,
   onDone,
@@ -282,6 +292,7 @@ function StepRow({
   instanceOpen: boolean;
   disabled: boolean;
   undoable: boolean;
+  blockedByQuestion: boolean;
   form: ReactNode;
   onOpenForm: (intent: ThreadWorkflowFormIntent) => void;
   onDone: (stepId: ThreadWorkflowStepId, note: string) => void;
@@ -307,6 +318,7 @@ function StepRow({
               {step.waitsForUser && (phase === "current" || phase === "upcoming") ? (
                 <YourCall />
               ) : null}
+              {blockedByQuestion ? <WaitingOnQuestion /> : null}
             </span>
             <CollapsibleTrigger
               render={<Button size="icon-xs" variant="ghost-muted" aria-label="Details" />}
@@ -392,6 +404,9 @@ export function ThreadWorkflowStepList({
   onUndo: (stepId: ThreadWorkflowStepId) => void;
 }) {
   const instanceOpen = instance.status._tag === "open";
+  const blockedSteps = new Set(
+    openThreadWorkflowQuestions(instance).map((question) => question.blocksStepId),
+  );
   return (
     <ol className="flex flex-col">
       {instance.steps.map((step) => {
@@ -404,6 +419,7 @@ export function ThreadWorkflowStepList({
             instanceOpen={instanceOpen}
             disabled={disabled}
             undoable={instanceOpen && phase === "done" && step.id === undoStepId}
+            blockedByQuestion={step.state._tag === "open" && blockedSteps.has(step.id)}
             form={formStepId === step.id ? <div className="pt-1">{renderForm()}</div> : null}
             onOpenForm={onOpenForm}
             onDone={onDone}

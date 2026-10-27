@@ -1,13 +1,17 @@
 import {
+  ThreadId,
   ThreadWorkflowInstanceId,
+  ThreadWorkflowQuestionId,
   ThreadWorkflowStepId,
   ThreadWorkflowTemplateId,
   type ThreadWorkflowInstanceSummary,
+  type ThreadWorkflowQuestionSummary,
   type ThreadWorkflowStamp,
   type ThreadWorkflowStepSummary,
   type ThreadWorkflowSubscriptionState,
   type ThreadWorkflowSubscriptionView,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
 import * as Stream from "effect/Stream";
 import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
@@ -16,6 +20,8 @@ import type { ThreadPendingUserInput } from "./threadRequests.ts";
 import {
   activeThreadWorkflowInstanceAtom,
   deriveThreadWorkflowAsks,
+  nextThreadWorkflowAttention,
+  openThreadWorkflowQuestions,
   threadWorkflowProgress,
   threadWorkflowRevisionAtom,
   threadWorkflowStageLine,
@@ -72,6 +78,7 @@ const instance = (
     started: stamp,
     lastChangeAt: stamp.at,
     steps,
+    questions: [],
   }) as ThreadWorkflowInstanceSummary;
 
 const view = (
@@ -248,5 +255,63 @@ describe("threadWorkflowRevisionAtom", () => {
 
     expect(signals).toEqual([null, 3, 4]);
     registry.dispose();
+  });
+});
+
+describe("nextThreadWorkflowAttention", () => {
+  const entries = (...items: ReadonlyArray<readonly [string, number, string]>) =>
+    AsyncResult.success(
+      items.map(([threadId, openQuestions, latestQuestionId]) => ({
+        threadId: ThreadId.make(threadId),
+        openQuestions,
+        latestQuestionId: ThreadWorkflowQuestionId.make(latestQuestionId),
+      })),
+    );
+
+  it("maps the list by thread and keeps the map when nothing changed", () => {
+    const first = nextThreadWorkflowAttention(
+      new Map(),
+      entries(["t1", 2, "w1.q2"], ["t2", 1, "w3.q1"]),
+    );
+    expect(first.get(ThreadId.make("t1"))).toEqual({ openQuestions: 2, latestQuestionId: "w1.q2" });
+    expect(
+      nextThreadWorkflowAttention(first, entries(["t1", 2, "w1.q2"], ["t2", 1, "w3.q1"])),
+    ).toBe(first);
+    const changed = nextThreadWorkflowAttention(
+      first,
+      entries(["t1", 3, "w1.q3"], ["t2", 1, "w3.q1"]),
+    );
+    expect(changed).not.toBe(first);
+    expect(changed.get(ThreadId.make("t1"))?.latestQuestionId).toBe("w1.q3");
+    const dropped = nextThreadWorkflowAttention(changed, entries(["t2", 1, "w3.q1"]));
+    expect(dropped.size).toBe(1);
+  });
+
+  it("reads as empty before the first snapshot and after a failure", () => {
+    expect(nextThreadWorkflowAttention(new Map(), AsyncResult.initial()).size).toBe(0);
+    expect(
+      nextThreadWorkflowAttention(new Map(), AsyncResult.failure(Cause.fail("gone"))).size,
+    ).toBe(0);
+    const empty = nextThreadWorkflowAttention(new Map(), entries());
+    expect(nextThreadWorkflowAttention(empty, entries())).toBe(empty);
+  });
+});
+
+describe("openThreadWorkflowQuestions", () => {
+  it("keeps only the open ones, in asked order", () => {
+    const open = { _tag: "open" } as const;
+    const questions = [
+      { id: ThreadWorkflowQuestionId.make("w1.q1"), title: "A?", state: open },
+      {
+        id: ThreadWorkflowQuestionId.make("w1.q2"),
+        title: "B?",
+        state: { _tag: "answered", stamp, answer: "yes", source: "pane" },
+      },
+      { id: ThreadWorkflowQuestionId.make("w1.q3"), title: "C?", state: open },
+    ] as ReadonlyArray<ThreadWorkflowQuestionSummary>;
+    expect(openThreadWorkflowQuestions({ questions }).map((question) => question.id)).toEqual([
+      "w1.q1",
+      "w1.q3",
+    ]);
   });
 });

@@ -16,6 +16,7 @@ import { PrimaryConnectionTarget } from "../connection/model.ts";
 import { v2Now, v2ShellSnapshot, v2ThreadShell } from "./orchestrationV2TestFixtures.ts";
 import { applyShellStreamEvent } from "./shellReducer.ts";
 import { isThreadWorking } from "./threadInbox.ts";
+import type { WorkflowAttention } from "./models.ts";
 import { childThreadInputsTitle, createEnvironmentThreadShellAtoms } from "./threadShell.ts";
 
 const environmentId = EnvironmentId.make("environment-v2");
@@ -44,13 +45,67 @@ function makeHarness(environmentIds: ReadonlyArray<EnvironmentId> = [environment
       ]),
     ),
   });
+  const workflowAttentionAtom = Atom.family((_environmentId: EnvironmentId) =>
+    Atom.make<ReadonlyMap<ThreadId, WorkflowAttention>>(new Map()),
+  );
   return {
     registry: AtomRegistry.make(),
     snapshotAtom,
     catalogValueAtom,
-    threads: createEnvironmentThreadShellAtoms({ catalogValueAtom, snapshotAtom }),
+    workflowAttentionAtom,
+    threads: createEnvironmentThreadShellAtoms({
+      catalogValueAtom,
+      snapshotAtom,
+      workflowAttentionAtom,
+    }),
   };
 }
+
+describe("workflow attention", () => {
+  it("overlays each thread's open questions and wakes the quiet shell when they change", () => {
+    const harness = makeHarness();
+    const runId = RunId.make("asking-run");
+    const running: OrchestrationV2ThreadShell = {
+      ...v2ThreadShell,
+      latestRunId: runId,
+      activeRunId: runId,
+      status: "running",
+    };
+    harness.registry.set(harness.snapshotAtom(environmentId), {
+      ...v2ShellSnapshot,
+      threads: [running],
+    });
+    const ref = { environmentId, threadId: running.id };
+    const quietAtom = harness.threads.quietThreadShellAtom(ref);
+    const listAtom = harness.threads.threadShellsAtom;
+    const disposeQuiet = harness.registry.mount(quietAtom);
+    const disposeList = harness.registry.mount(listAtom);
+    try {
+      const before = harness.registry.get(quietAtom);
+      expect(before?.openWorkflowQuestions).toBe(0);
+      expect(before?.latestWorkflowQuestionId).toBeNull();
+
+      harness.registry.set(
+        harness.workflowAttentionAtom(environmentId),
+        new Map([[running.id, { openQuestions: 2, latestQuestionId: "w1.q2" }]]),
+      );
+      const asked = harness.registry.get(quietAtom);
+      expect(asked).not.toBe(before);
+      expect(asked?.openWorkflowQuestions).toBe(2);
+      expect(asked?.latestWorkflowQuestionId).toBe("w1.q2");
+      expect(harness.registry.get(listAtom)[0]).toBe(asked);
+
+      harness.registry.set(harness.workflowAttentionAtom(environmentId), new Map());
+      const answered = harness.registry.get(quietAtom);
+      expect(answered?.openWorkflowQuestions).toBe(0);
+      expect(answered).not.toBe(asked);
+    } finally {
+      disposeList();
+      disposeQuiet();
+      harness.registry.dispose();
+    }
+  });
+});
 
 describe("v2 thread shell lists", () => {
   it("preserves ordered reference arrays when a middle thread changes", () => {

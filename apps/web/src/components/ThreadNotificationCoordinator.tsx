@@ -1,6 +1,7 @@
 import {
   type PendingSubagentRequest,
   presentThreadShell,
+  type WorkflowAttention,
 } from "@t3tools/client-runtime/state/models";
 import { pendingSubagentRequestsByThread } from "@t3tools/client-runtime/state/threads";
 import { useAtomValue } from "@effect/atom-react";
@@ -18,6 +19,7 @@ import { useEffect, useRef } from "react";
 import { getClientSettings, useClientSettings } from "../hooks/useSettings";
 import { useEnvironmentIds } from "../state/environments";
 import { environmentShell } from "../state/shell";
+import { threadWorkflowAttentionAtom } from "../state/threadWorkflowAttention";
 import {
   hasDesktopNotifications,
   hasNotificationSound,
@@ -27,6 +29,7 @@ import {
   unlockNotificationAudio,
 } from "../threadNotifications";
 import { resolveSidebarThreadStatus } from "./Sidebar.logic";
+import { threadAttentionKey, workflowQuestionNumber } from "./ThreadNotificationCoordinator.logic";
 import { toastManager } from "./ui/toast";
 
 export function ThreadNotificationCoordinator() {
@@ -96,9 +99,18 @@ export function ThreadNotificationCoordinator() {
 interface NotificationState {
   readonly raw: OrchestrationV2ThreadShell;
   readonly subagentRequest: PendingSubagentRequest | null;
+  readonly workflowAttention: WorkflowAttention | null;
+  readonly workflowHighWater: number;
   readonly attention: string | null;
   readonly completion: number | null;
 }
+
+const sameWorkflowAttention = (left: WorkflowAttention | null, right: WorkflowAttention | null) =>
+  left === right ||
+  (left !== null &&
+    right !== null &&
+    left.openQuestions === right.openQuestions &&
+    left.latestQuestionId === right.latestQuestionId);
 
 function EnvironmentNotifications({
   environmentId,
@@ -110,6 +122,7 @@ function EnvironmentNotifications({
   const shell = useAtomValue(environmentShell.stateValueAtom(environmentId));
   const threads =
     shell.status === "live" && Option.isSome(shell.snapshot) ? shell.snapshot.value.threads : null;
+  const workflowAttention = useAtomValue(threadWorkflowAttentionAtom(environmentId));
   const mode = useClientSettings((settings) => settings.notificationMode);
   const inAppNotificationsEnabled = useClientSettings(
     (settings) => settings.inAppNotificationsEnabled,
@@ -131,17 +144,23 @@ function EnvironmentNotifications({
       if (rawThread.lineage.relationshipToParent === "subagent") continue;
       const prior = previous.current.get(rawThread.id);
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
-      if (prior?.raw === rawThread && prior.subagentRequest === subagentRequest) {
+      const attentionEntry = workflowAttention.get(rawThread.id) ?? null;
+      if (
+        prior?.raw === rawThread &&
+        prior.subagentRequest === subagentRequest &&
+        sameWorkflowAttention(prior.workflowAttention, attentionEntry)
+      ) {
         next.set(rawThread.id, prior);
         continue;
       }
-      const thread = presentThreadShell(environmentId, rawThread, subagentRequest);
+      const thread = presentThreadShell(environmentId, rawThread, subagentRequest, attentionEntry);
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
-      const attention =
-        status === "input" || status === "approval" || status === "failed" || status === "limited"
-          ? `${thread.latestRun?.runId ?? ""}:${status}`
-          : null;
+      const workflowHighWater = Math.max(
+        prior?.workflowHighWater ?? 0,
+        workflowQuestionNumber(attentionEntry?.latestQuestionId),
+      );
+      const attention = threadAttentionKey(status, thread, workflowHighWater);
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
       const completion =
         status === "ready" &&
@@ -149,7 +168,14 @@ function EnvironmentNotifications({
         Number.isFinite(completedAt)
           ? completedAt
           : (prior?.completion ?? null);
-      next.set(thread.id, { raw: rawThread, subagentRequest, attention, completion });
+      next.set(thread.id, {
+        raw: rawThread,
+        subagentRequest,
+        workflowAttention: attentionEntry,
+        workflowHighWater,
+        attention,
+        completion,
+      });
       if (!prior || thread.archivedAt !== null) continue;
       const kind =
         attention && attention !== prior.attention
@@ -248,6 +274,7 @@ function EnvironmentNotifications({
     navigate,
     onNotification,
     threads,
+    workflowAttention,
   ]);
 
   return null;
