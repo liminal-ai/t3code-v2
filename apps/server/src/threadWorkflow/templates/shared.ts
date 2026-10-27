@@ -46,7 +46,7 @@ export const reflectAndUpkeep: Step = {
   title: "Thread reflected and verify skill kept current",
   slug: "reflect-and-upkeep",
   instructions:
-    "A thread that merged changes to a project or ran across sessions runs `/reflect`, then `/maintain-verification-skill` scoped to the gaps the thread exposed, updating the project's verify skill and `.agents/merge-brief.md` in one PR through the merge gate. pstack itself changes only in a retro round. A thread that merged nothing may skip with that reason.",
+    "A thread that merged changes to a project or ran across sessions runs `/reflect`, then `/maintain-verification-skill` scoped to the gaps the thread exposed, updating the project's verify skill and `.agents/merge-brief.md` in one PR through the merge gate. pstack itself changes only in a retro round. A thread that neither merged changes nor ran across sessions may skip with that reason.",
   proofLevel: "recommended",
   proofHint: "the reflect path and the upkeep PR URL, or the skip reason",
   waitsForUser: false,
@@ -56,7 +56,7 @@ export const cleanup: Step = {
   title: "Run cleaned up",
   slug: "cleanup",
   instructions:
-    "Run the cleanup protocol in `~/.agents/skills/poteto-mode/references/cleanup-protocol.md`. List what the run created and the scope it worked in. A cleanup subagent compares against the before snapshot, scours that scope, removes what is clearly from the run, and reports the rest. Remove or check what you can, and put only what is not clearly from the run in front of the user.",
+    "Run the cleanup protocol in `~/.agents/skills/poteto-mode/references/cleanup-protocol.md`. A cleanup agent reviews the whole thread and every subagent's thread, the run folder, the diff against the before snapshot, and the code changes. It keeps cited proof, removes what is clearly from the run, and lists the rest for you. Remove or check what you can, and put only what you cannot settle in front of the user.",
   proofLevel: "required",
   proofHint: "the cleanup report's path",
   waitsForUser: false,

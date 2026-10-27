@@ -11,8 +11,8 @@ export const hillclimb = Schema.decodeSync(ThreadWorkflowTemplate)({
     "One metric improved against a target in a loop: one change, one measurement, keep or revert.",
   source: {
     playbook: "poteto-mode/playbooks/hillclimb.md",
-    commit: "5b090aff34e36677a0d6d53b7db6a74bedc709d1",
-    sha256: "d994445ca602d5a67b0662398f9d2677ebaa09a26ddd4e929a81565442bfa2db",
+    commit: "03a5c1c4b89683b9fc0bf3001694af1f4bf1c689",
+    sha256: "e484f7d81eb53f3cce4d09b4ba46e461f44179080425009010fc79b0b3910f9f",
   },
   steps: [
     findVerifySkill,
@@ -29,7 +29,7 @@ export const hillclimb = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Harness proven sensitive and frozen",
       slug: "freeze-harness",
       instructions:
-        "Build the measurement harness, show it separates contrasting workloads, vet it with benchmark-checklist, and freeze it as one command that prints the median of N, its error count and the work done. Record the baseline and a green regression gate. Open `decision.tsv` via show-me-your-work, outside the tree.",
+        "Build the measurement harness, show it separates contrasting workloads, vet it with benchmark-checklist, and freeze it as one command that prints the median of N, its error count and the work done. Record the baseline and a green regression gate. Open `decision.tsv` via show-me-your-work in the run folder, out of git.",
       proofLevel: "required",
       proofHint: "the harness command and the baseline",
       waitsForUser: false,

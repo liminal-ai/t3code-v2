@@ -99,12 +99,9 @@ it("ships the twenty playbook templates in poteto-mode's order, then open-ended"
   const waiting = [...builtInTemplates.values()].flatMap((template) =>
     template.steps.filter((step) => step.waitsForUser).map((step) => `${template.id}/${step.slug}`),
   );
-  assert.deepStrictEqual(waiting, [
-    "multi-phase-plan/hand-back",
-    "worktree-cleanup/prune-worktrees",
-    "retro-round/record-decisions",
-    "open-ended/confirm-done",
-  ]);
+  // Only a step the user always ends carries the flag: the note's waits-for-user line is
+  // unconditional, so a step that waits only sometimes says so in its instructions instead.
+  assert.deepStrictEqual(waiting, ["retro-round/record-decisions", "open-ended/confirm-done"]);
 });
 
 const OPENS_WITHOUT_VERIFY_SKILL = new Set([
@@ -165,6 +162,9 @@ describe.each(playbookTemplates.map((template) => [template.id, template] as con
           assert.match(step.instructions, /\b(if|when|only|otherwise)\b/i, step.slug);
         }
         if (step.waitsForUser) assert.match(step.instructions, /\bthe user decides\b/i, step.slug);
+        if (/\bskip (this|the) wait\b/i.test(step.instructions)) {
+          assert.isFalse(step.waitsForUser, `${step.slug} waits only sometimes`);
+        }
       }
     });
 

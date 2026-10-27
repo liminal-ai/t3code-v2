@@ -11,8 +11,8 @@ export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
     "A green stack verified PR by PR, then the contiguous verified run landed bottom-up through the merge gate.",
   source: {
     playbook: "poteto-mode/playbooks/shipping.md",
-    commit: "5b090aff34e36677a0d6d53b7db6a74bedc709d1",
-    sha256: "bf5b6afcd8a2263f47d5f7288a99cda2c687a62ae90146335f72dc54a6a1eebe",
+    commit: "47b5f218d3dfdec82229c39a3f4e37439f01d87a",
+    sha256: "e392b8bf43980f892a44cc34de5337eb8184e136ee3fb1bd9edae48202d0bc29",
   },
   steps: [
     findVerifySkill,
@@ -38,7 +38,7 @@ export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Run landed bottom-up through the gate",
       slug: "land-run",
       instructions:
-        "Merge the run's lowest unmerged PR only with `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo <owner/name> --pr <n>`, adding `--method merge` where the repo requires merge commits and `--plan` with `--plan-pr` when a plan covers it. Leave the stack alone while it lands. Watch the bottom PR with a fallback heartbeat, re-arm on each merge, and stop at the ceiling.",
+        "Merge the run's lowest unmerged PR only with `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo <owner/name> --pr <n>` (`--method merge` where the repo requires merge commits; `--plan` with `--plan-pr` unless the PR declares its plan), and read the merge brief it prints. After each merge, retarget the next PR to trunk, move its patch onto the merge result, push with `--force-with-lease`, let the diff rule decide whether its verdict carries, and gate it once its checks pass; touch nothing else in the stack. Watch the bottom PR with a fallback heartbeat, re-arm on each merge, and stop at the ceiling.",
       proofLevel: "required",
       proofHint: "each merge SHA, read back from the forge",
       waitsForUser: false,

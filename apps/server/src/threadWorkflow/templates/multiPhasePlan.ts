@@ -11,8 +11,8 @@ export const multiPhasePlan = Schema.decodeSync(ThreadWorkflowTemplate)({
     "A plan for work that spans phases or stacked PRs, written as a checklist an owner runs box by box. No implementation.",
   source: {
     playbook: "poteto-mode/playbooks/multi-phase-plan.md",
-    commit: "5b090aff34e36677a0d6d53b7db6a74bedc709d1",
-    sha256: "adc0035c258f1c2f68afa7036bbe7206735fae0c81539d36a7c898b39d5d7367",
+    commit: "03a5c1c4b89683b9fc0bf3001694af1f4bf1c689",
+    sha256: "c7fe374a2c1c8dab04f46b592e9a1d9b30a8dc6bfa64f795879ce487d219104d",
   },
   steps: [
     findVerifySkill,
@@ -38,10 +38,10 @@ export const multiPhasePlan = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Plan handed back",
       slug: "hand-back",
       instructions:
-        "Post the plan path and the check script's output. If the request already gave the go to build, skip this wait and start the execution playbook the plan names. Otherwise the user decides whether to build: put that on the workflow's open questions, or in chat where it has none, and stop.",
+        "Post the plan path and the check script's output. If the request already gave the go to build, start the execution playbook the plan names; its PRs declare the plan with a `pstack-plan:` line in their bodies. Otherwise the user decides whether to build: put that on the workflow's open questions, or in chat where it has none, and stop.",
       proofLevel: "required",
       proofHint: "the go, quoted, or where it came from",
-      waitsForUser: true,
+      waitsForUser: false,
     },
     ...closingSteps,
   ],

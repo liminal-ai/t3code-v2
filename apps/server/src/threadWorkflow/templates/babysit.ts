@@ -20,7 +20,7 @@ export const babysit = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Mode declared and forge resolved",
       slug: "declare-mode",
       instructions:
-        "Declare the mode before any poll: drive to merge-ready (the default), background, threads-only, or check, which small and docs-only PRs get. Resolve the forge: gh unless Origin resolves the repo. Check nothing else is babysitting the stack, then arm watch_pull_request with a fallback heartbeat.",
+        "Declare the mode before any poll. drive runs the loop to merge-ready (the default). background triages without blocking. threads-only answers review comments and touches nothing else. check is one status pass and a report, which small and docs-only PRs get, with no watcher. Resolve the forge: gh unless Origin resolves the repo. For drive and background, check nothing else is babysitting the stack, then arm watch_pull_request with a fallback heartbeat.",
       proofLevel: "required",
       proofHint: "the mode and the forge",
       waitsForUser: false,
@@ -29,7 +29,7 @@ export const babysit = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Frontier PR cleared",
       slug: "clear-frontier",
       instructions:
-        "Work only the lowest unmerged PR: conflicts, then review threads, then CI, batched into one push wave. Report a conflict and the branch that needs the rebase rather than resolving it, and never change stack topology. Classify CI before one fresh build. Triage Bugbot and Codex per bugbot-triage.md, fixing real findings red-first in the owning PR and checking each fix through the project's verify skill. Trust watch-pr, not a green list.",
+        "In check mode, report the frontier's status and stop here. In threads-only, triage and answer the review threads and touch nothing else. Otherwise work only the lowest unmerged PR: conflicts, then review threads, then CI, batched into one push wave. Report a conflict and the branch that needs the rebase rather than resolving it, and never change stack topology. Classify CI before one fresh build. Triage Bugbot and Codex per bugbot-triage.md, fixing real findings red-first in the owning PR and checking each fix through the project's verify skill. Trust watch-pr, not a green list.",
       proofLevel: "required",
       proofHint: "watch-pr's status for the frontier PR",
       waitsForUser: false,
