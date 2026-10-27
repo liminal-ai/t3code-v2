@@ -22,7 +22,7 @@ Everything else is upstream. `git diff --stat v0.1.2 main` lists every file that
 
 - `main` is the upstream tag we last synced plus the fork's commits. Every change reaches `main` through a PR.
 - Work goes on a short-lived branch: `fix/...`, `feature/...`, `sync/upstream-<tag>`. T3 creates `t3/...` branches for its own worktrees. Leave branches that another thread owns alone.
-- Merge every PR with a merge commit: `gh pr merge <n> --merge`. Never squash and never rebase `main`. A squash flattens upstream's history, so the next sync conflicts on every file upstream touched since. GitHub still allows squash and rebase on this repository, so nothing stops a wrong merge button but this rule.
+- Merge every PR through the merge gate, with a merge commit: `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo liminal-ai/t3code-v2 --pr <n> --method merge`. The gate checks the PR's checks, review threads, the independent verdict and Lee's approval of any instruction-file text, then merges. Never merge a PR with `gh` yourself, never squash and never rebase `main`. A squash flattens upstream's history, so the next sync conflicts on every file upstream touched since. GitHub still allows squash and rebase on this repository, so nothing stops a wrong merge button but this rule.
 - The fork's `origin` carries one old nightly tag, `v0.0.46-nightly.20261011.2980`. Upstream's tags come from `git fetch upstream --tags`. Without them, `git describe` names a build of today's `main` after that old tag.
 - `gh` resolves this repository to `liminal-ai/t3code-v2` through `remote.origin.gh-resolved` in the shared git config. Without that line, `gh` picks the `upstream` remote and a bare `gh pr create` opens the PR on `pingdotgg/t3code`. If `gh repo view --json nameWithOwner` ever prints `pingdotgg/t3code`, run `gh repo set-default liminal-ai/t3code-v2`.
 
@@ -31,9 +31,9 @@ Everything else is upstream. `git diff --stat v0.1.2 main` lists every file that
 1. Do not change any `AGENTS.md` or `CLAUDE.md`, including this repository's, until Lee approves the exact text.
 2. Run `gh repo view --json nameWithOwner` and check that it prints `liminal-ai/t3code-v2`.
 3. If the change touches a file in [Seams to re-check](#seams-to-re-check), run the tests listed there.
-4. Follow upstream's `AGENTS.md` for everything else: conventional commit titles, focused tests, no repo-wide checks.
+4. `AGENTS.md` is owned by the fork and points here. Upstream's agent rules do not apply to this repository. Keep conventional commit titles and focused tests, and run no repo-wide checks.
 5. Get an independent verdict from a model family other than the author's before you merge. The pstack Shipping playbook covers how.
-6. Merge with `--merge`. A merge changes nothing in prod until a cutover, and only Lee runs or approves a cutover.
+6. Merge through the merge gate with `--method merge`. A merge changes nothing in prod until a cutover, and only Lee runs or approves a cutover.
 
 ## Sync from upstream
 
@@ -93,6 +93,8 @@ Lee runs or approves every cutover.
 To roll back, point `prod/current` at the previous release and restart the unit. `facts.env` in the run folder names the previous release. A rollback runs the old binary on data the new one may have migrated or compacted. Nobody has tested that for 3238.
 
 ## Test live without touching prod
+
+Never start a server against `~/.t3/userdata`, the live install; read it and copy from it only. Never set `VITE_HTTP_URL` or `VITE_WS_URL` for dev; dev is single-origin and Vite proxies `/api`, `/ws`, `/oauth` and `/.well-known`, so setting them bakes localhost into the bundle and breaks every remote browser. Both rules move into the fork's verify skill when it lands.
 
 Run a throwaway T3 from a built release on a free port, with its own base directory. Take its data from a WAL-safe snapshot and follow every step of the safety list in `~/lim-v2/notes/cursor-cloud-evidence/verification-20261017-sync3238-r2/safety-audit.md`. That list says which files to leave out, the SQL that stops copied threads from waking, and the settings to use. Read the live ports with `ss -H -ltnp` first. 13987 is v2 prod, 13977 is the older `~/lim` T3, and 13995 is the deploy script's smoke test.
 
