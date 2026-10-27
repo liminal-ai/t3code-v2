@@ -198,7 +198,7 @@ export const progress = (instance: Pick<ThreadWorkflowInstanceSummary, "steps">)
 };
 
 /** Steps that count against the cap: the open ones. A finished, skipped or removed step has left the plan ahead. */
-export const openStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
+const openStepCount = (steps: ReadonlyArray<Pick<ThreadWorkflowStepSummary, "state">>) =>
   steps.filter((step) => step.state._tag === "open").length;
 
 const STEP_CAP_ADVICE = `A workflow holds at most ${THREAD_WORKFLOW_LIMITS.steps} open steps. Combine steps into outcomes at one level, and put detail in a comment on the current step instead.`;
