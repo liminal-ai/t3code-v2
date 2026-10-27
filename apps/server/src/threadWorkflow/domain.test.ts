@@ -10,11 +10,14 @@ import * as Schema from "effect/Schema";
 
 import {
   admits,
+  attentionOf,
   emptyState,
   evolve,
   fold,
+  instanceActedOn,
   lifecycleBlocker,
   markCorrupt,
+  openQuestions,
   slugFor,
   toSubscriptionView,
   toView,
@@ -62,6 +65,23 @@ const insert = (fields: Record<string, unknown> = {}) => ({
   reason: "found more work",
   ...fields,
 });
+const ask = (fields: Record<string, unknown> = {}) => ({
+  _tag: "ask",
+  title: "Merge without a second review?",
+  summary: "Yes (recommended) · No, wait for Sam",
+  ...fields,
+});
+const answer = (questionId: string, fields: Record<string, unknown> = {}) => ({
+  _tag: "answer",
+  questionId,
+  answer: "Yes",
+  ...fields,
+});
+const withdraw = (questionId: string) => ({
+  _tag: "withdraw",
+  questionId,
+  reason: "Sam already reviewed it",
+});
 const start = { _tag: "start", templateId: "checklist" };
 const planned = (...titles: ReadonlyArray<string>) => ({
   ...start,
@@ -81,6 +101,9 @@ const allResolved: Setup = [
 ];
 const closedFinished: Setup = [...allResolved, [user, close("w1", "finished")]];
 const closedAbandoned: Setup = [started, [user, close("w1", "abandoned")]];
+const asked: Setup = [started, [agent, ask()]];
+const answered: Setup = [...asked, [user, answer("w1.q1")]];
+const withdrawn: Setup = [...asked, [agent, withdraw("w1.q1")]];
 
 const outcomeOf = (applied: ReturnType<typeof apply>): Expected => {
   const { decision } = applied;
@@ -572,6 +595,129 @@ const rows: ReadonlyArray<Row> = [
     request: { _tag: "recover", reason: "fix it" },
     expect: "not_corrupt",
   },
+  {
+    name: "ask with no open instance",
+    setup: closedAbandoned,
+    actor: agent,
+    request: ask(),
+    expect: "no_open_instance",
+    mentions: ["thread_workflow_start"],
+  },
+  { name: "ask by the agent", setup: userStarted, actor: agent, request: ask(), expect: "changed" },
+  {
+    name: "ask blocking a step of the open instance",
+    setup: userStarted,
+    actor: agent,
+    request: ask({ blocksStepId: "w1.2" }),
+    expect: "changed",
+  },
+  {
+    name: "ask blocking a step that does not exist",
+    setup: userStarted,
+    actor: agent,
+    request: ask({ blocksStepId: "w1.9" }),
+    expect: "unknown_step",
+  },
+  {
+    name: "answer from the pane",
+    setup: asked,
+    actor: user,
+    request: answer("w1.q1"),
+    expect: "changed",
+  },
+  {
+    name: "answer recorded from chat",
+    setup: asked,
+    actor: agent,
+    request: answer("w1.q1", { source: "chat" }),
+    expect: "changed",
+  },
+  {
+    name: "answer a question that does not exist",
+    setup: asked,
+    actor: user,
+    request: answer("w1.q2"),
+    expect: "unknown_question",
+    mentions: ["thread_workflow_get {}"],
+  },
+  {
+    name: "answer an answered question",
+    setup: answered,
+    actor: agent,
+    request: answer("w1.q1"),
+    expect: "question_closed",
+    mentions: [
+      "in the Workflow tab by the user",
+      '"Yes"',
+      'thread_workflow_change {"action":"reopen","target":"w1.q1","reason":"<why>"}',
+    ],
+  },
+  {
+    name: "answer on a closed workflow",
+    setup: [...asked, [user, close("w1", "abandoned")]],
+    actor: user,
+    request: answer("w1.q1"),
+    expect: "changed",
+  },
+  { name: "withdraw", setup: asked, actor: agent, request: withdraw("w1.q1"), expect: "changed" },
+  {
+    name: "withdraw a withdrawn question",
+    setup: withdrawn,
+    actor: agent,
+    request: withdraw("w1.q1"),
+    expect: "question_closed",
+    mentions: ["withdrawn by the agent"],
+  },
+  {
+    name: "reopen an answered question by the agent",
+    setup: answered,
+    actor: agent,
+    request: reopen("w1.q1"),
+    expect: "user_only",
+    mentions: ["thread_workflow_ask"],
+  },
+  {
+    name: "reopen an answered question by the user",
+    setup: answered,
+    actor: user,
+    request: reopen("w1.q1"),
+    expect: "changed",
+  },
+  {
+    name: "reopen a withdrawn question by the user",
+    setup: withdrawn,
+    actor: user,
+    request: reopen("w1.q1"),
+    expect: "changed",
+  },
+  {
+    name: "reopen an open question",
+    setup: asked,
+    actor: user,
+    request: reopen("w1.q1"),
+    expect: "unchanged",
+  },
+  {
+    name: "reopen a question that does not exist",
+    setup: asked,
+    actor: user,
+    request: reopen("w1.q3"),
+    expect: "unknown_question",
+  },
+  {
+    name: "comment on a question",
+    setup: asked,
+    actor: agent,
+    request: { _tag: "comment", target: "w1.q1", comment: "Sam is back Monday" },
+    expect: "changed",
+  },
+  {
+    name: "comment on a question that does not exist",
+    setup: asked,
+    actor: agent,
+    request: { _tag: "comment", target: "w1.q2", comment: "x" },
+    expect: "unknown_question",
+  },
   // pane concurrency
   {
     name: "a stale expected revision",
@@ -1003,5 +1149,154 @@ describe("admits", () => {
     const { state } = given(started, [agent, tick("w1.1"), { requestId: "r1" }]);
     const skipped = { _tag: "skipped", stepId: "w1.2", reason: "x" };
     expect(admits(state, at(3, skipped, "r1"))).toBe('reuses request id "r1"');
+  });
+});
+
+describe("questions", () => {
+  const questionsOf = (state: ThreadWorkflowState) => toView(state).instances[0]?.questions ?? [];
+
+  it("numbers questions per instance and never reuses a number", () => {
+    const { state } = given(
+      started,
+      [agent, ask()],
+      [agent, ask({ title: "Ship to staging first?" })],
+      [agent, withdraw("w1.q1")],
+      [agent, ask({ title: "Third" })],
+    );
+    expect(questionsOf(state).map((question) => question.id)).toEqual(["w1.q1", "w1.q2", "w1.q3"]);
+    expect(questionsOf(state)[0]?.summary).toBe("Yes (recommended) · No, wait for Sam");
+    expect(openQuestions(toView(state).instances[0]!).map((question) => question.id)).toEqual([
+      "w1.q2",
+      "w1.q3",
+    ]);
+    expect(toView(state).instances[0]?.currentStepId).toBe("w1.1");
+  });
+
+  it("records who answered and where, defaulting the source by actor", () => {
+    const fromPane = given(...answered).state;
+    expect(questionsOf(fromPane)[0]?.state).toEqual({
+      _tag: "answered",
+      stamp: { seq: 3, at: "2026-10-17T12:00:02.000Z", by: user },
+      answer: "Yes",
+      source: "pane",
+    });
+    const fromChat = given(...asked, [agent, answer("w1.q1", { answer: "No, wait" })]).state;
+    expect(questionsOf(fromChat)[0]?.state).toMatchObject({ source: "chat", answer: "No, wait" });
+    expect(questionsOf(fromChat)[0]?.history).toHaveLength(1);
+  });
+
+  it("withdraws with a reason and reopens to open", () => {
+    const gone = given(...withdrawn).state;
+    expect(questionsOf(gone)[0]?.state).toMatchObject({
+      _tag: "withdrawn",
+      reason: "Sam already reviewed it",
+    });
+    const back = given(...withdrawn, [user, reopen("w1.q1")]).state;
+    expect(questionsOf(back)[0]?.state).toEqual({ _tag: "open" });
+    expect(questionsOf(back)[0]?.history.map((record) => record.event._tag)).toEqual([
+      "withdrawn",
+      "reopened",
+    ]);
+  });
+
+  it("reports attention only while a valid open instance has an open question", () => {
+    expect(attentionOf(given(started).state)).toBeNull();
+    const two = given(started, [agent, ask()], [agent, ask({ title: "Second?" })]).state;
+    expect(attentionOf(two)).toEqual({ threadId, openQuestions: 2, latestQuestionId: "w1.q2" });
+    const one = apply(two, agent, answer("w1.q2", { answer: "Later" })).state;
+    expect(attentionOf(one)).toEqual({ threadId, openQuestions: 1, latestQuestionId: "w1.q1" });
+    expect(attentionOf(apply(one, user, answer("w1.q1")).state)).toBeNull();
+    expect(attentionOf(apply(two, user, close("w1", "abandoned")).state)).toBeNull();
+    expect(attentionOf(markCorrupt(two, "line 9 of its log is not JSON"))).toBeNull();
+  });
+
+  it("names the instance a question request acted on", () => {
+    const { state } = given(...asked);
+    expect(instanceActedOn(state, ask() as never, null)).toBe("w1");
+    expect(instanceActedOn(state, answer("w1.q1") as never, null)).toBe("w1");
+    expect(instanceActedOn(state, withdraw("w1.q1") as never, null)).toBe("w1");
+    expect(instanceActedOn(state, reopen("w1.q1") as never, null)).toBe("w1");
+  });
+
+  it("folds a question log to the same state record by record, and drops question history from the pane view", () => {
+    const { state, records } = given(
+      started,
+      [agent, ask({ blocksStepId: "w1.1" })],
+      [user, answer("w1.q1")],
+      [agent, ask({ title: "Second?" })],
+      [agent, withdraw("w1.q2")],
+      [user, reopen("w1.q2")],
+      [agent, { _tag: "comment", target: "w1.q2", comment: "still relevant" }],
+    );
+    expect(fold(threadId, records)).toEqual(state);
+    const summary = toSubscriptionView(state).instances[0]?.questions ?? [];
+    expect(summary.map((question) => question.state._tag)).toEqual(["answered", "open"]);
+    expect(summary[0]).not.toHaveProperty("history");
+    expect(summary[0]?.blocksStepId).toBe("w1.1");
+  });
+
+  it("folds a log written before questions existed with none", () => {
+    const { records } = given(started, [agent, tick("w1.1")]);
+    const folded = fold(threadId, records);
+    expect(toView(folded).instances[0]?.questions).toEqual([]);
+    expect(toSubscriptionView(folded).instances[0]?.questions).toEqual([]);
+  });
+});
+
+describe("admits questions", () => {
+  const { state: open, records } = given(...asked);
+  const askedRecord = records[1] as ThreadWorkflowChangeRecord;
+  const at = (seq: number, event: unknown) => decodeRecord({ ...askedRecord, seq, event });
+  const asking = (id: string, instanceId = "w1", blocksStepId?: string) => ({
+    _tag: "asked",
+    instanceId,
+    question: { id, title: "Again?", ...(blocksStepId === undefined ? {} : { blocksStepId }) },
+  });
+
+  it("admits every question record decide wrote, in order", () => {
+    const log = given(
+      ...asked,
+      [agent, ask({ title: "Second?", blocksStepId: "w1.2" })],
+      [user, answer("w1.q1")],
+      [agent, withdraw("w1.q2")],
+      [user, reopen("w1.q2")],
+      [agent, { _tag: "comment", target: "w1.q2", comment: "x" }],
+      [user, close("w1", "abandoned")],
+      [agent, answer("w1.q2", { source: "chat" })],
+    );
+    let state = emptyState(threadId);
+    for (const record of log.records) {
+      expect(admits(state, record)).toBeNull();
+      state = evolve(state, record);
+    }
+  });
+
+  it("refuses an ask on a missing or closed instance, a taken id, or a missing blocked step", () => {
+    expect(admits(open, at(3, asking("w2.q1", "w2")))).toBe("asks on w2, which does not exist");
+    const closed = given(...asked, [user, close("w1", "abandoned")]).state;
+    expect(admits(closed, at(4, asking("w1.q2")))).toBe("asks on w1, which is closed");
+    expect(admits(open, at(3, asking("w1.q1")))).toBe("asks w1.q1, an id w1 cannot take");
+    expect(admits(open, at(3, asking("w2.q2")))).toBe("asks w2.q2, an id w1 cannot take");
+    expect(admits(open, at(3, asking("w1.q2", "w1", "w1.9")))).toBe(
+      "asks w1.q2 blocking w1.9, which does not exist",
+    );
+  });
+
+  it("refuses answers, withdrawals and reopens the question's state does not allow", () => {
+    const resolved = given(...answered).state;
+    const answering = { _tag: "answered", questionId: "w1.q1", answer: "x", source: "chat" };
+    expect(admits(resolved, at(4, answering))).toBe("moves w1.q1 from answered to answered");
+    expect(admits(resolved, at(4, { _tag: "withdrawn", questionId: "w1.q1", reason: "x" }))).toBe(
+      "moves w1.q1 from answered to withdrawn",
+    );
+    expect(admits(open, at(3, { ...answering, questionId: "w1.q7" }))).toBe(
+      "changes w1.q7, which does not exist",
+    );
+    expect(admits(open, at(3, { _tag: "reopened", target: "w1.q1", reason: "x" }))).toBe(
+      "reopens w1.q1, which is open",
+    );
+    expect(
+      admits(open, at(3, { _tag: "commented", target: "w1.q9", comment: "x", proof: null })),
+    ).toBe("comments on w1.q9, which does not exist");
   });
 });

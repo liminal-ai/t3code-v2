@@ -27,8 +27,21 @@ export const ThreadWorkflowStepId = Schema.String.check(
 ).pipe(Schema.brand("ThreadWorkflowStepId"));
 export type ThreadWorkflowStepId = typeof ThreadWorkflowStepId.Type;
 
-/** A step or an instance. The two id patterns are disjoint. */
-export const ThreadWorkflowTarget = Schema.Union([ThreadWorkflowStepId, ThreadWorkflowInstanceId]);
+/**
+ * `w2.q3`: a question for the user on instance `w2`, numbered per instance and never reused.
+ * Disjoint from step ids by the `q`.
+ */
+export const ThreadWorkflowQuestionId = Schema.String.check(
+  Schema.isPattern(/^w[1-9]\d*\.q[1-9]\d*$/),
+).pipe(Schema.brand("ThreadWorkflowQuestionId"));
+export type ThreadWorkflowQuestionId = typeof ThreadWorkflowQuestionId.Type;
+
+/** A step, a question or an instance. The three id patterns are disjoint. */
+export const ThreadWorkflowTarget = Schema.Union([
+  ThreadWorkflowStepId,
+  ThreadWorkflowQuestionId,
+  ThreadWorkflowInstanceId,
+]);
 export type ThreadWorkflowTarget = typeof ThreadWorkflowTarget.Type;
 
 export const ThreadWorkflowTemplateId = Schema.String.check(
@@ -59,6 +72,11 @@ const InstanceTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 const StepTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
 const Instructions = TrimmedNonEmptyString.check(Schema.isMaxLength(640));
 const ProofHint = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
+const QuestionTitle = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const QuestionSummary = TrimmedNonEmptyString.check(Schema.isMaxLength(240));
+const QuestionDetails = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
+const QuestionOptionLabel = TrimmedNonEmptyString.check(Schema.isMaxLength(120));
+const Answer = TrimmedNonEmptyString.check(Schema.isMaxLength(2_000));
 
 /**
  * `ground-subsystem`, `open-pr`: the agent's handle for a step. Given with the step or derived
@@ -80,6 +98,12 @@ export const THREAD_WORKFLOW_LIMITS = {
   turnNote: 2_000,
   /** Open steps. The pane is for a glance, so the work ahead is a few stages, not a task list; finished steps have left it. */
   steps: 8,
+  questionTitle: 200,
+  questionSummary: 240,
+  questionDetails: 2_000,
+  questionOptions: 6,
+  questionOptionLabel: 120,
+  answer: 2_000,
 } as const;
 
 /** How much a step wants evidence. Advisory: it shapes the note and the pane and never refuses a tick. */
@@ -124,6 +148,38 @@ export const ThreadWorkflowStepSeed = Schema.Struct({
   waitsForUser: Schema.Boolean,
 });
 export type ThreadWorkflowStepSeed = typeof ThreadWorkflowStepSeed.Type;
+
+export const ThreadWorkflowQuestionOption = Schema.Struct({
+  label: QuestionOptionLabel,
+  recommended: Schema.optionalKey(Schema.Boolean),
+});
+export type ThreadWorkflowQuestionOption = typeof ThreadWorkflowQuestionOption.Type;
+
+/** What the agent puts on the workflow when it needs the user's decision and can keep working. */
+export const ThreadWorkflowQuestionSeed = Schema.Struct({
+  /** One sentence: the row's heading. */
+  title: QuestionTitle,
+  /** The row's subline: the options, or the recommendation. */
+  summary: Schema.optionalKey(QuestionSummary),
+  /** Markdown: why it matters, what goes wrong if it stays open. */
+  details: Schema.optionalKey(QuestionDetails),
+  options: Schema.optionalKey(
+    Schema.Array(ThreadWorkflowQuestionOption).check(Schema.isMaxLength(6)),
+  ),
+  /** The step that waits on the answer, marked in the pane. */
+  blocksStepId: Schema.optionalKey(ThreadWorkflowStepId),
+});
+export type ThreadWorkflowQuestionSeed = typeof ThreadWorkflowQuestionSeed.Type;
+
+export const ThreadWorkflowQuestionDefinition = Schema.Struct({
+  id: ThreadWorkflowQuestionId,
+  ...ThreadWorkflowQuestionSeed.fields,
+});
+export type ThreadWorkflowQuestionDefinition = typeof ThreadWorkflowQuestionDefinition.Type;
+
+/** `pane`: the user answered in the Workflow tab. `chat`: the agent recorded an answer given in chat. */
+export const ThreadWorkflowAnswerSource = Schema.Literals(["pane", "chat"]);
+export type ThreadWorkflowAnswerSource = typeof ThreadWorkflowAnswerSource.Type;
 
 /**
  * Where a template came from. `sha256` is the installed playbook's hash at derivation time and is
@@ -203,7 +259,21 @@ const Commented = Schema.TaggedStruct("commented", {
   comment: Comment,
   proof: Schema.NullOr(Proof),
 });
+/** A step, a question or a closed instance goes back to open. */
 const Reopened = Schema.TaggedStruct("reopened", { target: ThreadWorkflowTarget, reason: Reason });
+const Asked = Schema.TaggedStruct("asked", {
+  instanceId: ThreadWorkflowInstanceId,
+  question: ThreadWorkflowQuestionDefinition,
+});
+const Answered = Schema.TaggedStruct("answered", {
+  questionId: ThreadWorkflowQuestionId,
+  answer: Answer,
+  source: ThreadWorkflowAnswerSource,
+});
+const Withdrawn = Schema.TaggedStruct("withdrawn", {
+  questionId: ThreadWorkflowQuestionId,
+  reason: Reason,
+});
 const Closed = Schema.TaggedStruct("closed", {
   instanceId: ThreadWorkflowInstanceId,
   outcome: ThreadWorkflowOutcome,
@@ -231,7 +301,18 @@ const TickedByAgent = Schema.TaggedStruct("ticked", {
   proof: Schema.NullOr(Proof),
 });
 
-const SharedEvents = [Started, Skipped, Inserted, Removed, Commented, Reopened, Closed] as const;
+const SharedEvents = [
+  Started,
+  Skipped,
+  Inserted,
+  Removed,
+  Commented,
+  Reopened,
+  Closed,
+  Asked,
+  Answered,
+  Withdrawn,
+] as const;
 export const ThreadWorkflowUserEvent = Schema.Union([...SharedEvents, TickedByUser, Recovered]);
 export const ThreadWorkflowAgentEvent = Schema.Union([...SharedEvents, TickedByAgent]);
 export type ThreadWorkflowEvent =
@@ -305,8 +386,20 @@ export const ThreadWorkflowRequest = Schema.Union([
     reason: Reason,
   }),
   Schema.TaggedStruct("remove", { stepId: ThreadWorkflowStepId, reason: Reason }),
-  /** A step goes back to open; a closed instance reopens when no other instance is open. */
+  /**
+   * A step or a question goes back to open; a closed instance reopens when no other instance is
+   * open. Only the user reopens a question.
+   */
   Schema.TaggedStruct("reopen", { target: ThreadWorkflowTarget, reason: Reason }),
+  /** On the open instance. */
+  Schema.TaggedStruct("ask", ThreadWorkflowQuestionSeed.fields),
+  /** `source` defaults by actor: the user's answer is from the pane, the agent records one from chat. */
+  Schema.TaggedStruct("answer", {
+    questionId: ThreadWorkflowQuestionId,
+    answer: Answer,
+    source: Schema.optionalKey(ThreadWorkflowAnswerSource),
+  }),
+  Schema.TaggedStruct("withdraw", { questionId: ThreadWorkflowQuestionId, reason: Reason }),
   Schema.TaggedStruct("comment", {
     target: ThreadWorkflowTarget,
     comment: Comment,
@@ -328,6 +421,8 @@ export const ThreadWorkflowErrorCode = Schema.Literals([
   "unknown_template",
   "unknown_instance",
   "unknown_step",
+  "unknown_question",
+  "question_closed",
   "no_open_instance",
   "instance_open",
   "instance_closed",
@@ -386,6 +481,23 @@ export const ThreadWorkflowStepSummary = Schema.Struct({
 });
 export type ThreadWorkflowStepSummary = typeof ThreadWorkflowStepSummary.Type;
 
+export const ThreadWorkflowQuestionState = Schema.Union([
+  Schema.TaggedStruct("open", {}),
+  Schema.TaggedStruct("answered", {
+    stamp: ThreadWorkflowStamp,
+    answer: Schema.String,
+    source: ThreadWorkflowAnswerSource,
+  }),
+  Schema.TaggedStruct("withdrawn", { stamp: ThreadWorkflowStamp, reason: Schema.String }),
+]);
+export type ThreadWorkflowQuestionState = typeof ThreadWorkflowQuestionState.Type;
+
+export const ThreadWorkflowQuestionSummary = Schema.Struct({
+  ...ThreadWorkflowQuestionDefinition.fields,
+  state: ThreadWorkflowQuestionState,
+});
+export type ThreadWorkflowQuestionSummary = typeof ThreadWorkflowQuestionSummary.Type;
+
 export const ThreadWorkflowInstanceStatus = Schema.Union([
   Schema.TaggedStruct("open", {}),
   Schema.TaggedStruct("closed", {
@@ -410,6 +522,8 @@ const InstanceSummaryFields = {
 export const ThreadWorkflowInstanceSummary = Schema.Struct({
   ...InstanceSummaryFields,
   steps: Schema.Array(ThreadWorkflowStepSummary),
+  /** In asked order. */
+  questions: Schema.Array(ThreadWorkflowQuestionSummary),
 });
 export type ThreadWorkflowInstanceSummary = typeof ThreadWorkflowInstanceSummary.Type;
 
@@ -420,10 +534,18 @@ export const ThreadWorkflowStep = Schema.Struct({
 });
 export type ThreadWorkflowStep = typeof ThreadWorkflowStep.Type;
 
+export const ThreadWorkflowQuestion = Schema.Struct({
+  ...ThreadWorkflowQuestionSummary.fields,
+  /** Every record that touched this question after it was asked, in order. */
+  history: Schema.Array(ThreadWorkflowChangeRecord),
+});
+export type ThreadWorkflowQuestion = typeof ThreadWorkflowQuestion.Type;
+
 export const ThreadWorkflowInstance = Schema.Struct({
   ...InstanceSummaryFields,
   steps: Schema.Array(ThreadWorkflowStep),
-  /** Records about the instance itself: started, inserted, closed, reopened and its comments. */
+  questions: Schema.Array(ThreadWorkflowQuestion),
+  /** Records about the instance itself: started, inserted, asked, closed, reopened and its comments. */
   history: Schema.Array(ThreadWorkflowChangeRecord),
 });
 export type ThreadWorkflowInstance = typeof ThreadWorkflowInstance.Type;
@@ -469,6 +591,19 @@ export const ThreadWorkflowApplyResult = Schema.Struct({
   view: ThreadWorkflowSubscriptionView,
 });
 export type ThreadWorkflowApplyResult = typeof ThreadWorkflowApplyResult.Type;
+
+/** One thread with an open question on its open workflow. Absent from the list means none. */
+export const ThreadWorkflowAttentionEntry = Schema.Struct({
+  threadId: ThreadId,
+  openQuestions: Schema.Int.check(Schema.isGreaterThan(0)),
+  /** The last question asked that is still open: what a new notification keys on. */
+  latestQuestionId: ThreadWorkflowQuestionId,
+});
+export type ThreadWorkflowAttentionEntry = typeof ThreadWorkflowAttentionEntry.Type;
+
+/** What `threadWorkflow.attention` streams: every thread that needs the user, after every change. */
+export const ThreadWorkflowAttention = Schema.Array(ThreadWorkflowAttentionEntry);
+export type ThreadWorkflowAttention = typeof ThreadWorkflowAttention.Type;
 
 export const ThreadWorkflowSubscribeInput = Schema.Struct({ threadId: ThreadId });
 export const ThreadWorkflowGetInput = Schema.Struct({
