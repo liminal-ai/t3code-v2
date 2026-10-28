@@ -737,6 +737,10 @@ const claudeLhcWindowSetting = (pattern: RegExp, defaultValue: string) =>
 export const ClaudeLhcSettings = makeProviderSettingsSchema(
   {
     ...ClaudeSettings.fields,
+    enabled: Schema.Boolean.pipe(
+      Schema.withDecodingDefault(Effect.succeed(false)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
     autoCompactWindow: claudeLhcWindowSetting(CLAUDE_LHC_TRIGGER_PATTERN, "700000").pipe(
       Schema.annotateKey({
         title: "Compact trigger",
@@ -1334,8 +1338,8 @@ export const providerInstanceConfigEnabledFlag = (config: unknown): boolean | un
 
 // Must match each driver's enabled decoding default.
 const DEFAULT_DISABLED_PROVIDER_DRIVERS: ReadonlySet<ProviderDriverKind> = new Set(
-  ["cursor", "grok", "fx", "muse", "pi", "opencode", "antigravity"].map((driver) =>
-    ProviderDriverKind.make(driver),
+  ["cursor", "grok", "fx", "muse", "pi", "opencode", "antigravity", CLAUDE_LHC_DRIVER_KIND].map(
+    (driver) => ProviderDriverKind.make(driver),
   ),
 );
 

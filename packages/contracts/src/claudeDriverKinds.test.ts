@@ -12,7 +12,7 @@ import {
   DEFAULT_TEXT_GENERATION_MODEL_BY_PROVIDER,
   PROVIDER_DISPLAY_NAMES,
 } from "./model.ts";
-import { ClaudeLhcSettings } from "./settings.ts";
+import { ClaudeLhcSettings, resolveProviderInstanceEnabled } from "./settings.ts";
 
 const decodeLhc = Schema.decodeUnknownResult(ClaudeLhcSettings);
 const accepts = (config: Record<string, unknown>) => decodeLhc(config)._tag === "Success";
@@ -39,12 +39,15 @@ describe("Claude driver kinds", () => {
 });
 
 describe("ClaudeLhcSettings", () => {
-  it("defaults the windows to a 700k trigger and a 120k rebuilt view, with idle compaction off", () => {
-    expect(Schema.decodeUnknownSync(ClaudeLhcSettings)({})).toMatchObject({
+  it("defaults to off, a 700k trigger, a 120k rebuilt view, and no idle compaction", () => {
+    expect(Schema.decodeSync(ClaudeLhcSettings)({})).toMatchObject({
+      enabled: false,
       autoCompactWindow: "700000",
       lhcLowerBound: "120000",
       idleCompaction: "off",
     });
+    expect(resolveProviderInstanceEnabled({ driver: CLAUDE_LHC_DRIVER_KIND })).toBe(false);
+    expect(resolveProviderInstanceEnabled({ driver: CLAUDE_DRIVER_KIND })).toBe(true);
   });
 
   it("refuses an empty window, since the sidecar needs both", () => {
