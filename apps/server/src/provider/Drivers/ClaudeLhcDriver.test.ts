@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { afterAll, assert, describe, it } from "@effect/vitest";
 import {
   ClaudeLhcSettings,
   CommandId,
@@ -63,8 +63,10 @@ const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
+const packageDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-lhc-pinned-"));
+afterAll(() => NodeFS.rmSync(packageDir, { recursive: true, force: true }));
+
 function stagePinnedSidecar(): string {
-  const packageDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-lhc-pinned-"));
   NodeFS.mkdirSync(NodePath.join(packageDir, "dist"));
   NodeFS.writeFileSync(
     NodePath.join(packageDir, "package.json"),
