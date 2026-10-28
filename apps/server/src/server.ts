@@ -7,6 +7,7 @@ import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReact
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as HeldQueueResumer from "./fork/HeldQueueResumer.ts";
+import * as DelegatedRequestTimeout from "./fork/DelegatedRequestTimeout.ts";
 import * as ThreadWorkflow from "./threadWorkflow/layer.ts";
 import * as GroupChat from "./groupChat/layer.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
@@ -626,6 +627,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   ThreadWorkflow.layerIdleReactorStart,
   ThreadWorkflow.layerAnswerReactorStart,
   HeldQueueResumer.layerStart,
+  DelegatedRequestTimeout.layerStart,
   GroupChat.layerEngineStart,
   ProviderUsageLimitsIngestion.layer,
   layerProviderInstallationRefresh,

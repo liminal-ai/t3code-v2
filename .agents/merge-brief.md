@@ -6,6 +6,7 @@
   - `apps/server/src/threadWorkflow/`, `apps/server/src/mcp/toolkits/threadWorkflow/` or `apps/web/src/threadWorkflow/`: `features/workflow-tab.md`, with its outcome check.
   - `packages/provider-cursor/`: `features/agent-turn.md` with a Cursor instance picked.
   - `apps/web/src/groupChat/`, `apps/server/src/groupChat/`, `routes/group-chat*` or `mainAppLocation.ts`: `features/group-chat.md`.
+  - `apps/server/src/fork/`: `features/agent-turn.md`, and `features/delegated-requests.md` for `DelegatedRequestTimeout.ts`.
   - Any other `apps/web/` or `apps/server/` change: the feature file for each flow it touches, and `features/agent-turn.md` at least.
   - Docs only (`docs/`, `*.md`): no drive. Read the changed text against the code it describes.
 - Before the push: `vp run check:changed`. Run no repo-wide checks. An upstream sync changes nearly every package, so it typechecks each package the fork touches and lints the files that differ from the upstream tag instead.
