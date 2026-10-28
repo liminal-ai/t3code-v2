@@ -1,11 +1,7 @@
 // @effect-diagnostics globalTimers:off nodeBuiltinImport:off
 /**
- * The query seam for claude-lhc instances. Each Claude session runs inside the claude-lhc sidecar,
- * a Node process that runs the Claude Agent SDK, records the thread into LHC, and forwards the
- * native SDK stream unchanged over JSONL stdio. The wire and the launch contract are claude-lhc's
- * `src/protocol.ts` and README.
- *
- * @module provider/Drivers/ClaudeLhcSidecar
+ * Runs each claude-lhc session inside the claude-lhc sidecar over JSONL stdio. The wire and the
+ * launch contract are claude-lhc's `src/protocol.ts` and README.
  */
 import type {
   McpServerConfig,
@@ -109,7 +105,6 @@ export function claudeLhcHome(baseDir: string): string {
   return `${NodePath.resolve(baseDir).replace(/[\\/]+$/, "")}-lhc`;
 }
 
-/** A sidecar that records a host rollback in LHC (claude-lhc 0.2.0, U11). */
 export const sidecarHonorsRollback = (version: string): boolean =>
   satisfiesSemverRange(version, ROLLBACK_SIDECAR_RANGE);
 
@@ -138,10 +133,6 @@ function readStagedPackage(entry: string): { name?: string; version?: string } |
   }
 }
 
-/**
- * Reads the instance environment for an explicit Node binary and the compiled sidecar entry, and
- * checks the package beside the entry against the pin in `lhc/sidecar.json`.
- */
 export function resolveClaudeLhcSidecar(
   environment: NodeJS.ProcessEnv,
   baseDir: string,
@@ -284,7 +275,6 @@ function wireOptions(
   };
 }
 
-/** Messages the runtime iterator drains; `fail` rejects the pending pull and every later one. */
 class MessageQueue {
   readonly #items: SDKMessage[] = [];
   #ended = false;

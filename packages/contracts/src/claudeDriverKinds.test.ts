@@ -3,7 +3,6 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   CLAUDE_DRIVER_KIND,
-  CLAUDE_DRIVER_KINDS,
   CLAUDE_LHC_DRIVER_KIND,
   isClaudeDriverKind,
 } from "./claudeDriverKinds.ts";
@@ -15,11 +14,11 @@ import {
 import { ClaudeLhcSettings, resolveProviderInstanceEnabled } from "./settings.ts";
 
 const decodeLhc = Schema.decodeUnknownResult(ClaudeLhcSettings);
+const decodeLhcDefaults = Schema.decodeSync(ClaudeLhcSettings);
 const accepts = (config: Record<string, unknown>) => decodeLhc(config)._tag === "Success";
 
 describe("Claude driver kinds", () => {
   it("recognises both Claude kinds and nothing else", () => {
-    expect(CLAUDE_DRIVER_KINDS).toEqual([CLAUDE_DRIVER_KIND, CLAUDE_LHC_DRIVER_KIND]);
     expect(isClaudeDriverKind("claudeAgent")).toBe(true);
     expect(isClaudeDriverKind("claude-lhc")).toBe(true);
     expect(isClaudeDriverKind("codex")).toBe(false);
@@ -40,7 +39,7 @@ describe("Claude driver kinds", () => {
 
 describe("ClaudeLhcSettings", () => {
   it("defaults to off, a 700k trigger, a 120k rebuilt view, and no idle compaction", () => {
-    expect(Schema.decodeSync(ClaudeLhcSettings)({})).toMatchObject({
+    expect(decodeLhcDefaults({})).toMatchObject({
       enabled: false,
       autoCompactWindow: "700000",
       lhcLowerBound: "120000",

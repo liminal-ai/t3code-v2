@@ -2841,7 +2841,6 @@ const decodeClaudeAgentSdkReplayTranscript = Schema.decodeUnknownEffect(
   ClaudeAgentSdkReplayTranscript,
 );
 
-/** Replays Claude transcripts through an instance of the given Claude adapter driver kind. */
 export const makeClaudeOrchestratorReplayHarness = (
   adapterDriver: ClaudeReplayAdapterDriver = ClaudeAdapterV2.ClaudeAdapterV2Driver,
 ): OrchestratorV2ProviderReplayHarness<

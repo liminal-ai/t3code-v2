@@ -63,7 +63,6 @@ const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-/** The pinned package staged as a source build is, with its compiled entry under dist/. */
 function stagePinnedSidecar(): string {
   const packageDir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-lhc-pinned-"));
   NodeFS.mkdirSync(NodePath.join(packageDir, "dist"));
@@ -76,13 +75,15 @@ function stagePinnedSidecar(): string {
   return entry;
 }
 
+const decodeLhcSettings = Schema.decodeSync(ClaudeLhcSettings);
+
 const createInstance = (environment: ProviderInstanceEnvironment) =>
   ClaudeLhcDriver.create({
     instanceId: ProviderInstanceId.make("claude-lhc"),
     displayName: undefined,
     environment,
     enabled: true,
-    config: Schema.decodeSync(ClaudeLhcSettings)({}),
+    config: decodeLhcSettings({}),
   });
 
 const policyOutcomes = (capabilities: OrchestrationV2ProviderCapabilities) =>

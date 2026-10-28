@@ -69,6 +69,8 @@ import {
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
+
 const DRIVER_KIND = CLAUDE_DRIVER_KIND;
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
 
@@ -125,6 +127,7 @@ export interface ClaudeDriverSpec<Settings extends ClaudeSettings> {
   readonly driverKind: ProviderDriverKind;
   readonly displayName: string;
   readonly configSchema: Schema.Codec<Settings, unknown>;
+  readonly defaultConfig: () => Settings;
   readonly continuationGroupKey?: (stockKey: string) => string;
   readonly querySeam?: (input: ClaudeQuerySeamInput<Settings>) => ClaudeDriverQuerySeam;
 }
@@ -133,6 +136,7 @@ export const CLAUDE_DRIVER_SPEC: ClaudeDriverSpec<ClaudeSettings> = {
   driverKind: DRIVER_KIND,
   displayName: "Claude",
   configSchema: ClaudeSettings,
+  defaultConfig: () => decodeClaudeSettings({}),
 };
 
 export const makeClaudeDriver = <Settings extends ClaudeSettings>(
@@ -144,7 +148,7 @@ export const makeClaudeDriver = <Settings extends ClaudeSettings>(
     supportsMultipleInstances: true,
   },
   configSchema: spec.configSchema,
-  defaultConfig: (): Settings => Schema.decodeSync(spec.configSchema)({}),
+  defaultConfig: spec.defaultConfig,
   usage: claudeUsageReader,
   create: Effect.fn("ClaudeDriver.create")(function* ({
     instanceId,

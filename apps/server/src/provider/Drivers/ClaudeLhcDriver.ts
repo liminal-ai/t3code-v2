@@ -1,10 +1,5 @@
-/**
- * The `claude-lhc` driver kind: stock Claude's runtime, probe and text generation, with every
- * session's query running inside the claude-lhc sidecar.
- *
- * @module provider/Drivers/ClaudeLhcDriver
- */
 import { CLAUDE_LHC_DRIVER_KIND, ClaudeLhcSettings } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { makeClaudeDriver } from "./ClaudeDriver.ts";
 import {
@@ -22,10 +17,13 @@ export const claudeLhcContinuationGroupKey = (stockKey: string): string =>
 export const CLAUDE_LHC_FORK_REFUSAL =
   "Claude LHC threads can't be forked: a fork would copy the native transcript, not the LHC view. Start a new thread instead.";
 
+const decodeClaudeLhcSettings = Schema.decodeSync(ClaudeLhcSettings);
+
 export const ClaudeLhcDriver = makeClaudeDriver({
   driverKind: CLAUDE_LHC_DRIVER_KIND,
   displayName: "Claude LHC",
   configSchema: ClaudeLhcSettings,
+  defaultConfig: () => decodeClaudeLhcSettings({}),
   continuationGroupKey: claudeLhcContinuationGroupKey,
   querySeam: ({ environment, baseDir, config }) => {
     const sidecar = resolveClaudeLhcSidecar(environment, baseDir);
