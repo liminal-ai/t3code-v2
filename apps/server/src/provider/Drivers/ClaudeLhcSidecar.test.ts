@@ -178,15 +178,18 @@ describe("resolveClaudeLhcSidecar", () => {
     expect(readyLaunch().home).toBe(`${BASE_DIR}-lhc`);
   });
 
-  it("pins a sidecar that records host rollbacks, in both pin files", () => {
-    const stagedPackage = JSON.parse(
+  it("pins a sidecar that records host rollbacks, in the pin and the lock", () => {
+    const lock = JSON.parse(
       NodeFS.readFileSync(
-        new URL("../../../../../lhc/sidecar/package.json", import.meta.url),
+        new URL("../../../../../lhc/sidecar/package-lock.json", import.meta.url),
         "utf8",
       ),
-    ) as { dependencies: Record<string, string> };
+    ) as { packages: Record<string, { version?: string; integrity?: string }> };
     expect(satisfiesSemverRange(sidecarPin.version, ">=0.2.0")).toBe(true);
-    expect(stagedPackage.dependencies).toEqual({ [sidecarPin.package]: sidecarPin.version });
+    expect(lock.packages[`node_modules/${sidecarPin.package}`]).toMatchObject({
+      version: sidecarPin.version,
+      integrity: sidecarPin.integrity,
+    });
   });
 });
 

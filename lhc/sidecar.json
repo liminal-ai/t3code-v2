@@ -1,4 +1,5 @@
 {
   "package": "claude-lhc",
-  "version": "0.2.0"
+  "version": "0.2.0",
+  "integrity": "sha512-35nz6zT/9zr6OVZDFceIyq+Xzq9Nq8k2Mh6xhEywkU0qy7+6lKnMhdsUw87jh8qr4u981Lyx+rEKfAFADrRoog=="
 }

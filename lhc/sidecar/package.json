@@ -1,6 +1,7 @@
 {
+  "name": "t3-claude-lhc-sidecar",
   "private": true,
   "dependencies": {
-    "claude-lhc": "0.2.0"
+    "claude-lhc": "file:claude-lhc.tgz"
   }
 }
