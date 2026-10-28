@@ -20,6 +20,7 @@ import {
   TrimmedString,
 } from "./baseSchemas.ts";
 import { UsageLimitSourceId } from "./usageLimitSourceId.ts";
+import { CLAUDE_LHC_DRIVER_KIND } from "./claudeDriverKinds.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
 import {
@@ -725,6 +726,52 @@ export const ClaudeSettings = makeProviderSettingsSchema(
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
+const CLAUDE_LHC_TRIGGER_PATTERN = /^(?:[1-9]\d{5}|1000000)$/;
+const CLAUDE_LHC_VIEW_PATTERN = /^(?:[1-9]\d{4}|[1-9]\d{5}|1000000)$/;
+
+const claudeLhcWindowSetting = (pattern: RegExp, defaultValue: string) =>
+  TrimmedString.check(Schema.isPattern(pattern)).pipe(
+    Schema.withDecodingDefault(Effect.succeed(defaultValue)),
+  );
+
+export const ClaudeLhcSettings = makeProviderSettingsSchema(
+  {
+    ...ClaudeSettings.fields,
+    autoCompactWindow: claudeLhcWindowSetting(CLAUDE_LHC_TRIGGER_PATTERN, "700000").pipe(
+      Schema.annotateKey({
+        title: "Compact trigger",
+        description:
+          "Context size, in provider-billed tokens, at which LHC rebuilds the view: 100,000 to 1,000,000. Lowered to fit a smaller model window.",
+        providerSettingsForm: { placeholder: "e.g. 700000", clearWhenEmpty: "omit" },
+      }),
+    ),
+    lhcLowerBound: claudeLhcWindowSetting(CLAUDE_LHC_VIEW_PATTERN, "120000").pipe(
+      Schema.annotateKey({
+        title: "Rebuilt view size",
+        description:
+          "Size LHC rebuilds the context to after a compact: 10,000 or more, and below the trigger.",
+        providerSettingsForm: { placeholder: "e.g. 120000", clearWhenEmpty: "omit" },
+      }),
+    ),
+    // The sidecar compacts on its own trigger, so T3 never compacts an idle LHC thread.
+    idleCompaction: Schema.Literal("off").pipe(
+      Schema.withDecodingDefault(Effect.succeed("off" as const)),
+      Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
+    ),
+  },
+  {
+    order: ["binaryPath", "homePath", "autoCompactWindow", "lhcLowerBound", "launchArgs"],
+  },
+).check(
+  Schema.makeFilter(
+    (settings) =>
+      Number(settings.lhcLowerBound) < Number(settings.autoCompactWindow) ||
+      "The rebuilt view size must be below the compact trigger.",
+    { identifier: "ClaudeLhcWindows" },
+  ),
+);
+export type ClaudeLhcSettings = typeof ClaudeLhcSettings.Type;
+
 export const ANTIGRAVITY_AUTH_METHODS = [
   { value: "oauth-personal", label: "Google account" },
   { value: "oauth-business", label: "Gemini Enterprise" },
@@ -1372,6 +1419,7 @@ export const resolveIdleCompaction = (
   const instance = Object.hasOwn(settings.providerInstances, instanceId)
     ? settings.providerInstances[instanceId]
     : undefined;
+  if (instance?.driver === CLAUDE_LHC_DRIVER_KIND) return "off";
   const override = decodeClaudeSettings(instance?.config ?? {}).pipe(
     Option.map((config) => config.idleCompaction),
     Option.getOrElse(() => "default" as const),

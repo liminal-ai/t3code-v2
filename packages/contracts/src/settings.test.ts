@@ -154,6 +154,18 @@ describe("resolveIdleCompaction", () => {
     expect(resolveIdleCompaction(settings, ProviderInstanceId.make("claudeAgent"))).toBe("off");
   });
 
+  it("never compacts an idle Claude LHC thread, whatever the stored config says", () => {
+    const settings = decodeServerSettings({
+      idleCompaction: "beforeCacheExpires",
+      providerInstances: {
+        "claude-lhc": { driver: "claude-lhc" },
+        lhc_glm: { driver: "claude-lhc", config: { idleCompaction: "beforeCacheExpires" } },
+      },
+    });
+    expect(resolveIdleCompaction(settings, ProviderInstanceId.make("claude-lhc"))).toBe("off");
+    expect(resolveIdleCompaction(settings, ProviderInstanceId.make("lhc_glm"))).toBe("off");
+  });
+
   it("reads the mode from the legacy switch, in either form servers saved it", () => {
     expect(globalIdleCompaction(decodeServerSettings({ compactIdleThreads: true }))).toBe(
       "beforeCacheExpires",
