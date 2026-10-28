@@ -27,7 +27,12 @@ import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
 import {
   ClaudeAgentSdkQueryRunner,
   type ClaudeAgentSdkQueryOpenInput,
+  type ClaudeCreateQuery,
+  type ClaudeQuerySeam,
+  claudeProviderCapabilities,
+  ClaudeProviderCapabilitiesV2,
   layerQueryRunner,
+  makeClaudeAgentSdkQueryRunner,
   spawnClaudeProcessGroup,
 } from "./ClaudeAdapterV2.ts";
 
@@ -119,6 +124,11 @@ const realQueryRunner = layerQueryRunner.pipe(
   Layer.provide(NodeServices.layer),
 );
 
+const makeSeamRunner = (seam: ClaudeQuerySeam) =>
+  makeClaudeAgentSdkQueryRunner(seam).pipe(
+    Effect.provideService(ProviderEventLoggers, { native: undefined, canonical: undefined }),
+  );
+
 const resumedMcpQueryInput = {
   threadId: ThreadId.make("thread-restart-registration"),
   providerSessionId: ProviderSessionId.make("session-restart-registration"),
@@ -136,6 +146,102 @@ const resumedMcpQueryInput = {
     },
   },
 } satisfies ClaudeAgentSdkQueryOpenInput;
+
+it("advertises stock Claude capabilities for the stock seam", () => {
+  assert.deepEqual(claudeProviderCapabilities({}), ClaudeProviderCapabilitiesV2);
+});
+
+it.effect(
+  "runs every query of an overriding instance through its createQuery, forks included",
+  () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-seam-config-",
+        });
+        yield* writeClaudeSession(configDir);
+        const sdkQuery = vi.spyOn(ClaudeSdk, "query");
+        yield* Effect.addFinalizer(() => Effect.sync(() => sdkQuery.mockRestore()));
+        const setMcpServers = vi.fn(async () => ({ added: ["t3-code"], removed: [], errors: {} }));
+        const createQuery = vi.fn<ClaudeCreateQuery>(
+          () =>
+            ({
+              setMcpServers,
+              close: vi.fn(),
+              [Symbol.asyncDispose]: async () => {},
+            }) as unknown as ClaudeSdk.Query,
+        );
+        const runner = yield* makeSeamRunner({ createQuery });
+
+        const first = yield* runner.open(resumedMcpQueryInput);
+        yield* Effect.addFinalizer(() => first.close.pipe(Effect.orDie));
+        const forked = yield* runner.forkSession({
+          sessionId: FORK_SESSION_ID,
+          options: { dir: "/repo" },
+          environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+          threadId: ThreadId.make("thread-seam-fork"),
+          providerSessionId: ProviderSessionId.make("session-seam-fork"),
+        });
+        const second = yield* runner.open({
+          ...resumedMcpQueryInput,
+          options: { ...resumedMcpQueryInput.options, resume: forked.sessionId },
+        });
+        yield* Effect.addFinalizer(() => second.close.pipe(Effect.orDie));
+
+        assert.notEqual(forked.sessionId, FORK_SESSION_ID);
+        assert.deepEqual(
+          createQuery.mock.calls.map(([call]) => call.options?.resume),
+          [FORK_SESSION_ID, forked.sessionId],
+        );
+        for (const [call] of createQuery.mock.calls) {
+          assert.isUndefined(call.options?.mcpServers);
+          assert.isFunction(call.options?.spawnClaudeCodeProcess);
+        }
+        assert.deepEqual(setMcpServers.mock.calls, [
+          [resumedMcpQueryInput.options.mcpServers],
+          [resumedMcpQueryInput.options.mcpServers],
+        ]);
+        assert.equal(sdkQuery.mock.calls.length, 0);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each(["host", "instance"] as const)(
+  "refuses a fork on the %s Claude home without copying the session",
+  (home) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const configDir = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-seam-refusal-",
+        });
+        const projectDir = yield* writeClaudeSession(configDir);
+        const inProcessFork = vi
+          .spyOn(ClaudeSdk, "forkSession")
+          .mockRejectedValue(new Error("forked despite the refusal"));
+        yield* Effect.addFinalizer(() => Effect.sync(() => inProcessFork.mockRestore()));
+        const refusal = "This kind of Claude thread can't be forked.";
+        const runner = yield* makeSeamRunner({ forkRefusal: refusal });
+
+        const error = yield* runner
+          .forkSession({
+            sessionId: FORK_SESSION_ID,
+            options: { dir: "/repo" },
+            environment:
+              home === "host" ? process.env : { ...process.env, CLAUDE_CONFIG_DIR: configDir },
+            threadId: ThreadId.make("thread-seam-refusal"),
+            providerSessionId: ProviderSessionId.make("session-seam-refusal"),
+          })
+          .pipe(Effect.flip);
+
+        assert.equal(error.method, "forkSession");
+        assert.include(String(error.cause), refusal);
+        assert.equal(inProcessFork.mock.calls.length, 0);
+        assert.deepEqual(yield* fileSystem.readDirectory(projectDir), [`${FORK_SESSION_ID}.jsonl`]);
+      }),
+    ).pipe(Effect.provide(NodeServices.layer)),
+);
 
 it.effect("reopens a stalled MCP registration before delivering the resumed prompt", () =>
   Effect.scoped(
