@@ -35,6 +35,7 @@ import {
   ClaudeSettings,
   CodexSettings,
   ProviderInstanceId,
+  isClaudeDriverKind,
 } from "@t3tools/contracts";
 import { makeKeyedCoalescingWorker } from "@t3tools/shared/KeyedCoalescingWorker";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
@@ -1441,7 +1442,7 @@ export const resolveProviderInstanceTerminalEnvironment = Effect.fn(
       if (layout.effectiveHomePath)
         resolved = { ...resolved, CODEX_HOME: layout.effectiveHomePath };
     }
-  } else if (instance.driver === "claudeAgent") {
+  } else if (isClaudeDriverKind(instance.driver)) {
     const config = decodeClaudeSettings(instance.config ?? {});
     if (Option.isSome(config)) {
       resolved = yield* makeClaudeEnvironment(config.value, resolved).pipe(
