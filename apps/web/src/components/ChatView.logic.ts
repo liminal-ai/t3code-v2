@@ -28,6 +28,7 @@ import {
   type EnvironmentId,
   CLAUDE_LHC_DRIVER_KIND,
   isProviderDriverKind,
+  PROVIDER_DISPLAY_NAMES,
   ProjectId,
   type MessageId,
   type ModelSelection,
@@ -512,9 +513,18 @@ export function resolveComposerProviderSelection(input: {
     input.lockedProvider === "antigravity" &&
     input.lockedInstanceId != null &&
     lockedContinuationGroupKey === null;
-  const requiresLhc = requestedEntry?.driverKind === CLAUDE_LHC_DRIVER_KIND;
+  // A default instance's id is its kind. A deleted custom instance may have been Claude LHC,
+  // whose sessions report claudeAgent, so nothing may stand in for it.
+  const requestedKind =
+    requestedEntry?.driverKind ??
+    (requestedInstanceId != null && Object.hasOwn(PROVIDER_DISPLAY_NAMES, requestedInstanceId)
+      ? ProviderDriverKind.make(requestedInstanceId)
+      : undefined);
+  const requiresLhc = requestedKind === CLAUDE_LHC_DRIVER_KIND;
+  const requestedKindUnknown = requestedInstanceId != null && requestedKind === undefined;
   const compatibleEntries = input.entries.filter(
     (entry) =>
+      !requestedKindUnknown &&
       (!input.lockedProvider || entry.driverKind === input.lockedProvider) &&
       (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
       (!requiresExactInstance || entry.instanceId === input.lockedInstanceId) &&
