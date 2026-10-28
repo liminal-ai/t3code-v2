@@ -268,6 +268,38 @@ describe("DesktopBackendConfiguration", () => {
     ),
   );
 
+  it.effect("resolvePrimary points only a packaged backend at the bundled claude-lhc", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const baseDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-desktop-backend-config-test-",
+      });
+      const resolvePrimary = (isPackaged: boolean) =>
+        Effect.gen(function* () {
+          const configuration = yield* DesktopBackendConfiguration.DesktopBackendConfiguration;
+          return yield* configuration.resolvePrimary;
+        }).pipe(
+          Effect.provide(
+            layerBackendConfiguration().pipe(
+              Layer.provideMerge(layerServerExposure),
+              Layer.provideMerge(DesktopAppSettings.layerTest()),
+              Layer.provideMerge(DesktopWslEnvironment.layerTest()),
+              Layer.provideMerge(DesktopWslServerTree.layerTest()),
+              Layer.provideMerge(
+                layerEnvironment(baseDir, { isPackaged, resourcesPath: "/opt/T3/resources" }),
+              ),
+            ),
+          ),
+        );
+
+      assert.equal(
+        (yield* resolvePrimary(true)).env.CLAUDE_LHC_SIDECAR,
+        "/opt/T3/resources/claude-lhc/node_modules/claude-lhc/dist/sidecar.js",
+      );
+      assert.isUndefined((yield* resolvePrimary(false)).env.CLAUDE_LHC_SIDECAR);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("resolvePrimary starts from server.asar without materializing the WSL tree", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

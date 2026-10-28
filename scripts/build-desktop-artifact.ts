@@ -1090,6 +1090,10 @@ export const DESKTOP_EXTRA_RESOURCES = [
     from: "apps/desktop/prod-resources/resource-monitor",
     to: "resource-monitor",
   },
+  {
+    from: "apps/desktop/prod-resources/claude-lhc",
+    to: "claude-lhc",
+  },
 ] as const;
 export const LINUX_CAPTURE_EXTRA_RESOURCES = [
   {
@@ -2452,6 +2456,27 @@ export const stageBrowserSecret = Effect.fn("stageBrowserSecret")(function* (inp
   );
 });
 
+export const stageClaudeLhcSidecar = Effect.fn("stageClaudeLhcSidecar")(function* (input: {
+  readonly repoRoot: string;
+  readonly stageResourcesDir: string;
+  readonly verbose: boolean;
+}) {
+  const path = yield* Path.Path;
+  const tarball = yield* Config.String("CLAUDE_LHC_TARBALL").pipe(Config.option);
+  yield* runCommand(
+    ChildProcess.make(
+      "bash",
+      [
+        path.join(input.repoRoot, "lhc/stage-sidecar.sh"),
+        path.join(input.stageResourcesDir, "claude-lhc"),
+        ...Option.toArray(tarball),
+      ],
+      { cwd: input.repoRoot },
+    ),
+    { label: "stage the claude-lhc sidecar", verbose: input.verbose },
+  );
+});
+
 const generateMacIconSet = Effect.fn("build-desktop-artifact.generateMacIconSet")(function* (
   sourcePng: string,
   targetIcns: string,
@@ -3757,6 +3782,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
     arch: options.arch,
     verbose: options.verbose,
   });
+  yield* stageClaudeLhcSidecar({ repoRoot, stageResourcesDir, verbose: options.verbose });
 
   yield* assertPlatformBuildResources(
     options.platform,

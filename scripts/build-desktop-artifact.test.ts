@@ -48,6 +48,8 @@ import {
   copyDirectoryPreservingSymlinks,
   LinuxBrowserSecretHostError,
   stageBrowserSecret,
+  stageClaudeLhcSidecar,
+  DESKTOP_EXTRA_RESOURCES,
   validateWindowsPackagedPayload,
   verifyPackagedBundleIsSelfContained,
   WindowsPrimaryNativeProbeError,
@@ -1127,6 +1129,49 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           spawnerLayer,
           Layer.succeed(HostProcess.Platform, "darwin"),
           Layer.succeed(HostProcess.Architecture, "arm64"),
+        ),
+      ),
+    );
+  });
+
+  it.effect("stages claude-lhc into the shipped resources from the tarball the build names", () => {
+    const commands: Array<{ readonly command: string; readonly args: ReadonlyArray<string> }> = [];
+    const spawnerLayer = Layer.succeed(
+      ChildProcessSpawner.ChildProcessSpawner,
+      ChildProcessSpawner.make((command) => {
+        commands.push(command as unknown as (typeof commands)[number]);
+        return Effect.succeed(mockProcess(0));
+      }),
+    );
+
+    return Effect.gen(function* () {
+      yield* stageClaudeLhcSidecar({
+        repoRoot: "/repo",
+        stageResourcesDir: "/stage/resources",
+        verbose: false,
+      });
+      assert.deepStrictEqual(
+        commands.map(({ command, args }) => [command, ...args]),
+        [
+          [
+            "bash",
+            "/repo/lhc/stage-sidecar.sh",
+            "/stage/resources/claude-lhc",
+            "/tmp/claude-lhc.tgz",
+          ],
+        ],
+      );
+      assert.deepInclude(DESKTOP_EXTRA_RESOURCES, {
+        from: "apps/desktop/prod-resources/claude-lhc",
+        to: "claude-lhc",
+      });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          spawnerLayer,
+          ConfigProvider.layer(
+            ConfigProvider.fromEnv({ env: { CLAUDE_LHC_TARBALL: "/tmp/claude-lhc.tgz" } }),
+          ),
         ),
       ),
     );

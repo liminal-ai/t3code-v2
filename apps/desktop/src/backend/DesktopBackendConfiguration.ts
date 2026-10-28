@@ -533,6 +533,14 @@ const resolvePrimaryStartConfig = Effect.fn("desktop.backendConfiguration.resolv
         ...backendChildEnvPatch(),
         ELECTRON_RUN_AS_NODE: "1",
         T3CODE_CLI_PATH: Option.getOrUndefined(input.cliPath),
+        ...(environment.isPackaged
+          ? {
+              CLAUDE_LHC_SIDECAR: environment.path.join(
+                environment.resourcesPath,
+                "claude-lhc/node_modules/claude-lhc/dist/sidecar.js",
+              ),
+            }
+          : {}),
       },
       extendEnv: true,
       bootstrap,
