@@ -70,7 +70,7 @@ Sync to a published tag, not to upstream `main`. A tag is a build upstream shipp
 
    Resolve each conflict so that upstream's new behavior and ours both survive. If upstream now does what one of our changes did, take upstream's version and delete ours.
 
-   A file that merges with no conflict can still break the fork. Upstream #26238 dropped `settings` from the Cursor driver's `makeCursorAdapterV2` call, git applied `packages/provider-cursor/src/server/driver.ts` cleanly, and `cursor-cloud` would have run on this machine. The 3824 sync restored the argument, and `driver.test.ts` "builds a %s adapter from the instance's Runs on setting" now pins it. So read the step 2 commits and run the seam tests even when every file merges clean.
+   A file that merges with no conflict can still break the fork. Upstream #26238 dropped `settings` from the Cursor driver's `makeCursorAdapterV2` call, git applied `packages/provider-cursor/src/server/driver.ts` cleanly, and that broke the handoff of each instance's settings, which carry **Runs on**, to the fork's adapter. The adapter still requires `settings`. Without them it fails to start, and with default settings in their place a `cursor-cloud` instance runs on this machine. The 3824 sync restored the argument, and `driver.test.ts` "builds a %s adapter from the instance's Runs on setting" now pins it. So read the step 2 commits and run the seam tests even when every file merges clean.
 
 4. Verify three things. Upstream owns testing upstream, so do not re-test upstream features.
    - Our code: the provider-cursor tests, with the commands in [Seams to re-check](#seams-to-re-check).

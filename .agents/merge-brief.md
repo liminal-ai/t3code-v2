@@ -6,7 +6,7 @@
   - Precedent, not a threshold: on #45, the 3824 sync, the review stayed `running` for 93+ minutes while the same bot finished #46. The round lead ruled it unable to run, and #45 merged with `--waive codex=<reason>`, the reason naming the independent verdict. The review completed with no findings at 16:55Z, after the 16:52Z merge.
 - A verdict drives the change through `.agents/skills/verify-t3code/` on a dev server built from the PR's head, by path:
   - `apps/server/src/threadWorkflow/`, `apps/server/src/mcp/toolkits/threadWorkflow/` or `apps/web/src/threadWorkflow/`: `features/workflow-tab.md`, with its outcome check.
-  - `packages/provider-cursor/`: one real Cursor turn on a throwaway release, per the verify skill's "Release check". A dev server has no Cursor sign-in, and the skill forbids copying prod's credential into it, so a Cursor turn on a dev server cannot pass. #45's first verdict failed on exactly that.
+  - `packages/provider-cursor/`: one real Cursor turn on a throwaway release, per the verify skill's "Release check". A fresh dev server starts with Cursor signed out, and the skill forbids copying prod's credential into it. An unattended verifier has nobody to sign it in, so it runs the turn on the release instead. #45's first verdict failed on a signed-out dev server.
   - `apps/web/src/groupChat/`, `apps/server/src/groupChat/`, `routes/group-chat*` or `mainAppLocation.ts`: `features/group-chat.md`.
   - `apps/server/src/fork/`: `features/agent-turn.md`, and `features/delegated-requests.md` for `DelegatedRequestTimeout.ts`.
   - `apps/server/src/peer/`, `apps/server/src/cli/environment.ts` or the peer-link migrations (`070_PeerLinks.ts`, `071_PeerLinkFence.ts`, `072_WaitingLinkRequestIndex.ts`): `features/linked-environments.md`.
