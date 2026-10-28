@@ -1,8 +1,4 @@
 // @effect-diagnostics globalTimers:off nodeBuiltinImport:off
-/**
- * Runs each claude-lhc session inside the claude-lhc sidecar over JSONL stdio. The wire and the
- * launch contract are claude-lhc's `src/protocol.ts` and README.
- */
 import type {
   McpServerConfig,
   McpSetServersResult,
@@ -100,7 +96,6 @@ const NON_WIRE_OPTIONS = new Set([
   "stderr",
 ]);
 
-/** Each T3 install keeps its LHC store beside its base dir, so two installs never share one. */
 export function claudeLhcHome(baseDir: string): string {
   return `${NodePath.resolve(baseDir).replace(/[\\/]+$/, "")}-lhc`;
 }
@@ -178,30 +173,19 @@ export function resolveClaudeLhcSidecar(
 }
 
 export const UNCATALOGUED_CONTEXT_WINDOW = 200_000;
+const MAX_TRIGGER_SHARE_OF_WINDOW = 0.8;
+const MAX_VIEW_SHARE_OF_FITTED_TRIGGER = 0.5;
 
-/**
- * The window Claude Code gives the model a query opens with. A model change opens a new query, so
- * each query sizes its own model. A model the catalog doesn't know gets Claude Code's own fallback:
- * CLAUDE_CODE_MAX_CONTEXT_TOKENS when set, else 200k.
- */
-export function lhcContextWindow(model: string, env: NodeJS.ProcessEnv): number | undefined {
+export function lhcContextWindow(model: string): number | undefined {
   if (model === "") return undefined;
   if (model.endsWith("[1m]")) return 1_000_000;
   const known = resolveClaudeCatalogContextWindowTokens(BUNDLED_CLAUDE_MODEL_CATALOG, {
     instanceId: ProviderInstanceId.make("claude-lhc"),
     model,
   });
-  if (known !== undefined) return known;
-  const declared = Number(env.CLAUDE_CODE_MAX_CONTEXT_TOKENS);
-  return Number.isInteger(declared) && declared > 0 ? declared : UNCATALOGUED_CONTEXT_WINDOW;
+  return known ?? UNCATALOGUED_CONTEXT_WINDOW;
 }
 
-/**
- * The sidecar turns off Claude Code's auto-compact and compacts only at its trigger, so a trigger
- * at or above the model's window overflows first (the 700k default on a 200k model). Such a
- * trigger drops to 80% of the window, leaving room for one more tool result, and the rebuilt view
- * to at most half of that.
- */
 export function fitLhcCompactionToContextWindow(input: {
   readonly autoCompactWindow: number;
   readonly lhcLowerBound: number;
@@ -209,11 +193,14 @@ export function fitLhcCompactionToContextWindow(input: {
 }): { readonly autoCompactWindow: number; readonly lhcLowerBound: number } {
   const { autoCompactWindow, lhcLowerBound, contextWindow } = input;
   if (contextWindow === undefined) return { autoCompactWindow, lhcLowerBound };
-  const maxTrigger = Math.floor(contextWindow * 0.8);
+  const maxTrigger = Math.floor(contextWindow * MAX_TRIGGER_SHARE_OF_WINDOW);
   if (autoCompactWindow <= maxTrigger) return { autoCompactWindow, lhcLowerBound };
   return {
     autoCompactWindow: maxTrigger,
-    lhcLowerBound: Math.min(lhcLowerBound, Math.floor(maxTrigger / 2)),
+    lhcLowerBound: Math.min(
+      lhcLowerBound,
+      Math.floor(maxTrigger * MAX_VIEW_SHARE_OF_FITTED_TRIGGER),
+    ),
   };
 }
 
@@ -228,24 +215,19 @@ interface SidecarLaunchCommand {
   readonly claudeBinary: string | undefined;
 }
 
-/**
- * The runner wraps the Claude binary in the agent's scope: the wrapper is the executable and the
- * binary is the last executable argument. The sidecar spawns Claude Code itself, so the wrapper
- * moves to the sidecar process and the wire carries the real binary.
- */
-function sidecarLaunchCommand(
+function scopedSidecarCommand(
   options: ClaudeQueryOptions,
   launch: ClaudeLhcLaunch,
 ): SidecarLaunchCommand {
-  const wrapperArgs = options.executableArgs ?? [];
-  const wrapper = options.pathToClaudeCodeExecutable;
-  if (wrapper === undefined || wrapperArgs.length === 0) {
-    return { command: launch.node, args: [launch.entry], claudeBinary: wrapper };
+  const scope = options.pathToClaudeCodeExecutable;
+  const scopeArgsThenClaude = options.executableArgs ?? [];
+  if (scope === undefined || scopeArgsThenClaude.length === 0) {
+    return { command: launch.node, args: [launch.entry], claudeBinary: scope };
   }
   return {
-    command: wrapper,
-    args: [...wrapperArgs.slice(0, -1), launch.node, launch.entry],
-    claudeBinary: wrapperArgs.at(-1),
+    command: scope,
+    args: [...scopeArgsThenClaude.slice(0, -1), launch.node, launch.entry],
+    claudeBinary: scopeArgsThenClaude.at(-1),
   };
 }
 
@@ -253,7 +235,6 @@ function wireOptions(
   options: ClaudeQueryOptions,
   claudeBinary: string | undefined,
   windows: ClaudeLhcWindows,
-  environment: NodeJS.ProcessEnv,
 ): Record<string, unknown> {
   const wire: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(options)) {
@@ -264,7 +245,7 @@ function wireOptions(
   const fitted = fitLhcCompactionToContextWindow({
     autoCompactWindow: Number(windows.autoCompactWindow),
     lhcLowerBound: Number(windows.lhcLowerBound),
-    contextWindow: lhcContextWindow(model, { ...environment, ...options.env }),
+    contextWindow: lhcContextWindow(model),
   });
   const settings =
     typeof options.settings === "object" && options.settings !== null ? options.settings : {};
@@ -330,7 +311,7 @@ function startSidecarQuery(
   sidecar: ClaudeLhcQueryInput,
 ): ClaudeQueryRuntime {
   const { options } = input;
-  const launchCommand = sidecarLaunchCommand(options, sidecar.launch);
+  const launchCommand = scopedSidecarCommand(options, sidecar.launch);
   const messages = new MessageQueue();
   const pendingControls = new Map<
     number,
@@ -484,7 +465,7 @@ function startSidecarQuery(
 
   send({
     type: "start",
-    options: wireOptions(options, launchCommand.claudeBinary, sidecar.windows, sidecar.environment),
+    options: wireOptions(options, launchCommand.claudeBinary, sidecar.windows),
   });
 
   void (async () => {

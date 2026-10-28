@@ -59,9 +59,10 @@ export const makeClaudeContinuationGroupKey = Effect.fn("makeClaudeContinuationG
   function* (
     config: Pick<ClaudeSettings, "homePath">,
     environment?: NodeJS.ProcessEnv,
+    prefix = "claude",
   ): Effect.fn.Return<string, never, Path.Path> {
     const resolvedHomePath = yield* resolveClaudeHomePath(config, environment);
-    return `claude:home:${resolvedHomePath}`;
+    return `${prefix}:home:${resolvedHomePath}`;
   },
 );
 

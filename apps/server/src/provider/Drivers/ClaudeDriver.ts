@@ -119,7 +119,6 @@ export interface ClaudeQuerySeamInput<Settings extends ClaudeSettings = ClaudeSe
 }
 
 export interface ClaudeDriverQuerySeam extends ClaudeQuerySeam {
-  /** Why no turn can start on this server; the instance reports it instead of failing a turn. */
   readonly unavailableReason?: string;
 }
 
@@ -128,7 +127,7 @@ export interface ClaudeDriverSpec<Settings extends ClaudeSettings> {
   readonly displayName: string;
   readonly configSchema: Schema.Codec<Settings, unknown>;
   readonly defaultConfig: () => Settings;
-  readonly continuationGroupKey?: (stockKey: string) => string;
+  readonly continuationKeyPrefix: string;
   readonly querySeam?: (input: ClaudeQuerySeamInput<Settings>) => ClaudeDriverQuerySeam;
 }
 
@@ -137,6 +136,7 @@ export const CLAUDE_DRIVER_SPEC: ClaudeDriverSpec<ClaudeSettings> = {
   displayName: "Claude",
   configSchema: ClaudeSettings,
   defaultConfig: () => decodeClaudeSettings({}),
+  continuationKeyPrefix: "claude",
 };
 
 export const makeClaudeDriver = <Settings extends ClaudeSettings>(
@@ -191,12 +191,11 @@ export const makeClaudeDriver = <Settings extends ClaudeSettings>(
         Effect.provideService(Path.Path, path),
       ),
     );
-    const stockContinuationGroupKey = yield* makeClaudeContinuationGroupKey(
+    const continuationGroupKey = yield* makeClaudeContinuationGroupKey(
       effectiveConfig,
       processEnv,
+      spec.continuationKeyPrefix,
     );
-    const continuationGroupKey =
-      spec.continuationGroupKey?.(stockContinuationGroupKey) ?? stockContinuationGroupKey;
     const configDir = yield* resolveClaudeHomePath(effectiveConfig, processEnv);
     const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
       effectiveConfig.homePath.trim() || processEnv.CLAUDE_CONFIG_DIR?.trim()

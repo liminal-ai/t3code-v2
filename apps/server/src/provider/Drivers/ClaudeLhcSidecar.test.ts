@@ -29,8 +29,6 @@ const BASE_DIR = NodePath.join(NodeOS.tmpdir(), "t3-lhc-under-test", "userdata")
 const scratch = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "claude-lhc-sidecar-test-"));
 afterAll(() => NodeFS.rmSync(scratch, { recursive: true, force: true }));
 
-// Speaks claude-lhc's wire: reports what it was started with, asks for tool approval on each
-// prompt, answers the controls a 0.2.0 sidecar knows, and refuses the rest.
 const FAKE_SIDECAR = `
 const readline = require("node:readline");
 const write = (frame) => process.stdout.write(JSON.stringify(frame) + "\\n");
@@ -74,7 +72,6 @@ function stageSidecar(version = PIN.version): string {
 }
 
 let launchers = 0;
-/** A Node launcher that marks the sidecar's env, so a test sees which binary started it. */
 function nodeLauncher(version?: string): string {
   const launcher = NodePath.join(scratch, `node-${version ?? "marked"}-${++launchers}.sh`);
   NodeFS.writeFileSync(
@@ -172,12 +169,11 @@ describe("resolveClaudeLhcSidecar", () => {
 
 describe("compaction windows", () => {
   it("sizes each model the way Claude Code does", () => {
-    expect(lhcContextWindow("claude-opus-5-5", {})).toBe(1_000_000);
-    expect(lhcContextWindow("claude-haiku-4-5", {})).toBe(200_000);
-    expect(lhcContextWindow("claude-sonnet-4-6[1m]", {})).toBe(1_000_000);
-    expect(lhcContextWindow("glm-5.3", {})).toBe(200_000);
-    expect(lhcContextWindow("glm-5.3", { CLAUDE_CODE_MAX_CONTEXT_TOKENS: "128000" })).toBe(128_000);
-    expect(lhcContextWindow("", {})).toBeUndefined();
+    expect(lhcContextWindow("claude-opus-5-5")).toBe(1_000_000);
+    expect(lhcContextWindow("claude-haiku-4-5")).toBe(200_000);
+    expect(lhcContextWindow("claude-sonnet-4-6[1m]")).toBe(1_000_000);
+    expect(lhcContextWindow("glm-5.3")).toBe(200_000);
+    expect(lhcContextWindow("")).toBeUndefined();
   });
 
   it("drops a trigger that would overflow the window to 80%, and the view to at most half of it", () => {

@@ -8,12 +8,6 @@ import {
   sidecarHonorsRollback,
 } from "./ClaudeLhcSidecar.ts";
 
-const STOCK_CONTINUATION_PREFIX = "claude:";
-
-/** An LHC thread never continues natively on a stock instance that shares its Claude home. */
-export const claudeLhcContinuationGroupKey = (stockKey: string): string =>
-  `claude-lhc:${stockKey.startsWith(STOCK_CONTINUATION_PREFIX) ? stockKey.slice(STOCK_CONTINUATION_PREFIX.length) : stockKey}`;
-
 export const CLAUDE_LHC_FORK_REFUSAL =
   "Claude LHC threads can't be forked: a fork would copy the native transcript, not the LHC view. Start a new thread instead.";
 
@@ -24,7 +18,7 @@ export const ClaudeLhcDriver = makeClaudeDriver({
   displayName: "Claude LHC",
   configSchema: ClaudeLhcSettings,
   defaultConfig: () => decodeClaudeLhcSettings({}),
-  continuationGroupKey: claudeLhcContinuationGroupKey,
+  continuationKeyPrefix: CLAUDE_LHC_DRIVER_KIND,
   querySeam: ({ environment, baseDir, config }) => {
     const sidecar = resolveClaudeLhcSidecar(environment, baseDir);
     if (sidecar._tag === "unavailable") {

@@ -765,7 +765,6 @@ export const ClaudeLhcSettings = makeProviderSettingsSchema(
         providerSettingsForm: { placeholder: "e.g. 120000", clearWhenEmpty: "omit" },
       }),
     ),
-    // The sidecar compacts on its own trigger, so T3 never compacts an idle LHC thread.
     idleCompaction: Schema.Literal("off").pipe(
       Schema.withDecodingDefault(Effect.succeed("off" as const)),
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),

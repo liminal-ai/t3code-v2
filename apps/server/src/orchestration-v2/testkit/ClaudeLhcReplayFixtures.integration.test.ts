@@ -16,7 +16,6 @@ import {
   type ReplayFixtureCase,
 } from "./ProviderReplayFixtures.ts";
 
-/** A claude-lhc instance as a staged sidecar presents it: Claude's adapter with LHC's capabilities. */
 const ClaudeLhcOrchestratorReplayHarness = makeClaudeOrchestratorReplayHarness({
   ...ClaudeAdapterV2Driver,
   driverKind: CLAUDE_LHC_DRIVER_KIND,

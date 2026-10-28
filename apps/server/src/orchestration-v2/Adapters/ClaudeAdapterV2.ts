@@ -445,7 +445,6 @@ export const ClaudeProviderCapabilitiesV2 = {
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
-/** The part of the SDK's Query that the runner drives, so a seam can supply its own runtime. */
 export type ClaudeQueryRuntime = AsyncGenerator<SDKMessage, void> &
   AsyncDisposable &
   Pick<

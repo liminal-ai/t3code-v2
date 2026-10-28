@@ -31,7 +31,7 @@ import * as ProviderHostLive from "../ProviderHostLive.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "../ProviderOrchestrationAdapterInfrastructure.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import { ClaudeDriver } from "./ClaudeDriver.ts";
-import { ClaudeLhcDriver, claudeLhcContinuationGroupKey } from "./ClaudeLhcDriver.ts";
+import { ClaudeLhcDriver } from "./ClaudeLhcDriver.ts";
 import sidecarPin from "../../../../../lhc/sidecar.json" with { type: "json" };
 
 const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
@@ -125,13 +125,6 @@ describe("ClaudeLhcDriver", () => {
     );
   });
 
-  it("never shares a continuation group with a stock instance on the same Claude home", () => {
-    assert.equal(
-      claudeLhcContinuationGroupKey("claude:home:/home/lee/.claude"),
-      "claude-lhc:home:/home/lee/.claude",
-    );
-  });
-
   it.effect(
     "reports why it cannot run when the sidecar is not configured, and offers no turn",
     () =>
@@ -165,7 +158,7 @@ describe("ClaudeLhcDriver", () => {
         const capabilities = yield* instance.orchestrationAdapter.getCapabilities();
 
         assert.notEqual(snapshot.availability, "unavailable");
-        assert.match(instance.continuationIdentity.continuationKey, /^claude-lhc:/);
+        assert.match(instance.continuationIdentity.continuationKey, /^claude-lhc:home:\//);
         assert.deepEqual(yield* policyOutcomes(capabilities), {
           fork: "portable_context",
           rollback: "allowed",
