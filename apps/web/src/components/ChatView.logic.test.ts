@@ -590,7 +590,7 @@ describe("resolveComposerProviderSelection", () => {
 
   it("keeps a deleted default Claude LHC instance unavailable rather than falling back", () => {
     const selection = resolveComposerProviderSelection({
-      entries: [entry("codex"), entry("claudeAgent")],
+      entries: [entry("codex"), entry("claudeAgent"), entry("claude-lhc", "lhc_other")],
       candidateInstanceIds: [ProviderInstanceId.make("claude-lhc")],
       lockedProvider: null,
       lockedInstanceId: null,

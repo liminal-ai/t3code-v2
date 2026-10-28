@@ -513,18 +513,17 @@ export function resolveComposerProviderSelection(input: {
     input.lockedProvider === "antigravity" &&
     input.lockedInstanceId != null &&
     lockedContinuationGroupKey === null;
-  // A default instance's id is its kind. A deleted custom instance may have been Claude LHC,
-  // whose sessions report claudeAgent, so nothing may stand in for it.
-  const requestedKind =
-    requestedEntry?.driverKind ??
-    (requestedInstanceId != null && Object.hasOwn(PROVIDER_DISPLAY_NAMES, requestedInstanceId)
-      ? ProviderDriverKind.make(requestedInstanceId)
-      : undefined);
-  const requiresLhc = requestedKind === CLAUDE_LHC_DRIVER_KIND;
-  const requestedKindUnknown = requestedInstanceId != null && requestedKind === undefined;
+  const requiresLhc = requestedEntry?.driverKind === CLAUDE_LHC_DRIVER_KIND;
+  // Claude LHC sessions report claudeAgent, so once a custom instance is deleted nothing says it
+  // was LHC. A default instance's id is its kind.
+  const requestedMayBeDeletedLhc =
+    requestedInstanceId != null &&
+    requestedEntry === undefined &&
+    (requestedInstanceId === CLAUDE_LHC_DRIVER_KIND ||
+      !Object.hasOwn(PROVIDER_DISPLAY_NAMES, requestedInstanceId));
   const compatibleEntries = input.entries.filter(
     (entry) =>
-      !requestedKindUnknown &&
+      !requestedMayBeDeletedLhc &&
       (!input.lockedProvider || entry.driverKind === input.lockedProvider) &&
       (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
       (!requiresExactInstance || entry.instanceId === input.lockedInstanceId) &&
