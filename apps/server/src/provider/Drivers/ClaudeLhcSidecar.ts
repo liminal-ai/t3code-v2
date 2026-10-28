@@ -70,7 +70,6 @@ export interface ClaudeLhcLaunch {
   readonly node: string;
   readonly entry: string;
   readonly home: string;
-  readonly version: string;
 }
 
 export type ClaudeLhcSidecarResolution =
@@ -80,7 +79,6 @@ export type ClaudeLhcSidecarResolution =
 export const CLAUDE_LHC_NODE_ENV = "CLAUDE_LHC_NODE";
 export const CLAUDE_LHC_SIDECAR_ENV = "CLAUDE_LHC_SIDECAR";
 const MIN_NODE_RANGE = ">=24.3.0";
-const ROLLBACK_SIDECAR_RANGE = ">=0.2.0";
 const CLOSE_GRACE_MS = 5_000;
 const KILL_GRACE_MS = 5_000;
 
@@ -99,9 +97,6 @@ const NON_WIRE_OPTIONS = new Set([
 export function claudeLhcHome(baseDir: string): string {
   return `${NodePath.resolve(baseDir).replace(/[\\/]+$/, "")}-lhc`;
 }
-
-export const sidecarHonorsRollback = (version: string): boolean =>
-  satisfiesSemverRange(version, ROLLBACK_SIDECAR_RANGE);
 
 function readNodeVersion(node: string): string | undefined {
   try {
@@ -168,22 +163,24 @@ export function resolveClaudeLhcSidecar(
   }
   return {
     _tag: "ready",
-    launch: { node, entry, home: claudeLhcHome(baseDir), version: pin.version },
+    launch: { node, entry, home: claudeLhcHome(baseDir) },
   };
 }
 
 export const UNCATALOGUED_CONTEXT_WINDOW = 200_000;
+const ONE_MILLION_SUFFIX = "[1m]";
 const MAX_TRIGGER_SHARE_OF_WINDOW = 0.8;
 const MAX_VIEW_SHARE_OF_FITTED_TRIGGER = 0.5;
 
-export function lhcContextWindow(model: string): number | undefined {
-  if (model === "") return undefined;
-  if (model.endsWith("[1m]")) return 1_000_000;
+export function lhcContextWindow(apiModelId: string): number | undefined {
+  if (apiModelId === "") return undefined;
+  const oneMillion = apiModelId.endsWith(ONE_MILLION_SUFFIX);
   const known = resolveClaudeCatalogContextWindowTokens(BUNDLED_CLAUDE_MODEL_CATALOG, {
     instanceId: ProviderInstanceId.make("claude-lhc"),
-    model,
+    model: oneMillion ? apiModelId.slice(0, -ONE_MILLION_SUFFIX.length) : apiModelId,
+    options: [{ id: "contextWindow", value: oneMillion ? "1m" : "200k" }],
   });
-  return known ?? UNCATALOGUED_CONTEXT_WINDOW;
+  return known ?? (oneMillion ? 1_000_000 : UNCATALOGUED_CONTEXT_WINDOW);
 }
 
 export function fitLhcCompactionToContextWindow(input: {
@@ -209,31 +206,16 @@ export interface ClaudeLhcWindows {
   readonly lhcLowerBound: string;
 }
 
-interface SidecarLaunchCommand {
-  readonly command: string;
-  readonly args: ReadonlyArray<string>;
-  readonly claudeBinary: string | undefined;
-}
-
-function scopedSidecarCommand(
-  options: ClaudeQueryOptions,
-  launch: ClaudeLhcLaunch,
-): SidecarLaunchCommand {
-  const scope = options.pathToClaudeCodeExecutable;
-  const scopeArgsThenClaude = options.executableArgs ?? [];
-  if (scope === undefined || scopeArgsThenClaude.length === 0) {
-    return { command: launch.node, args: [launch.entry], claudeBinary: scope };
-  }
-  return {
-    command: scope,
-    args: [...scopeArgsThenClaude.slice(0, -1), launch.node, launch.entry],
-    claudeBinary: scopeArgsThenClaude.at(-1),
-  };
+function fittedWindows(model: string | undefined, windows: ClaudeLhcWindows) {
+  return fitLhcCompactionToContextWindow({
+    autoCompactWindow: Number(windows.autoCompactWindow),
+    lhcLowerBound: Number(windows.lhcLowerBound),
+    contextWindow: lhcContextWindow(model ?? ""),
+  });
 }
 
 function wireOptions(
   options: ClaudeQueryOptions,
-  claudeBinary: string | undefined,
   windows: ClaudeLhcWindows,
 ): Record<string, unknown> {
   const wire: Record<string, unknown> = {};
@@ -241,19 +223,9 @@ function wireOptions(
     if (NON_WIRE_OPTIONS.has(key) || typeof value === "function" || value === undefined) continue;
     wire[key] = value;
   }
-  const model = typeof options.model === "string" ? options.model : "";
-  const fitted = fitLhcCompactionToContextWindow({
-    autoCompactWindow: Number(windows.autoCompactWindow),
-    lhcLowerBound: Number(windows.lhcLowerBound),
-    contextWindow: lhcContextWindow(model),
-  });
   const settings =
     typeof options.settings === "object" && options.settings !== null ? options.settings : {};
-  return {
-    ...wire,
-    ...(claudeBinary === undefined ? {} : { pathToClaudeCodeExecutable: claudeBinary }),
-    settings: { ...settings, ...fitted },
-  };
+  return { ...wire, settings: { ...settings, ...fittedWindows(options.model, windows) } };
 }
 
 class MessageQueue {
@@ -310,8 +282,10 @@ function startSidecarQuery(
   input: Parameters<ClaudeCreateQuery>[0],
   sidecar: ClaudeLhcQueryInput,
 ): ClaudeQueryRuntime {
-  const { options } = input;
-  const launchCommand = scopedSidecarCommand(options, sidecar.launch);
+  const { options, program } = input;
+  if (program === undefined || options.spawnClaudeCodeProcess === undefined) {
+    throw new Error("claude-lhc needs the Claude query runner to scope and spawn its sidecar.");
+  }
   const messages = new MessageQueue();
   const pendingControls = new Map<
     number,
@@ -322,28 +296,34 @@ function startSidecarQuery(
   let closed = false;
   let stdinOpen = true;
 
-  const child = NodeChildProcess.spawn(launchCommand.command, [...launchCommand.args], {
-    stdio: ["pipe", "pipe", "pipe"],
+  const terminate = new AbortController();
+  const child = options.spawnClaudeCodeProcess({
+    command: program.command,
+    args: [...program.args],
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     env: {
       ...sidecar.environment,
       T3CODE_LHC_HOME: sidecar.launch.home,
       T3CODE_THREAD_ID: input.threadId,
     },
-    windowsHide: true,
+    signal: terminate.signal,
   });
-  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  const exited = new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    child.once("error", () => resolve());
+  });
   const log = (line: string): void => {
-    process.stderr.write(`[claude-lhc:${child.pid ?? "?"}] ${line}\n`);
+    process.stderr.write(`[claude-lhc:${input.threadId}] ${line}\n`);
   };
 
   const send = (frame: DriverFrame): void => {
-    if (!stdinOpen || child.stdin === null || child.stdin.destroyed) return;
+    if (!stdinOpen || child.stdin.destroyed) return;
     child.stdin.write(`${JSON.stringify(frame)}\n`);
   };
   const endStdin = (): void => {
     if (!stdinOpen) return;
     stdinOpen = false;
-    child.stdin?.end();
+    child.stdin.end();
   };
   const failAll = (cause: Error): void => {
     for (const waiter of pendingControls.values()) waiter.reject(cause);
@@ -353,6 +333,7 @@ function startSidecarQuery(
   };
 
   child.on("error", (cause) => {
+    stdinOpen = false;
     messages.fail(
       new Error(`claude-lhc sidecar failed to start (${sidecar.launch.entry}): ${cause.message}`),
     );
@@ -367,10 +348,7 @@ function startSidecarQuery(
       );
     failAll(new Error("claude-lhc sidecar exited"));
   });
-  child.stdin?.on("error", (cause) => log(`stdin: ${cause.message}`));
-  if (child.stderr !== null) {
-    NodeReadline.createInterface({ input: child.stderr }).on("line", log);
-  }
+  child.stdin.on("error", (cause) => log(`stdin: ${cause.message}`));
 
   const answerRequest = async (frame: Extract<SidecarFrame, { type: "req" }>): Promise<void> => {
     const controller = new AbortController();
@@ -414,43 +392,41 @@ function startSidecarQuery(
     }
   };
 
-  if (child.stdout !== null) {
-    NodeReadline.createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY }).on(
-      "line",
-      (line) => {
-        if (line.trim() === "") return;
-        let frame: SidecarFrame;
-        try {
-          frame = JSON.parse(line) as SidecarFrame;
-        } catch (cause) {
-          log(`unreadable frame: ${cause instanceof Error ? cause.message : String(cause)}`);
+  NodeReadline.createInterface({ input: child.stdout, crlfDelay: Number.POSITIVE_INFINITY }).on(
+    "line",
+    (line) => {
+      if (line.trim() === "") return;
+      let frame: SidecarFrame;
+      try {
+        frame = JSON.parse(line) as SidecarFrame;
+      } catch (cause) {
+        log(`unreadable frame: ${cause instanceof Error ? cause.message : String(cause)}`);
+        return;
+      }
+      switch (frame.type) {
+        case "msg":
+          messages.push(frame.message);
+          return;
+        case "req":
+          void answerRequest(frame);
+          return;
+        case "res": {
+          const waiter = pendingControls.get(frame.id);
+          if (waiter === undefined) return;
+          pendingControls.delete(frame.id);
+          if (frame.ok) waiter.resolve(frame.value);
+          else waiter.reject(new Error(frame.error));
           return;
         }
-        switch (frame.type) {
-          case "msg":
-            messages.push(frame.message);
-            return;
-          case "req":
-            void answerRequest(frame);
-            return;
-          case "res": {
-            const waiter = pendingControls.get(frame.id);
-            if (waiter === undefined) return;
-            pendingControls.delete(frame.id);
-            if (frame.ok) waiter.resolve(frame.value);
-            else waiter.reject(new Error(frame.error));
-            return;
-          }
-          case "abort":
-            inflightRequests.get(frame.id)?.abort();
-            return;
-          case "error":
-            messages.fail(new Error(frame.message));
-            return;
-        }
-      },
-    );
-  }
+        case "abort":
+          inflightRequests.get(frame.id)?.abort();
+          return;
+        case "error":
+          messages.fail(new Error(frame.message));
+          return;
+      }
+    },
+  );
 
   const control = (method: DriverControlMethod, params: unknown): Promise<unknown> =>
     new Promise((resolve, reject) => {
@@ -465,7 +441,7 @@ function startSidecarQuery(
 
   send({
     type: "start",
-    options: wireOptions(options, launchCommand.claudeBinary, sidecar.windows),
+    options: wireOptions(options, sidecar.windows),
   });
 
   void (async () => {
@@ -485,11 +461,9 @@ function startSidecarQuery(
     if (closed) return;
     closed = true;
     endStdin();
-    const term = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
-    }, CLOSE_GRACE_MS);
+    const term = setTimeout(() => terminate.abort(), CLOSE_GRACE_MS);
     const kill = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+      if (child.exitCode === null && child.signalCode == null) child.kill("SIGKILL");
     }, CLOSE_GRACE_MS + KILL_GRACE_MS);
     void exited.then(() => {
       clearTimeout(term);
@@ -518,7 +492,7 @@ function startSidecarQuery(
       return undefined;
     },
     setModel: async (model?: string) => {
-      await control("setModel", { model });
+      await control("setModel", { model, settings: fittedWindows(model, sidecar.windows) });
     },
     setPermissionMode: async (mode: PermissionMode) => {
       await control("setPermissionMode", { mode });

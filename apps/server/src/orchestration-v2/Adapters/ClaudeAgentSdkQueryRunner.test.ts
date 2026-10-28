@@ -208,6 +208,45 @@ it.effect(
     ).pipe(Effect.provide(NodeServices.layer)),
 );
 
+it.effect("scopes a seam's own program and leaves the Claude binary for it to pass on", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const createQuery = vi.fn<ClaudeCreateQuery>(
+        () =>
+          ({
+            close: vi.fn(),
+            [Symbol.asyncDispose]: async () => {},
+          }) as unknown as ClaudeSdk.Query,
+      );
+      const runner = yield* makeSeamRunner({
+        createQuery,
+        program: { command: "/opt/node/bin/node", args: ["/opt/claude-lhc/dist/sidecar.js"] },
+      });
+      const { mcpServers: _mcpServers, ...withoutMcp } = resumedMcpQueryInput.options;
+      const session = yield* runner.open({
+        ...resumedMcpQueryInput,
+        options: { ...withoutMcp, pathToClaudeCodeExecutable: "/opt/claude/bin/claude" },
+      });
+      yield* Effect.addFinalizer(() => session.close.pipe(Effect.orDie));
+      const call = createQuery.mock.calls[0]![0];
+
+      assert.deepInclude(call.program, {
+        command: "/scope",
+        args: ["--", "/opt/node/bin/node", "/opt/claude-lhc/dist/sidecar.js"],
+      });
+      assert.equal(call.options.pathToClaudeCodeExecutable, "/opt/claude/bin/claude");
+      assert.isUndefined(call.options.executableArgs);
+    }),
+  ).pipe(
+    Effect.provideService(AgentScope, {
+      ...AgentScope.defaultValue(),
+      wrap: ({ command, args }) =>
+        Effect.succeed({ command: "/scope", args: ["--", command, ...args] }),
+    }),
+    Effect.provide(NodeServices.layer),
+  ),
+);
+
 it.effect.each(["host", "instance"] as const)(
   "refuses a fork on the %s Claude home without copying the session",
   (home) =>

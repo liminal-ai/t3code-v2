@@ -459,14 +459,23 @@ export type ClaudeQueryRuntime = AsyncGenerator<SDKMessage, void> &
     | "close"
   >;
 
+export interface ClaudeQueryProgram {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+}
+
 export type ClaudeCreateQuery = (input: {
   readonly prompt: AsyncIterable<SDKUserMessage>;
   readonly options: ClaudeQueryOptions;
   readonly threadId: ThreadId;
+  /** The seam's program in the agent's scope, for `options.spawnClaudeCodeProcess` to start. */
+  readonly program?: ClaudeQueryProgram;
 }) => ClaudeQueryRuntime;
 
 export interface ClaudeQuerySeam {
   readonly createQuery?: ClaudeCreateQuery;
+  /** A program each query runs in place of the Claude binary, such as a sidecar that spawns it. */
+  readonly program?: ClaudeQueryProgram;
   readonly forkRefusal?: string;
   readonly canRollback?: boolean;
 }
@@ -948,6 +957,7 @@ const forkClaudeSessionInWorker = Effect.fn("forkClaudeSessionInWorker")(functio
 export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryRunner")(function* ({
   createQuery = query,
   forkRefusal,
+  program,
 }: ClaudeQuerySeam = {}) {
   const crypto = yield* Crypto.Crypto;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
@@ -982,19 +992,24 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
         const { mcpServers, ...queryOptions } = input.options;
         // The SDK can prepend a scope wrapper to native binaries; script entries run through node.
         const binaryPath = queryOptions.pathToClaudeCodeExecutable;
-        const launch =
-          binaryPath === undefined ||
+        const scoped =
+          program ??
+          (binaryPath === undefined ||
           CLAUDE_SCRIPT_EXTENSIONS.some((ext) => binaryPath.endsWith(ext))
             ? undefined
+            : { command: binaryPath, args: [] });
+        const launch =
+          scoped === undefined
+            ? undefined
             : yield* agentScope.wrap({
-                command: binaryPath,
-                args: [],
+                command: scoped.command,
+                args: scoped.args,
                 name: "claude",
                 threadId: input.threadId,
                 env: queryOptions.env,
               });
         const options =
-          launch === undefined || launch.args.length === 0
+          program !== undefined || launch === undefined || launch.args.length === 0
             ? queryOptions
             : {
                 ...queryOptions,
@@ -1042,6 +1057,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
                 prompt,
                 options: { ...options, spawnClaudeCodeProcess },
                 threadId: input.threadId,
+                ...(program === undefined || launch === undefined ? {} : { program: launch }),
               }),
             catch: (cause) => queryRunnerError(cause, "query"),
           }).pipe(

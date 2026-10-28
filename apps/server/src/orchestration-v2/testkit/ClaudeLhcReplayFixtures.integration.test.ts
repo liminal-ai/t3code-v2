@@ -1,9 +1,7 @@
 import { describe } from "@effect/vitest";
 import { CLAUDE_LHC_DRIVER_KIND } from "@t3tools/contracts";
 
-import sidecarPin from "../../../../../lhc/sidecar.json" with { type: "json" };
 import { CLAUDE_LHC_FORK_REFUSAL } from "../../provider/Drivers/ClaudeLhcDriver.ts";
-import { sidecarHonorsRollback } from "../../provider/Drivers/ClaudeLhcSidecar.ts";
 import {
   ClaudeAdapterV2Driver,
   claudeProviderCapabilities,
@@ -21,10 +19,7 @@ const ClaudeLhcOrchestratorReplayHarness = makeClaudeOrchestratorReplayHarness({
   driverKind: CLAUDE_LHC_DRIVER_KIND,
   create: (input) =>
     createClaudeAdapterV2(input, {
-      capabilities: claudeProviderCapabilities({
-        forkRefusal: CLAUDE_LHC_FORK_REFUSAL,
-        canRollback: sidecarHonorsRollback(sidecarPin.version),
-      }),
+      capabilities: claudeProviderCapabilities({ forkRefusal: CLAUDE_LHC_FORK_REFUSAL }),
     }),
 });
 

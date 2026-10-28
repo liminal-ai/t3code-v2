@@ -2,11 +2,7 @@ import { CLAUDE_LHC_DRIVER_KIND, ClaudeLhcSettings } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
 import { makeClaudeDriver } from "./ClaudeDriver.ts";
-import {
-  makeClaudeLhcCreateQuery,
-  resolveClaudeLhcSidecar,
-  sidecarHonorsRollback,
-} from "./ClaudeLhcSidecar.ts";
+import { makeClaudeLhcCreateQuery, resolveClaudeLhcSidecar } from "./ClaudeLhcSidecar.ts";
 
 export const CLAUDE_LHC_FORK_REFUSAL =
   "Claude LHC threads can't be forked: a fork would copy the native transcript, not the LHC view. Start a new thread instead.";
@@ -40,8 +36,8 @@ export const ClaudeLhcDriver = makeClaudeDriver({
         },
         environment,
       }),
+      program: { command: sidecar.launch.node, args: [sidecar.launch.entry] },
       forkRefusal: CLAUDE_LHC_FORK_REFUSAL,
-      canRollback: sidecarHonorsRollback(sidecar.launch.version),
     };
   },
 });
