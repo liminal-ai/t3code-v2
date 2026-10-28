@@ -76,8 +76,8 @@ export type ClaudeLhcSidecarResolution =
   | { readonly _tag: "ready"; readonly launch: ClaudeLhcLaunch }
   | { readonly _tag: "unavailable"; readonly reason: string };
 
-export const CLAUDE_LHC_NODE_ENV = "CLAUDE_LHC_NODE";
-export const CLAUDE_LHC_SIDECAR_ENV = "CLAUDE_LHC_SIDECAR";
+const CLAUDE_LHC_NODE_ENV = "CLAUDE_LHC_NODE";
+const CLAUDE_LHC_SIDECAR_ENV = "CLAUDE_LHC_SIDECAR";
 const MIN_NODE_RANGE = ">=24.3.0";
 const CLOSE_GRACE_MS = 5_000;
 const KILL_GRACE_MS = 5_000;
@@ -167,7 +167,7 @@ export function resolveClaudeLhcSidecar(
   };
 }
 
-export const UNCATALOGUED_CONTEXT_WINDOW = 200_000;
+const UNCATALOGUED_CONTEXT_WINDOW = 200_000;
 const ONE_MILLION_SUFFIX = "[1m]";
 const MAX_TRIGGER_SHARE_OF_WINDOW = 0.8;
 const MAX_VIEW_SHARE_OF_FITTED_TRIGGER = 0.5;
