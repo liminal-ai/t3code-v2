@@ -213,6 +213,29 @@ it.layer(layerTest)("CursorDriver", (it) => {
       }).pipe(Effect.scoped),
   );
 
+  it.effect.each(["local", "cloud"] as const)(
+    "builds a %s adapter from the instance's Runs on setting",
+    (runtime) =>
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-driver-home-" });
+        const instance = yield* CursorDriver.create({
+          instanceId: ProviderInstanceId.make(`cursor-${runtime}-runs-on`),
+          displayName: "Cursor runs on",
+          enabled: true,
+          environment: [
+            { name: "HOME", value: home, sensitive: false },
+            { name: "CURSOR_API_KEY", value: "runs-on-key", sensitive: true },
+          ],
+          config: { ...CursorDriver.defaultConfig(), runtime },
+        });
+
+        const capabilities = yield* instance.orchestrationAdapter.getCapabilities();
+
+        expect(capabilities.checkpointing.appCanCheckpointFilesystem).toBe(runtime === "local");
+      }).pipe(Effect.scoped),
+  );
+
   it.effect("budgets handoffs for the SDK model across catalog refreshes and option changes", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
