@@ -14,27 +14,27 @@ Claude LHC needs two things on the environment's machine:
 - The claude-lhc package, version 0.2.0. T3 Code checks the version beside the entry
   before it offers the instance.
 
-Until T3 Code ships the sidecar in its release, build it from the long-horizon-context
-repository:
+Release builds ship the sidecar. Its entry is
+`claude-lhc/node_modules/claude-lhc/dist/sidecar.js` inside the `t3` release folder, and
+inside the app's resources folder on desktop. The server reads the Node binary from
+`CLAUDE_LHC_NODE` and the entry from `CLAUDE_LHC_SIDECAR` in its environment. The desktop
+app sets `CLAUDE_LHC_SIDECAR` itself. The instance's own fields below override both.
 
-```bash
-pnpm install --filter "claude-lhc..."
-pnpm --filter lhc build && pnpm --filter claude-lhc build
-```
-
-The entry is `packages/claude-lhc/dist/sidecar.js`.
+To stage the sidecar for a source checkout, run `lhc/stage-sidecar.sh <folder>`. It
+installs the pinned package into the folder and prints the entry.
 
 ## Add an instance
 
 In **Settings > Providers**, choose **Add provider**, then **Claude LHC**. Claude LHC is
-off until you add an instance. On the new instance's card, under **Setup**, fill in:
+off until you add an instance. On the new instance's card, under **Setup**, fill in any
+value the server's environment does not already supply:
 
 | Field         | Value                                      |
 | ------------- | ------------------------------------------ |
 | Node binary   | An absolute path to Node 24.3 or later     |
 | Sidecar entry | The path to claude-lhc's `dist/sidecar.js` |
 
-Until both are set, the instance shows why it cannot run, and the composer offers no
+Until both are known, the instance shows why it cannot run, and the composer offers no
 Claude LHC thread. **Binary path** and **CLAUDE_CONFIG_DIR path** work as they do for
 Claude, so a second instance can run another account or a Claude Code wrapper.
 

@@ -25,7 +25,7 @@ A user adds a Claude LHC provider instance, points it at a Node binary and the c
 Preconditions:
 
 - `node $T3V doctor` prints no `FAIL`.
-- A claude-lhc build at the version `lhc/sidecar.json` pins. Until a release stages it, build one from a separate clone of long-horizon-context, never in its checkout: `pnpm install --frozen-lockfile --filter "claude-lhc..."`, then `pnpm --filter lhc build && pnpm --filter claude-lhc build`. The entry is `packages/claude-lhc/dist/sidecar.js`.
+- The claude-lhc that `lhc/sidecar.json` pins, staged with `lhc/stage-sidecar.sh <run scratch>/claude-lhc [tarball]`, which prints the entry. Without a tarball it packs the pinned version from npm. Before that version is published, pass a tarball built the way long-horizon-context's `publish-claude-lhc-<version>` workflow builds it. The script refuses any tarball whose sha512 is not the pin's `integrity`.
 - A Node 24.3 or later binary, named by an absolute path.
 - A disposable project folder that is its own git repository (`git init` in it), added through [projects.md](./projects.md). Here it is `lhc-demo`.
 
