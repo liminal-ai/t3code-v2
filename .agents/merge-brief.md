@@ -2,13 +2,21 @@
 
 - Gate: `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo liminal-ai/t3code-v2 --pr <n> --method merge`. Merge commits only. Never squash, rebase or run `gh pr merge` (FORK.md, "Branches and merges").
 - The gate also needs Codex's review of the PR's current head and no open review thread. Codex reviews when a PR opens or leaves draft; after a push, comment `@codex review` and wait for its summary to name the new head. On the 3766 sync it caught a regression three verifier rounds had not.
+  - Read the bot's state from the `<!-- codex-review-state:v1 {...} -->` line in its summary comment (`gh api repos/liminal-ai/t3code-v2/issues/<n>/comments`). The gate reads `code_review.commit_sha` and `code_review.status`, and the comment's `updated_at` shows when the bot last moved.
+  - Precedent, not a threshold: on #45, the 3824 sync, the review stayed `running` for 93+ minutes while the same bot finished #46. The round lead ruled it unable to run, and #45 merged with `--waive codex=<reason>`, the reason naming the independent verdict. The review completed with no findings at 16:55Z, after the 16:52Z merge.
 - A verdict drives the change through `.agents/skills/verify-t3code/` on a dev server built from the PR's head, by path:
   - `apps/server/src/threadWorkflow/`, `apps/server/src/mcp/toolkits/threadWorkflow/` or `apps/web/src/threadWorkflow/`: `features/workflow-tab.md`, with its outcome check.
-  - `packages/provider-cursor/`: `features/agent-turn.md` with a Cursor instance picked.
+  - `packages/provider-cursor/`: one real Cursor turn on a throwaway release, per the verify skill's "Release check". A dev server has no Cursor sign-in, and the skill forbids copying prod's credential into it, so a Cursor turn on a dev server cannot pass. #45's first verdict failed on exactly that.
   - `apps/web/src/groupChat/`, `apps/server/src/groupChat/`, `routes/group-chat*` or `mainAppLocation.ts`: `features/group-chat.md`.
   - `apps/server/src/fork/`: `features/agent-turn.md`, and `features/delegated-requests.md` for `DelegatedRequestTimeout.ts`.
+  - `apps/server/src/peer/`, `apps/server/src/cli/environment.ts` or the peer-link migrations (`070_PeerLinks.ts`, `071_PeerLinkFence.ts`, `072_WaitingLinkRequestIndex.ts`): `features/linked-environments.md`.
   - Any other `apps/web/` or `apps/server/` change: the feature file for each flow it touches, and `features/agent-turn.md` at least.
   - Docs only (`docs/`, `*.md`): no drive. Read the changed text against the code it describes.
+- A verdict line reads `pstack-verdict: <PASS|PASS+NOTES|FAIL> head=<sha> base=<sha> by=<model>`. PASS and PASS+NOTES both pass the gate. #46 merged on PASS+NOTES with no waiver.
+- The gate hashes the change from `git merge-base main <head>` to the head. A verdict on a PR stacked on another records `base=` as the head of the PR below it, so it matches only after that PR lands. #46's verdict had `base=661cacaf88`, #45's head. Land the stack bottom-up, and run the gate on each PR after the one below it merges.
+- `Agent context budget` (`.github/workflows/agent-context-budget.yml`) fails when a PR raises a value in `apps/server/src/provider/agentContextBudget.json` above `main`'s. To accept growth on purpose, a maintainer adds the `agent-context-increase` label, which the fork created on #45.
+  - The label starts a `labeled` run that passes, but the failed run from the `opened` event stays on the head, and the gate counts it. The gate drops only a cancelled run that another run of the same workflow superseded. A rerun replays the original event with its original labels, so it fails again. #45 merged with `--waive checks=<reason>`, the reason naming the passing `labeled` run.
+  - The job compares with `main` as it is when the job runs. A PR stacked on one that grows the budget fails until that PR lands, and then `gh run rerun <run id> --failed` passes. #46 did that.
 - Before the push: `vp run check:changed`. Run no repo-wide checks. An upstream sync changes nearly every package, so it typechecks each package the fork touches and lints the files that differ from the upstream tag instead.
 - A change to a file in FORK.md "Seams to re-check" runs the tests listed there. Run the provider-cursor tests from `packages/provider-cursor`, because four fail from the root.
 - CI does not run the live drive, or an upstream sync's throwaway-release check (FORK.md "Sync from upstream" step 4). Before a cutover question, the release runs one real turn on Cursor, Claude and Codex, per the verify skill's "Release check".

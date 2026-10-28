@@ -48,3 +48,4 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Projects](./projects.md) covers adding a local folder as a project and starting a thread in it.
 - [Settings for verification](./settings.md) covers `threadWorkflowsEnabled` and provider instances.
 - [Pair another browser](./pairing.md) covers a fresh pairing URL, the pairing page, and a second browser.
+- [Link another environment](./linked-environments.md) covers the Labs flag, linking two throwaway servers, the link list, a `delegate_task` on the linked one, and Forget.

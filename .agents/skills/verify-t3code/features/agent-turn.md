@@ -22,7 +22,7 @@ Preconditions:
 
 - `node $T3V doctor` prints no `FAIL`.
 - A disposable project, here `demo-project`, is in the sidebar.
-- The provider you pick shows `Authenticated` in Settings > Providers. A fresh dev server's Cursor is not signed in: sign it in from **Settings > Providers > Cursor** (**Sign in**, or paste a key into **Cursor API key**), or report the Cursor turn as unreachable for that reason. Never copy credentials from prod into a dev server's `.t3`.
+- The provider you pick shows `Authenticated` in Settings > Providers. A fresh dev server's Cursor is not signed in. Never copy credentials from prod into a dev server's `.t3`. A verdict that needs a Cursor turn runs it on a throwaway release, per [SKILL.md](../SKILL.md) "Release check", and the merge brief sends `packages/provider-cursor/` changes there.
 
 - **New thread.** Choose `New thread` and pick the project. Run `node $T3V browser click --role button --name "New thread"`, `node $T3V browser type "demo-project"` and `node $T3V browser press Enter`. The breadcrumb reads `demo-project / New thread` and the heading asks `What should we build in demo-project?`.
 - **Pick a model.** Open the picker, which is named after the current model, choose a provider, then a model. Run `node $T3V browser click --role button --name "GPT-6-Astra"`, `node $T3V browser click --role button --name "Claude"` and `node $T3V browser click --text "Claude Haiku 5.5"`. The picker button now reads `Claude Haiku 5.5`.
@@ -39,5 +39,6 @@ Preconditions:
 - An option's accessible name joins the model, its badges and the favorite control, such as `Claude Haiku 5.5 New model Claude Add to favorites`, and the `New model` badge comes and goes. Click the model's visible text instead of the option's full name.
 - The draft's URL is `/draft/<id>` until the first send. The thread id, which outcome checks need, is the last URL segment after that.
 - `browser wait --text` matches your own message as soon as it is sent. Wait with `--gone "Working"`.
+- To watch a turn render without spending a model, pick `Replay (dev)`. It never replies `pong`, so grade it by the run ending. See [SKILL.md](../SKILL.md) "Free turns with Replay (dev)".
 - In the proof run the draft heading `What should we build in demo-project?` never counted as visible to `browser wait --text`. Wait on `--role textbox --name-prefix "Message"` instead.
 - After a turn, a stray `=` glyph sits in the timeline's left margin at about (271, 476) in a 1440x900 viewport. It is the app's, and harmless to a drive.

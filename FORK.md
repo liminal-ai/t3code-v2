@@ -45,31 +45,36 @@ Sync to a published tag, not to upstream `main`. A tag is a build upstream shipp
 1. Fetch and pick the tag. Prefer the newest stable tag, such as `v0.1.2`, when one exists, and take the newest nightly only when you need something no stable tag carries yet. Upstream cuts each stable tag on the same commit as a nightly (`v0.1.2` is `v0.1.2-nightly.20261022.3541`), so `t3-v2-deploy`, which names a release from `git describe --match 'v*-nightly.*'`, still names the build after that nightly.
 
    ```bash
+   git fetch origin
    git fetch upstream --tags
    git tag -l 'v*' --sort=-creatordate | head -10
    git tag --points-at <stable tag>   # the nightly on the same commit
    ```
+
+   Every later step works from `origin/main`, never local `main`. On the 3824 sync local `main` was stale behind PR #42, and the first merge started from it.
 
 2. List what upstream changed in the files we changed. Read each of those commits before you merge.
 
    ```bash
    OLD=v0.1.4-nightly.20261028.3824   # the "Last synced" tag above
    NEW=<new tag>
-   git log --oneline $OLD..$NEW -- $(git diff --name-only $OLD main)
+   git log --oneline $OLD..$NEW -- $(git diff --name-only $OLD origin/main)
    ```
 
 3. Merge on a branch:
 
    ```bash
-   git switch -c sync/upstream-<tag> main
+   git switch -c sync/upstream-<tag> origin/main
    git merge --no-ff $NEW
    ```
 
    Resolve each conflict so that upstream's new behavior and ours both survive. If upstream now does what one of our changes did, take upstream's version and delete ours.
 
+   A file that merges with no conflict can still break the fork. Upstream #26238 dropped `settings` from the Cursor driver's `makeCursorAdapterV2` call, git applied `packages/provider-cursor/src/server/driver.ts` cleanly, and `cursor-cloud` would have run on this machine. The 3824 sync restored the argument, and `driver.test.ts` "builds a %s adapter from the instance's Runs on setting" now pins it. So read the step 2 commits and run the seam tests even when every file merges clean.
+
 4. Verify three things. Upstream owns testing upstream, so do not re-test upstream features.
    - Our code: the provider-cursor tests, with the commands in [Seams to re-check](#seams-to-re-check).
-   - The seams: the tests in [Seams to re-check](#seams-to-re-check), and the content check that the merged tree is upstream plus our diff and nothing else. Compare `git diff $NEW <merge>` with `git diff $OLD main`. The only differences should be the conflict resolutions you made.
+   - The seams: the tests in [Seams to re-check](#seams-to-re-check), and the content check that the merged tree is upstream plus our diff and nothing else. Compare `git diff $NEW <merge>` with `git diff $OLD origin/main`. The only differences should be the conflict resolutions you made.
    - The deployment: build a release (see [Build a release](#build-a-release)) and run it as a throwaway T3, never against prod, with one real turn on Cursor, Claude and Codex. The verify skill's "Release check" has the commands. See [Test live without touching prod](#test-live-without-touching-prod).
 5. Open the PR against `main`. Set "Last synced" in this file to the new tag in the same PR.
 6. Have a reviewer from the other model family verify it, then merge with `--merge`. If the merge commit carries a test that the next commit fixes, that is fine. `main`'s first-parent history stays green because the PR lands as a merge commit.
@@ -99,7 +104,7 @@ To roll back, point `prod/current` at the previous release and restart the unit.
 
 Drive a dev server from a worktree with `.agents/skills/verify-t3code/SKILL.md`, which holds the rules that keep it off the live install.
 
-Run a throwaway T3 from a built release on a free port, with its own base directory. Take its data from a WAL-safe snapshot (`VACUUM INTO`; `.backup` never finishes on busy prod) and follow every step of the safety list in `~/lim-v2/notes/cursor-cloud-evidence/verification-20261017-sync3238-r2/safety-audit.md`. That list says which files to leave out, the SQL that stops copied threads from waking, and the settings to use. Read the live ports with `ss -H -ltnp` first. 13987 is v2 prod, 13977 is the older `~/lim` T3, and 13995 is the deploy script's smoke test.
+Run a throwaway T3 from a built release on a free port, with its own base directory. Prior art: the 3824 sync's `.pstack/runs/sync-3824-chain/proof/prod-copy-check.sh` in the main checkout boots a release on a neutralized copy of prod's database, checks its new migrations ran, and runs one turn each on Cursor, Claude and Codex. It lives in a run folder, so read it before you reuse it. Take its data from a WAL-safe snapshot (`VACUUM INTO`; `.backup` never finishes on busy prod) and follow every step of the safety list in `~/lim-v2/notes/cursor-cloud-evidence/verification-20261017-sync3238-r2/safety-audit.md`. That list says which files to leave out, the SQL that stops copied threads from waking, and the settings to use. Read the live ports with `ss -H -ltnp` first. 13987 is v2 prod, 13977 is the older `~/lim` T3, and 13995 is the deploy script's smoke test.
 
 ## Seams to re-check
 
@@ -108,8 +113,8 @@ After every upstream merge, list the upstream commits that touched the upstream 
 ```bash
 OLD=v0.1.4-nightly.20261028.3824   # the "Last synced" tag
 NEW=<new tag>
-git log --oneline $OLD..$NEW -- $(git diff --diff-filter=M --name-only $OLD main)
-git diff --diff-filter=A --name-only $OLD main | xargs -r git log --oneline $OLD..$NEW --   # upstream created a file we own
+git log --oneline $OLD..$NEW -- $(git diff --diff-filter=M --name-only $OLD origin/main)
+git diff --diff-filter=A --name-only $OLD origin/main | xargs -r git log --oneline $OLD..$NEW --   # upstream created a file we own
 ```
 
 Then run the tests that pin the seams. Run the provider-cursor tests from the package directory. From the repository root, four `CursorSdk` tests fail because their subprocess cannot resolve `effect`.
