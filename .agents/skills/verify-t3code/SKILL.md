@@ -75,6 +75,16 @@ The other surfaces:
 - **HTTP.** `curl http://127.0.0.1:<server port>/.well-known/t3/environment` answers without auth, and `/api/auth/session` reports the session. The web origin proxies both.
 - **MCP tools in a thread.** A dev thread's agent gets T3's MCP tools, and the `thread_workflow_*` tools when `threadWorkflowsEnabled` is on. Prove a tool change by asking the agent in a dev thread to call it, then read the outcome below.
 
+### Free turns with Replay (dev)
+
+A dev server run from source registers the `Replay (dev)` provider, instance `devReplay` (upstream #26207). It is a local ACP agent, `apps/server/scripts/dev-replay-agent.ts`, that plays recorded turns with simulated streaming through the real ACP adapter, orchestration and UI, and spends no model. Its models are scenarios: `Showcase` (thinking, a plan, tool calls, an approval and markdown), `Plan and reads`, `Write approval`, `Question` and `Multi turn`. Each prompt plays the scenario's next recorded turn, whatever the prompt says. Pick it in the composer's model picker like any provider, call `window.t3dev.replay("<scenario id>")` in the page (`showcase`, `todo-list`, `approval`, `question`, `multi-turn`), which starts the thread on approval-required, or run `node apps/server/src/bin.ts thread start --base-dir .t3 --provider devReplay --model showcase <project> "go"`. Turn it off in Settings rather than deleting it, because a dev server adds it back on start.
+
+- It stands in for a turn's UI and pipeline: a thread starting, `Working`, streaming, plan and tool-call rows, an approval card (`approval`, on an approval-required thread as `t3dev.replay` starts it) or a question card (`question`) and its answer, and the run ending. Use it for a change to those surfaces, and to rehearse a recipe before a paid turn.
+- It cannot stand in for a provider. A change to a driver, adapter, sign-in or model list, such as `packages/provider-cursor/`, needs that provider's real turn.
+- It cannot stand in for anything the agent must do. Its tool calls are recorded rows: nothing runs, and it never calls T3's MCP tools. `delegate_task`, the workflow tools, linked environments and delegated requests need a real agent.
+- Its reply never follows the prompt, so a recipe that grades a `pong` reply needs a real provider.
+- A packaged release has no agent script, so the Release check cannot use it.
+
 ## Evidence
 
 Save proof under `proof/` with names in drive order. For a user-visible path, keep a screenshot of each action and of the state it produced, and the thread timeline (`browser text`). Exercise the real user path, never internal setters, direct SQLite writes or test-only endpoints. A screen alone is not proof of a change that stores something, so read the side effect too:
@@ -98,6 +108,8 @@ Two kinds of check prove a feature:
 
 Two worktrees run two dev servers side by side, because each derives its ports from its own path and keeps its state in its own `.t3`. Never run two servers on one state dir. `up` refuses when `server-runtime.json` names a live server, so drive that one or stop it. Never drive a server this run did not start.
 
+The dev server restarts on any write under `apps/server/src` or `packages/`, and a restart cancels every pending approval and the run that raised it. `vp test` and `vp run check:changed` in the same worktree write a vite temp file under `packages/`, so they restart it too. While a drive waits on a live approval, run nothing in its worktree. Run checks in another worktree, or before or after the drive.
+
 ## Release check
 
 A dev server runs the worktree's source, so it cannot show a fault that only the packaged release has, such as a dependency the archive leaves out. Before a cutover question, run the release `t3-v2-deploy` built as a throwaway and complete one real turn on each provider prod uses. FORK.md "Test live without touching prod" holds the safety rules this follows.
@@ -107,6 +119,10 @@ A dev server runs the worktree's source, so it cannot show a fault that only the
 3. **Start.** `T3CODE_HOME=<base> T3CODE_NO_BROWSER=1 T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false T3CODE_TELEMETRY_ENABLED=false setsid nohup <release>/t3 serve --host 127.0.0.1 --port <free port> --base-dir <base> --no-browser > <base>/../serve.log 2>&1 &`. The log names each migration that ran and when the server listened. `$!` is the shell wrapper's PID, so find the server's with `ss -H -ltnp` on that port, and confirm its `/proc/<pid>/cwd` before you stop it.
 4. **Turns.** Add a disposable project with `<release>/t3 project add --base-dir <base> <folder>`, then from inside that folder run one turn per provider: `<release>/t3 thread start --base-dir <base> --provider <instance> --model <slug> --wait --json . "Reply with the single word pong. Do not call tools or change files."`. Each prints `"status":"completed"` and `"reply":"pong"`. Slugs in use here: `cursor` `grok-4.7`, `claudeAgent` `claude-haiku-5-5`, `codex` `gpt-6-astra`.
 5. **UI on the release.** t3v cannot attach to `t3 serve`. Open the pairing URL from the log in T3's Browser panel with `preview_open` (`profileId: "incognito"`), as above.
+
+**A Cursor turn for a verdict runs here.** A fresh dev server starts with Cursor signed out, and `features/agent-turn.md` forbids copying prod's credential into its `.t3`. Someone can sign it in with Cursor, but an unattended verifier can't, so the merge brief sends a `packages/provider-cursor/` change to this check. Steps 1 to 4 with only the `cursor` instance are enough. A release built from an earlier commit than the PR's head stands in for the head only when `git diff --stat <release sha> <head>` changes no runtime code. On #45 the release `fb48715408` differed from head `661cacaf88` only in `FORK.md` and `driver.test.ts`. Otherwise build the head with `t3-v2-deploy <head>`.
+
+**On a Mac over ssh.** The steps above assume the linux-x64 release on this machine. On the M1 on 2026-10-28, a new darwin-arm64 build's Cursor turn failed over ssh with `Cursor Agent SDK open failed`, the keychain answered `User interaction is not allowed`, and `SecurityAgent` was running, while Claude and Codex turns passed. The likely cause, not yet confirmed on the M1, is a keychain password prompt that the ad-hoc-signed build raises on the Mac's screen, as the v0.1.2 Mac app did on first launch. Until someone types the password at that screen, report the Cursor turn as blocked on it rather than as a Cursor failure.
 
 ## Cleanup
 
