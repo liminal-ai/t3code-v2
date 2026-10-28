@@ -197,6 +197,7 @@ it.effect(
         for (const [call] of createQuery.mock.calls) {
           assert.isUndefined(call.options?.mcpServers);
           assert.isFunction(call.options?.spawnClaudeCodeProcess);
+          assert.equal(call.threadId, resumedMcpQueryInput.threadId);
         }
         assert.deepEqual(setMcpServers.mock.calls, [
           [resumedMcpQueryInput.options.mcpServers],

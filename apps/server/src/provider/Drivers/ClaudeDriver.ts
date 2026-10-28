@@ -1,4 +1,9 @@
-import { ClaudeSettings, ProviderDriverKind } from "@t3tools/contracts";
+import {
+  CLAUDE_DRIVER_KIND,
+  ClaudeSettings,
+  type ProviderDriverKind,
+  type ServerProvider,
+} from "@t3tools/contracts";
 import * as Cache from "effect/Cache";
 import * as Duration from "effect/Duration";
 import * as Crypto from "effect/Crypto";
@@ -64,9 +69,7 @@ import {
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
-
-const DRIVER_KIND = ProviderDriverKind.make("claudeAgent");
+const DRIVER_KIND = CLAUDE_DRIVER_KIND;
 const CAPABILITIES_PROBE_TTL = Duration.minutes(5);
 
 const withoutUsage = (capabilities: ClaudeCapabilitiesProbe): ClaudeCapabilitiesProbe => {
@@ -107,26 +110,41 @@ export type ClaudeDriverEnv =
   | ProviderEventLoggers.ProviderEventLoggers
   | ServerConfig.ServerConfig;
 
-export interface ClaudeQuerySeamInput {
+export interface ClaudeQuerySeamInput<Settings extends ClaudeSettings = ClaudeSettings> {
   readonly environment: NodeJS.ProcessEnv;
   readonly baseDir: string;
-  readonly config: ClaudeSettings;
+  readonly config: Settings;
 }
 
-export interface ClaudeDriverSpec {
-  readonly querySeam?: (input: ClaudeQuerySeamInput) => ClaudeQuerySeam;
+export interface ClaudeDriverQuerySeam extends ClaudeQuerySeam {
+  /** Why no turn can start on this server; the instance reports it instead of failing a turn. */
+  readonly unavailableReason?: string;
 }
 
-export const makeClaudeDriver = (
-  spec: ClaudeDriverSpec = {},
-): ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.Path> => ({
+export interface ClaudeDriverSpec<Settings extends ClaudeSettings> {
+  readonly driverKind: ProviderDriverKind;
+  readonly displayName: string;
+  readonly configSchema: Schema.Codec<Settings, unknown>;
+  readonly continuationGroupKey?: (stockKey: string) => string;
+  readonly querySeam?: (input: ClaudeQuerySeamInput<Settings>) => ClaudeDriverQuerySeam;
+}
+
+export const CLAUDE_DRIVER_SPEC: ClaudeDriverSpec<ClaudeSettings> = {
   driverKind: DRIVER_KIND,
+  displayName: "Claude",
+  configSchema: ClaudeSettings,
+};
+
+export const makeClaudeDriver = <Settings extends ClaudeSettings>(
+  spec: ClaudeDriverSpec<Settings>,
+): ProviderDriver<Settings, ClaudeDriverEnv, Path.Path> => ({
+  driverKind: spec.driverKind,
   metadata: {
-    displayName: "Claude",
+    displayName: spec.displayName,
     supportsMultipleInstances: true,
   },
-  configSchema: ClaudeSettings,
-  defaultConfig: (): ClaudeSettings => decodeClaudeSettings({}),
+  configSchema: spec.configSchema,
+  defaultConfig: (): Settings => Schema.decodeSync(spec.configSchema)({}),
   usage: claudeUsageReader,
   create: Effect.fn("ClaudeDriver.create")(function* ({
     instanceId,
@@ -151,14 +169,14 @@ export const makeClaudeDriver = (
       .pipe(Effect.map(resolveClaudeModelCatalog));
     const processEnv = yield* mergeProviderInstanceEnvironment(environment);
     const fallbackContinuationIdentity = defaultProviderContinuationIdentity({
-      driverKind: DRIVER_KIND,
+      driverKind: spec.driverKind,
       instanceId,
     });
-    const effectiveConfig = {
+    const effectiveConfig: Settings = {
       ...config,
       enabled,
       binaryPath: expandHomePath(config.binaryPath, yield* HostProcess.HomeDirectory),
-    } satisfies ClaudeSettings;
+    };
     const resolveMaintenance = yield* makeCachedProviderMaintenanceResolution(
       resolveProviderMaintenanceCapabilitiesEffect(UPDATE, {
         binaryPath: effectiveConfig.binaryPath,
@@ -169,7 +187,12 @@ export const makeClaudeDriver = (
         Effect.provideService(Path.Path, path),
       ),
     );
-    const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig, processEnv);
+    const stockContinuationGroupKey = yield* makeClaudeContinuationGroupKey(
+      effectiveConfig,
+      processEnv,
+    );
+    const continuationGroupKey =
+      spec.continuationGroupKey?.(stockContinuationGroupKey) ?? stockContinuationGroupKey;
     const configDir = yield* resolveClaudeHomePath(effectiveConfig, processEnv);
     const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
       effectiveConfig.homePath.trim() || processEnv.CLAUDE_CONFIG_DIR?.trim()
@@ -178,7 +201,7 @@ export const makeClaudeDriver = (
     );
     const stampIdentity = withInstanceIdentity({
       instanceId,
-      driverKind: DRIVER_KIND,
+      driverKind: spec.driverKind,
       displayName,
       accentColor,
       continuationGroupKey,
@@ -190,6 +213,18 @@ export const makeClaudeDriver = (
       baseDir,
       config: effectiveConfig,
     });
+    const unavailableReason = querySeam?.unavailableReason;
+    const reportUnavailable = (provider: ServerProvider): ServerProvider =>
+      unavailableReason === undefined || provider.status === "disabled"
+        ? provider
+        : {
+            ...provider,
+            status: "error",
+            installed: false,
+            message: unavailableReason,
+            availability: "unavailable",
+            unavailableReason,
+          };
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -213,7 +248,7 @@ export const makeClaudeDriver = (
       Effect.mapError(
         (cause) =>
           new ProviderDriverError({
-            driver: DRIVER_KIND,
+            driver: spec.driverKind,
             instanceId,
             detail: "Failed to build Claude orchestration adapter.",
             cause,
@@ -308,7 +343,7 @@ export const makeClaudeDriver = (
               ? Cache.invalidateAll(capabilitiesProbeCache)
               : Effect.void,
           ),
-          Effect.map(stampIdentity),
+          Effect.map((provider) => reportUnavailable(stampIdentity(provider))),
         ),
       ),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -325,7 +360,7 @@ export const makeClaudeDriver = (
       initialSnapshot: (settings) =>
         modelCatalog.pipe(
           Effect.flatMap((catalog) => makePendingClaudeProvider(settings.provider, catalog)),
-          Effect.map(stampIdentity),
+          Effect.map((provider) => reportUnavailable(stampIdentity(provider))),
         ),
       checkProvider,
       enrichSnapshot: ({ settings, snapshot, publishSnapshot }) =>
@@ -343,7 +378,7 @@ export const makeClaudeDriver = (
       Effect.mapError(
         (cause) =>
           new ProviderDriverError({
-            driver: DRIVER_KIND,
+            driver: spec.driverKind,
             instanceId,
             detail: `Failed to build Claude snapshot: ${cause.message ?? String(cause)}`,
             cause,
@@ -381,7 +416,7 @@ export const makeClaudeDriver = (
       Effect.mapError(
         (cause) =>
           new ProviderDriverError({
-            driver: DRIVER_KIND,
+            driver: spec.driverKind,
             instanceId,
             detail:
               cause._tag === "ClaudeResetCreditError"
@@ -403,7 +438,7 @@ export const makeClaudeDriver = (
               refreshed.usageLimits?.unavailable?.reason === "probeFailed")
           ) {
             return yield* new ProviderDriverError({
-              driver: DRIVER_KIND,
+              driver: spec.driverKind,
               instanceId,
               detail:
                 "The reset was applied, but Claude could not confirm the new limits. Refresh to check.",
@@ -415,7 +450,7 @@ export const makeClaudeDriver = (
 
     return {
       instanceId,
-      driverKind: DRIVER_KIND,
+      driverKind: spec.driverKind,
       continuationIdentity: {
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,
@@ -440,4 +475,4 @@ export const makeClaudeDriver = (
   }),
 });
 
-export const ClaudeDriver = makeClaudeDriver();
+export const ClaudeDriver = makeClaudeDriver(CLAUDE_DRIVER_SPEC);

@@ -445,7 +445,26 @@ export const ClaudeProviderCapabilitiesV2 = {
   },
 } satisfies OrchestrationV2ProviderCapabilities;
 
-export type ClaudeCreateQuery = typeof query;
+/** The part of the SDK's Query that the runner drives, so a seam can supply its own runtime. */
+export type ClaudeQueryRuntime = AsyncGenerator<SDKMessage, void> &
+  AsyncDisposable &
+  Pick<
+    ClaudeQuery,
+    | "interrupt"
+    | "setModel"
+    | "setPermissionMode"
+    | "applyFlagSettings"
+    | "stopTask"
+    | "backgroundTasks"
+    | "setMcpServers"
+    | "close"
+  >;
+
+export type ClaudeCreateQuery = (input: {
+  readonly prompt: AsyncIterable<SDKUserMessage>;
+  readonly options: ClaudeQueryOptions;
+  readonly threadId: ThreadId;
+}) => ClaudeQueryRuntime;
 
 export interface ClaudeQuerySeam {
   readonly createQuery?: ClaudeCreateQuery;
@@ -655,7 +674,7 @@ function queryRunnerError(cause: unknown, method: string): ClaudeAgentSdkQueryRu
     : new ClaudeAgentSdkQueryRunnerError({ cause, method });
 }
 
-function closeClaudeQuery(queryRuntime: ClaudeQuery) {
+function closeClaudeQuery(queryRuntime: ClaudeQueryRuntime) {
   return Effect.try({
     try: () => queryRuntime.close(),
     catch: (cause) => queryRunnerError(cause, "close"),
@@ -663,7 +682,9 @@ function closeClaudeQuery(queryRuntime: ClaudeQuery) {
 }
 
 // Iterate Query itself: the raw generator's return() queues behind a pending CLI read and deadlocks interruption.
-export function claudeQueryMessages(queryRuntime: ClaudeQuery): AsyncIterable<SDKMessage, void> {
+export function claudeQueryMessages(
+  queryRuntime: ClaudeQueryRuntime,
+): AsyncIterable<SDKMessage, void> {
   return { [Symbol.asyncIterator]: () => queryRuntime };
 }
 
@@ -1021,6 +1042,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
               createQuery({
                 prompt,
                 options: { ...options, spawnClaudeCodeProcess },
+                threadId: input.threadId,
               }),
             catch: (cause) => queryRunnerError(cause, "query"),
           }).pipe(

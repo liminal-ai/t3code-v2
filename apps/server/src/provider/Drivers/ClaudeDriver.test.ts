@@ -26,7 +26,12 @@ import * as ModelManifest from "../ModelManifest.ts";
 import * as ProviderHostLive from "../ProviderHostLive.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "../ProviderOrchestrationAdapterInfrastructure.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
-import { ClaudeDriver, makeClaudeDriver, type ClaudeQuerySeamInput } from "./ClaudeDriver.ts";
+import {
+  CLAUDE_DRIVER_SPEC,
+  ClaudeDriver,
+  makeClaudeDriver,
+  type ClaudeQuerySeamInput,
+} from "./ClaudeDriver.ts";
 
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -111,6 +116,7 @@ describe("ClaudeDriver query seam", () => {
       Effect.gen(function* () {
         const seamInputs: Array<ClaudeQuerySeamInput> = [];
         const driver = makeClaudeDriver({
+          ...CLAUDE_DRIVER_SPEC,
           querySeam: (input) => {
             seamInputs.push(input);
             return {
