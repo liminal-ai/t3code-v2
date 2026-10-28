@@ -543,7 +543,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     localStorage.setItem(MODE_KEY, next);
   };
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- a captured document key listener, so the chat underneath never sees a key the lanes took.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a captured document key listener, so the chat underneath never sees a key the lanes took.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.isComposing || isCommandPaletteOpen()) return;
@@ -561,7 +561,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     return () => document.removeEventListener("keydown", onKeyDown, { capture: true });
   }, [step, clearSelection]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- only a reader's gesture on the scroller leaves the end; a pin or the lanes' own scroll never does.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- only a reader's gesture on the scroller leaves the end; a pin or the lanes' own scroll never does.
   useEffect(() => {
     const element = scroller.current;
     if (element === null) return;
@@ -591,7 +591,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     };
   }, [follow]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- a resize of the scroller re-lays out the lanes.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a resize of the scroller re-lays out the lanes.
   useEffect(() => {
     const element = scroller.current;
     if (element === null) return;
@@ -604,7 +604,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     });
   }, [relayoutGeometry]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- one resize subscription for every card, so many resized cards lay out once.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- one resize subscription for every card, so many resized cards lay out once.
   useLayoutEffect(() => {
     const state = layoutState.current!;
     const slots = model.blocks.flatMap((block) =>
@@ -615,12 +615,12 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     return observeResize(slots, () => relayoutGeometry(false));
   }, [model, relayoutGeometry]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- the lanes open pinned to the end before the first paint.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the lanes open pinned to the end before the first paint.
   useLayoutEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight });
   }, []);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- cards render markdown once they near the viewport, which only an IntersectionObserver reports.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cards render markdown once they near the viewport, which only an IntersectionObserver reports.
   useEffect(() => {
     const observer = new IntersectionObserver(
       (entries) => {
@@ -643,12 +643,12 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     };
   }, []);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- card positions are measured from the committed DOM before paint.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- card positions are measured from the committed DOM before paint.
   useLayoutEffect(() => {
     layout(layoutState.current!, { selection, mode, model, focus });
   }, [selection, mode, model, focus]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- the commit that applied new spacers, or ended a slide, is the one to measure.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the commit that applied new spacers, or ended a slide, is the one to measure.
   useLayoutEffect(() => {
     const state = layoutState.current!;
     if (!state.drawPending || spacers !== state.spacers || sliding !== state.sliding) return;
@@ -692,7 +692,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
       },
     );
   });
-  // oxlint-disable-next-line t3code/react-effect-budget -- the retry timer calls requestOlder, which cannot schedule itself; each failure resets it.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the retry timer calls requestOlder, which cannot schedule itself; each failure resets it.
   useEffect(() => {
     if (olderRetryAt === null) return;
     const timer = setTimeout(
@@ -713,7 +713,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
   };
 
   const followedSeq = useRef(view.highSeq);
-  // oxlint-disable-next-line t3code/react-effect-budget -- a newer message, never an older page, moves a reader who is at the end, after it commits.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a newer message, never an older page, moves a reader who is at the end, after it commits.
   useLayoutEffect(() => {
     const element = scroller.current;
     const newer = view.highSeq > followedSeq.current;
@@ -723,7 +723,7 @@ export function SwimLanes({ groupId, view }: { groupId: GroupChatGroupId; view: 
     }
   }, [view.highSeq]);
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- an older page keeps the reader's place and fills a short view once it commits.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- an older page keeps the reader's place and fills a short view once it commits.
   useLayoutEffect(() => {
     const element = scroller.current;
     const anchor = olderAnchor.current;

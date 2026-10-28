@@ -101,7 +101,7 @@ export function refreshGroupChatSnapshot(): void {
 export function useGroupChatSnapshot(): GroupChatSnapshotState {
   const result = useAtomValue(groupChatSnapshotAtom);
   const retryDue = AsyncResult.isFailure(result) && !result.waiting;
-  // oxlint-disable-next-line t3code/react-effect-budget -- the event stream opens only after a snapshot, so this timer is the only refetch after a failure.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the event stream opens only after a snapshot, so this timer is the only refetch after a failure.
   useEffect(() => {
     if (!retryDue) return;
     const retry = setTimeout(refreshGroupChatSnapshot, SNAPSHOT_RETRY_DELAY_MS);

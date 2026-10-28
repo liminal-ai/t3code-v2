@@ -38,12 +38,12 @@ const ThreadWorkflowPanel = lazy(() =>
   })),
 );
 
-export type RightPanelTerminalProps = Omit<
+type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
   "visible" | "threadRef" | "surface"
 >;
 
-export interface RightPanelPullRequestProps {
+interface RightPanelPullRequestProps {
   readonly capabilityKnown: boolean;
   readonly supported: boolean;
   readonly projectId: ProjectId | null;
@@ -53,13 +53,13 @@ export interface RightPanelPullRequestProps {
   readonly onBack: (() => void) | undefined;
 }
 
-export interface RightPanelWorkflowProps {
+interface RightPanelWorkflowProps {
   /** The thread's pending question-tool requests, the same list the composer answers. */
   readonly pendingUserInputs: ReadonlyArray<ThreadPendingUserInput>;
   readonly onAnswerInComposer: () => void;
 }
 
-export interface RightPanelFileProps {
+interface RightPanelFileProps {
   readonly projectName: string | null;
   readonly workspaceRoot: string | undefined;
   readonly availableEditors: ReadonlyArray<EditorId>;
