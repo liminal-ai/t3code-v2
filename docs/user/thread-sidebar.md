@@ -260,6 +260,13 @@ Subagent threads started by the agent can't take messages; message the parent
 thread instead. When such a subagent needs an approval or an answer, the parent
 thread asks for it.
 
+A task an agent hands off with `delegate_task` runs in its own thread. When that
+task stops on a permission prompt, its parent agent is told at once, but only you
+can approve it, in the task's thread. If nobody answers a task's prompt or
+question within 10 minutes, T3 declines it with a note that no human is
+available, and the task works around it or reports what it needed. The note
+shows in the task's thread. A thread you started yourself never times out.
+
 Expand a tool call in the conversation to see its full command and output.
 Summaries shorten shell wrappers and can still describe the latest call after it
 finishes; the call's own result shows its status.
