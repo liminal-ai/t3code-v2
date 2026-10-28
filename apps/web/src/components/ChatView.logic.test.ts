@@ -498,6 +498,52 @@ describe("resolveComposerProviderSelection", () => {
     ).toBe(importedEntry.instanceId);
   });
 
+  it("keeps a started claude-lhc thread on its own instance, whose session Claude's adapter labels claudeAgent", () => {
+    const stock = entry("claudeAgent", "claudeAgent", {
+      continuation: { groupKey: "claude:home:/h" },
+    });
+    const lhc = entry("claude-lhc", "claude-lhc", {
+      continuation: { groupKey: "claude-lhc:home:/h" },
+    });
+    const thread = {
+      ...importedThread(lhc.instanceId),
+      runtime: { ...readySession, providerName: "claudeAgent", providerInstanceId: lhc.instanceId },
+    };
+    const lockedProvider = deriveLockedProvider({
+      thread,
+      selectedProvider: null,
+      threadProvider: lhc.instanceId,
+      providers: [stock.snapshot, lhc.snapshot],
+    });
+
+    expect(lockedProvider).toBe("claude-lhc");
+    expect(
+      resolveComposerProviderSelection({
+        entries: [stock, lhc],
+        candidateInstanceIds: [null, lhc.instanceId, lhc.instanceId],
+        lockedProvider,
+        lockedInstanceId: lhc.instanceId,
+      }).selectedProviderEntry?.instanceId,
+    ).toBe(lhc.instanceId);
+  });
+
+  it("shows a Claude LHC draft as unavailable rather than falling back to another kind", () => {
+    const stock = entry("claudeAgent");
+    const lhc = entry("claude-lhc", "claude-lhc", {
+      status: "error",
+      availability: "unavailable",
+    });
+    const selection = resolveComposerProviderSelection({
+      entries: [stock, lhc],
+      candidateInstanceIds: [lhc.instanceId],
+      lockedProvider: null,
+      lockedInstanceId: null,
+    });
+
+    expect(selection.selectedProviderEntry).toBeUndefined();
+    expect(selection.unavailableProviderInstanceId).toBe(lhc.instanceId);
+  });
+
   it("keeps the session driver authoritative over instance and draft selections", () => {
     const selected = entry("claudeAgent", "claude_work");
     const sessionEntry = entry("ollama", "local_models");

@@ -1,5 +1,7 @@
 import {
   AntigravitySettings,
+  CLAUDE_LHC_DRIVER_KIND,
+  ClaudeLhcSettings,
   ClaudeSettings,
   CodexSettings,
   isProviderDriverKind,
@@ -29,6 +31,26 @@ export const providerClients = makeProviderClientRegistry([
     modelFamilies: ["Claude "],
     acpRegistryAgentIds: ["claude-acp"],
     settingsSchema: ClaudeSettings,
+  },
+  {
+    driverKind: CLAUDE_LHC_DRIVER_KIND,
+    label: "Claude LHC",
+    modelFamilies: ["Claude "],
+    settingsSchema: ClaudeLhcSettings,
+    environmentFields: [
+      {
+        name: "CLAUDE_LHC_NODE",
+        label: "Node binary",
+        description: "Node 24.3 or later. Runs the claude-lhc sidecar.",
+        placeholder: "/usr/local/bin/node",
+      },
+      {
+        name: "CLAUDE_LHC_SIDECAR",
+        label: "Sidecar entry",
+        description: "The claude-lhc package's dist/sidecar.js.",
+        placeholder: "~/claude-lhc/dist/sidecar.js",
+      },
+    ],
   },
   cursorClient,
   grokClient,

@@ -43,6 +43,23 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
+  it("offers Claude LHC's windows and sidecar paths, and no idle compaction mode", () => {
+    const lhc = providerClients.get(ProviderDriverKind.make("claude-lhc"));
+
+    expect(lhc?.label).toBe("Claude LHC");
+    expect(deriveProviderSettingsFields(lhc!).map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "lhcLowerBound",
+      "launchArgs",
+    ]);
+    expect(lhc?.environmentFields?.map((field) => field.name)).toEqual([
+      "CLAUDE_LHC_NODE",
+      "CLAUDE_LHC_SIDECAR",
+    ]);
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = providerClients.get(ProviderDriverKind.make("opencode"));
     expect(opencode).toBeDefined();

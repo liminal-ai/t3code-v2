@@ -26,6 +26,7 @@ import {
   type ChatFileAttachment,
   type CommandId,
   type EnvironmentId,
+  CLAUDE_LHC_DRIVER_KIND,
   isProviderDriverKind,
   ProjectId,
   type MessageId,
@@ -496,9 +497,10 @@ export function resolveComposerProviderSelection(input: {
   const requestedInstanceId = input.candidateInstanceIds.find(
     (candidate) => candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
   );
+  const requestedEntry = input.entries.find((entry) => entry.instanceId === requestedInstanceId);
   const requestedDriverKind =
     input.lockedProvider ??
-    input.entries.find((entry) => entry.instanceId === requestedInstanceId)?.driverKind ??
+    requestedEntry?.driverKind ??
     input.entries[0]?.driverKind ??
     ProviderDriverKind.make("unconfigured");
   const lockedContinuationGroupKey = input.lockedProvider
@@ -510,11 +512,17 @@ export function resolveComposerProviderSelection(input: {
     input.lockedProvider === "antigravity" &&
     input.lockedInstanceId != null &&
     lockedContinuationGroupKey === null;
+  // A draft asking for Claude LHC never falls back to another kind: an LHC instance that cannot
+  // run shows as unavailable instead of silently starting a stock thread. Default ids are their kind.
+  const requiresLhc =
+    (input.lockedProvider ?? requestedEntry?.driverKind ?? requestedInstanceId) ===
+    CLAUDE_LHC_DRIVER_KIND;
   const compatibleEntries = input.entries.filter(
     (entry) =>
       (!input.lockedProvider || entry.driverKind === input.lockedProvider) &&
       (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
-      (!requiresExactInstance || entry.instanceId === input.lockedInstanceId),
+      (!requiresExactInstance || entry.instanceId === input.lockedInstanceId) &&
+      (!requiresLhc || entry.driverKind === CLAUDE_LHC_DRIVER_KIND),
   );
   const selectedProviderEntry =
     input.candidateInstanceIds
@@ -899,7 +907,13 @@ export function deriveLockedProvider(input: {
   if (!threadHasStarted(input.thread)) {
     return null;
   }
-  const sessionProvider = input.thread?.runtime?.providerName ?? null;
+  // The session's instance names its kind: a claude-lhc session runs Claude's adapter, which labels it claudeAgent.
+  const sessionProvider =
+    input.providers.find(
+      (provider) => provider.instanceId === input.thread?.runtime?.providerInstanceId,
+    )?.driver ??
+    input.thread?.runtime?.providerName ??
+    null;
   if (sessionProvider && isProviderDriverKind(sessionProvider)) {
     return sessionProvider;
   }
