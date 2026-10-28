@@ -27,6 +27,7 @@ import {
   type CommandId,
   type EnvironmentId,
   CLAUDE_LHC_DRIVER_KIND,
+  defaultInstanceIdForDriver,
   isProviderDriverKind,
   PROVIDER_DISPLAY_NAMES,
   ProjectId,
@@ -514,16 +515,16 @@ export function resolveComposerProviderSelection(input: {
     input.lockedInstanceId != null &&
     lockedContinuationGroupKey === null;
   const requiresLhc = requestedEntry?.driverKind === CLAUDE_LHC_DRIVER_KIND;
-  // Claude LHC sessions report claudeAgent, so once a custom instance is deleted nothing says it
-  // was LHC. A default instance's id is its kind.
-  const requestedMayBeDeletedLhc =
-    requestedInstanceId != null &&
-    requestedEntry === undefined &&
-    (requestedInstanceId === CLAUDE_LHC_DRIVER_KIND ||
-      !Object.hasOwn(PROVIDER_DISPLAY_NAMES, requestedInstanceId));
+  const requestedInstanceDeleted = requestedInstanceId != null && requestedEntry === undefined;
+  const deletedInstanceIsCustom =
+    requestedInstanceDeleted && !Object.hasOwn(PROVIDER_DISPLAY_NAMES, requestedInstanceId);
+  const deletedInstanceMayBeLhc =
+    deletedInstanceIsCustom ||
+    (requestedInstanceDeleted &&
+      requestedInstanceId === defaultInstanceIdForDriver(CLAUDE_LHC_DRIVER_KIND));
   const compatibleEntries = input.entries.filter(
     (entry) =>
-      !requestedMayBeDeletedLhc &&
+      !deletedInstanceMayBeLhc &&
       (!input.lockedProvider || entry.driverKind === input.lockedProvider) &&
       (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
       (!requiresExactInstance || entry.instanceId === input.lockedInstanceId) &&
