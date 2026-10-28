@@ -544,6 +544,62 @@ describe("resolveComposerProviderSelection", () => {
     expect(selection.unavailableProviderInstanceId).toBe(lhc.instanceId);
   });
 
+  it("shows a started thread's deleted Claude LHC instance as unavailable instead of moving it", () => {
+    const entries = [entry("codex"), entry("claudeAgent")];
+    const deletedInstanceId = ProviderInstanceId.make("lhc_work");
+    const thread = {
+      ...importedThread(deletedInstanceId),
+      runtime: {
+        ...readySession,
+        providerName: "claudeAgent",
+        providerInstanceId: deletedInstanceId,
+      },
+    };
+    const candidateInstanceIds = [
+      null,
+      deletedInstanceId,
+      deletedInstanceId,
+      entries[0]!.instanceId,
+    ];
+    const lockedProvider = deriveLockedProvider({
+      thread,
+      selectedProvider: null,
+      threadProvider: deletedInstanceId,
+      providers: entries.map((entry) => entry.snapshot),
+    });
+
+    for (const locked of [null, lockedProvider]) {
+      const selection = resolveComposerProviderSelection({
+        entries,
+        candidateInstanceIds,
+        lockedProvider: locked,
+        lockedInstanceId: deletedInstanceId,
+      });
+      expect(selection.selectedProviderEntry).toBeUndefined();
+      expect(selection.unavailableProviderInstanceId).toBe(deletedInstanceId);
+    }
+    expect(
+      resolveComposerProviderSelection({
+        entries,
+        candidateInstanceIds: [entries[0]!.instanceId, ...candidateInstanceIds.slice(1)],
+        lockedProvider: null,
+        lockedInstanceId: deletedInstanceId,
+      }).selectedProviderEntry?.instanceId,
+    ).toBe(entries[0]!.instanceId);
+  });
+
+  it("keeps a deleted default Claude LHC instance unavailable rather than falling back", () => {
+    const selection = resolveComposerProviderSelection({
+      entries: [entry("codex"), entry("claudeAgent")],
+      candidateInstanceIds: [ProviderInstanceId.make("claude-lhc")],
+      lockedProvider: null,
+      lockedInstanceId: null,
+    });
+
+    expect(selection.selectedProviderEntry).toBeUndefined();
+    expect(selection.unavailableProviderInstanceId).toBe("claude-lhc");
+  });
+
   it("keeps the session driver authoritative over instance and draft selections", () => {
     const selected = entry("claudeAgent", "claude_work");
     const sessionEntry = entry("ollama", "local_models");
