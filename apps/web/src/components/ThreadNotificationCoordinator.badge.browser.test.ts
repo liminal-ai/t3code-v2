@@ -49,6 +49,19 @@ vi.mock("../state/threadWorkflowAttention", () => ({
   threadWorkflowAttentionAtom: (id: string) => attentionAtom(id),
   threadWorkflowAttentionReadyAtom: (id: string) => attentionReadyAtom(id),
 }));
+vi.mock(import("../state/threads"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    environmentThreadShells: {
+      ...actual.environmentThreadShells,
+      pendingSubagentRequestsAtom: (() => noRequestsAtom) as never,
+      get delegatedUnderParentAtom() {
+        return noDelegatedAtom as never;
+      },
+    },
+  };
+});
 vi.mock(import("../hooks/useSettings"), async (original) => ({
   ...(await original()),
   subscribeClientSettings: ((listener: () => void) => {
@@ -76,6 +89,8 @@ const attentionAtom = Atom.family((_id: string) =>
   Atom.make<ReadonlyMap<string, { openQuestions: number; latestQuestionId: string }>>(new Map()),
 );
 const attentionReadyAtom = Atom.family((_id: string) => Atom.make(true));
+const noRequestsAtom = Atom.make(new Map());
+const noDelegatedAtom = Atom.make<ReadonlySet<string>>(new Set<string>());
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
 const setAttention = (id: string, questions: ReadonlyArray<readonly [number, string]>) =>
   registry.set(

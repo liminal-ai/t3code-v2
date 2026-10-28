@@ -79,7 +79,7 @@ function useFollowEnd(listRef: React.RefObject<LegendListRef | null>) {
   const onScroll = useStableCallback(() => apply({ kind: "scroll" }));
   const leave = useStableCallback(() => update(false));
 
-  // oxlint-disable-next-line t3code/react-effect-budget -- the list's DOM node and the document are the only sources of the reader's gestures.
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the list's DOM node and the document are the only sources of the reader's gestures.
   useEffect(() => {
     const node = listRef.current?.getScrollableNode();
     if (!node) return;

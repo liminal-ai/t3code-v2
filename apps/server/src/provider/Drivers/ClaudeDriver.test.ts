@@ -20,6 +20,7 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import * as ServerConfig from "../../config.ts";
+import * as PortScanner from "../../preview/PortScanner.ts";
 import * as CommandPolicy from "../../orchestration-v2/CommandPolicy.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as ModelManifest from "../ModelManifest.ts";
@@ -54,6 +55,7 @@ const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
       McpProviderSessions.layer,
       ModelManifest.layerTest,
       ResetCreditCoordinator.layerTest,
+      PortScanner.layerTest,
     ),
   ),
   Layer.provideMerge(NodeServices.layer),

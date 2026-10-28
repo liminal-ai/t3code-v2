@@ -20,16 +20,18 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
-import { CursorAdapterV2Driver } from "@t3tools/provider-cursor/server";
 import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
+import { CursorSettings } from "@t3tools/provider-cursor/settings";
 import {
   CURSOR_DEFAULT_INSTANCE_ID,
-  CURSOR_DRIVER_KIND,
   cursorSdkModelSelection,
   makeCursorAgentOptions,
+  makeCursorAdapterV2,
 } from "@t3tools/provider-cursor/testing";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { RuntimePolicyV2Override } from "../RuntimePolicy.ts";
+
+const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 const CursorAgentSdkReplayTranscript = Schema.Struct({
   provider: Schema.Literal(CursorAgentSdk.CURSOR_PROVIDER),
@@ -526,14 +528,16 @@ export function layer(
       return { HOME: home };
     }).pipe(Effect.orDie),
   ).pipe(Layer.provide(NodeServices.layer));
-  return ProviderAdapterRegistry.layerFromDrivers({
-    drivers: [CursorAdapterV2Driver],
-    configMap: {
-      [CURSOR_DEFAULT_INSTANCE_ID]: {
-        driver: CURSOR_DRIVER_KIND,
-      },
-    },
-  }).pipe(
+  return ProviderAdapterRegistry.layerFromAdaptersEffect(
+    Effect.gen(function* () {
+      const adapter = yield* makeCursorAdapterV2({
+        instanceId: CURSOR_DEFAULT_INSTANCE_ID,
+        settings: yield* decodeCursorSettings({}).pipe(Effect.orDie),
+        environment: yield* HostProcess.Environment,
+      });
+      return [adapter];
+    }),
+  ).pipe(
     Layer.provide(
       Layer.mergeAll(
         layerCursorAgentSdkReplay(transcript, options),

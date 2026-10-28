@@ -29,6 +29,7 @@ import { claudeUsageReader } from "./claudeUsage.ts";
 import { makeClaudeScopedLimitNames } from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
+import type * as PortScanner from "../../preview/PortScanner.ts";
 import {
   checkClaudeProviderStatus,
   makePendingClaudeProvider,
@@ -105,6 +106,7 @@ export type ClaudeDriverEnv =
   | ModelCatalog.ModelCatalog
   | Path.Path
   | ProviderEventLoggers.ProviderEventLoggers
+  | PortScanner.PortDiscovery
   | ServerConfig.ServerConfig;
 
 export interface ClaudeQuerySeamInput {

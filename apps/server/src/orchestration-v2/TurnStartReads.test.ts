@@ -26,11 +26,6 @@ const layerDatabase = Layer.mergeAll(
   ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
 );
 
-const layerFor = (storage: "sqlite" | "memory") =>
-  storage === "sqlite"
-    ? layerDatabase
-    : Layer.merge(SqlitePersistence.layerMemory, ProjectionStore.layerMemory);
-
 const instanceId = ProviderInstanceId.make("codex");
 
 const appThread = (threadId: ThreadId, now: DateTime.Utc): OrchestrationV2AppThread => ({
@@ -80,7 +75,7 @@ const appRun = (
   contextHandoffId: null,
 });
 
-it.effect.each(["sqlite", "memory"] as const)(
+it.effect.each(["sqlite"] as const)(
   "loads startup state without obsolete transcript payloads in %s",
   (storage) =>
     Effect.gen(function* () {
@@ -375,85 +370,80 @@ it.effect.each(["sqlite", "memory"] as const)(
         yield* store.getTurnStartContext(ThreadId.make("missing"), runId).pipe(Effect.flip),
         ProjectionStore.ProjectionStoreThreadNotFoundError,
       );
-    }).pipe(Effect.provide(layerFor(storage))),
+    }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect.each(["sqlite", "memory"] as const)(
-  "counts the thread's compactions for a run whose own items hold none in %s",
-  (storage) =>
-    Effect.gen(function* () {
-      const store = yield* ProjectionStore.ProjectionStoreV2;
-      const now = yield* DateTime.now;
-      const threadId = ThreadId.make("thread:compaction-count");
-      const runId = RunId.make("run:compaction-count");
-      const oldRunId = RunId.make("run:compaction-count:old");
-      const messageId = MessageId.make("message:compaction-count");
-      const thread = appThread(threadId, now);
-      const run = appRun(runId, threadId, messageId, now);
+it.effect("counts the thread's compactions for a run whose own items hold none in sqlite", () =>
+  Effect.gen(function* () {
+    const store = yield* ProjectionStore.ProjectionStoreV2;
+    const now = yield* DateTime.now;
+    const threadId = ThreadId.make("thread:compaction-count");
+    const runId = RunId.make("run:compaction-count");
+    const oldRunId = RunId.make("run:compaction-count:old");
+    const messageId = MessageId.make("message:compaction-count");
+    const thread = appThread(threadId, now);
+    const run = appRun(runId, threadId, messageId, now);
+    yield* store.apply({
+      id: EventId.make(`event:thread:${threadId}`),
+      type: "thread.created",
+      threadId,
+      occurredAt: now,
+      payload: thread,
+    });
+    for (const value of [{ ...run, id: oldRunId, ordinal: 1, status: "completed" as const }, run]) {
       yield* store.apply({
-        id: EventId.make(`event:thread:${threadId}`),
-        type: "thread.created",
+        id: EventId.make(`event:run:${value.id}`),
+        type: "run.updated",
         threadId,
+        runId: value.id,
         occurredAt: now,
-        payload: thread,
+        payload: value,
       });
-      for (const value of [
-        { ...run, id: oldRunId, ordinal: 1, status: "completed" as const },
-        run,
-      ]) {
-        yield* store.apply({
-          id: EventId.make(`event:run:${value.id}`),
-          type: "run.updated",
-          threadId,
-          runId: value.id,
-          occurredAt: now,
-          payload: value,
-        });
-      }
-      yield* store.apply({
-        id: EventId.make("event:compaction"),
-        type: "turn-item.updated",
+    }
+    yield* store.apply({
+      id: EventId.make("event:compaction"),
+      type: "turn-item.updated",
+      threadId,
+      runId: oldRunId,
+      occurredAt: now,
+      payload: {
+        id: TurnItemId.make("item:compaction"),
         threadId,
         runId: oldRunId,
-        occurredAt: now,
-        payload: {
-          id: TurnItemId.make("item:compaction"),
-          threadId,
-          runId: oldRunId,
-          nodeId: null,
-          providerThreadId: null,
-          providerTurnId: null,
-          nativeItemRef: null,
-          parentItemId: null,
-          ordinal: 1,
-          status: "completed",
-          title: null,
-          startedAt: now,
-          completedAt: now,
-          updatedAt: now,
-          type: "compaction",
-          driver: null,
-        },
-      });
-      const context = yield* store.getTurnStartContext(threadId, runId);
-      assert.equal(context.compactionCount, 1);
-      assert.deepEqual(context.turnItems, []);
-      assert.equal((yield* store.getTurnStartContext(threadId, oldRunId)).compactionCount, 1);
-      const other = ThreadId.make("thread:compaction-count:other");
-      yield* store.apply({
-        id: EventId.make(`event:thread:${other}`),
-        type: "thread.created",
-        threadId: other,
-        occurredAt: now,
-        payload: appThread(other, now),
-      });
-      assert.equal((yield* store.getTurnStartContext(other, runId)).compactionCount, 0);
-    }).pipe(Effect.provide(layerFor(storage))),
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: null,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+        type: "compaction",
+        driver: null,
+      },
+    });
+    const context = yield* store.getTurnStartContext(threadId, runId);
+    assert.equal(context.compactionCount, 1);
+    assert.deepEqual(context.turnItems, []);
+    assert.equal((yield* store.getTurnStartContext(threadId, oldRunId)).compactionCount, 1);
+    const other = ThreadId.make("thread:compaction-count:other");
+    yield* store.apply({
+      id: EventId.make(`event:thread:${other}`),
+      type: "thread.created",
+      threadId: other,
+      occurredAt: now,
+      payload: appThread(other, now),
+    });
+    assert.equal((yield* store.getTurnStartContext(other, runId)).compactionCount, 0);
+  }).pipe(Effect.provide(layerDatabase)),
 );
 
-it.effect.each(["sqlite", "memory"] as const)(
-  "counts a native fork's inherited history as conversation for its first /compact in %s",
-  (storage) =>
+it.effect(
+  "counts a native fork's inherited history as conversation for its first /compact in sqlite",
+  () =>
     Effect.gen(function* () {
       const store = yield* ProjectionStore.ProjectionStoreV2;
       const now = yield* DateTime.now;
@@ -589,11 +579,5 @@ it.effect.each(["sqlite", "memory"] as const)(
       yield* userMessage(forkId, forkRunId, "/compact");
 
       assert.isTrue((yield* store.getTurnStartContext(forkId, forkRunId)).hasConversation);
-    }).pipe(
-      Effect.provide(
-        storage === "sqlite"
-          ? layerDatabase
-          : Layer.merge(SqlitePersistence.layerMemory, ProjectionStore.layerMemory),
-      ),
-    ),
+    }).pipe(Effect.provide(layerDatabase)),
 );
