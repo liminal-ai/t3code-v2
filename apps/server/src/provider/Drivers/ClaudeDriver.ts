@@ -18,8 +18,11 @@ import * as ServerConfig from "../../config.ts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import {
+  claudeProviderCapabilities,
   createClaudeAdapterV2,
+  makeClaudeAgentSdkQueryRunner,
   type ClaudeAdapterV2DriverEnv,
+  type ClaudeQuerySeam,
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { claudeUsageReader } from "./claudeUsage.ts";
@@ -104,7 +107,19 @@ export type ClaudeDriverEnv =
   | ProviderEventLoggers.ProviderEventLoggers
   | ServerConfig.ServerConfig;
 
-export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.Path> = {
+export interface ClaudeQuerySeamInput {
+  readonly environment: NodeJS.ProcessEnv;
+  readonly baseDir: string;
+  readonly config: ClaudeSettings;
+}
+
+export interface ClaudeDriverSpec {
+  readonly querySeam?: (input: ClaudeQuerySeamInput) => ClaudeQuerySeam;
+}
+
+export const makeClaudeDriver = (
+  spec: ClaudeDriverSpec = {},
+): ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.Path> => ({
   driverKind: DRIVER_KIND,
   metadata: {
     displayName: "Claude",
@@ -126,7 +141,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const path = yield* Path.Path;
     // The server cwd is $HOME in packaged desktop builds, and `claude`
     // wrappers that scope themselves to their cwd refuse to run there.
-    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const { stateDir, baseDir } = yield* ServerConfig.ServerConfig;
     const httpClient = yield* HttpClient.HttpClient;
     const latestVersions = yield* ProviderLatestVersions.ProviderLatestVersions;
     const resetCreditCoordinator = yield* ResetCreditCoordinator.ResetCreditCoordinator;
@@ -170,6 +185,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
+    const querySeam = spec.querySeam?.({
+      environment: processEnv,
+      baseDir,
+      config: effectiveConfig,
+    });
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -179,7 +199,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         enabled,
         config,
       },
-      { scopedLimitNames, onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
+      {
+        ...(querySeam === undefined
+          ? {}
+          : {
+              queryRunner: yield* makeClaudeAgentSdkQueryRunner(querySeam),
+              capabilities: claudeProviderCapabilities(querySeam),
+            }),
+        scopedLimitNames,
+        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+      },
     ).pipe(
       Effect.mapError(
         (cause) =>
@@ -409,4 +438,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       consumeResetCredit,
     } satisfies ProviderInstance;
   }),
-};
+});
+
+export const ClaudeDriver = makeClaudeDriver();
