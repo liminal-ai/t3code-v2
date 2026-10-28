@@ -54,9 +54,9 @@ describe("ProviderSettingsForm helpers", () => {
       "lhcLowerBound",
       "launchArgs",
     ]);
-    expect(lhc?.environmentFields?.map((field) => field.name)).toEqual([
-      "CLAUDE_LHC_NODE",
-      "CLAUDE_LHC_SIDECAR",
+    expect(lhc?.environmentFields?.map(({ name, sensitive }) => ({ name, sensitive }))).toEqual([
+      { name: "CLAUDE_LHC_NODE", sensitive: false },
+      { name: "CLAUDE_LHC_SIDECAR", sensitive: false },
     ]);
   });
 
