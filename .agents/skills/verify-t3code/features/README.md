@@ -46,4 +46,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Group chat](./group-chat.md) covers opening it, creating a group, a message and each member's reply, Back, and Escape.
 - [Projects](./projects.md) covers adding a local folder as a project and starting a thread in it.
 - [Settings for verification](./settings.md) covers `threadWorkflowsEnabled` and provider instances.
+- [Claude LHC threads](./claude-lhc.md) covers adding a Claude LHC instance, its sidecar setup, a turn, restart-resume, rollback, `/compact`, and stock Claude staying off the sidecar.
 - [Pair another browser](./pairing.md) covers a fresh pairing URL, the pairing page, and a second browser.
