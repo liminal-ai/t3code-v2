@@ -734,6 +734,14 @@ const claudeLhcWindowSetting = (pattern: RegExp, defaultValue: string) =>
     Schema.withDecodingDefault(Effect.succeed(defaultValue)),
   );
 
+const CLAUDE_LHC_SETTINGS_ORDER = [
+  "binaryPath",
+  "homePath",
+  "autoCompactWindow",
+  "lhcLowerBound",
+  "launchArgs",
+] as const;
+
 export const ClaudeLhcSettings = makeProviderSettingsSchema(
   {
     ...ClaudeSettings.fields,
@@ -763,17 +771,18 @@ export const ClaudeLhcSettings = makeProviderSettingsSchema(
       Schema.annotateKey({ providerSettingsForm: { hidden: true } }),
     ),
   },
-  {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "lhcLowerBound", "launchArgs"],
-  },
-).check(
-  Schema.makeFilter(
-    (settings) =>
-      Number(settings.lhcLowerBound) < Number(settings.autoCompactWindow) ||
-      "The rebuilt view size must be below the compact trigger.",
-    { identifier: "ClaudeLhcWindows" },
-  ),
-);
+  { order: CLAUDE_LHC_SETTINGS_ORDER },
+)
+  .check(
+    Schema.makeFilter(
+      (settings) =>
+        Number(settings.lhcLowerBound) < Number(settings.autoCompactWindow) ||
+        "The rebuilt view size must be below the compact trigger.",
+      { identifier: "ClaudeLhcWindows" },
+    ),
+  )
+  // A check keeps its own annotations, so the form order goes on again after it.
+  .pipe(Schema.annotate({ providerSettingsFormSchema: { order: CLAUDE_LHC_SETTINGS_ORDER } }));
 export type ClaudeLhcSettings = typeof ClaudeLhcSettings.Type;
 
 export const ANTIGRAVITY_AUTH_METHODS = [
