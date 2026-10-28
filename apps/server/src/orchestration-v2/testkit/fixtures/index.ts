@@ -208,6 +208,7 @@ import { assertWebSearchOutput } from "./web_search/codex_output.ts";
 import { webSearchInput } from "./web_search/input.ts";
 import {
   ACP_REGISTRY_MODEL_SELECTION,
+  CLAUDE_LHC_MODEL_SELECTION,
   CLAUDE_MODEL_SELECTION,
   CODEX_MODEL_SELECTION,
   CURSOR_MODEL_SELECTION,
@@ -471,6 +472,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         modelSelection: CLAUDE_MODEL_SELECTION,
         assertOutput: assertClaudeIdleResumeOutput,
       },
+      {
+        driver: ProviderDriverKind.make("claude-lhc"),
+        transcriptFile: new URL("./claude_idle_resume/claude_transcript.ndjson", import.meta.url),
+        modelSelection: CLAUDE_LHC_MODEL_SELECTION,
+        assertOutput: assertClaudeIdleResumeOutput,
+      },
     ],
   },
   {
@@ -631,6 +638,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         driver: ProviderDriverKind.make("claudeAgent"),
         transcriptFile: new URL("./simple/claude_transcript.ndjson", import.meta.url),
         modelSelection: CLAUDE_MODEL_SELECTION,
+        assertOutput: assertSimpleClaudeOutput,
+      },
+      {
+        driver: ProviderDriverKind.make("claude-lhc"),
+        transcriptFile: new URL("./simple/claude_transcript.ndjson", import.meta.url),
+        modelSelection: CLAUDE_LHC_MODEL_SELECTION,
         assertOutput: assertSimpleClaudeOutput,
       },
       {
@@ -1235,6 +1248,12 @@ export const ORCHESTRATOR_REPLAY_FIXTURES: ReadonlyArray<OrchestratorReplayFixtu
         driver: ProviderDriverKind.make("claudeAgent"),
         transcriptFile: new URL("./multi_turn/claude_transcript.ndjson", import.meta.url),
         modelSelection: CLAUDE_MODEL_SELECTION,
+        assertOutput: assertMultiTurnClaudeOutput,
+      },
+      {
+        driver: ProviderDriverKind.make("claude-lhc"),
+        transcriptFile: new URL("./multi_turn/claude_transcript.ndjson", import.meta.url),
+        modelSelection: CLAUDE_LHC_MODEL_SELECTION,
         assertOutput: assertMultiTurnClaudeOutput,
       },
       {

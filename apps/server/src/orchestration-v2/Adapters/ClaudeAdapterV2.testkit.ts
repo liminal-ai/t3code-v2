@@ -11,6 +11,9 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { SpawnExecutableResolution } from "@t3tools/shared/shell";
 import {
+  CLAUDE_LHC_DRIVER_KIND,
+  type ClaudeSettings,
+  defaultInstanceIdForDriver,
   ProviderReplayEntry,
   type ModelSelection,
   type ProviderApprovalDecision,
@@ -35,7 +38,10 @@ import {
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import { claudeTaskOutputRoot } from "./ClaudeTaskOutputTail.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
-import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
+import {
+  ProviderAdapterDriverCreateError,
+  type ProviderAdapterDriver,
+} from "@t3tools/provider-core/server/adapterDriver";
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import { randomUuidV4 } from "@t3tools/provider-core/server/randomUuid";
 import {
@@ -49,7 +55,7 @@ export const claudeBackgroundWakeResultLabel = (wakeNumber: number) =>
   `result:background-wake:${wakeNumber}`;
 
 const ClaudeAgentSdkReplayTranscript = Schema.Struct({
-  provider: Schema.Literal(ClaudeAdapterV2.CLAUDE_PROVIDER),
+  provider: Schema.Literals([ClaudeAdapterV2.CLAUDE_PROVIDER, CLAUDE_LHC_DRIVER_KIND]),
   protocol: Schema.Literal(CLAUDE_AGENT_SDK_REPLAY_PROTOCOL),
   version: Schema.String,
   scenario: Schema.String,
@@ -1005,12 +1011,18 @@ const writeReplayTaskOutputFiles = Effect.fn("ClaudeReplay.writeTaskOutputFiles"
   return tmpRoot;
 });
 
+type ClaudeReplayAdapterDriver = ProviderAdapterDriver<
+  ClaudeSettings,
+  ClaudeAdapterV2.ClaudeAdapterV2DriverEnv
+>;
+
 function layerClaudeProviderAdapterRegistryReplay(
   transcript: ClaudeAgentSdkReplayTranscript,
   options: {
     readonly replayGate?: ProviderReplayGate;
     readonly queryRunner?: ClaudeQueryRunner;
   } = {},
+  adapterDriver: ClaudeReplayAdapterDriver = ClaudeAdapterV2.ClaudeAdapterV2Driver,
 ) {
   const layerServerConfig = Layer.effect(
     ServerConfig.ServerConfig,
@@ -1021,10 +1033,10 @@ function layerClaudeProviderAdapterRegistryReplay(
       Effect.orDie,
       Effect.map((tmpRoot) =>
         ProviderAdapterRegistry.layerFromDrivers({
-          drivers: [ClaudeAdapterV2.ClaudeAdapterV2Driver],
+          drivers: [adapterDriver],
           configMap: {
-            [ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID]: {
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            [defaultInstanceIdForDriver(adapterDriver.driverKind)]: {
+              driver: adapterDriver.driverKind,
               environment: [{ name: "CLAUDE_CODE_TMPDIR", value: tmpRoot, sensitive: false }],
             },
           },
@@ -2829,11 +2841,14 @@ const decodeClaudeAgentSdkReplayTranscript = Schema.decodeUnknownEffect(
   ClaudeAgentSdkReplayTranscript,
 );
 
-export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarness<
+/** Replays Claude transcripts through an instance of the given Claude adapter driver kind. */
+export const makeClaudeOrchestratorReplayHarness = (
+  adapterDriver: ClaudeReplayAdapterDriver = ClaudeAdapterV2.ClaudeAdapterV2Driver,
+): OrchestratorV2ProviderReplayHarness<
   ClaudeAgentSdkReplayTranscript,
   ClaudeOrchestratorReplayHarnessError
-> = {
-  driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+> => ({
+  driver: adapterDriver.driverKind,
   decodeTranscript: (transcript) =>
     decodeClaudeAgentSdkReplayTranscript(transcript).pipe(
       Effect.mapError(
@@ -2845,8 +2860,10 @@ export const ClaudeOrchestratorReplayHarness: OrchestratorV2ProviderReplayHarnes
       ),
     ),
   makeProviderAdapterRegistryLayer: (transcript, options) =>
-    layerClaudeProviderAdapterRegistryReplay(transcript, options),
-};
+    layerClaudeProviderAdapterRegistryReplay(transcript, options, adapterDriver),
+});
+
+export const ClaudeOrchestratorReplayHarness = makeClaudeOrchestratorReplayHarness();
 
 export function makeClaudeRestartReplayHarness(transcript: ClaudeAgentSdkReplayTranscript) {
   const queryRunner = makeReplayQueryRunner(transcript);

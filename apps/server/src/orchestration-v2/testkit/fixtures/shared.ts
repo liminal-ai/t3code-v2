@@ -338,6 +338,11 @@ export const CLAUDE_MODEL_SELECTION = {
   model: "claude-sonnet-4-6",
 } satisfies ModelSelection;
 
+export const CLAUDE_LHC_MODEL_SELECTION = {
+  instanceId: ProviderInstanceId.make("claude-lhc"),
+  model: "claude-sonnet-4-6",
+} satisfies ModelSelection;
+
 export const CURSOR_MODEL_SELECTION = {
   instanceId: ProviderInstanceId.make("cursor"),
   model: "composer-2.5",

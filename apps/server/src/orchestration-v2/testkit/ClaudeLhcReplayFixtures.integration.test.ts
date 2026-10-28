@@ -1,0 +1,42 @@
+import { describe } from "@effect/vitest";
+import { CLAUDE_LHC_DRIVER_KIND } from "@t3tools/contracts";
+
+import sidecarPin from "../../../../../lhc/sidecar.json" with { type: "json" };
+import { CLAUDE_LHC_FORK_REFUSAL } from "../../provider/Drivers/ClaudeLhcDriver.ts";
+import { sidecarHonorsRollback } from "../../provider/Drivers/ClaudeLhcSidecar.ts";
+import {
+  ClaudeAdapterV2Driver,
+  claudeProviderCapabilities,
+  createClaudeAdapterV2,
+} from "../Adapters/ClaudeAdapterV2.ts";
+import { makeClaudeOrchestratorReplayHarness } from "../Adapters/ClaudeAdapterV2.testkit.ts";
+import {
+  itRunsReplayFixtures,
+  runReplayFixture,
+  type ReplayFixtureCase,
+} from "./ProviderReplayFixtures.ts";
+
+/** A claude-lhc instance as a staged sidecar presents it: Claude's adapter with LHC's capabilities. */
+const ClaudeLhcOrchestratorReplayHarness = makeClaudeOrchestratorReplayHarness({
+  ...ClaudeAdapterV2Driver,
+  driverKind: CLAUDE_LHC_DRIVER_KIND,
+  create: (input) =>
+    createClaudeAdapterV2(input, {
+      capabilities: claudeProviderCapabilities({
+        forkRefusal: CLAUDE_LHC_FORK_REFUSAL,
+        canRollback: sidecarHonorsRollback(sidecarPin.version),
+      }),
+    }),
+});
+
+function runClaudeLhcReplayFixture(input: ReplayFixtureCase) {
+  return runReplayFixture({
+    ...input,
+    harness: ClaudeLhcOrchestratorReplayHarness,
+    transformTranscript: (transcript) => ({ ...transcript, provider: CLAUDE_LHC_DRIVER_KIND }),
+  });
+}
+
+describe("Claude LHC replay fixtures", () => {
+  itRunsReplayFixtures(CLAUDE_LHC_DRIVER_KIND, runClaudeLhcReplayFixture);
+});
