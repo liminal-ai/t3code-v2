@@ -750,15 +750,15 @@ describe("decide", () => {
     }
   });
 
-  it("starts a planned instance with the plan before the template's steps, in one record", () => {
+  it("starts a planned instance with the plan after the template's first step, in one record", () => {
     const { state, records } = given([agent, planned("Scope", "Build")]);
     expect(records).toHaveLength(1);
     expect(
       state.instances[0]!.instance.steps.map((step) => [step.id, step.title, step.origin._tag]),
     ).toEqual([
-      ["w1.1", "Scope", "template"],
-      ["w1.2", "Build", "template"],
-      ["w1.3", "Write it", "template"],
+      ["w1.1", "Write it", "template"],
+      ["w1.2", "Scope", "template"],
+      ["w1.3", "Build", "template"],
       ["w1.4", "Ask the user", "template"],
       ["w1.5", "Ship it", "template"],
     ]);
@@ -975,10 +975,10 @@ describe("slugs", () => {
   it("puts a slug on every started step, in the event, unique within the instance", () => {
     const { state, records } = given([agent, planned("Build", "Build", "build", "Write it")]);
     expect(slugsOf(state)).toEqual([
+      "write-it",
       "build",
       "build-2",
       "build-3",
-      "write-it",
       "write-it-2",
       "ask-the-user",
       "ship-it",
@@ -1005,7 +1005,7 @@ describe("slugs", () => {
         ],
       },
     ]);
-    expect(slugsOf(state)).toEqual(["ship-it", "write-it", "ask-the-user", "ship-it-2"]);
+    expect(slugsOf(state)).toEqual(["write-it", "ship-it", "ask-the-user", "ship-it-2"]);
   });
 
   it("gives an inserted step a slug clear of the instance's, and keeps it within the limit", () => {

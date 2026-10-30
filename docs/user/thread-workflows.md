@@ -21,7 +21,7 @@ Open the **Workflow** tab and pick a template, or ask the agent to start one. Th
 
 A playbook template already holds its playbook's steps. Each opens by finding the project's verify skill and making the run folder, and closes with grouped tickets, a reflect, and cleanup. When a playbook changed after its template was built, the template shows **playbook changed**, and when the playbook is not installed on the server's machine, **playbook missing**. Either way it still starts.
 
-For open-ended work, the agent writes the whole plan in one call, as 4 to 7 stages at one level. A workflow holds at most 8 open stages. A stage that is done, skipped or removed has left the count, so a long thread can keep adding the next stage as it finishes the last. Detail and side quests go in comments on the current stage, not in new stages.
+Open-ended opens and closes the same way, and asks you to confirm the work is done after cleanup. The agent writes the stages between in one call, as 2 to 3 stages at one level. A workflow holds at most 8 open stages. A stage that is done, skipped or removed has left the count, so a long thread can keep adding the next stage as it finishes the last. Detail and side quests go in comments on the current stage, not in new stages.
 
 ## Read the pane
 
