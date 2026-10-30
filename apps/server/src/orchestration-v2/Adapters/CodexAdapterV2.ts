@@ -117,10 +117,7 @@ import {
 } from "../../provider/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
-import {
-  mergeProviderInstanceEnvironment,
-  withProjectTmpDir,
-} from "@t3tools/provider-core/server/instanceEnvironment";
+import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import {
@@ -1331,6 +1328,7 @@ function codexThreadRuntimeParams(input: {
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const projectTmpDir = input.runtimePolicy?.projectTmpDir;
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
@@ -1348,6 +1346,11 @@ function codexThreadRuntimeParams(input: {
               },
             },
           }),
+      // One app-server serves every project, so its process env cannot carry a per-project TMPDIR.
+      // Codex merges this dotted key into the user's own shell_environment_policy.
+      ...(projectTmpDir === undefined
+        ? {}
+        : { "shell_environment_policy.set.TMPDIR": projectTmpDir }),
     },
   };
 }
@@ -1495,13 +1498,10 @@ export const layerAppServerClientFactory: Layer.Layer<
     return CodexAppServerClientFactory.of({
       open: Effect.fn("CodexAdapterV2.open")(function* (input) {
         const scope = yield* Scope.Scope;
-        const environment = withProjectTmpDir(
-          {
-            ...codexAppServerEnvironment(input.environment),
-            ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
-          },
-          input.runtimePolicy,
-        );
+        const environment = {
+          ...codexAppServerEnvironment(input.environment),
+          ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
+        };
         const command = yield* makeCodexAppServerSpawnCommand({
           command: input.settings.binaryPath || "codex",
           args: codexAppServerArgs(
@@ -7600,7 +7600,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...codexThreadRuntimeParams({
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
+                    runtimePolicy: threadInput.runtimePolicy ?? input.runtimePolicy,
                   }),
                 });
               }

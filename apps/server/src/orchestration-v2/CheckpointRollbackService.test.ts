@@ -558,6 +558,8 @@ const seedRollbackHistory = Effect.gen(function* () {
   }
 
   const rollbackCounts: number[] = [];
+  const rollbackPolicies: unknown[] = [];
+  const resolvedPolicy = { cwd: "/project", projectTmpDir: "/project/.pstack/tmp" };
   const restored: CheckpointId[] = [];
   const deletedRefs: CheckpointId[] = [];
   const committed: OrchestrationV2DomainEvent[] = [];
@@ -598,11 +600,14 @@ const seedRollbackHistory = Effect.gen(function* () {
               rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                 Effect.gen(function* () {
                   rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
+                  rollbackPolicies.push(input.runtimePolicy);
                   return { providerThread: input.providerThread };
                 }),
             } as never),
         }),
-        Layer.mock(RuntimePolicy.RuntimePolicyV2)({ resolve: () => Effect.succeed({} as never) }),
+        Layer.mock(RuntimePolicy.RuntimePolicyV2)({
+          resolve: () => Effect.succeed(resolvedPolicy as never),
+        }),
       ),
     ),
   );
@@ -626,6 +631,8 @@ const seedRollbackHistory = Effect.gen(function* () {
     checkpointId,
     rollback,
     rollbackCounts,
+    rollbackPolicies,
+    resolvedPolicy,
     restored,
     deletedRefs,
     committed,
@@ -662,6 +669,7 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
         yield* history.rollback(2);
 
         assert.deepEqual(history.rollbackCounts, [4]);
+        assert.deepEqual(history.rollbackPolicies, [history.resolvedPolicy]);
         assert.deepEqual(history.restored, [checkpointId(2)]);
         assert.sameMembers(history.deletedRefs, [3, 4, 5, 6].map(checkpointId));
         const runs = yield* sql<{ ordinal: number; status: string }>`
