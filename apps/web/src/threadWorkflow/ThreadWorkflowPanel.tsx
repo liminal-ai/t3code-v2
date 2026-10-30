@@ -2,6 +2,7 @@ import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/threa
 import {
   activeThreadWorkflowInstance,
   deriveThreadWorkflowAsks,
+  openThreadWorkflowQuestions,
 } from "@t3tools/client-runtime/state/thread-workflow";
 import type {
   ScopedThreadRef,
@@ -163,11 +164,14 @@ export function ThreadWorkflowPanel({
         view.instances.at(-1) ??
         null);
   // A reveal from the chat column shows the workflow that holds its question, even over history.
+  // Only an open question counts: its row clears the reveal, so a resolved one would pin the tab.
   const revealInstanceId =
     revealQuestionId === null
       ? null
       : (view?.instances.find((candidate) =>
-          candidate.questions.some((question) => question.id === revealQuestionId),
+          openThreadWorkflowQuestions(candidate).some(
+            (question) => question.id === revealQuestionId,
+          ),
         )?.id ?? null);
   if (revealInstanceId !== null && instance?.id !== revealInstanceId) {
     setForm(null);
