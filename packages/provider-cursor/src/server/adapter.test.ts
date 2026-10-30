@@ -633,6 +633,7 @@ describe("CursorAdapterV2", () => {
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
         environment: { HOME: workspace },
+        settings: yield* decodeCursorSettings({}),
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
           assertComplete: Effect.void,
@@ -641,6 +642,7 @@ describe("CursorAdapterV2", () => {
               agentId: "native-cursor-device",
               listMessages: Effect.succeed([]),
               close: Effect.void,
+              attach: () => Effect.die("unused"),
               send: (input) =>
                 Effect.sync(() => {
                   sentMessages.push(
@@ -1228,6 +1230,7 @@ describe("CursorAdapterV2", () => {
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
         environment: { HOME: workspace },
+        settings: yield* decodeCursorSettings({}),
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
           assertComplete: Effect.void,
@@ -1236,6 +1239,7 @@ describe("CursorAdapterV2", () => {
               agentId: "native-cursor-task-ls",
               listMessages: Effect.succeed([]),
               close: Effect.void,
+              attach: () => Effect.die("unused"),
               send: (input) =>
                 Effect.gen(function* () {
                   const args = {
