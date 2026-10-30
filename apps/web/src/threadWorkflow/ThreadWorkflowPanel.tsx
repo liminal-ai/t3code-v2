@@ -162,6 +162,17 @@ export function ThreadWorkflowPanel({
         active ??
         view.instances.at(-1) ??
         null);
+  // A reveal from the chat column shows the workflow that holds its question, even over history.
+  const revealInstanceId =
+    revealQuestionId === null
+      ? null
+      : (view?.instances.find((candidate) =>
+          candidate.questions.some((question) => question.id === revealQuestionId),
+        )?.id ?? null);
+  if (revealInstanceId !== null && instance?.id !== revealInstanceId) {
+    setForm(null);
+    setViewedInstanceId(revealInstanceId);
+  }
   const corrupt = view !== null && view.corruption !== null;
   const disabled = !actions.canOperate || actions.busy || corrupt;
   const asks = deriveThreadWorkflowAsks(pendingUserInputs);

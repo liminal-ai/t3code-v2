@@ -294,6 +294,21 @@ describe("thread workflow pane", () => {
     expect(again.getByRole("button", { name: "Answer", exact: true }).all()).toHaveLength(0);
   });
 
+  it("leaves a historical workflow for the question the chat column asked for", async () => {
+    state.submit.mockReset().mockResolvedValue(true);
+    setWorkflow([abandoned, withQuestions], withQuestions.id);
+    await using screen = await render(panel());
+
+    await userEvent.click(screen.getByRole("button", { name: "Workflow menu" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /Single task/ }));
+    await expect.poll(() => screen.getByText("Ground the subsystem").all().length).toBe(1);
+
+    revealThreadWorkflowQuestion(threadRef, ThreadWorkflowQuestionId.make("w2.q2"));
+    await expect
+      .poll(() => document.activeElement?.getAttribute("aria-label"))
+      .toBe("Answer to Ship to staging first?");
+  });
+
   it("pins a pending question above the list", async () => {
     state.submit.mockReset().mockResolvedValue(true);
     setWorkflow([sliceOne], sliceOne.id);
