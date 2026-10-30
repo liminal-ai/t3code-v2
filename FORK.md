@@ -41,9 +41,7 @@ Everything else is upstream. `git diff --stat v0.1.5 main` lists every file that
 
 ## Sync from upstream
 
-Sync to a published tag, not to upstream `main`. A tag is a build upstream shipped. `main` carries unreleased work.
-
-1. Fetch and pick the tag. Prefer the newest stable tag, such as `v0.1.2`, when one exists, and take the newest nightly only when you need something no stable tag carries yet. Upstream cuts each stable tag on the same commit as a nightly (`v0.1.5` is `v0.1.5-nightly.20261029.3877`). `t3-v2-deploy` finds that nightly with `git describe --match 'v*-nightly.*'` and names the build after the stable tag on its commit, so a `v0.1.5` merge builds as `t3-0.1.5-lim.<sha>`.
+1. Fetch the tag. Upstream cuts each stable tag on the same commit as a nightly (`v0.1.5` is `v0.1.5-nightly.20261029.3877`). `t3-v2-deploy` finds that nightly with `git describe --match 'v*-nightly.*'` and names the build after the stable tag on its commit, so a `v0.1.5` merge builds as `t3-0.1.5-lim.<sha>`.
 
    ```bash
    git fetch origin

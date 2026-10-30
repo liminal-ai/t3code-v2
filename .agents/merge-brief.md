@@ -17,5 +17,5 @@
 - A change to a file in FORK.md "Seams to re-check" runs the tests listed there. Run the provider-cursor tests from `packages/provider-cursor`, because four fail from the root.
 - CI runs neither the live drive nor a sync's throwaway-release check (FORK.md "Sync from upstream" step 4). Before a cutover question, the release runs one real turn each on Cursor, Claude and Codex, per the skill's "Release check".
 - `AGENTS.md` or `CLAUDE.md` text: Lee approves the exact text, and the gate checks the approval comment.
-- An upstream sync goes to a published tag and updates "Last synced" in FORK.md in the same PR.
+- An upstream sync updates "Last synced" in FORK.md in the same PR.
 - A merge changes nothing in prod. Only Lee runs or approves a cutover (FORK.md "Cut over").

@@ -17,7 +17,7 @@ export const forkSync = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Tag picked and upstream's changes read",
       slug: "pick-tag",
       instructions:
-        'Fetch upstream with tags. Take the newest stable tag, or the newest nightly only for something no stable tag carries. List upstream\'s commits from the "Last synced" tag to the new one on the files we changed (`git log $OLD..$NEW -- $(git diff --name-only $OLD main)`), and read each one before merging.',
+        'Fetch upstream with tags. List upstream\'s commits from the "Last synced" tag to the new one on the files we changed (`git log $OLD..$NEW -- $(git diff --name-only $OLD main)`), and read each one before merging.',
       proofLevel: "required",
       proofHint: "the tag and the commits read",
       waitsForUser: false,
