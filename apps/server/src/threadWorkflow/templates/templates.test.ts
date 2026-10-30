@@ -104,6 +104,15 @@ it("ships the twenty playbook templates in poteto-mode's order, then open-ended"
   assert.deepStrictEqual(waiting, ["retro-round/record-decisions", "open-ended/confirm-done"]);
 });
 
+it("opens and closes open-ended like a playbook template, with the sign-off last and room for 3 stages", () => {
+  const { steps } = builtInTemplates.get("open-ended" as never)!;
+  assert.deepStrictEqual(
+    steps.map((step) => step.slug),
+    ["find-verify-skill", "close-out-tickets", "reflect-and-upkeep", "cleanup", "confirm-done"],
+  );
+  assert.strictEqual(THREAD_WORKFLOW_LIMITS.steps - steps.length, 3);
+});
+
 const OPENS_WITHOUT_VERIFY_SKILL = new Set([
   "investigation",
   "retro-round",

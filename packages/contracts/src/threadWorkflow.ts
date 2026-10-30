@@ -367,7 +367,7 @@ export const ThreadWorkflowRequest = Schema.Union([
     templateId: ThreadWorkflowTemplateId,
     title: Schema.optionalKey(InstanceTitle),
     comment: Schema.optionalKey(Comment),
-    /** The plan, placed before the template's own steps. Part of the start, so one record holds both. */
+    /** The plan, placed after the template's first step. Part of the start, so one record holds both. */
     steps: Schema.optionalKey(Schema.Array(ThreadWorkflowStepSeed)),
   }),
   /** `comment` is optional here because the user may omit it; an agent tick without one is refused. */

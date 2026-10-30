@@ -21,7 +21,7 @@ export const mergeThroughGate = (extra?: string): Step => ({
   slug: "merge-through-gate",
   instructions: [
     "Run Opening a PR and link it with link_pull_request.",
-    "A verifier on the counterpart of the author's model family, never the author, drives the change through the project's verify skill and posts `pstack-verdict:` on the PR.",
+    "A verifier on the counterpart of the author's model family, never the author, drives the change through the project's verify skill, covers `.agents/merge-brief.md`, and posts `pstack-verdict:` on the PR.",
     `Merge only with \`${MERGE_GATE} --repo <owner/name> --pr <n>\`, adding \`--method merge\` where the repo requires merge commits and \`--plan\` with \`--plan-pr\` when a plan covers the PR.`,
     extra,
   ]

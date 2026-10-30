@@ -638,7 +638,7 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
       assert.strictEqual(refused._tag, "GroupChatThreadRefused");
       assert.match(
         (refused as { reason: string }).reason,
-        /^Thread gc-settle-thread .*open workflow "Open-ended" \(w1, 1 of 1 steps open\)/,
+        /^Thread gc-settle-thread .*open workflow "Open-ended" \(w1, 5 of 5 steps open\)/,
       );
       yield* workflows.apply(user, threadId, {
         _tag: "close",

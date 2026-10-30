@@ -3,16 +3,20 @@ import * as Schema from "effect/Schema";
 
 import { cleanup, reflectAndUpkeep, RUN_FOLDER } from "./shared.ts";
 
+/**
+ * Version 2 re-pins `reflect/SKILL.md` after its Save section changed how the retro folder syncs;
+ * the steps are unchanged. A running instance keeps its copied steps.
+ */
 export const retroRound = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "retro-round",
-  version: 1,
+  version: 2,
   title: "Retro round",
   description:
     "Several threads' reflects reviewed together, the user's decisions recorded, and the approved changes landed.",
   source: {
     playbook: "reflect/SKILL.md",
-    commit: "3c71c9ab63a1d4a3a24149f37b20ee6e399974da",
-    sha256: "a3ce1a372f1068db4ce2fa09aa08c238bf1832032f8cabafaae7f05cbe366b80",
+    commit: "0fe755e25db51a1aefef0a945ad762ac070c984f",
+    sha256: "ef0f5b960ca35c3221d6dc74121ab3cebdcf99809c8c2b85d044937ae1421ecd",
   },
   steps: [
     {

@@ -22,6 +22,7 @@ import * as ProjectionStore from "../../../orchestration-v2/ProjectionStore.ts";
 import * as ThreadCommandExecutor from "../../../orchestration-v2/ThreadCommandExecutor.ts";
 import * as ServerSettings from "../../../serverSettings.ts";
 import * as ThreadWorkflow from "../../../threadWorkflow/layer.ts";
+import { openEnded } from "../../../threadWorkflow/templates/openEnded.ts";
 import { ThreadWorkflowService } from "../../../threadWorkflow/ThreadWorkflowService.ts";
 import { WAITS_FOR_USER } from "../../../threadWorkflow/turnNote.ts";
 import * as McpHttpServer from "../../McpHttpServer.ts";
@@ -151,6 +152,19 @@ const callPrinted = (line: string) => {
 const pane: ThreadWorkflowActor = { _tag: "user", clientSessionId: "pane" };
 
 const stage = (title: string) => ({ title, instructions: `Do ${title.toLowerCase()}.` });
+const [kickoff, ...closing] = openEnded.steps;
+/** Open-ended's step titles with a plan's stages in their place. */
+const aroundPlan = (...stages: ReadonlyArray<string>) => [
+  kickoff!.title,
+  ...stages,
+  ...closing.map((step) => step.title),
+];
+const kickoffStep = {
+  id: "w1.1",
+  title: kickoff!.title,
+  instructions: kickoff!.instructions,
+  waitsForUser: false,
+};
 
 it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
   it.effect("writes the plan in one start call and answers every mutation with a short ack", () =>
@@ -167,8 +181,8 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         title: "Slice 1",
         steps: [
           stage("Groundwork"),
-          { ...stage("Scope"), slug: "scope-it" },
-          { ...stage("Build"), waitsForUser: true },
+          { ...stage("Scope"), slug: "scope-it", waitsForUser: true },
+          stage("Build"),
         ],
       });
       assert.isFalse(started.isError, JSON.stringify(started.content));
@@ -181,37 +195,43 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       ]);
       assert.deepInclude(started.structuredContent as object, {
         instanceId: "w1",
-        progress: { total: 4, open: 4, currentPosition: 1 },
-        currentStep: {
-          id: "w1.1",
-          title: "Groundwork",
-          instructions: "Do groundwork.",
-          waitsForUser: false,
-        },
+        progress: { total: 8, open: 8, currentPosition: 1 },
+        currentStep: kickoffStep,
       });
       const planned = structured(yield* call("thread_workflow_get", {}));
-      assert.deepStrictEqual(stepsOf(planned), [
-        ["w1.1", "Groundwork", "open"],
-        ["w1.2", "Scope", "open"],
-        ["w1.3", "Build", "open"],
-        ["w1.4", "Confirm done with the user", "open"],
-      ]);
+      assert.deepStrictEqual(
+        stepsOf(planned),
+        aroundPlan("Groundwork", "Scope", "Build").map((title, index) => [
+          `w1.${index + 1}`,
+          title,
+          "open",
+        ]),
+      );
       assert.deepStrictEqual(
         planned.instance?.steps.map((step) => step.slug),
-        ["groundwork", "scope-it", "build", "confirm-done"],
+        [
+          "find-verify-skill",
+          "groundwork",
+          "scope-it",
+          "build",
+          "close-out-tickets",
+          "reflect-and-upkeep",
+          "cleanup",
+          "confirm-done",
+        ],
       );
       const note = planned.note ?? "";
-      assert.match(note, /step 1 of 4: groundwork \(w1\.1\)\nGroundwork\n/);
+      assert.include(note, `step 1 of 8: find-verify-skill (w1.1)\n${kickoff!.title}\n`);
       const tickLine = note
         .split("\n")
         .find((line) => line.startsWith("Done: thread_workflow_tick "))!
         .slice("Done: ".length);
       const ticked = yield* callPrinted(
-        tickLine.replace("<what you did and how you know it worked>", "repo and judge set up"),
+        tickLine.replace("<what you did and how you know it worked>", "verify skill named"),
       );
       assert.isFalse(ticked.isError, JSON.stringify(ticked.content));
       assert.deepInclude(ticked.structuredContent as object, {
-        progress: { total: 4, open: 3, currentPosition: 2 },
+        progress: { total: 8, open: 7, currentPosition: 2 },
       });
       assert.match(
         (ticked.structuredContent as { next: string }).next,
@@ -221,13 +241,13 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       const skipped = yield* call("thread_workflow_change", {
         action: "skip",
         stepId: "w1.2",
-        reason: "already scoped",
+        reason: "groundwork already laid",
       });
       assert.isFalse(skipped.isError, JSON.stringify(skipped.content));
       assert.deepInclude(skipped.structuredContent as object, {
         instanceId: "w1",
-        progress: { total: 4, open: 2, currentPosition: 3 },
-        currentStep: { id: "w1.3", title: "Build", instructions: "Do build.", waitsForUser: true },
+        progress: { total: 8, open: 6, currentPosition: 3 },
+        currentStep: { id: "w1.3", title: "Scope", instructions: "Do scope.", waitsForUser: true },
       });
       assert.isTrue(
         (skipped.structuredContent as { next: string }).next.startsWith(
@@ -248,7 +268,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       const afterInsert = structured(yield* call("thread_workflow_get", {}));
       assert.deepStrictEqual(
         stepsOf(afterInsert).map(([id]) => id),
-        ["w1.1", "w1.2", "w1.3", "w1.5", "w1.4"],
+        ["w1.1", "w1.2", "w1.3", "w1.9", "w1.4", "w1.5", "w1.6", "w1.7", "w1.8"],
       );
       assert.strictEqual(afterInsert.instance?.steps[3]?.slug, "build-2");
 
@@ -258,14 +278,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         reason: "the goal changed",
       });
       assert.isFalse(reopened.isError);
-      assert.deepInclude(reopened.structuredContent as object, {
-        currentStep: {
-          id: "w1.1",
-          title: "Groundwork",
-          instructions: "Do groundwork.",
-          waitsForUser: false,
-        },
-      });
+      assert.deepInclude(reopened.structuredContent as object, { currentStep: kickoffStep });
       assert.notInclude((reopened.structuredContent as { next: string }).next, WAITS_FOR_USER);
 
       const unfinished = yield* call("thread_workflow_close", {
@@ -287,7 +300,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       const after = structured(yield* call("thread_workflow_get", {}));
       assert.isNull(after.activeInstanceId);
       const closedOne = structured(yield* call("thread_workflow_get", { instanceId: "w1" }));
-      assert.strictEqual(closedOne.instance?.steps.length, 5);
+      assert.strictEqual(closedOne.instance?.steps.length, 9);
     }),
   );
 
@@ -296,7 +309,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       const revision = structured(yield* call("thread_workflow_get", {})).revision;
       const refused = yield* call("thread_workflow_start", {
         templateId: "open-ended",
-        steps: Array.from({ length: 8 }, (_, index) => stage(`Stage ${index + 1}`)),
+        steps: Array.from({ length: 4 }, (_, index) => stage(`Stage ${index + 1}`)),
       });
       assert.strictEqual(failure(refused)?.code, "too_many_steps");
       assert.match(failure(refused)?.message ?? "", /at most 8 open steps/);
@@ -305,7 +318,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
 
       const fits = yield* call("thread_workflow_start", {
         templateId: "open-ended",
-        steps: Array.from({ length: 7 }, (_, index) => stage(`Stage ${index + 1}`)),
+        steps: Array.from({ length: 3 }, (_, index) => stage(`Stage ${index + 1}`)),
       });
       assert.isFalse(fits.isError, JSON.stringify(fits.content));
       assert.deepInclude(fits.structuredContent as object, {
@@ -347,7 +360,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       assert.deepStrictEqual(again.structuredContent, first.structuredContent);
       assert.deepStrictEqual(
         stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([, title]) => title),
-        ["One", "Two", "Confirm done with the user"],
+        aroundPlan("One", "Two"),
       );
 
       const top = yield* call("thread_workflow_change", {
@@ -366,7 +379,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       );
       assert.deepStrictEqual(
         stepsOf(structured(yield* call("thread_workflow_get", {}))).map(([, title]) => title),
-        ["Zero", "One", "Two", "Confirm done with the user"],
+        ["Zero", ...aroundPlan("One", "Two")],
       );
     }),
   );
@@ -394,8 +407,9 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
         readonly currentStep: { readonly id: string; readonly waitsForUser: boolean };
         readonly next: string;
       };
-      assert.isTrue(plainAck.currentStep.waitsForUser);
-      assert.isTrue(plainAck.next.startsWith(`${WAITS_FOR_USER} thread_workflow_tick `));
+      assert.strictEqual(plainAck.currentStep.id, `${plainAck.instanceId}.1`);
+      assert.isFalse(plainAck.currentStep.waitsForUser);
+      assert.isTrue(plainAck.next.startsWith("thread_workflow_tick "));
       yield* call("thread_workflow_close", {
         instanceId: plainAck.instanceId,
         outcome: "abandoned",
@@ -464,7 +478,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       assert.isNull(view.corruption);
       assert.deepStrictEqual(
         stepsOf(view).map(([, title]) => title),
-        ["One", "Two", "Confirm done with the user"],
+        aroundPlan("One", "Two"),
       );
       const { instanceId } = first.structuredContent as { readonly instanceId: string };
       yield* call("thread_workflow_close", { instanceId, outcome: "abandoned", reason: "x" });
@@ -474,7 +488,7 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
   it.effect("keeps a plan out of a workflow the pane restarted as soon as it opened", () =>
     Effect.gen(function* () {
       const service = yield* ThreadWorkflowService;
-      const plan = ["One", "Two", "Three", "Four", "Five"].map(stage);
+      const plan = ["One", "Two", "Three"].map(stage);
       const before = structured(yield* call("thread_workflow_get", {})).revision as number;
       // The pane abandons the planned workflow on the first change that shows it open, and starts
       // its own.
@@ -523,15 +537,8 @@ it.layer(layerFor(true))("thread workflow MCP tools", (it) => {
       };
       const titlesOf = (title: string) =>
         instances.find((instance) => instance.title === title)?.steps.map((step) => step.title);
-      assert.deepStrictEqual(titlesOf("Raced"), [
-        "One",
-        "Two",
-        "Three",
-        "Four",
-        "Five",
-        "Confirm done with the user",
-      ]);
-      assert.deepStrictEqual(titlesOf("Restarted"), ["Confirm done with the user"]);
+      assert.deepStrictEqual(titlesOf("Raced"), aroundPlan("One", "Two", "Three"));
+      assert.deepStrictEqual(titlesOf("Restarted"), aroundPlan());
       const restarted = instances.find((instance) => instance.title === "Restarted")!;
       yield* call("thread_workflow_close", {
         instanceId: restarted.id,

@@ -491,10 +491,13 @@ const decideStart = (
       source: template.source,
       staleAtStart: freshness === "stale",
     },
-    steps: withSlugs([...plan, ...template.steps]).map((seed, index) => ({
-      id: `${instanceId}.${index + 1}` as ThreadWorkflowStepId,
-      ...seed,
-    })),
+    // Every template opens with its kickoff step, so the plan goes right after it.
+    steps: withSlugs([...template.steps.slice(0, 1), ...plan, ...template.steps.slice(1)]).map(
+      (seed, index) => ({
+        id: `${instanceId}.${index + 1}` as ThreadWorkflowStepId,
+        ...seed,
+      }),
+    ),
     comment: request.comment ?? null,
   });
 };

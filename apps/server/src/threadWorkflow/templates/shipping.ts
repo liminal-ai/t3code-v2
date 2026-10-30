@@ -3,16 +3,20 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
+/**
+ * Version 3 names the merge brief in the verifier's brief. A running instance keeps its copied
+ * steps.
+ */
 export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "shipping",
-  version: 1,
+  version: 3,
   title: "Shipping",
   description:
     "A green stack verified PR by PR, then the contiguous verified run landed bottom-up through the merge gate.",
   source: {
     playbook: "poteto-mode/playbooks/shipping.md",
-    commit: "47b5f218d3dfdec82229c39a3f4e37439f01d87a",
-    sha256: "e392b8bf43980f892a44cc34de5337eb8184e136ee3fb1bd9edae48202d0bc29",
+    commit: "f963d259b94b05b30c986329bf60bb2f7d75180d",
+    sha256: "78365d3d706e583eb0ac1ac777d59bdd352448d29e6dd36ac2420989c45ed656",
   },
   steps: [
     findVerifySkill,
@@ -20,7 +24,7 @@ export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Each PR verified independently",
       slug: "verify-each-pr",
       instructions:
-        "Resolve the forge. One verifier per PR, a delegate_task child on the counterpart of the code author's family and never the author, works in its own worktree, runs the change parent against head through the project's verify skill (its brief names it), and posts `pstack-verdict: <PASS|PASS+NOTES|FAIL> head=<sha> base=<merge-base> by=<model>` on the PR.",
+        "Resolve the forge. One verifier per PR, a delegate_task child on the counterpart of the code author's family and never the author, works in its own worktree, runs the change parent against head through the project's verify skill (its brief names it and `.agents/merge-brief.md`), and posts `pstack-verdict: <PASS|PASS+NOTES|FAIL> head=<sha> base=<merge-base> by=<model>` on the PR.",
       proofLevel: "required",
       proofHint: "each PR's verdict line",
       waitsForUser: false,
