@@ -7,7 +7,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 
-import { tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
+import { claudeTaskOutputRoot, tailClaudeTaskOutput } from "./ClaudeTaskOutputTail.ts";
 
 const SESSION_ID = "0c91bb28-9e89-4889-bd22-3de9880233d3";
 const TASK_ID = "bk6xreeye";
@@ -101,5 +101,26 @@ describe("tailClaudeTaskOutput", () => {
         assert.deepEqual(chunks, ["one\n", "two\n"]);
       }).pipe(Effect.provide(NodeServices.layer)),
     ),
+  );
+});
+
+describe("claudeTaskOutputRoot", () => {
+  it.effect("follows the TMPDIR Claude gets, under CLAUDE_CODE_TMPDIR", () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const uid = process.getuid?.();
+      if (uid === undefined) return;
+      const root = (environment: Record<string, string>) => claudeTaskOutputRoot(environment, path);
+
+      assert.equal(root({}), `/tmp/claude-${uid}`);
+      assert.equal(
+        root({ TMPDIR: "/work/app/.pstack/tmp" }),
+        `/work/app/.pstack/tmp/claude-${uid}`,
+      );
+      assert.equal(
+        root({ TMPDIR: "/work/app/.pstack/tmp", CLAUDE_CODE_TMPDIR: "/claude-tmp" }),
+        `/claude-tmp/claude-${uid}`,
+      );
+    }).pipe(Effect.provide(NodeServices.layer)),
   );
 });

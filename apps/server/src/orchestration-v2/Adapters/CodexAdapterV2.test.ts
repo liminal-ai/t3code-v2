@@ -216,6 +216,41 @@ describe("CodexAdapterV2 runtime policy", () => {
     }),
   );
 
+  it.effect("lets a workspace-write turn write its project's TMPDIR", () =>
+    Effect.gen(function* () {
+      const projectTmpDir = "/work/project/.pstack/tmp";
+      const build = (
+        runtimeMode: "approval-required" | "auto-accept-edits" | "auto" | "full-access",
+        sandboxPolicy?: unknown,
+      ) =>
+        CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId: `native-tmp-${runtimeMode}`,
+          codexInput: [{ type: "text", text: "test" }],
+          runtimePolicy: {
+            runtimeMode,
+            interactionMode: "default",
+            cwd: "/work/worktrees/feature",
+            projectTmpDir,
+            ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+          },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        });
+
+      for (const mode of ["auto-accept-edits", "auto"] as const) {
+        assert.deepEqual((yield* build(mode)).sandboxPolicy, {
+          type: "workspaceWrite",
+          writableRoots: [projectTmpDir],
+        });
+      }
+      assert.deepEqual(
+        (yield* build("auto", { type: "workspaceWrite", writableRoots: ["/data"] })).sandboxPolicy,
+        { type: "workspaceWrite", writableRoots: ["/data", projectTmpDir] },
+      );
+      assert.deepEqual((yield* build("approval-required")).sandboxPolicy, { type: "readOnly" });
+      assert.deepEqual((yield* build("full-access")).sandboxPolicy, { type: "dangerFullAccess" });
+    }),
+  );
+
   it.effect("sends MCP app model context as untrusted Codex context", () =>
     Effect.gen(function* () {
       const policy = { runtimeMode: "full-access", interactionMode: "default", cwd: null } as const;
@@ -6497,6 +6532,202 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     completedAt: input.now,
   });
 
+  it.effect("gives each thread its own project's TMPDIR on start, resume and rollback", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "tmpdir-thread-a";
+      const otherNativeThreadId = "tmpdir-thread-b";
+      const projectA = {
+        ...CODEX_TEST_RUNTIME_POLICY,
+        cwd: "/project-a",
+        projectTmpDir: "/project-a/.pstack/tmp",
+      };
+      const projectB = {
+        ...CODEX_TEST_RUNTIME_POLICY,
+        cwd: "/project-b",
+        projectTmpDir: "/project-b/.pstack/tmp",
+      };
+      const configFor = (projectTmpDir: string) => ({
+        ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+        "shell_environment_policy.set.TMPDIR": projectTmpDir,
+      });
+      const transcript = makeCodexReplayTranscript({
+        scenario: "codex-project-tmpdir",
+        entries: [
+          ...codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5),
+          {
+            type: "expect_outbound",
+            label: "thread/start in project B",
+            frame: {
+              id: 3,
+              method: "thread/start",
+              params: { config: configFor(projectB.projectTmpDir) },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/start in project B",
+            frame: {
+              id: 3,
+              result: codexReplayThreadResult({
+                nativeThreadId: otherNativeThreadId,
+                forkedFromId: null,
+              }),
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: "thread/resume in project A",
+            frame: {
+              id: 4,
+              method: "thread/resume",
+              params: {
+                threadId: nativeThreadId,
+                excludeTurns: true,
+                config: configFor(projectA.projectTmpDir),
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/resume in project A",
+            frame: { id: 4, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+          },
+          {
+            type: "expect_outbound",
+            label: "thread/read before rollback",
+            frame: {
+              id: 5,
+              method: "thread/read",
+              params: { threadId: otherNativeThreadId, includeTurns: false },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/read before rollback",
+            frame: {
+              id: 5,
+              result: {
+                thread: {
+                  id: otherNativeThreadId,
+                  historyMode: "paginated",
+                  status: { type: "notLoaded" },
+                },
+              },
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: "thread/resume for rollback in project B",
+            frame: {
+              id: 6,
+              method: "thread/resume",
+              params: {
+                threadId: otherNativeThreadId,
+                excludeTurns: true,
+                config: configFor(projectB.projectTmpDir),
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/resume for rollback in project B",
+            frame: {
+              id: 6,
+              result: { thread: { id: otherNativeThreadId, updatedAt: 1782622450 } },
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: "thread/turns/list",
+            frame: {
+              id: 7,
+              method: "thread/turns/list",
+              params: {
+                threadId: otherNativeThreadId,
+                cursor: null,
+                limit: 1,
+                sortDirection: "desc",
+                itemsView: "summary",
+              },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/turns/list",
+            frame: {
+              id: 7,
+              result: {
+                data: [{ id: "tmpdir-turn-b", items: [], status: "completed", error: null }],
+                nextCursor: null,
+              },
+            },
+          },
+          {
+            type: "expect_outbound",
+            label: "thread/revert",
+            frame: {
+              id: 8,
+              method: "thread/revert",
+              params: { threadId: otherNativeThreadId, beforeTurnId: "tmpdir-turn-b" },
+            },
+          },
+          {
+            type: "emit_inbound",
+            label: "thread/revert",
+            frame: {
+              id: 8,
+              result: codexReplayThreadResult({
+                nativeThreadId: otherNativeThreadId,
+                forkedFromId: null,
+              }),
+            },
+          },
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript);
+
+      const otherProviderThread = yield* harness.runtime.ensureThread({
+        threadId: ThreadId.make("thread-codex-project-tmpdir-b"),
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: projectB,
+      });
+      yield* harness.runtime.resumeThread({
+        providerThread: harness.providerThread,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: projectA,
+      });
+      const turn = codexReplaySourceTurn({
+        id: "provider-turn-tmpdir-b",
+        ordinal: 1,
+        nativeId: "tmpdir-turn-b",
+        providerThreadId: otherProviderThread.id,
+        now: yield* DateTime.now,
+      });
+      const rolledBack = yield* harness.runtime.rollbackThread({
+        providerThread: otherProviderThread,
+        target: {
+          type: "thread_start",
+          checkpointId: CheckpointId.make("checkpoint-project-tmpdir"),
+          appRunOrdinal: 0,
+        },
+        providerThreadTurns: [turn],
+        runtimePolicy: projectB,
+      });
+
+      assert.equal(otherProviderThread.nativeThreadRef?.nativeId, otherNativeThreadId);
+      assert.equal(rolledBack.providerThread.nativeThreadRef?.nativeId, otherNativeThreadId);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
+
   it.effect("fails honestly when rolling back a legacy Codex thread", () =>
     Effect.gen(function* () {
       const nativeThreadId = "legacy-rollback-thread";
@@ -7682,4 +7913,44 @@ describe("CodexAdapterV2 post-settle continuation", () => {
       ),
     );
   });
+});
+
+describe("CodexAdapterV2 project TMPDIR", () => {
+  it.effect("keeps the project TMPDIR off the app server shared by every project", () =>
+    Effect.gen(function* () {
+      const launches: Array<ChildProcess.StandardCommand> = [];
+      const spawner = ChildProcessSpawner.make((command) => {
+        if (command._tag === "StandardCommand") launches.push(command);
+        return Effect.fail(
+          PlatformError.systemError({ _tag: "NotFound", module: "codex-tmpdir", method: "spawn" }),
+        );
+      });
+      const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+        Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      );
+      yield* factory
+        .open({
+          instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          threadId: ThreadId.make("thread-codex-tmpdir"),
+          providerSessionId: ProviderSessionId.make("session-codex-tmpdir"),
+          runtimePolicy: {
+            ...CODEX_TEST_RUNTIME_POLICY,
+            projectTmpDir: "/workspace/.pstack/tmp",
+          },
+          settings: DEFAULT_CODEX_SETTINGS,
+          environment: { TMPDIR: "/tmp" },
+        })
+        .pipe(Effect.scoped, Effect.ignore);
+
+      assert.deepEqual(
+        launches.map((command) => command.options.env?.TMPDIR),
+        ["/tmp"],
+      );
+    }),
+  );
 });

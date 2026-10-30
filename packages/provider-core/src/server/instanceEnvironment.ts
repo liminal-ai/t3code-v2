@@ -3,6 +3,7 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 
 import { expandHomePath } from "./pathExpansion.ts";
+import type { ProviderAdapterV2RuntimePolicy } from "./ProviderAdapter.ts";
 
 export const mergeProviderInstanceEnvironment = Effect.fn(function* (
   environment: ProviderInstanceEnvironment | undefined,
@@ -22,3 +23,12 @@ export const mergeProviderInstanceEnvironment = Effect.fn(function* (
   }
   return next;
 });
+
+/** Points the agent's `TMPDIR` at its project's `.pstack/tmp/` when the runtime policy names one. */
+export function withProjectTmpDir<Env extends Readonly<Record<string, string | undefined>>>(
+  environment: Env,
+  runtimePolicy: Pick<ProviderAdapterV2RuntimePolicy, "projectTmpDir"> | undefined,
+): Env {
+  const projectTmpDir = runtimePolicy?.projectTmpDir;
+  return projectTmpDir === undefined ? environment : { ...environment, TMPDIR: projectTmpDir };
+}

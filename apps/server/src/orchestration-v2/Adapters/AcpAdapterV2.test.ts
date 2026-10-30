@@ -2892,6 +2892,98 @@ describe("AcpAdapterV2", () => {
     }).pipe(Effect.provide(layerTest), Effect.scoped),
   );
 
+  it.effect("runs client terminal commands with the project TMPDIR", () =>
+    Effect.gen(function* () {
+      const childProcessSpawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const path = yield* Path.Path;
+      const selfInvocation = yield* resolveSelfInvocation();
+      const mockAgentPath = yield* path.fromFileUrl(
+        new URL("../../../scripts/acp-mock-agent.ts", import.meta.url),
+      );
+      type RuntimeService = AcpSessionRuntime.AcpSessionRuntime["Service"];
+      let createTerminal: Parameters<RuntimeService["handleCreateTerminal"]>[0] | undefined;
+      let readTerminalOutput: Parameters<RuntimeService["handleTerminalOutput"]>[0] | undefined;
+      let waitForTerminalExit:
+        | Parameters<RuntimeService["handleTerminalWaitForExit"]>[0]
+        | undefined;
+      const makeRuntime = makeMockRuntime({
+        childProcessSpawner,
+        mockAgentPath,
+        wrapRuntime: (runtime) => ({
+          ...runtime,
+          handleCreateTerminal: (handler) =>
+            Effect.sync(() => {
+              createTerminal = handler;
+            }).pipe(Effect.andThen(runtime.handleCreateTerminal(handler))),
+          handleTerminalOutput: (handler) =>
+            Effect.sync(() => {
+              readTerminalOutput = handler;
+            }).pipe(Effect.andThen(runtime.handleTerminalOutput(handler))),
+          handleTerminalWaitForExit: (handler) =>
+            Effect.sync(() => {
+              waitForTerminalExit = handler;
+            }).pipe(Effect.andThen(runtime.handleTerminalWaitForExit(handler))),
+        }),
+      });
+      const instanceId = ProviderInstanceId.make("acp-test-terminal-tmpdir");
+      const adapter = yield* makeAcpAdapterV2({
+        instanceId,
+        flavor: {
+          driver: ACP_TEST_DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime,
+        },
+        selfInvocation,
+        clientTerminals: {},
+      });
+      const threadId = ThreadId.make("thread-acp-terminal-tmpdir");
+      const runtimePolicy = ProviderAdapter.ProviderAdapterV2RuntimePolicy.make({
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        cwd: process.cwd(),
+        projectTmpDir: "/workspace/project/.pstack/tmp",
+      });
+      const modelSelection = { instanceId, model: "default" } as const;
+      const runtime = yield* adapter.openSession({
+        threadId,
+        providerSessionId: ProviderSessionId.make("provider-session-acp-terminal-tmpdir"),
+        modelSelection,
+        runtimePolicy,
+      });
+      yield* runtime.ensureThread({ threadId, modelSelection, runtimePolicy });
+      if (
+        createTerminal === undefined ||
+        readTerminalOutput === undefined ||
+        waitForTerminalExit === undefined
+      ) {
+        return yield* Effect.die("ACP runtime must register terminal handlers");
+      }
+      const terminals = { createTerminal, readTerminalOutput, waitForTerminalExit };
+      const runTerminal = Effect.fn(function* (sessionId: string) {
+        const meta = (method: string) => ({ requestId: `${sessionId}-${method}`, method });
+        const { terminalId } = yield* terminals.createTerminal(
+          {
+            sessionId,
+            command: process.execPath,
+            args: ["-e", "process.stdout.write(process.env.TMPDIR ?? '')"],
+          },
+          meta("terminal/create"),
+        );
+        yield* terminals.waitForTerminalExit(
+          { sessionId, terminalId },
+          meta("terminal/wait_for_exit"),
+        );
+        return (yield* terminals.readTerminalOutput(
+          { sessionId, terminalId },
+          meta("terminal/output"),
+        )).output;
+      });
+
+      assert.equal(yield* runTerminal("mock-session-1"), "/workspace/project/.pstack/tmp");
+      assert.equal(yield* runTerminal("mock-child-session"), "/workspace/project/.pstack/tmp");
+    }).pipe(Effect.provide(layerTest), Effect.scoped),
+  );
+
   it.effect(
     "answers fs requests method-not-found when the flavor does not opt into client fs",
     () =>

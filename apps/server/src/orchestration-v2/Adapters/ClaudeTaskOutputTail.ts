@@ -20,7 +20,7 @@ export function claudeTaskOutputRoot(
 ): string | undefined {
   const uid = process.getuid?.();
   if (uid === undefined) return undefined;
-  const base = environment?.CLAUDE_CODE_TMPDIR?.trim() || "/tmp";
+  const base = environment?.CLAUDE_CODE_TMPDIR?.trim() || environment?.TMPDIR?.trim() || "/tmp";
   return path.join(base, `claude-${uid}`);
 }
 

@@ -14,6 +14,7 @@ import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import * as ProjectTmpDir from "../fork/ProjectTmpDir.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
@@ -75,6 +76,12 @@ const providerInstanceFor = (instanceId: ProviderInstanceId) =>
 
 const layerTest = RuntimePolicy.layerFromProjectStore.pipe(
   Layer.provide(
+    Layer.succeed(ProjectTmpDir.ProjectTmpDir, {
+      resolve: ({ projectRoot }) =>
+        Effect.succeed(projectRoot === undefined ? undefined : `${projectRoot}/.pstack/tmp`),
+    }),
+  ),
+  Layer.provide(
     Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
       getInstance: (instanceId) => Effect.succeed(providerInstanceFor(instanceId)),
       listInstances: Effect.succeed([]),
@@ -121,6 +128,20 @@ it.layer(layerTest)("RuntimePolicyV2", (it) => {
       assert.equal(yield* modeFor(grokInstanceId, "auto"), "auto");
       assert.equal(yield* modeFor(grokInstanceId, "full-access"), "full-access");
       assert.equal(yield* modeFor(providerInstanceId, "auto-accept-edits"), "auto-accept-edits");
+    }),
+  );
+
+  it.effect("gives a worktree thread its project root's tmp dir", () =>
+    Effect.gen(function* () {
+      const policy = yield* RuntimePolicy.RuntimePolicyV2;
+      const now = yield* DateTime.now;
+      const resolved = yield* policy.resolve({
+        thread: makeThread({ now, worktreePath: "/worktrees/runtime-policy" }),
+        modelSelection,
+      });
+
+      assert.equal(resolved.cwd, "/worktrees/runtime-policy");
+      assert.equal(resolved.projectTmpDir, "/project-root/.pstack/tmp");
     }),
   );
 });

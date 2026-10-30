@@ -49,6 +49,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
+  /** The project's `.pstack/tmp/`, set when the agent's `TMPDIR` should point there. */
+  projectTmpDir: Schema.optional(Schema.String),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
 });
@@ -480,6 +482,8 @@ export interface ProviderAdapterV2RollbackThreadInput {
   readonly providerThread: OrchestrationV2ProviderThread;
   readonly target: ProviderAdapterV2RollbackTarget;
   readonly providerThreadTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+  /** The rolled-back thread's own policy; a session shared across projects opened with another's. */
+  readonly runtimePolicy?: ProviderAdapterV2RuntimePolicy;
 }
 
 export interface ProviderAdapterV2ForkThreadInput {

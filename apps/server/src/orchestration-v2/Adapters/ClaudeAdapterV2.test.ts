@@ -1153,9 +1153,11 @@ describe("ClaudeAdapterV2 approval cancellation", () => {
 const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(function* (
   binaryPath: string,
   environment: ProviderInstanceEnvironment = [],
+  runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy = CLAUDE_TEST_RUNTIME_POLICY,
 ) {
   const executablePaths: Array<string | undefined> = [];
   const taskToolEnvironment: Array<string | undefined> = [];
+  const tmpDirs: Array<string | undefined> = [];
   const adapter = yield* ClaudeAdapterV2.createClaudeAdapterV2(
     {
       instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
@@ -1177,6 +1179,7 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
         Effect.sync(() => {
           executablePaths.push(input.options.pathToClaudeCodeExecutable);
           taskToolEnvironment.push(input.options.env?.CLAUDE_CODE_ENABLE_TODO_TOOLS);
+          tmpDirs.push(input.options.env?.TMPDIR);
           return {
             messages: Stream.never,
             offer: () => Effect.void,
@@ -1214,9 +1217,29 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
       attemptId: RunAttemptId.make("attempt-claude-binary-path"),
       text: "hello",
       attachments: [],
+      runtimePolicy,
     }),
   );
-  return { executablePaths, taskToolEnvironment };
+  return { executablePaths, taskToolEnvironment, tmpDirs };
+});
+
+describe("ClaudeAdapterV2 project TMPDIR", () => {
+  it.effect("launches Claude with TMPDIR at the runtime policy's project directory", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { tmpDirs } = yield* captureSdkExecutablePaths("claude", [], {
+          ...CLAUDE_TEST_RUNTIME_POLICY,
+          projectTmpDir: "/workspace/.pstack/tmp",
+        });
+
+        assert.deepEqual(tmpDirs, ["/workspace/.pstack/tmp"]);
+      }),
+    ).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
 });
 
 describe("ClaudeAdapterV2 executable path", () => {

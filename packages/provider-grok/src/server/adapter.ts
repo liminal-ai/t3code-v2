@@ -1,4 +1,5 @@
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
+import { withProjectTmpDir } from "@t3tools/provider-core/server/instanceEnvironment";
 import {
   XAiPromptFailureText,
   isXAiTaskCompletedWakeNotification,
@@ -294,7 +295,7 @@ export function makeGrokAcpAdapterFlavor(
           ...input,
           interruptPromptOnCancel: input.interruptPromptOnCancel ?? false,
           grokSettings: options.settings,
-          environment: options.environment,
+          environment: withProjectTmpDir(options.environment, runtimePolicy),
           runtimeMode: grokLaunchRuntimeMode(runtimePolicy),
         })),
     // Auto prompts represent classifier refusals and must reach the user.

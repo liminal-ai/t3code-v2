@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Path from "effect/Path";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 
-import { mergeProviderInstanceEnvironment } from "./instanceEnvironment.ts";
+import { mergeProviderInstanceEnvironment, withProjectTmpDir } from "./instanceEnvironment.ts";
 
 describe("mergeProviderInstanceEnvironment", () => {
   it.effect.each([
@@ -71,4 +71,21 @@ describe("mergeProviderInstanceEnvironment", () => {
       });
     }),
   );
+});
+
+describe("withProjectTmpDir", () => {
+  it("points TMPDIR at the project's directory over the server's own", () => {
+    expect(
+      withProjectTmpDir(
+        { PATH: "/usr/bin", TMPDIR: "/tmp" },
+        { projectTmpDir: "/work/app/.pstack/tmp" },
+      ),
+    ).toEqual({ PATH: "/usr/bin", TMPDIR: "/work/app/.pstack/tmp" });
+  });
+
+  it("leaves the environment alone when the policy names no directory", () => {
+    const environment = { PATH: "/usr/bin", TMPDIR: "/instance-tmp" };
+    expect(withProjectTmpDir(environment, {})).toBe(environment);
+    expect(withProjectTmpDir(environment, undefined)).toBe(environment);
+  });
 });

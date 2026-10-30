@@ -721,6 +721,20 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   }
 }
 
+// Codex's sandbox lets commands write its own process's TMPDIR, not the one a thread's shell
+// policy sets, and a worktree thread's project folder sits outside its cwd.
+function withProjectTmpDirWritable<
+  Policy extends CodexSchema.V2TurnStartParams__SandboxPolicy | null,
+>(policy: Policy, projectTmpDir: string | undefined): Policy {
+  if (projectTmpDir === undefined || policy === null || policy.type !== "workspaceWrite") {
+    return policy;
+  }
+  const writableRoots = policy.writableRoots ?? [];
+  return writableRoots.includes(projectTmpDir)
+    ? policy
+    : { ...policy, writableRoots: [...writableRoots, projectTmpDir] };
+}
+
 export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
   function* (input: {
     readonly nativeThreadId: string;
@@ -739,10 +753,12 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
+    const sandboxPolicy = withProjectTmpDirWritable(
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
-        : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+        : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy),
+      input.runtimePolicy.projectTmpDir,
+    );
     const selectedEffort =
       getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
       codexDefaultReasoningEffortOverride(input.modelSelection.model);
@@ -1328,6 +1344,7 @@ function codexThreadRuntimeParams(input: {
   readonly config: Readonly<Record<string, Schema.Json>>;
 } {
   const { mcpSession } = input;
+  const projectTmpDir = input.runtimePolicy?.projectTmpDir;
   return {
     ...(input.runtimePolicy?.cwd == null ? {} : { cwd: input.runtimePolicy.cwd }),
     ...(input.modelSelection === undefined ? {} : { model: input.modelSelection.model }),
@@ -1345,6 +1362,11 @@ function codexThreadRuntimeParams(input: {
               },
             },
           }),
+      // One app-server serves every project, so its process env cannot carry a per-project TMPDIR.
+      // Codex merges this dotted key into the user's own shell_environment_policy.
+      ...(projectTmpDir === undefined
+        ? {}
+        : { "shell_environment_policy.set.TMPDIR": projectTmpDir }),
     },
   };
 }
@@ -7594,7 +7616,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                   ...codexThreadRuntimeParams({
                     mcpSession: yield* readMcpSession(threadInput.providerThread.appThreadId),
                     modelSelection: input.modelSelection,
-                    runtimePolicy: input.runtimePolicy,
+                    runtimePolicy: threadInput.runtimePolicy ?? input.runtimePolicy,
                   }),
                 });
               }
