@@ -19,13 +19,13 @@ Read [features/README.md](features/README.md) before you drive. It indexes one r
 `scripts/t3v.mjs` launches, checks, drives and stops one dev server for the worktree that holds it, whatever directory you run it from. Run it with no arguments for its usage. Set the run once per shell, and every path below is under that run:
 
 ```bash
-export T3V_RUN=<run>          # e.g. the pstack run name; default verify-t3code
+export T3V_RUN=<run>          # e.g. the pstack run name, shared by every verifier in it; default verify-t3code
 T3V=.agents/skills/verify-t3code/scripts/t3v.mjs
 node $T3V <command>
 ```
 
 - Proof goes to `<main checkout>/.pstack/runs/<run>/proof/`. Git ignores it, it is outside every worktree, and `down` never touches it.
-- Scratch goes to `<main checkout>/.pstack/runs/<run>/scratch/t3v/<worktree>/`: the dev log, the PIDs, the pairing URL (mode 0600) and the browser profile.
+- Scratch goes to `<main checkout>/.pstack/runs/<run>/scratch/t3v/<checkout folder>-<hash of its full path>/`: the dev log, the PIDs, the pairing URL (mode 0600) and the browser profile. `up` prints the path.
 - The browser is headless Chromium from the repo's own `playwright`, started once by `browser open` and reached over CDP by every later command, so menus and focus survive between commands.
 
 ## Launch
@@ -97,7 +97,7 @@ Save proof under `proof/` with names in drive order. For a user-visible path, ke
 | A tool the agent called, and its result | `.t3/userdata/logs/provider/events.<thread-id>.log`       | `grep` it for `mcp__t3-code__<tool name>`  |
 | Server behavior and errors              | the dev log in scratch                                    | `grep` it                                  |
 
-The thread id is the last path segment of the thread's URL. Clients read projects from `projection_projects` and everything else from the `orchestration_v2_projection_*` tables. To seed SQLite fixtures, read [the fixtures reference](references/sqlite-fixtures.md), and stop the server before any write.
+The thread id is the last path segment of the thread's URL. Pass it as is. On disk an `mcp:` id becomes `mcp_3a….jsonl` and `events.mcp-….log`, and `outcome` finds both. Clients read projects from `projection_projects` and everything else from the `orchestration_v2_projection_*` tables. To seed SQLite fixtures, read [the fixtures reference](references/sqlite-fixtures.md), and stop the server before any write.
 
 Two kinds of check prove a feature:
 
@@ -106,7 +106,7 @@ Two kinds of check prove a feature:
 
 ## Isolation
 
-Two worktrees run two dev servers side by side, because each derives its ports from its own path and keeps its state in its own `.t3`. Never run two servers on one state dir. `up` refuses when `server-runtime.json` names a live server, so drive that one or stop it. Never drive a server this run did not start.
+Two checkouts run two dev servers side by side, because each derives its ports and its t3v scratch from its full path and keeps its state in its own `.t3`. Verifiers can share one `T3V_RUN` even when their checkouts have the same folder name. Never run two servers on one state dir. `up` refuses when `server-runtime.json` names a live server, or when the process group of an earlier `up` still runs, so drive that one or stop it. Never drive a server this run did not start.
 
 The dev server restarts on any write under `apps/server/src` or `packages/`, and a restart cancels every pending approval and the run that raised it. `vp test` and `vp run check:changed` in the same worktree write a vite temp file under `packages/`, so they restart it too. While a drive waits on a live approval, run nothing in its worktree. Run checks in another worktree, or before or after the drive.
 
@@ -122,8 +122,29 @@ A dev server runs the worktree's source, so it cannot show a fault that only the
 
 **A Cursor turn for a verdict runs here.** A fresh dev server starts with Cursor signed out, and `features/agent-turn.md` forbids copying prod's credential into its `.t3`. Someone can sign it in with Cursor, but an unattended verifier can't, so the merge brief sends a `packages/provider-cursor/` change to this check. Steps 1 to 4 with only the `cursor` instance are enough. A release built from an earlier commit than the PR's head stands in for the head only when `git diff --stat <release sha> <head>` changes no runtime code. On #45 the release `fb48715408` differed from head `661cacaf88` only in `FORK.md` and `driver.test.ts`. Otherwise build the head with `t3-v2-deploy <head>`.
 
+**What a turn here cannot show.**
+
+- A local Cursor agent's shell runs inside the server's own process (`@cursor/sdk`), with no per-agent environment. An environment probe such as `echo "$TMPDIR"` prints the server's environment for Cursor by design (FORK.md, the TMPDIR bullet), so grade per-agent environment on Claude or Codex.
+- Codex's workspace-write sandbox (bwrap) fails on lim-builder before any command runs, on `main` too: `bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted`. `bwrap --ro-bind / / --unshare-net true` reproduces it. A sandboxed write cannot be proved here, and a full-access turn skips the sandbox, so it is no substitute. Prove the `sandboxPolicy` Codex receives from `buildCodexTurnStartParams` in `CodexAdapterV2.ts`, as #49's last verdict did. Run the live write only on a host where that bwrap command exits 0. Otherwise report the write as unprovable on this host, not as a FAIL.
+
 **On a Mac over ssh.** The steps above assume the linux-x64 release on this machine. On the M1 on 2026-10-28, a new darwin-arm64 build's Cursor turn failed over ssh with `Cursor Agent SDK open failed`, the keychain answered `User interaction is not allowed`, and `SecurityAgent` was running, while Claude and Codex turns passed. The likely cause, not yet confirmed on the M1, is a keychain password prompt that the ad-hoc-signed build raises on the Mac's screen, as the v0.1.2 Mac app did on first launch. Until someone types the password at that screen, report the Cursor turn as blocked on it rather than as a Cursor failure.
+
+## Re-verification
+
+After a rebase or a small change, a verdict may carry an earlier passing lane to the new head instead of rerunning it, when nothing that changed reaches what the lane runs (poteto-mode's Shipping playbook, step 3). Compare `git range-diff` of the PR's own patch, and the diff of `main` under it, against what each lane runs:
+
+| Lane                                                  | Runs                                                                                                 | Rerun when the change touches                                          |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `.agents/merge-brief.md` checks                       | `vp run check:changed`, the seam tests of each FORK.md seam the PR changes                           | anything. They rerun at every new head.                                |
+| A focused suite or package typecheck outside them     | the files it compiles or imports                                                                     | one of those files, a test config, `package.json` or the lockfile      |
+| `features/agent-turn.md` and every recipe with a turn | the web app, `apps/server/src/orchestration-v2/`, the provider package of that turn                  | any of those. A change in one adapter reruns only that provider's turn |
+| A feature recipe (`features/<name>.md`)               | the paths the merge brief maps to it, and the web screens it drives                                  | those paths, or a screen or ARIA name the recipe targets               |
+| A user-only check                                     | the screens and `docs/user/`                                                                         | either                                                                 |
+| An outcome check                                      | the store or log it reads (`threadWorkflow/store.ts`, the provider event log, the projection tables) | that store's writer or format                                          |
+| The Release check's turns                             | the release archive, its CLI, server and provider packages                                           | runtime code, a dependency or packaging, or the Release check's steps  |
+
+Any change to this skill's steps for a lane (its feature file, this file's section, or `scripts/t3v.mjs` for what the lane calls) reruns that lane. Docs outside `docs/user/`, FORK.md and test-only changes carry every live lane, and the changed tests and text get a fresh run and read. The verdict lists each carry as `shortcut <id>: <what was not rerun, and the verdict it carries>. <why nothing that changed reaches it>`, and the lead accepts each on the gate run. Accepted precedents: #49's last verdict carried Claude turns, the TMPDIR filesystem cases and the provider typechecks across a Codex-only sandbox-policy fix. #50's re-verification after #48 landed under it carried the release turns and the provider settings, and reran the workflow-question screens #48 changed. #51 carried its base-v2 upgrade lane because the workflow domain and replay were unchanged since it ran.
 
 ## Cleanup
 
-`node $T3V down` stops the browser and the dev server's process group by the PIDs `up` and `browser open` recorded, and removes the unused pairing URL. It never kills by name or pattern. If something else holds your port, kill it only after `/proc/<pid>/cwd` shows it is in your worktree. In T3, close your Browser panel tab with `t3_preview_close`. Proof survives `down`. Delete the worktree's `.t3`, and any folder you added as a project, only when you no longer need their state. An assistant turn ending is not teardown, so keep the server up while the user is still looking.
+`node $T3V down` stops the browser and the dev server's whole process group (the server, Vite and the file watcher) by the PIDs `up` and `browser open` recorded, and removes the unused pairing URL. It never kills by name or pattern. It refuses, and says why, when the group's cwd is not this checkout. It waits for the group to exit, then exits 1 naming any process still listening on the server or web port. Kill such a process only after `/proc/<pid>/cwd` shows it is in your checkout. In T3, close your Browser panel tab with `t3_preview_close`. Proof survives `down`. Delete the worktree's `.t3`, and any folder you added as a project, only when you no longer need their state. An assistant turn ending is not teardown, so keep the server up while the user is still looking.
