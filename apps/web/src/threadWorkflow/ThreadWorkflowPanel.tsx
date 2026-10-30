@@ -24,6 +24,7 @@ import { ThreadWorkflowForm } from "./ThreadWorkflowForm";
 import { threadWorkflowFormStepId, type ThreadWorkflowFormIntent } from "./threadWorkflowForms";
 import { ThreadWorkflowHeader, ThreadWorkflowInstanceList } from "./ThreadWorkflowHeader";
 import { ThreadWorkflowQuestions } from "./ThreadWorkflowQuestions";
+import { usePendingThreadWorkflowReveal } from "./threadWorkflowQuestionReveal";
 import { ThreadWorkflowStart } from "./ThreadWorkflowStart";
 import { ThreadWorkflowStepList } from "./ThreadWorkflowStepList";
 import { ThreadWorkflowStrip } from "./ThreadWorkflowStrip";
@@ -144,6 +145,7 @@ export function ThreadWorkflowPanel({
   const query = useEnvironmentQuery(threadWorkflowStateAtom(threadRef));
   const state = query.data;
   const actions = useThreadWorkflowActions(threadRef, state?.view.revision ?? 0);
+  const revealQuestionId = usePendingThreadWorkflowReveal(threadRef);
   const [viewedInstanceId, setViewedInstanceId] = useState<ThreadWorkflowInstanceId | null>(null);
   const [form, setForm] = useState<ThreadWorkflowFormIntent | null>(null);
   const [starting, setStarting] = useState(false);
@@ -317,6 +319,7 @@ export function ThreadWorkflowPanel({
             <ThreadWorkflowQuestions
               instance={instance}
               disabled={disabled}
+              revealQuestionId={revealQuestionId}
               onSubmit={(request) => void submit(request)}
             />
           ) : null}

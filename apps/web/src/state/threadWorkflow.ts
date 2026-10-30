@@ -1,7 +1,15 @@
 import { scopedThreadKey, parseScopedThreadKey } from "@t3tools/client-runtime/environment";
 import { derivePendingThreadRequests } from "@t3tools/client-runtime/state/thread-requests";
-import { createThreadWorkflowEnvironmentAtoms } from "@t3tools/client-runtime/state/thread-workflow";
-import type { ScopedThreadRef, ThreadWorkflowSubscriptionState } from "@t3tools/contracts";
+import {
+  createThreadWorkflowEnvironmentAtoms,
+  NO_THREAD_WORKFLOW_QUESTIONS,
+  nextOpenThreadWorkflowQuestions,
+} from "@t3tools/client-runtime/state/thread-workflow";
+import type {
+  ScopedThreadRef,
+  ThreadWorkflowQuestionSummary,
+  ThreadWorkflowSubscriptionState,
+} from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 
@@ -33,6 +41,9 @@ export function readThreadWorkflowState(
 
 const FALSE_ATOM = Atom.make(false).pipe(Atom.withLabel("thread-workflow:visible:none"));
 const ZERO_ATOM = Atom.make(0).pipe(Atom.withLabel("thread-workflow:asks:none"));
+const NO_QUESTIONS_ATOM = Atom.make(NO_THREAD_WORKFLOW_QUESTIONS).pipe(
+  Atom.withLabel("thread-workflow:open-questions:none"),
+);
 
 // Keyed by thread so every consumer of one thread shares one derived atom. Primitive results
 // keep consumers quiet while the underlying streams change without changing the answer.
@@ -61,6 +72,16 @@ const openAskCountFamily = Atom.family((threadKey: string) => {
   }).pipe(Atom.withLabel(`thread-workflow:asks:${threadKey}`));
 });
 
+const openQuestionsFamily = Atom.family((threadKey: string) => {
+  const ref = parseScopedThreadKey(threadKey);
+  let previous = NO_THREAD_WORKFLOW_QUESTIONS;
+  return Atom.make((get) => {
+    if (ref === null) return previous;
+    previous = nextOpenThreadWorkflowQuestions(previous, get(threadWorkflowStateAtom(ref)));
+    return previous;
+  }).pipe(Atom.withLabel(`thread-workflow:open-questions:${threadKey}`));
+});
+
 /** Whether the Workflow tab and its `+` item show: the flag is on, or an instance is open or corrupt. */
 export function threadWorkflowVisibleAtom(ref: ScopedThreadRef | null) {
   return ref === null ? FALSE_ATOM : visibleFamily(scopedThreadKey(ref));
@@ -68,4 +89,11 @@ export function threadWorkflowVisibleAtom(ref: ScopedThreadRef | null) {
 
 export function threadWorkflowOpenAskCountAtom(ref: ScopedThreadRef | null) {
   return ref === null ? ZERO_ATOM : openAskCountFamily(scopedThreadKey(ref));
+}
+
+/** The open questions the chat column shows, from the pane's own subscription. */
+export function threadWorkflowOpenQuestionsAtom(
+  ref: ScopedThreadRef | null,
+): Atom.Atom<ReadonlyArray<ThreadWorkflowQuestionSummary>> {
+  return ref === null ? NO_QUESTIONS_ATOM : openQuestionsFamily(scopedThreadKey(ref));
 }
