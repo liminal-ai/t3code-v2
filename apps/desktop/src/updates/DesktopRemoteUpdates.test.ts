@@ -948,4 +948,44 @@ describe("DesktopRemoteUpdates", () => {
       }),
     );
   });
+
+  // liminal-ai/t3code-v2: a -lim. build ships with no update feed (FORK.md, desktop identity).
+  it.effect("never checks for or installs an upstream build on a lim build", () => {
+    const harness = makeHarness({
+      appVersion: "0.1.5-lim.e36c7f23a5",
+      env: { T3CODE_DESKTOP_MOCK_UPDATES: "false" },
+      beforeSetUpdateChannel: Effect.void,
+    });
+
+    return runRemoteUpdatesTest(harness, ({ reports, requests }) =>
+      Effect.gen(function* () {
+        yield* Queue.offer(requests, {
+          ...request("req-switch"),
+          channel: "nightly",
+          targetVersion: "0.1.6-nightly.20261030.3900",
+        });
+        yield* settle;
+        yield* Queue.offer(requests, request("req-plain"));
+        yield* settle;
+        harness.emit("update-available", { version: "0.1.6" });
+        yield* settle;
+
+        const noFeed = "Automatic updates are not available because no update feed is configured.";
+        assert.deepEqual(
+          terminalReports(reports).map((report) => [
+            report.requestId,
+            report.outcome,
+            report.reason,
+          ]),
+          [
+            ["req-switch", "failed", noFeed],
+            ["req-plain", "failed", noFeed],
+          ],
+        );
+        assert.equal(harness.checkCount(), 0);
+        assert.equal(harness.downloadCount(), 0);
+        assert.equal(harness.quitAndInstalls(), 0);
+      }),
+    );
+  });
 });
