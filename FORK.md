@@ -86,6 +86,8 @@ Bugbot does not cover a sync: it refused PR #4 at 42,105 lines. Codex does, and 
 
 `~/lim-v2/bin/t3-v2-deploy <ref>` builds `<ref>` from the main checkout `~/lim-v2/code/t3code-v2` into the same linux-x64 `t3` archive upstream ships. It names the release `t3-<tag>-lim.<sha>-linux-x64` after the nightly that `git describe --tags --match 'v*-nightly.*'` finds, or after the stable tag on that nightly's commit, so run `git fetch upstream --tags` in that checkout first. It unpacks the release into `~/lim-v2/service/t3code/prod/releases/` and smoke-tests it on port 13995.
 
+Since upstream #26912 the Linux archive carries `lib/libatomic.so.1` and sets `t3`'s RUNPATH to it with `patchelf`, so the build host needs the `patchelf` and `libatomic1` packages. Without `patchelf`, `build-cli-archive.ts` stops with `spawn patchelf ENOENT`. This machine got `patchelf` during the `v0.1.5` sync.
+
 The script never switches prod. It ends by printing the `t3-v2-cutover` command for the new release, with its sha256.
 
 ## Cut over
