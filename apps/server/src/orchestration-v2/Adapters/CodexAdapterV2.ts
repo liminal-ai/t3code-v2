@@ -117,7 +117,10 @@ import {
 } from "../../provider/EventNdjsonLogger.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { codexAppServerArgs, resolveCodexLaunchArgs } from "../../provider/codexLaunchArgs.ts";
-import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  mergeProviderInstanceEnvironment,
+  withProjectTmpDir,
+} from "@t3tools/provider-core/server/instanceEnvironment";
 import * as McpProviderSession from "@t3tools/provider-core/server/mcpSession";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import {
@@ -1492,10 +1495,13 @@ export const layerAppServerClientFactory: Layer.Layer<
     return CodexAppServerClientFactory.of({
       open: Effect.fn("CodexAdapterV2.open")(function* (input) {
         const scope = yield* Scope.Scope;
-        const environment = {
-          ...codexAppServerEnvironment(input.environment),
-          ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
-        };
+        const environment = withProjectTmpDir(
+          {
+            ...codexAppServerEnvironment(input.environment),
+            ...(input.settings.homePath ? { CODEX_HOME: input.settings.homePath } : {}),
+          },
+          input.runtimePolicy,
+        );
         const command = yield* makeCodexAppServerSpawnCommand({
           command: input.settings.binaryPath || "codex",
           args: codexAppServerArgs(

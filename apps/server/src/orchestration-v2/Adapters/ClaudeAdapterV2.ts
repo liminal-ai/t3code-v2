@@ -166,7 +166,10 @@ import {
   type ClaudeScopedLimitNames,
 } from "../../provider/claudeUsageLimits.ts";
 import type { ManagedServerProvider } from "@t3tools/provider-core/server/snapshot";
-import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
+import {
+  mergeProviderInstanceEnvironment,
+  withProjectTmpDir,
+} from "@t3tools/provider-core/server/instanceEnvironment";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "@t3tools/provider-core/server/orchestrationInstructions";
 import { buildRuntimeInstructions } from "@t3tools/provider-core/server/runtimeInstructions";
 import {
@@ -9847,12 +9850,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             attachmentsDir,
             settings: adapterOptions.settings,
             ...(launchArgSettings === undefined ? {} : { sdkSettings: launchArgSettings }),
-            environment: claudeQueryEnvironment(
-              adapterOptions.environment,
-              turnInput.appThread,
-              turnInput.appThread.lineage.relationshipToParent === "subagent"
-                ? yield* resolveSubagentPromptCacheTtl(turnInput.runtimePolicy.cwd)
-                : undefined,
+            environment: withProjectTmpDir(
+              claudeQueryEnvironment(
+                adapterOptions.environment,
+                turnInput.appThread,
+                turnInput.appThread.lineage.relationshipToParent === "subagent"
+                  ? yield* resolveSubagentPromptCacheTtl(turnInput.runtimePolicy.cwd)
+                  : undefined,
+              ),
+              turnInput.runtimePolicy,
             ),
             tools: queryPolicy.tools ?? CLAUDE_CODE_PRESET_TOOLS,
             ...(mcpOverrides.allowedTools === undefined

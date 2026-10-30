@@ -49,6 +49,8 @@ export const ProviderAdapterV2RuntimePolicy = Schema.Struct({
   runtimeMode: RuntimeMode,
   interactionMode: ProviderInteractionMode,
   cwd: Schema.NullOr(Schema.String),
+  /** The project's `.pstack/tmp/`, set when the agent's `TMPDIR` should point there. */
+  projectTmpDir: Schema.optional(Schema.String),
   approvalPolicy: Schema.optional(Schema.Unknown),
   sandboxPolicy: Schema.optional(Schema.Unknown),
 });

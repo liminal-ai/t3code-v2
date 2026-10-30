@@ -27,11 +27,13 @@ import * as Stream from "effect/Stream";
 import * as Layer from "effect/Layer";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
+import type * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import type * as EffectAcpSchema from "effect-acp/compat";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
 import * as ProjectStore from "../ProjectStore.ts";
+import * as ProjectTmpDir from "../../fork/ProjectTmpDir.ts";
 import { buildInitialGrokProviderSnapshot } from "@t3tools/provider-grok/testing";
 import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
 import * as ProviderInstanceRegistry from "../../provider/ProviderInstanceRegistry.ts";
@@ -241,11 +243,11 @@ describe("Grok launch permission mode", () => {
     layerHost,
   );
 
-  const launchArgs = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+  const launches = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
     Effect.gen(function* () {
-      const launches: Array<ReadonlyArray<string>> = [];
+      const launches: Array<ChildProcess.StandardCommand> = [];
       const childProcessSpawner = ChildProcessSpawner.make((command) => {
-        if (command._tag === "StandardCommand") launches.push(command.args);
+        if (command._tag === "StandardCommand") launches.push(command);
         return Effect.fail(
           PlatformError.systemError({
             _tag: "NotFound",
@@ -272,6 +274,8 @@ describe("Grok launch permission mode", () => {
         .pipe(Effect.scoped, Effect.ignore);
       return launches;
     }).pipe(Effect.provideService(HostProcess.Platform, "darwin"), Effect.provide(layerTest));
+  const launchArgs = (runtimePolicy: ProviderAdapter.ProviderAdapterV2RuntimePolicy) =>
+    launches(runtimePolicy).pipe(Effect.map((commands) => commands.map((command) => command.args)));
 
   const policy = (
     runtimeMode: RuntimeMode,
@@ -295,6 +299,18 @@ describe("Grok launch permission mode", () => {
   )("launches %s threads with %s", ([runtimeMode, , args]) =>
     Effect.gen(function* () {
       assert.deepEqual(yield* launchArgs(policy(runtimeMode)), [args]);
+    }),
+  );
+
+  it.effect("launches Grok with TMPDIR at the runtime policy's project directory", () =>
+    Effect.gen(function* () {
+      const commands = yield* launches(
+        policy("full-access", { projectTmpDir: "/workspace/.pstack/tmp" }),
+      );
+      assert.deepEqual(
+        commands.map((command) => command.options.env?.TMPDIR),
+        ["/workspace/.pstack/tmp"],
+      );
     }),
   );
 
@@ -339,6 +355,11 @@ describe("Grok launch permission mode", () => {
             Layer.provide(
               Layer.mock(ProjectStore.ProjectStoreV2)({
                 get: () => Effect.die("the thread has a worktree"),
+              }),
+            ),
+            Layer.provide(
+              Layer.succeed(ProjectTmpDir.ProjectTmpDir, {
+                resolve: () => Effect.undefined,
               }),
             ),
             Layer.provide(

@@ -62,6 +62,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { formatReadToolLabel, formatSearchToolLabel } from "@t3tools/shared/toolActivity";
 import * as ProviderHost from "@t3tools/provider-core/server/ProviderHost";
+import { withProjectTmpDir } from "@t3tools/provider-core/server/instanceEnvironment";
 import { makeAcpMcpOverAcpBridge, type AcpMcpOverAcpBridge } from "./mcpOverAcpBridge.ts";
 import { mcpToolPresentation } from "@t3tools/provider-core/server/mcpToolPresentation";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -1979,14 +1980,16 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
           onTermination: AcpAdapterV2RuntimeInput["onTermination"] = () =>
             handleRuntimeTerminationAtGeneration(runtimeGeneration),
         ): AcpAdapterV2RuntimeInput => {
+          const processEnvironment = withProjectTmpDir(
+            mcpContext.processEnvironment ?? {},
+            input.runtimePolicy,
+          );
           return {
             cwd: input.runtimePolicy.cwd ?? process.cwd(),
             runtimePolicy: input.runtimePolicy,
             mcpServers: mcpContext.servers,
             acpMcpServers: mcpContext.acpServers,
-            ...(mcpContext.processEnvironment === undefined
-              ? {}
-              : { processEnvironment: mcpContext.processEnvironment }),
+            ...(Object.keys(processEnvironment).length === 0 ? {} : { processEnvironment }),
             ...(resumeSessionId === undefined ? {} : { resumeSessionId }),
             interruptPromptOnCancel: flavor.interruptPromptOnCancel ?? false,
             clientCapabilities: {

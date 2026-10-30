@@ -7683,3 +7683,43 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     );
   });
 });
+
+describe("CodexAdapterV2 project TMPDIR", () => {
+  it.effect("launches the app server with TMPDIR at the runtime policy's project directory", () =>
+    Effect.gen(function* () {
+      const launches: Array<ChildProcess.StandardCommand> = [];
+      const spawner = ChildProcessSpawner.make((command) => {
+        if (command._tag === "StandardCommand") launches.push(command);
+        return Effect.fail(
+          PlatformError.systemError({ _tag: "NotFound", module: "codex-tmpdir", method: "spawn" }),
+        );
+      });
+      const factory = yield* CodexAdapterV2.CodexAppServerClientFactory.pipe(
+        Effect.provide(CodexAdapterV2.layerAppServerClientFactory),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
+        Effect.provideService(
+          ProviderEventLoggers.ProviderEventLoggers,
+          ProviderEventLoggers.NoOpProviderEventLoggers,
+        ),
+      );
+      yield* factory
+        .open({
+          instanceId: CodexAdapterV2.CODEX_DEFAULT_INSTANCE_ID,
+          threadId: ThreadId.make("thread-codex-tmpdir"),
+          providerSessionId: ProviderSessionId.make("session-codex-tmpdir"),
+          runtimePolicy: {
+            ...CODEX_TEST_RUNTIME_POLICY,
+            projectTmpDir: "/workspace/.pstack/tmp",
+          },
+          settings: DEFAULT_CODEX_SETTINGS,
+          environment: { TMPDIR: "/tmp" },
+        })
+        .pipe(Effect.scoped, Effect.ignore);
+
+      assert.deepEqual(
+        launches.map((command) => command.options.env?.TMPDIR),
+        ["/workspace/.pstack/tmp"],
+      );
+    }),
+  );
+});
