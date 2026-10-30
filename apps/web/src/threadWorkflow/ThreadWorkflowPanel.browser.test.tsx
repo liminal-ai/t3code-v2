@@ -44,6 +44,7 @@ vi.mock("./useThreadWorkflowActions", () => ({
 }));
 
 import { ThreadWorkflowPanel } from "./ThreadWorkflowPanel";
+import { revealThreadWorkflowQuestion } from "./threadWorkflowQuestionReveal";
 
 const stamp = {
   seq: 1,
@@ -272,6 +273,40 @@ describe("thread workflow pane", () => {
       target: ThreadWorkflowQuestionId.make("w2.q3"),
       reason: "Reopened from the Workflow tab",
     } satisfies ThreadWorkflowRequest);
+  });
+
+  it("opens on the question the chat column asked for, expanded with its answer field focused", async () => {
+    state.submit.mockReset().mockResolvedValue(true);
+    setWorkflow([withQuestions], withQuestions.id);
+    revealThreadWorkflowQuestion(threadRef, ThreadWorkflowQuestionId.make("w2.q2"));
+    await using screen = await render(panel());
+
+    const focused = () => document.activeElement?.getAttribute("aria-label");
+    await expect.poll(focused).toBe("Answer to Ship to staging first?");
+    expect(screen.getByLabelText("Answer to Merge without a second review?").all()).toHaveLength(0);
+
+    revealThreadWorkflowQuestion(threadRef, ThreadWorkflowQuestionId.make("w2.q1"));
+    await expect.poll(focused).toBe("Answer to Merge without a second review?");
+    expect(screen.getByLabelText("Answer to Ship to staging first?").all()).toHaveLength(1);
+
+    await screen.unmount();
+    await using again = await render(panel());
+    expect(again.getByRole("button", { name: "Answer", exact: true }).all()).toHaveLength(0);
+  });
+
+  it("leaves a historical workflow for the question the chat column asked for", async () => {
+    state.submit.mockReset().mockResolvedValue(true);
+    setWorkflow([abandoned, withQuestions], withQuestions.id);
+    await using screen = await render(panel());
+
+    await userEvent.click(screen.getByRole("button", { name: "Workflow menu" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /Single task/ }));
+    await expect.poll(() => screen.getByText("Ground the subsystem").all().length).toBe(1);
+
+    revealThreadWorkflowQuestion(threadRef, ThreadWorkflowQuestionId.make("w2.q2"));
+    await expect
+      .poll(() => document.activeElement?.getAttribute("aria-label"))
+      .toBe("Answer to Ship to staging first?");
   });
 
   it("pins a pending question above the list", async () => {

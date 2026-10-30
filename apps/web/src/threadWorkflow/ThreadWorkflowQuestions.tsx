@@ -2,6 +2,7 @@ import { openThreadWorkflowQuestions } from "@t3tools/client-runtime/state/threa
 import {
   THREAD_WORKFLOW_LIMITS,
   type ThreadWorkflowInstanceSummary,
+  type ThreadWorkflowQuestionId,
   type ThreadWorkflowQuestionSummary,
   type ThreadWorkflowRequest,
 } from "@t3tools/contracts";
@@ -11,7 +12,7 @@ import {
   MessageCircleQuestionIcon,
   Undo2Icon,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
@@ -19,11 +20,14 @@ import { Collapsible, CollapsiblePanel, CollapsibleTrigger } from "~/components/
 import { Input } from "~/components/ui/input";
 import { cn } from "~/lib/utils";
 import { formatRelativeTimeLabel } from "~/timestampFormat";
+import { clearThreadWorkflowReveal } from "./threadWorkflowQuestionReveal";
 import { actorLabel } from "./ThreadWorkflowStepList";
 
 const REOPEN_REASON = "Reopened from the Workflow tab";
 
-function optionsLine(question: ThreadWorkflowQuestionSummary): string | null {
+/** The line under a question's title: its summary, else its options. */
+export function questionSubline(question: ThreadWorkflowQuestionSummary): string | null {
+  if (question.summary) return question.summary;
   const options = question.options ?? [];
   if (options.length === 0) return null;
   return options
@@ -90,17 +94,29 @@ function OpenQuestion({
   question,
   blockedStepTitle,
   disabled,
+  revealed,
   onAnswer,
 }: {
   question: ThreadWorkflowQuestionSummary;
   blockedStepTitle: string | null;
   disabled: boolean;
+  revealed: boolean;
   onAnswer: (answer: string) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const summary = question.summary ?? optionsLine(question);
+  const rowRef = useRef<HTMLLIElement>(null);
+  if (revealed && !open) setOpen(true);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves DOM focus to the answer field once the row renders open; the click that asked for it is in the chat column, before this row may exist.
+  useEffect(() => {
+    if (!revealed) return;
+    rowRef.current?.scrollIntoView({ block: "nearest" });
+    rowRef.current?.querySelector("input")?.focus({ preventScroll: true });
+    clearThreadWorkflowReveal();
+  }, [revealed]);
+  const summary = questionSubline(question);
   return (
     <li
+      ref={rowRef}
       data-question-id={question.id}
       data-question-state="open"
       className="-mx-2 grid grid-cols-[auto_minmax(0,1fr)] gap-x-2.5 rounded-lg bg-warning/6 px-2 py-2"
@@ -234,10 +250,12 @@ function ResolvedQuestions({
 export function ThreadWorkflowQuestions({
   instance,
   disabled,
+  revealQuestionId,
   onSubmit,
 }: {
   instance: ThreadWorkflowInstanceSummary;
   disabled: boolean;
+  revealQuestionId: ThreadWorkflowQuestionId | null;
   onSubmit: (request: ThreadWorkflowRequest) => void;
 }) {
   const open = openThreadWorkflowQuestions(instance);
@@ -256,6 +274,7 @@ export function ThreadWorkflowQuestions({
               question={question}
               blockedStepTitle={stepTitle(question.blocksStepId)}
               disabled={disabled}
+              revealed={question.id === revealQuestionId}
               onAnswer={(answer) =>
                 onSubmit({ _tag: "answer", questionId: question.id, answer, source: "pane" })
               }

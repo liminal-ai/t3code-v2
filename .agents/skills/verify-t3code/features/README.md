@@ -42,7 +42,7 @@ Keep implementation details out of the map. Name only user paths, stable handles
 ## Features
 
 - [Start a thread and run a turn](./agent-turn.md) covers the composer, the model picker, and how a run ends.
-- [Workflow tab](./workflow-tab.md) covers starting a template, the agent's note, Done, closing, and the settle refusal.
+- [Workflow tab](./workflow-tab.md) covers starting a template, the agent's note, questions in the tab and above the composer, Done, closing, and the settle refusal.
 - [A delegated task's unanswered prompt](./delegated-requests.md) covers the parent's wake, the decline at 10 minutes with its note, the child finishing, and a top-level thread left alone.
 - [Group chat](./group-chat.md) covers opening it, creating a group, a message and each member's reply, Back, and Escape.
 - [Projects](./projects.md) covers adding a local folder as a project and starting a thread in it.
