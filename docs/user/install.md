@@ -171,6 +171,15 @@ instance can have its own environment variables, such as API keys or a custom
 base URL. Mark secret values as sensitive; after saving, T3 Code does not display
 their original values.
 
+Agents that T3 Code starts on its own machine get `TMPDIR` set to `.pstack/tmp/`
+in the project's folder. Every thread in the project shares it, worktree threads
+included, so files an agent makes with `mktemp` stay with the project instead of
+in the shared `/tmp`. T3 Code makes the folder readable only by you, and adds
+`.pstack/` to the repository's `.git/info/exclude` when nothing ignores it yet.
+An instance whose environment variables set `TMPDIR` keeps that value. Files in
+`.pstack/tmp/` stay until you delete them, because a restart does not clear them.
+Cursor, Antigravity and OpenCode's shared server keep their own temporary folders.
+
 For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
 [Antigravity](./providers-antigravity.md), [Pi](./providers-pi.md),

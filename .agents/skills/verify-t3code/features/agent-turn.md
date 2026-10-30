@@ -9,6 +9,7 @@ A user starts a thread in a project, picks the provider and model in the compose
 - `turn-send` sends the message and shows `Working` while the run is live.
 - `turn-end` shows the agent's reply and drops `Working` when the run ends.
 - `turn-title` renames the thread from its first message.
+- `turn-tmpdir` gives a local agent `TMPDIR` at the project's `.pstack/tmp/`.
 
 ## How to get to it (user POV)
 
@@ -29,6 +30,8 @@ Preconditions:
 - **Send.** Type and send. Run `node $T3V browser click --role textbox --name-prefix "Message"`, `node $T3V browser type "Reply with the single word pong. Do not call tools or change files."` and `node $T3V browser press Enter`. The message appears in the timeline and `Working` appears under it.
 - **Run ends.** Wait for the turn. Run `node $T3V browser wait --gone "Working" --timeout 180000`. The reply `pong` shows, and the sidebar and breadcrumb carry a new title such as `Pong Reply`.
 - **Proof.** Run `node $T3V browser shot <dir>/turn-ended` and `node $T3V browser text`. Grade it with `node $T3V outcome sql "select t.title, t.provider_instance_id, r.status from orchestration_v2_projection_threads t join orchestration_v2_projection_runs r using (thread_id) where t.thread_id = '<thread-id>'"`, which shows `claudeAgent` and a `completed` run.
+
+- **Project TMPDIR.** From inside a disposable git project, run `node apps/server/src/bin.ts thread start --base-dir <worktree>/.t3 --provider <instance> --model <slug> --wait --json . 'Run exactly this one shell command with your shell tool, then reply with its output verbatim and nothing else: echo "TMPDIR=$TMPDIR"; mktemp'`. The reply shows both paths under `<project>/.pstack/tmp/`. Add `--worktree <branch> --branch <new>` for a worktree thread, which prints the same project-root path. Then `git -C <project> status --porcelain --untracked-files=all` prints nothing, and `.git/info/exclude` holds one `.pstack/` line. This machine's global ignore already covers `.pstack/`, so run `git config core.excludesFile /dev/null` in the project first to see the exclude written. Cursor and Antigravity print their own temp folder.
 
 ## Gotchas
 
