@@ -49,7 +49,7 @@ The state is the worktree's ignored `.t3`. It outranks an ambient `T3CODE_HOME`,
 
 - The server PID in `.t3/userdata/server-runtime.json` is alive and owns its port.
 - The server's working directory is inside this worktree.
-- The server has this worktree's `.t3/userdata/statev2.sqlite` open, and no file under `~/.t3/userdata` or the prod data dir.
+- The server has this worktree's `.t3/userdata/statev2.sqlite` open, and no file under `~/.t3/userdata` or the prod data dir. T3 makes its worktrees under the prod data dir, so the check skips files inside this worktree.
 - The server and the web origin both answer 200.
 - The t3v browser holds a valid session (`/api/auth/session` says `authenticated`), or a pairing URL is waiting for `browser open`.
 
@@ -64,7 +64,7 @@ Every recipe in `features/` uses these commands. Target by ARIA role and accessi
 | `browser click --text <text>` / `--at <x>,<y>`            | Clicks visible text, or a point from a screenshot.                                                                                                                                               |
 | `browser fill --role <role> --name <name> --value <text>` | Replaces an input's value.                                                                                                                                                                       |
 | `browser type <text>` / `browser press <key>`             | Types into whatever has focus, or presses Enter, Escape and so on.                                                                                                                               |
-| `browser wait --text <text>` / `--gone <text>`            | Waits for text to appear, or for an exact text such as `Working` to leave. Default 15 s, `--timeout <ms>`.                                                                                       |
+| `browser wait --text <text>` / `--gone <text>`            | Waits for text to appear, or for a text such as `Working` to leave, alone or with more words after it, as in `Working for 12s`. Default 15 s, `--timeout <ms>`.                                  |
 | `browser goto <path>`                                     | Loads a path on the web origin, such as `/settings/providers`.                                                                                                                                   |
 | `browser shot <name>` / `aria <name>` / `text`            | A screenshot or ARIA snapshot under proof, or the page's text on stdout.                                                                                                                         |
 
