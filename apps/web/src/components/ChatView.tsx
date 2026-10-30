@@ -303,6 +303,7 @@ import { QueuedRunsControl, type QueuedRunsControlHandle } from "./chat/QueuedRu
 import { useThreadLinkedPullRequest } from "./pullRequest/useThreadLinkedPullRequest";
 import { threadWorkflowVisibleAtom } from "../state/threadWorkflow";
 import { ThreadWorkflowAutoOpen } from "../threadWorkflow/ThreadWorkflowAutoOpen";
+import { useThreadWorkflowQuestionBanners } from "../threadWorkflow/useThreadWorkflowQuestionBanners";
 import { useProactivePanels } from "../hooks/useProactivePanels";
 import { useIncrementalTimelineEntries } from "../hooks/useIncrementalTimelineEntries";
 import { useRightPanelSurfaceClose } from "../hooks/useRightPanelSurfaceClose";
@@ -1905,6 +1906,9 @@ export default function ChatView(props: ChatViewProps) {
     useRightPanelStore.getState().open(activeThreadRef, "workflow");
   };
   const addWorkflowSurfaceStable = useStableCallback(addWorkflowSurface);
+  const workflowQuestionBannerItems = useThreadWorkflowQuestionBanners(
+    isServerThread ? activeThreadRef : null,
+  );
   const { state: deviceState, loaded: deviceStateLoaded } = useDeviceState(
     activeThreadRef?.environmentId ?? null,
   );
@@ -2498,6 +2502,7 @@ export default function ChatView(props: ChatViewProps) {
         ...usageLimitsItems,
         ...projectCloneItems,
         ...systemComposerBannerItems,
+        ...workflowQuestionBannerItems,
       ];
     }
     return [
@@ -2506,6 +2511,7 @@ export default function ChatView(props: ChatViewProps) {
       ...usageLimitsItems,
       ...projectCloneItems,
       ...systemComposerBannerItems,
+      ...workflowQuestionBannerItems,
       branchMismatchBannerItem({
         mismatchKey: activeBranchMismatchKey,
         mismatch: localCheckoutBranchMismatch,

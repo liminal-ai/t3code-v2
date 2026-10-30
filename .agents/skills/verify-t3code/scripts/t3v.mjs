@@ -190,7 +190,11 @@ async function doctor() {
         }
       })
       .filter((target) => target.endsWith(".sqlite"));
-    const live = open.filter((target) => LIVE_STATE_DIRS.some((dir) => target.startsWith(dir)));
+    // T3 makes its worktrees under the prod data dir, so the worktree's own state sits there too.
+    const live = open.filter(
+      (target) =>
+        !target.startsWith(`${worktree}/`) && LIVE_STATE_DIRS.some((dir) => target.startsWith(dir)),
+    );
     if (live.length > 0) bad(`server has the live install open: ${live.join(", ")}`);
     else if (open.some((target) => target === NodePath.join(stateDir, "statev2.sqlite")))
       ok(`state is ${stateDir}`);
@@ -420,8 +424,10 @@ async function browser(sub) {
       const gone = flag("gone");
       return withPage(async (page) => {
         if (gone) {
+          // A live run reads "Working for 12s", so the text also counts with more words after it.
+          const escaped = gone.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
           await page
-            .getByText(gone, { exact: true })
+            .getByText(new RegExp(`^${escaped}(\\s|$)`))
             .first()
             .waitFor({ state: "detached", timeout });
           return console.log(`no "${gone}" on the page`);
