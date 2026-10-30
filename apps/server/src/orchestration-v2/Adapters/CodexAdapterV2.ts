@@ -721,6 +721,20 @@ function codexRuntimeModeTurnDefaults(runtimeMode: RuntimeMode): {
   }
 }
 
+// Codex's sandbox lets commands write its own process's TMPDIR, not the one a thread's shell
+// policy sets, and a worktree thread's project folder sits outside its cwd.
+function withProjectTmpDirWritable<
+  Policy extends CodexSchema.V2TurnStartParams__SandboxPolicy | null,
+>(policy: Policy, projectTmpDir: string | undefined): Policy {
+  if (projectTmpDir === undefined || policy === null || policy.type !== "workspaceWrite") {
+    return policy;
+  }
+  const writableRoots = policy.writableRoots ?? [];
+  return writableRoots.includes(projectTmpDir)
+    ? policy
+    : { ...policy, writableRoots: [...writableRoots, projectTmpDir] };
+}
+
 export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTurnStartParams")(
   function* (input: {
     readonly nativeThreadId: string;
@@ -739,10 +753,12 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
       input.runtimePolicy.approvalPolicy === undefined
         ? runtimeModeDefaults.approvalPolicy
         : yield* decodeTurnApprovalPolicy(input.runtimePolicy.approvalPolicy);
-    const sandboxPolicy =
+    const sandboxPolicy = withProjectTmpDirWritable(
       input.runtimePolicy.sandboxPolicy === undefined
         ? runtimeModeDefaults.sandboxPolicy
-        : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
+        : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy),
+      input.runtimePolicy.projectTmpDir,
+    );
     const selectedEffort =
       getModelSelectionStringOptionValue(input.modelSelection, "reasoningEffort") ??
       codexDefaultReasoningEffortOverride(input.modelSelection.model);

@@ -216,6 +216,41 @@ describe("CodexAdapterV2 runtime policy", () => {
     }),
   );
 
+  it.effect("lets a workspace-write turn write its project's TMPDIR", () =>
+    Effect.gen(function* () {
+      const projectTmpDir = "/work/project/.pstack/tmp";
+      const build = (
+        runtimeMode: "approval-required" | "auto-accept-edits" | "auto" | "full-access",
+        sandboxPolicy?: unknown,
+      ) =>
+        CodexAdapterV2.buildCodexTurnStartParams({
+          nativeThreadId: `native-tmp-${runtimeMode}`,
+          codexInput: [{ type: "text", text: "test" }],
+          runtimePolicy: {
+            runtimeMode,
+            interactionMode: "default",
+            cwd: "/work/worktrees/feature",
+            projectTmpDir,
+            ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+          },
+          modelSelection: { instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.4" },
+        });
+
+      for (const mode of ["auto-accept-edits", "auto"] as const) {
+        assert.deepEqual((yield* build(mode)).sandboxPolicy, {
+          type: "workspaceWrite",
+          writableRoots: [projectTmpDir],
+        });
+      }
+      assert.deepEqual(
+        (yield* build("auto", { type: "workspaceWrite", writableRoots: ["/data"] })).sandboxPolicy,
+        { type: "workspaceWrite", writableRoots: ["/data", projectTmpDir] },
+      );
+      assert.deepEqual((yield* build("approval-required")).sandboxPolicy, { type: "readOnly" });
+      assert.deepEqual((yield* build("full-access")).sandboxPolicy, { type: "dangerFullAccess" });
+    }),
+  );
+
   it.effect("sends MCP app model context as untrusted Codex context", () =>
     Effect.gen(function* () {
       const policy = { runtimeMode: "full-access", interactionMode: "default", cwd: null } as const;
