@@ -3,16 +3,20 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
+/**
+ * Version 2 blocks a PR only on a problem shown at its head, parks the rest as follow-ups, and
+ * gives a wording-only change no verifier. A running instance keeps its copied steps.
+ */
 export const autopilotFull = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "autopilot-full",
-  version: 1,
+  version: 2,
   title: "Autopilot-full",
   description:
     "A queue of independent PRs run to merged with full autonomy, one owner per PR and a swarm verdict before each merge.",
   source: {
     playbook: "poteto-mode/playbooks/autopilot-full.md",
-    commit: "5b090aff34e36677a0d6d53b7db6a74bedc709d1",
-    sha256: "e0a4141b62c7cfdbc32a8cce95f4af6de856107f5b4557b4165ef14f238ba63d",
+    commit: "fbe67d73fb87470601988a09f0bb49f7747dba48",
+    sha256: "8b368d258538025ac3873264038bc1398a32ff59da23360139caea1c05ef1fc6",
   },
   steps: [
     findVerifySkill,
@@ -29,7 +33,7 @@ export const autopilotFull = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Each PR swarm-verified at code-ready",
       slug: "swarm-verify",
       instructions:
-        "Swarm-verify once at each code-ready head, every lane driving the change through the project's verify skill. A rebase or minor fix gets one counterpart verifier at the new head. Send every proven finding to the owner in one fix-forward, and never push a fix yourself. Countersign anything that loosens a gate.",
+        "Swarm-verify once at each code-ready head, every lane driving the change through the project's verify skill. A rebase or minor fix gets one counterpart verifier at the new head, and a wording-only change gets none. Block a PR only for a problem you can show at its head, and send that to the owner; park the rest as follow-ups. Countersign anything that loosens a gate.",
       proofLevel: "required",
       proofHint: "each PR's verdict at its head",
       waitsForUser: false,

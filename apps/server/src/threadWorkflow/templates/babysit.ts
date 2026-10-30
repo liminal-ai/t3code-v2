@@ -3,16 +3,20 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
+/**
+ * Version 2 re-pins the playbook after it named Autopilot-stack owners beside Autopilot-full ones;
+ * the steps are unchanged. A running instance keeps its copied steps.
+ */
 export const babysit = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "babysit",
-  version: 1,
+  version: 2,
   title: "Babysit",
   description:
     "A PR or a stack driven to merge-ready: conflicts, review threads and CI, one frontier PR at a time.",
   source: {
     playbook: "poteto-mode/playbooks/babysit.md",
-    commit: "5b090aff34e36677a0d6d53b7db6a74bedc709d1",
-    sha256: "6af47c1f6df9a9ab884e8a4e08735fc00417fb07edf66a96acf557d4bc65e0cb",
+    commit: "fbe67d73fb87470601988a09f0bb49f7747dba48",
+    sha256: "37e9c5720bc26a8727b8f9b78a6db9029e3f7469fc8c62b62631da7e7b1843c8",
   },
   steps: [
     findVerifySkill,

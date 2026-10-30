@@ -3,16 +3,20 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
+/**
+ * Version 2 re-pins the playbook after its merge-gate audit flags changed; the steps are unchanged.
+ * A running instance keeps its copied steps.
+ */
 export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "shipping",
-  version: 1,
+  version: 2,
   title: "Shipping",
   description:
     "A green stack verified PR by PR, then the contiguous verified run landed bottom-up through the merge gate.",
   source: {
     playbook: "poteto-mode/playbooks/shipping.md",
-    commit: "47b5f218d3dfdec82229c39a3f4e37439f01d87a",
-    sha256: "e392b8bf43980f892a44cc34de5337eb8184e136ee3fb1bd9edae48202d0bc29",
+    commit: "c545c9c7abfbdbcab8898d9c63df60c3c570939e",
+    sha256: "9818abe4adf91a08e195ba3b4b8d84b9db934c87f772d84bf172d36fb042b5e0",
   },
   steps: [
     findVerifySkill,
