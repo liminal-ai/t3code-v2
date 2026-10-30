@@ -1455,7 +1455,13 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
             ? undefined
             : yield* makeAcpClientTerminals({
                 defaultCwd: input.runtimePolicy.cwd ?? process.cwd(),
-                environment: options.clientTerminals.environment,
+                environment:
+                  input.runtimePolicy.projectTmpDir === undefined
+                    ? options.clientTerminals.environment
+                    : withProjectTmpDir(
+                        options.clientTerminals.environment ?? {},
+                        input.runtimePolicy,
+                      ),
                 shellCommands: options.clientTerminals.shellCommands,
                 environmentForSession: (sessionId) => {
                   const remembered = terminalEnvironmentBySessionId.get(sessionId);
