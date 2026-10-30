@@ -20,6 +20,7 @@ import type { ThreadPendingUserInput } from "./threadRequests.ts";
 import {
   activeThreadWorkflowInstanceAtom,
   deriveThreadWorkflowAsks,
+  nextOpenThreadWorkflowQuestions,
   nextThreadWorkflowAttention,
   openThreadWorkflowQuestions,
   threadWorkflowProgress,
@@ -313,5 +314,82 @@ describe("openThreadWorkflowQuestions", () => {
       "w1.q1",
       "w1.q3",
     ]);
+  });
+});
+
+describe("nextOpenThreadWorkflowQuestions", () => {
+  const asked = (id: string, title: string, answered = false) =>
+    ({
+      id: ThreadWorkflowQuestionId.make(id),
+      title,
+      state: answered
+        ? { _tag: "answered", stamp, answer: "yes", source: "chat" }
+        : { _tag: "open" },
+    }) as ThreadWorkflowQuestionSummary;
+  const snapshot = (
+    questions: ReadonlyArray<ThreadWorkflowQuestionSummary>,
+    options: { status?: "open" | "closed"; corruption?: string; revision?: number } = {},
+  ) => {
+    const workflow = {
+      ...instance("w1", [step("w1.1", "open")], options.status),
+      questions,
+    } as ThreadWorkflowInstanceSummary;
+    return AsyncResult.success({
+      enabled: true,
+      visible: true,
+      unavailable: null,
+      view: {
+        ...view(options.status === "closed" ? null : "w1", [workflow]),
+        revision: options.revision ?? 3,
+        corruption: options.corruption ?? null,
+      },
+    } as ThreadWorkflowSubscriptionState);
+  };
+
+  it("lists the open workflow's open questions in asked order", () => {
+    const open = nextOpenThreadWorkflowQuestions(
+      [],
+      snapshot([asked("w1.q1", "A?"), asked("w1.q2", "B?", true), asked("w1.q3", "C?")]),
+    );
+    expect(open.map((question) => question.title)).toEqual(["A?", "C?"]);
+  });
+
+  it("keeps the same list while only the steps change, and a new one when a question resolves", () => {
+    const first = nextOpenThreadWorkflowQuestions(
+      [],
+      snapshot([asked("w1.q1", "A?"), asked("w1.q2", "B?")]),
+    );
+    expect(
+      nextOpenThreadWorkflowQuestions(
+        first,
+        snapshot([asked("w1.q1", "A?"), asked("w1.q2", "B?")], { revision: 4 }),
+      ),
+    ).toBe(first);
+    const answered = nextOpenThreadWorkflowQuestions(
+      first,
+      snapshot([asked("w1.q1", "A?", true), asked("w1.q2", "B?")], { revision: 5 }),
+    );
+    expect(answered.map((question) => question.id)).toEqual(["w1.q2"]);
+  });
+
+  it("shows nothing without a live snapshot, for a closed workflow or an unreadable log", () => {
+    const shown = nextOpenThreadWorkflowQuestions([], snapshot([asked("w1.q1", "A?")]));
+    expect(shown).toHaveLength(1);
+    expect(nextOpenThreadWorkflowQuestions(shown, AsyncResult.initial())).toHaveLength(0);
+    expect(
+      nextOpenThreadWorkflowQuestions(shown, AsyncResult.failure(Cause.fail("gone"))),
+    ).toHaveLength(0);
+    expect(
+      nextOpenThreadWorkflowQuestions(
+        shown,
+        snapshot([asked("w1.q1", "A?")], { status: "closed" }),
+      ),
+    ).toHaveLength(0);
+    expect(
+      nextOpenThreadWorkflowQuestions(
+        shown,
+        snapshot([asked("w1.q1", "A?")], { corruption: "bad line 3" }),
+      ),
+    ).toHaveLength(0);
   });
 });

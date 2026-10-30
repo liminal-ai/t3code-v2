@@ -101,6 +101,32 @@ export function openThreadWorkflowQuestions(
   return instance.questions.filter((question) => question.state._tag === "open");
 }
 
+export const NO_THREAD_WORKFLOW_QUESTIONS: ReadonlyArray<ThreadWorkflowQuestionSummary> = [];
+
+/**
+ * The open workflow's open questions for the chat column, or `previous` itself when they are the
+ * same ones, so it stays quiet while steps change. A question's text never changes once asked and
+ * its id is never reused, so the ids decide. Only a live snapshot of a readable log counts, as for
+ * the attention list.
+ */
+export function nextOpenThreadWorkflowQuestions(
+  previous: ReadonlyArray<ThreadWorkflowQuestionSummary>,
+  result: AsyncResult.AsyncResult<ThreadWorkflowSubscriptionState, unknown>,
+): ReadonlyArray<ThreadWorkflowQuestionSummary> {
+  const view = AsyncResult.isSuccess(result) ? result.value.view : null;
+  const instance =
+    view === null || view.corruption !== null ? null : activeThreadWorkflowInstance(view);
+  const open =
+    instance === null ? NO_THREAD_WORKFLOW_QUESTIONS : openThreadWorkflowQuestions(instance);
+  if (
+    open.length === previous.length &&
+    open.every((question, index) => question.id === previous[index]?.id)
+  ) {
+    return previous;
+  }
+  return open;
+}
+
 /** The subscription's revision, or null before its first snapshot. Unchanged revisions signal nothing. */
 export function threadWorkflowRevisionAtom(
   state: Atom.Atom<AsyncResult.AsyncResult<ThreadWorkflowSubscriptionState, unknown>>,

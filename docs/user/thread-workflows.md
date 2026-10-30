@@ -35,6 +35,8 @@ The agent's instructions for a stage, what proof it asked for, and who did what 
 
 When the agent needs your decision but can keep working, it puts a question on the workflow instead of asking in chat, where the question would scroll away. Each question is one sentence, with a subline that holds the options or the agent's recommendation. Behind the chevron are the agent's reasoning, the options with the recommended one marked, and the stage that waits on the answer. That stage carries a **waiting on question** marker in the list.
 
+Each open question also shows above the composer in the chat, with its title and subline, until it is answered or withdrawn, so you see it without opening the tab. Its **Answer in Workflow** button opens the tab on that question, expanded, with its answer box ready. While the agent waits on its question tool, that request takes the space above the composer, and the workflow questions come back once you answer it.
+
 Open questions sit at the top of the tab, above the stages. While any question is open, the thread reads **Awaiting Input** in the sidebar, and a new question raises one **Input needed** notification, the same as a question-tool request. Both clear when the last open question is answered or withdrawn.
 
 Answer in the tab or in chat:
