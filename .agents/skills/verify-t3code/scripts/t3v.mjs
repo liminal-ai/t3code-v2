@@ -80,7 +80,22 @@ const alive = (pid) => {
     return false;
   }
 };
-const groupAlive = (pgid) => alive(-pgid);
+// The group's members that still run. A zombie only waits for its parent to reap it, and signal 0
+// still reaches it, so it does not count.
+const groupMembers = (pgid) =>
+  NodeFS.readdirSync("/proc")
+    .filter((pid) => /^\d+$/.test(pid))
+    .filter((pid) => {
+      try {
+        const [state, , pgrp] = NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8")
+          .split(") ")[1]
+          .split(" ");
+        return pgrp === String(pgid) && state !== "Z";
+      } catch {
+        return false;
+      }
+    });
+const groupAlive = (pgid) => groupMembers(pgid).length > 0;
 const cwdOf = (pid) => {
   try {
     return NodeFS.readlinkSync(`/proc/${pid}/cwd`);
@@ -89,23 +104,7 @@ const cwdOf = (pid) => {
   }
 };
 // The group's leader, or while it is gone, any process left in the group.
-const groupCwd = (pgid) =>
-  cwdOf(pgid) ??
-  NodeFS.readdirSync("/proc")
-    .filter((pid) => /^\d+$/.test(pid))
-    .filter((pid) => {
-      try {
-        return (
-          NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")[2] ===
-          String(pgid)
-        );
-      } catch {
-        return false;
-      }
-    })
-    .map(cwdOf)
-    .find(Boolean) ??
-  null;
+const groupCwd = (pgid) => cwdOf(pgid) ?? groupMembers(pgid).map(cwdOf).find(Boolean) ?? null;
 const insideCheckout = (dir) => dir === worktree || dir?.startsWith(`${worktree}/`);
 const savedDevPgid = () =>
   NodeFS.existsSync(files.devPgid) ? Number(NodeFS.readFileSync(files.devPgid, "utf8")) : null;
