@@ -81,6 +81,24 @@ it.layer(layerTest)("ProjectTmpDir", (it) => {
     }),
   );
 
+  it.effect("makes a precreated .pstack/tmp owner-only", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const projectTmpDir = yield* ProjectTmpDir.ProjectTmpDir;
+      const root = yield* makeRepo;
+      const existing = path.join(root, ".pstack", "tmp");
+      yield* fileSystem.makeDirectory(existing, { recursive: true });
+      yield* fileSystem.chmod(existing, 0o755);
+
+      assert.equal(
+        yield* projectTmpDir.resolve({ projectRoot: root, instanceId: codex }),
+        existing,
+      );
+      assert.equal((yield* fileSystem.stat(existing)).mode & 0o777, 0o700);
+    }),
+  );
+
   it.effect("leaves a repo that already ignores .pstack/ alone", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;

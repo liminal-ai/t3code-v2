@@ -33,7 +33,7 @@ export function projectTmpDirPath(path: Path.Path, projectRoot: string): string 
   return path.join(projectRoot, ".pstack", "tmp");
 }
 
-export function instanceSetsTmpDir(environment: ProviderInstanceEnvironment | undefined): boolean {
+function instanceSetsTmpDir(environment: ProviderInstanceEnvironment | undefined): boolean {
   return environment?.some((variable) => variable.name === "TMPDIR") ?? false;
 }
 
@@ -43,7 +43,7 @@ export function withPstackExcluded(exclude: string): string {
   return `${exclude}${separator}${PSTACK_IGNORE_LINE}\n`;
 }
 
-export const make = Effect.gen(function* () {
+const make = Effect.gen(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const gitDriver = yield* GitVcsDriver.GitVcsDriver;
@@ -130,7 +130,9 @@ export const make = Effect.gen(function* () {
     }
     const tmpDir = projectTmpDirPath(path, projectRoot);
     // Made on every launch, so a deleted `.pstack/` never leaves agents a TMPDIR that is gone.
+    // mkdir keeps an existing directory's mode, so chmod makes a precreated one owner-only too.
     const writable = yield* fileSystem.makeDirectory(tmpDir, { recursive: true, mode: 0o700 }).pipe(
+      Effect.andThen(fileSystem.chmod(tmpDir, 0o700)),
       Effect.andThen(fileSystem.access(tmpDir, { writable: true })),
       Effect.as(true),
       Effect.orElseSucceed(() => false),
