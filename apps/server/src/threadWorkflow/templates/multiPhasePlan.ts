@@ -4,19 +4,19 @@ import * as Schema from "effect/Schema";
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
 /**
- * Version 2 re-pins the playbook after its skeleton took the execution playbook's blocking rule;
+ * Version 3 re-pins the playbook after its lanes came to save the evidence the verify skill names;
  * the steps are unchanged. A running instance keeps its copied steps.
  */
 export const multiPhasePlan = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "multi-phase-plan",
-  version: 2,
+  version: 3,
   title: "Multi-phase plan",
   description:
     "A plan for work that spans phases or stacked PRs, written as a checklist an owner runs box by box. No implementation.",
   source: {
     playbook: "poteto-mode/playbooks/multi-phase-plan.md",
-    commit: "fbe67d73fb87470601988a09f0bb49f7747dba48",
-    sha256: "2853685d0795599a43b526678e69436a1fe7f2e0010c5297ebad096acc154413",
+    commit: "80a789a1def45bd650fd70ab82ce027870f89f6c",
+    sha256: "b3ffd2c5c2fd4c228bc04939e00bc19ceedd5dadadaa3f68c1cc8ac3e8eb6972",
   },
   steps: [
     findVerifySkill,

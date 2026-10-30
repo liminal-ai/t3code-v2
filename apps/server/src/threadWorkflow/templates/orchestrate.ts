@@ -4,20 +4,19 @@ import * as Schema from "effect/Schema";
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
 /**
- * Version 3 follows the playbook's rewrite to run the program with the coordinator's own tools:
- * no `orch init`, standing orders, frontier.json, gates.md or encoded corrections. A running
- * instance keeps its copied steps.
+ * Version 4 re-pins the playbook after it said when to message a worker for its built state; the
+ * steps are unchanged. A running instance keeps its copied steps.
  */
 export const orchestrate = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "orchestrate",
-  version: 3,
+  version: 4,
   title: "Orchestrate",
   description:
     "A standing program run by one coordinator: many units, many stacked PRs, a fleet of workers.",
   source: {
     playbook: "poteto-mode/playbooks/orchestrate.md",
-    commit: "fbe67d73fb87470601988a09f0bb49f7747dba48",
-    sha256: "9af4f9ae0c6a3fc251543ec89fa5c3df770ffbd54448f99c978376a0664c70e5",
+    commit: "fcdfb47c257bf938330063ced672bc4ad969e713",
+    sha256: "4a676566bb483933cf24437303f15eab59f432d01a3285de6b9a7e22bb3ac538",
   },
   steps: [
     findVerifySkill,
