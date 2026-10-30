@@ -3,53 +3,58 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
+/**
+ * Version 3 follows the playbook's rewrite to run the program with the coordinator's own tools:
+ * no `orch init`, standing orders, frontier.json, gates.md or encoded corrections. A running
+ * instance keeps its copied steps.
+ */
 export const orchestrate = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "orchestrate",
-  version: 2,
+  version: 3,
   title: "Orchestrate",
   description:
     "A standing program run by one coordinator: many units, many stacked PRs, a fleet of workers.",
   source: {
     playbook: "poteto-mode/playbooks/orchestrate.md",
-    commit: "5b090aff34e36677a0d6d53b7db6a74bedc709d1",
-    sha256: "1dd1e53c8a9a81c75235a78bfba0f8d2f13e5dbb08507d70fcebf9ade66060a0",
+    commit: "fbe67d73fb87470601988a09f0bb49f7747dba48",
+    sha256: "9af4f9ae0c6a3fc251543ec89fa5c3df770ffbd54448f99c978376a0664c70e5",
   },
   steps: [
     findVerifySkill,
     {
-      title: "Program framed and runtime installed",
+      title: "Program framed",
       slug: "frame-program",
       instructions:
-        "State the done predicate as a count, the scope, the wall-clock budget and the tracks. If you would do the work yourself in this session, it is not a program: close this workflow and start autonomous-run. Otherwise run `orch init`, open the decision trail, write the standing orders before any spawn, and seed frontier.json from existing PRs.",
+        "State the goal, the scope and the tracks. If you would do the work yourself in this session, it is not a program: close this workflow and start autonomous-run. Otherwise keep the program's state in this workflow and in `orchestrate/<project-slug>/` in the pstack store.",
       proofLevel: "required",
-      proofHint: "the framing and the store path",
+      proofHint: "the goal and the state folder",
       waitsForUser: false,
     },
     {
       title: "One unit piloted end to end",
       slug: "pilot-one-unit",
       instructions:
-        "Push one unit through brief, worker, verification through the project's verify skill, stack entry, ledger row and merge. Fix the brief, the verify recipe and the unit size from its evidence before fan-out. On near-identical cheap units, the first unit is the pilot.",
+        "Take one unit through kickoff, owner, verifier and merge before fan-out, and fix the kickoff from what it shows. Each kickoff names the evidence that proves the unit done, such as a check through the project's verify skill. On near-identical cheap units, the first unit is the pilot.",
       proofLevel: "required",
-      proofHint: "the pilot's PR and its ledger row",
+      proofHint: "the pilot's PR and its verdict",
       waitsForUser: false,
     },
     {
-      title: "Units drained and landed",
+      title: "Units landed",
       slug: "scale-and-land",
       instructions:
-        "Keep a rolling window of workers up to the in-flight cap, refill as children finish, and run the queue discipline at every drain. Land verified units continuously through the merge gate, keeping the frontier green before upper-stack work. Park each escalation in gates.md and ask it with `thread_workflow_ask`, batched, and route work around it.",
+        "Keep about ten workers in flight, one owner per PR and a fresh worker per task, and start the next as each finishes. Each owner merges through the merge gate on a pass at its current head from a verifier on another model family. Read the diff, not the summary, and check each PR's live state before you report it. Ask the user with `thread_workflow_ask` only for a real decision or a blocker, and route work around it.",
       proofLevel: "required",
-      proofHint: "the orch status lines and the ledger summary",
+      proofHint: "each PR's live state and verdict",
       waitsForUser: false,
     },
     {
-      title: "Program closed against its predicate",
+      title: "Program closed against its goal",
       slug: "close-program",
       instructions:
-        "Drain the final inbox, reconcile every agent to a terminal row, confirm the predicate on the real artifact and a verdict for every landed head, audit the trail, and encode recurring corrections. Leave the store intact.",
+        "Account for every worker as done, replaced or absorbed, confirm what landed against the goal on the real artifact with a verdict for every landed head, and list what was dropped and why.",
       proofLevel: "required",
-      proofHint: "the closing counts",
+      proofHint: "what landed, what was dropped and why",
       waitsForUser: false,
     },
     ...closingSteps,
