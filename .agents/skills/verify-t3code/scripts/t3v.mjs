@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import * as NodeModule from "node:module";
 import * as NodeOS from "node:os";
@@ -27,7 +28,7 @@ const USAGE = `t3v.mjs [--run <name>] <command>
   outcome workflow [<thread-id>]   read-only: the thread workflow logs
   outcome note <thread-id>         read-only: each workflow note the provider was sent
   outcome sql <select>             read-only: one query against statev2.sqlite
-  down                       stop the browser and dev server this run started, by their PIDs
+  down                       stop the browser and dev server this checkout's \`up\` started, by their PIDs
 Options: --run <name> picks <main checkout>/.pstack/runs/<name>/ (default T3V_RUN, else verify-t3code).`;
 
 const argv = process.argv.slice(2);
@@ -47,7 +48,9 @@ const mainCheckout = NodePath.dirname(
 );
 const runName = flag("run") ?? process.env.T3V_RUN ?? "verify-t3code";
 const runDir = NodePath.join(mainCheckout, ".pstack", "runs", runName);
-const scratch = NodePath.join(runDir, "scratch", "t3v", NodePath.basename(worktree));
+// Two checkouts can share a folder name, so the key carries a hash of the full path.
+const checkoutKey = `${NodePath.basename(worktree)}-${NodeCrypto.createHash("sha256").update(worktree).digest("hex").slice(0, 8)}`;
+const scratch = NodePath.join(runDir, "scratch", "t3v", checkoutKey);
 const proof = NodePath.join(runDir, "proof");
 const stateDir = NodePath.join(worktree, ".t3", "userdata");
 const files = {
@@ -77,6 +80,35 @@ const alive = (pid) => {
     return false;
   }
 };
+const groupAlive = (pgid) => alive(-pgid);
+const cwdOf = (pid) => {
+  try {
+    return NodeFS.readlinkSync(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+};
+// The group's leader, or while it is gone, any process left in the group.
+const groupCwd = (pgid) =>
+  cwdOf(pgid) ??
+  NodeFS.readdirSync("/proc")
+    .filter((pid) => /^\d+$/.test(pid))
+    .filter((pid) => {
+      try {
+        return (
+          NodeFS.readFileSync(`/proc/${pid}/stat`, "utf8").split(") ")[1].split(" ")[2] ===
+          String(pgid)
+        );
+      } catch {
+        return false;
+      }
+    })
+    .map(cwdOf)
+    .find(Boolean) ??
+  null;
+const insideCheckout = (dir) => dir === worktree || dir?.startsWith(`${worktree}/`);
+const savedDevPgid = () =>
+  NodeFS.existsSync(files.devPgid) ? Number(NodeFS.readFileSync(files.devPgid, "utf8")) : null;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const httpStatus = async (url) => {
   try {
@@ -107,6 +139,9 @@ async function up() {
       `a dev server (pid ${previous.pid}) already runs on ${stateDir}; drive it or stop it first`,
     );
   }
+  const pgid = savedDevPgid();
+  if (pgid && groupAlive(pgid))
+    fail(`process group ${pgid} from an earlier \`up\` still runs; run \`down\` first`);
   for (const name of ["VITE_HTTP_URL", "VITE_WS_URL"]) {
     if (process.env[name]) fail(`${name} is set; unset it, dev is single-origin`);
   }
@@ -442,12 +477,27 @@ async function browser(sub) {
   }
 }
 
+// The workflow store's file name: `[a-z0-9-]` as is and every other byte as `_xx`, so an
+// `mcp:` thread's log is `mcp_3a….jsonl` (`threadLogFileName` in apps/server/src/threadWorkflow/store.ts).
+const workflowLogName = (threadId) =>
+  `${[...new TextEncoder().encode(threadId)]
+    .map((byte) =>
+      /[a-z0-9-]/.test(String.fromCharCode(byte))
+        ? String.fromCharCode(byte)
+        : `_${byte.toString(16).padStart(2, "0")}`,
+    )
+    .join("")}.jsonl`;
+
 // Codex records name the native thread; Claude records name the provider session, which
 // carries the T3 thread id. Every provider logs into the file of whichever thread opened its
 // session first, so read them all.
 const providerLogLinesForThread = (threadId, nativeIds) => {
   const dir = NodePath.join(stateDir, "logs", "provider");
-  const marks = [`:thread:${threadId}:`, ...nativeIds.map((id) => `"threadId":"${id}"`)];
+  const marks = [
+    `:thread:${threadId}:`,
+    `:thread:${encodeURIComponent(threadId)}:`,
+    ...nativeIds.map((id) => `"threadId":"${id}"`),
+  ];
   return NodeFS.readdirSync(dir)
     .flatMap((name) => NodeFS.readFileSync(NodePath.join(dir, name), "utf8").split("\n"))
     .filter((line) => marks.some((mark) => line.includes(mark)));
@@ -459,7 +509,7 @@ function outcome(sub) {
     if (!NodeFS.existsSync(dir)) return console.log(`no workflow logs under ${dir}`);
     const wanted = argv[0];
     for (const name of NodeFS.readdirSync(dir).sort()) {
-      if (wanted && name !== `${wanted}.jsonl`) continue;
+      if (wanted && name !== workflowLogName(wanted)) continue;
       console.log(`# ${NodePath.join(dir, name)}`);
       process.stdout.write(NodeFS.readFileSync(NodePath.join(dir, name), "utf8"));
     }
@@ -502,22 +552,41 @@ function outcome(sub) {
   fail(`unknown outcome command ${sub}\n${USAGE}`);
 }
 
-function down() {
+async function down() {
   const state = readJson(files.browser);
-  if (state && alive(state.pid)) {
+  if (state && alive(state.pid) && insideCheckout(cwdOf(state.pid))) {
     process.kill(state.pid, "SIGTERM");
     console.log(`stopped browser pid ${state.pid}`);
-  }
+  } else if (state && alive(state.pid))
+    console.log(
+      `left browser pid ${state.pid} alone: its cwd ${cwdOf(state.pid)} is not ${worktree}`,
+    );
   NodeFS.rmSync(files.browser, { force: true });
-  const devPgid = NodeFS.existsSync(files.devPgid)
-    ? Number(NodeFS.readFileSync(files.devPgid, "utf8"))
-    : null;
-  if (devPgid && alive(devPgid)) {
-    process.kill(-devPgid, "SIGTERM");
-    console.log(`stopped dev server process group ${devPgid}`);
-  } else console.log("no dev server started by t3v is running");
+  const info = runtime();
+  const ports = [info?.port, info?.devUrl && Number(new URL(info.devUrl).port)].filter(Boolean);
+  const pgid = savedDevPgid();
+  if (!pgid || !groupAlive(pgid)) console.log("no dev server started by t3v is running");
+  else if (!insideCheckout(groupCwd(pgid)))
+    return fail(
+      `refused to stop process group ${pgid}: its cwd is ${groupCwd(pgid) ?? "unreadable"}, not ${worktree}`,
+    );
+  else {
+    process.kill(-pgid, "SIGTERM");
+    for (let i = 0; i < 20 && groupAlive(pgid); i++) await sleep(500);
+    if (groupAlive(pgid)) process.kill(-pgid, "SIGKILL");
+    for (let i = 0; i < 10 && groupAlive(pgid); i++) await sleep(500);
+    if (groupAlive(pgid)) fail(`process group ${pgid} survived SIGKILL`);
+    console.log(`stopped dev server process group ${pgid}`);
+  }
   NodeFS.rmSync(files.devPgid, { force: true });
   NodeFS.rmSync(files.pairingUrl, { force: true });
+  const held = ports.flatMap((port) => {
+    const owner = portOwner(port);
+    return owner ? [`${port} (pid ${owner}, cwd ${cwdOf(owner)})`] : [];
+  });
+  if (held.length > 0)
+    fail(`still listening, not started by this checkout's \`up\`: ${held.join(", ")}`);
+  if (ports.length > 0) console.log(`nothing listens on ${ports.join(" or ")}`);
   console.log(`proof kept in ${proof}`);
 }
 
@@ -543,7 +612,7 @@ switch (command) {
     outcome(sub);
     break;
   case "down":
-    down();
+    await down();
     break;
   case "__serve":
     await browserServe();
