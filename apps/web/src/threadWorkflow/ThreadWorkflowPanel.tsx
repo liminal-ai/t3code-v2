@@ -2,6 +2,7 @@ import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/threa
 import {
   activeThreadWorkflowInstance,
   deriveThreadWorkflowAsks,
+  openThreadWorkflowQuestions,
 } from "@t3tools/client-runtime/state/thread-workflow";
 import type {
   ScopedThreadRef,
@@ -24,6 +25,7 @@ import { ThreadWorkflowForm } from "./ThreadWorkflowForm";
 import { threadWorkflowFormStepId, type ThreadWorkflowFormIntent } from "./threadWorkflowForms";
 import { ThreadWorkflowHeader, ThreadWorkflowInstanceList } from "./ThreadWorkflowHeader";
 import { ThreadWorkflowQuestions } from "./ThreadWorkflowQuestions";
+import { usePendingThreadWorkflowReveal } from "./threadWorkflowQuestionReveal";
 import { ThreadWorkflowStart } from "./ThreadWorkflowStart";
 import { ThreadWorkflowStepList } from "./ThreadWorkflowStepList";
 import { ThreadWorkflowStrip } from "./ThreadWorkflowStrip";
@@ -144,6 +146,7 @@ export function ThreadWorkflowPanel({
   const query = useEnvironmentQuery(threadWorkflowStateAtom(threadRef));
   const state = query.data;
   const actions = useThreadWorkflowActions(threadRef, state?.view.revision ?? 0);
+  const revealQuestionId = usePendingThreadWorkflowReveal(threadRef);
   const [viewedInstanceId, setViewedInstanceId] = useState<ThreadWorkflowInstanceId | null>(null);
   const [form, setForm] = useState<ThreadWorkflowFormIntent | null>(null);
   const [starting, setStarting] = useState(false);
@@ -160,6 +163,20 @@ export function ThreadWorkflowPanel({
         active ??
         view.instances.at(-1) ??
         null);
+  // A reveal from the chat column shows the workflow that holds its question, even over history.
+  // Only an open question counts: its row clears the reveal, so a resolved one would pin the tab.
+  const revealInstanceId =
+    revealQuestionId === null
+      ? null
+      : (view?.instances.find((candidate) =>
+          openThreadWorkflowQuestions(candidate).some(
+            (question) => question.id === revealQuestionId,
+          ),
+        )?.id ?? null);
+  if (revealInstanceId !== null && instance?.id !== revealInstanceId) {
+    setForm(null);
+    setViewedInstanceId(revealInstanceId);
+  }
   const corrupt = view !== null && view.corruption !== null;
   const disabled = !actions.canOperate || actions.busy || corrupt;
   const asks = deriveThreadWorkflowAsks(pendingUserInputs);
@@ -317,6 +334,7 @@ export function ThreadWorkflowPanel({
             <ThreadWorkflowQuestions
               instance={instance}
               disabled={disabled}
+              revealQuestionId={revealQuestionId}
               onSubmit={(request) => void submit(request)}
             />
           ) : null}
