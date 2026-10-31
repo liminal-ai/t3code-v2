@@ -5,11 +5,9 @@ import {
   type OrchestrationV2ProviderThreadNativeMetadata,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
+import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
-
-/** An instance's binding before it names the instance. Every new LHC row on the instance starts from it. */
-export type ClaudeEngineBindingTemplate = Omit<OrchestrationV2EngineBinding, "providerInstanceId">;
 
 /** The engine a provider row's native session runs on. Null means stock Claude. */
 export function rowEngineBinding(
@@ -42,7 +40,7 @@ export function copyEngineBinding(
 /** Fails when `row` would continue on an engine or Claude home other than its instance's. */
 export function checkClaudeEngineBinding(
   row: OrchestrationV2ProviderThread,
-  template: ClaudeEngineBindingTemplate | undefined,
+  template: ProviderEngineBindingTemplate | undefined,
   instanceId: ProviderInstanceId,
 ): Effect.Effect<void, ProviderAdapter.ProviderAdapterContinuationMismatchError> {
   const binding = rowEngineBinding(row);

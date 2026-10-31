@@ -142,7 +142,6 @@ import {
   copyEngineBinding,
   rowEngineBinding,
   stampEngineBinding,
-  type ClaudeEngineBindingTemplate,
 } from "../../provider/Drivers/claudeLhc/binding.ts";
 import {
   claudeAutoCompactWindow,
@@ -208,6 +207,7 @@ import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriverCreateInput,
 } from "@t3tools/provider-core/server/adapterDriver";
+import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import {
   type BackgroundWorkReport,
   backgroundWorkNotification,
@@ -4471,7 +4471,7 @@ export interface ClaudeAdapterV2Options {
     ) => Effect.Effect<void>;
   };
   /** The instance's context engine. Absent for stock Claude. Every row must agree with it. */
-  readonly engineBinding?: ClaudeEngineBindingTemplate;
+  readonly engineBinding?: ProviderEngineBindingTemplate;
 }
 
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (

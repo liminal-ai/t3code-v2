@@ -90,7 +90,7 @@ import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
-import type { ClaudeEngineBindingTemplate } from "../../provider/Drivers/claudeLhc/binding.ts";
+import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type * as ProviderContinuationRequests from "@t3tools/provider-core/server/ProviderContinuationRequests";
@@ -177,7 +177,7 @@ const CLAUDE_LHC_BINDING = {
 function engineBindingTemplate({
   providerInstanceId: _providerInstanceId,
   ...template
-}: OrchestrationV2EngineBinding): ClaudeEngineBindingTemplate {
+}: OrchestrationV2EngineBinding): ProviderEngineBindingTemplate {
   return template;
 }
 

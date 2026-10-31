@@ -8,6 +8,7 @@ import {
   type OrchestrationV2EngineBinding,
 } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
+import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -18,7 +19,6 @@ import {
   copyEngineBinding,
   rowEngineBinding,
   stampEngineBinding,
-  type ClaudeEngineBindingTemplate,
 } from "./binding.ts";
 
 const INSTANCE_ID = ProviderInstanceId.make("claude-lhc");
@@ -93,7 +93,7 @@ describe("claudeLhc binding", () => {
   });
 
   describe("checkClaudeEngineBinding", () => {
-    const check = (row: OrchestrationV2ProviderThread, template?: ClaudeEngineBindingTemplate) =>
+    const check = (row: OrchestrationV2ProviderThread, template?: ProviderEngineBindingTemplate) =>
       Effect.result(checkClaudeEngineBinding(row, template, INSTANCE_ID));
 
     it.effect(
