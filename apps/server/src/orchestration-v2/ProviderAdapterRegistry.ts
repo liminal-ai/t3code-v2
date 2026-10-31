@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off
+import * as NodePath from "node:path";
+
 import {
   ProviderInstanceId,
   ProviderSetupError,
@@ -11,6 +14,10 @@ import * as Scope from "effect/Scope";
 
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/adapterDriver";
+import {
+  engineContinuationKey,
+  type ProviderEngineBindingTemplate,
+} from "@t3tools/provider-core/server/driver";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
 const isProviderSetupError = Schema.is(ProviderSetupError);
@@ -49,9 +56,27 @@ export interface ProviderAdapterRegistryV2Shape {
       readonly continuationKey: string;
       readonly enabled: boolean;
       readonly capabilities: OrchestrationV2ProviderCapabilities;
+      readonly engineBinding?: ProviderEngineBindingTemplate;
     },
     ProviderAdapterRegistryV2Error
   >;
+}
+
+/** Why the template cannot seed a binding with its instance's identity, or undefined when it can. */
+function engineBindingTemplateProblem(
+  template: ProviderEngineBindingTemplate,
+  instanceContinuationKey: string,
+): string | undefined {
+  if (NodePath.resolve(template.claudeHome) !== template.claudeHome) {
+    return `The engine binding's Claude home ${template.claudeHome} is not a normalized absolute path.`;
+  }
+  if (template.continuationKey !== engineContinuationKey(template)) {
+    return `The engine binding's continuation key ${template.continuationKey} does not name its Claude home ${template.claudeHome}.`;
+  }
+  if (template.continuationKey !== instanceContinuationKey) {
+    return `The engine binding's continuation key ${template.continuationKey} differs from its instance's ${instanceContinuationKey}.`;
+  }
+  return undefined;
 }
 
 export class ProviderAdapterRegistryV2 extends Context.Service<
@@ -143,11 +168,24 @@ export const layerFromProviderInstanceRegistry: Layer.Layer<
               (cause) => new ProviderAdapterRegistryMetadataError({ instanceId, cause }),
             ),
           );
+        const continuationKey = instance.continuationIdentity.continuationKey;
+        const engineBinding = instance.engineBinding;
+        const templateProblem =
+          engineBinding === undefined
+            ? undefined
+            : engineBindingTemplateProblem(engineBinding, continuationKey);
+        if (templateProblem !== undefined) {
+          return yield* new ProviderAdapterRegistryMetadataError({
+            instanceId,
+            cause: templateProblem,
+          });
+        }
         return {
           driver: instance.driverKind,
-          continuationKey: instance.continuationIdentity.continuationKey,
+          continuationKey,
           enabled: instance.enabled,
           capabilities,
+          ...(engineBinding === undefined ? {} : { engineBinding }),
         };
       }),
     });

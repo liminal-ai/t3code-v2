@@ -56,6 +56,7 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
+  engineBindingsAgree,
   latestProviderTurnForAttempt,
   parseGoalCommand,
   orchestrationV2RunWorkStartedAt,
@@ -168,6 +169,7 @@ import {
 import { planThreadDeletion } from "./ThreadDeletion.ts";
 import { lifecycleActionOf, ThreadHooks } from "./ThreadHooks.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import * as ServerSettings from "../serverSettings.ts";
 
 const isMessageQuestionAnswer = Schema.is(
@@ -934,16 +936,19 @@ function appendContextHandoffId(
   return handoffId === null ? handoffIds : Array.from(new Set([...handoffIds, handoffId]));
 }
 
+/** Root rows on the instance that may continue under its current engine, newest first. */
 function rootProviderThreadsForProvider(
   projection: Pick<OrchestrationV2ThreadProjection, "providerThreads" | "thread">,
   providerInstanceId: ModelSelection["instanceId"],
+  engineBinding: ProviderEngineBindingTemplate | undefined,
 ): ReadonlyArray<OrchestrationV2ProviderThread> {
   return projection.providerThreads
     .filter(
       (providerThread) =>
         providerThread.providerInstanceId === providerInstanceId &&
         providerThread.appThreadId === projection.thread.id &&
-        providerThread.ownerNodeId === null,
+        providerThread.ownerNodeId === null &&
+        engineBindingsAgree(providerThread.nativeMetadata?.engineBinding, engineBinding),
     )
     .toSorted(
       (left, right) =>
@@ -1112,11 +1117,55 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } as Event;
     });
 
+  const engineBindingTemplate = (providerInstanceId: ProviderInstanceId) =>
+    providerAdapters.getMetadata === undefined
+      ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - Without metadata the instance has no template.
+        Effect.succeed(undefined)
+      : providerAdapters
+          .getMetadata(providerInstanceId)
+          .pipe(Effect.map((metadata) => metadata.engineBinding));
+
+  // A new or switched thread takes its instance's binding as the seed for its next new session.
+  const seedEngineBinding =
+    /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
+    Effect.fnUntraced(function* <Event extends Omit<OrchestrationV2DomainEvent, "id">>(
+      event: Event,
+    ) {
+      if (event.type !== "thread.created" && event.type !== "thread.provider-switched") {
+        return event;
+      }
+      const thread = (
+        event as Omit<OrchestrationV2DomainEvent, "id"> & {
+          readonly payload: OrchestrationV2AppThread;
+        }
+      ).payload;
+      if (thread.engineBinding?.providerInstanceId === thread.providerInstanceId) return event;
+      const template = yield* engineBindingTemplate(thread.providerInstanceId).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Engine binding template unreadable, thread keeps no seed", {
+            threadId: thread.id,
+            providerInstanceId: thread.providerInstanceId,
+            cause,
+          }).pipe(Effect.as(undefined)),
+        ),
+      );
+      if (template === undefined && thread.engineBinding === undefined) return event;
+      const { engineBinding: _replaced, ...unseeded } = thread;
+      const payload: OrchestrationV2AppThread =
+        template === undefined
+          ? unseeded
+          : {
+              ...unseeded,
+              engineBinding: { ...template, providerInstanceId: thread.providerInstanceId },
+            };
+      return { ...event, payload };
+    });
+
   const emit =
     (events: Ref.Ref<Array<OrchestrationV2DomainEvent>>, command: OrchestrationV2ServerCommand) =>
     <Event extends OrchestrationV2DomainEvent>(event: Omit<Event, "id">) =>
       Effect.gen(function* () {
-        const withId = yield* makeEvent(command, event);
+        const withId = yield* makeEvent(command, yield* seedEngineBinding(event));
         yield* Ref.update(events, (existing) => [...existing, withId]);
         return withId;
       });
@@ -1225,7 +1274,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
       options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
     ) {
-      const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
+      const withIds = yield* Effect.forEach(events, (event) =>
+        seedEngineBinding(event).pipe(Effect.flatMap(makeSystemEvent)),
+      );
       yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
     });
 
@@ -1644,7 +1695,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const targetProviderThread = followsCurrent
         ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId
           ? activeProviderThread
-          : rootProviderThreadsForProvider(projection, queuedRun.providerInstanceId)[0]
+          : rootProviderThreadsForProvider(
+              projection,
+              queuedRun.providerInstanceId,
+              yield* engineBindingTemplate(queuedRun.providerInstanceId).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new OrchestratorDispatchError({
+                      commandId,
+                      commandType: "message.dispatch",
+                      cause,
+                    }),
+                ),
+              ),
+            )[0]
         : storedProviderThread;
       const queuedProviderThread: OrchestrationV2ProviderThread = targetProviderThread ?? {
         id: idAllocator.derive.providerThread({
@@ -4725,6 +4789,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const existingTargetProviderThread = rootProviderThreadsForProvider(
         input.projection,
         input.modelSelection.instanceId,
+        yield* engineBindingTemplate(input.modelSelection.instanceId).pipe(
+          Effect.mapError(
+            (cause) =>
+              new OrchestratorProviderAdapterError({
+                commandId: input.command.commandId,
+                providerInstanceId: input.modelSelection.instanceId,
+                cause,
+              }),
+          ),
+        ),
       ).find((candidate) => candidate.id !== providerThread.id);
       const targetProviderSessionId =
         existingTargetProviderThread?.providerSessionId ??
@@ -5590,7 +5664,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const targetProviderThread =
         modelSelection.instanceId === queueProviderThread.providerInstanceId
           ? queueProviderThread
-          : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0];
+          : rootProviderThreadsForProvider(
+              projection,
+              modelSelection.instanceId,
+              yield* engineBindingTemplate(modelSelection.instanceId).pipe(
+                mapDispatchError(command),
+              ),
+            )[0];
       const queuedAdapter = yield* providerAdapters
         .get(modelSelection.instanceId)
         .pipe(mapDispatchError(command));
@@ -6324,7 +6404,20 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     const targetProviderThread =
       isProviderSwitch && !canResumeAcrossInstances
-        ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
+        ? rootProviderThreadsForProvider(
+            projection,
+            modelSelection.instanceId,
+            yield* engineBindingTemplate(modelSelection.instanceId).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new OrchestratorProviderAdapterError({
+                    commandId: command.commandId,
+                    providerInstanceId: modelSelection.instanceId,
+                    cause,
+                  }),
+              ),
+            ),
+          )[0]
         : activeProviderThread;
     const providerSessionId =
       (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
