@@ -1137,10 +1137,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       ).payload;
       if (thread.engineBinding?.providerInstanceId === thread.providerInstanceId) return event;
       // A restart steer moves the thread to its run's instance as a model-selection update.
+      // A fork continues its source's conversation, so it keeps the source's missing seed too.
       if (
         thread.engineBinding === undefined &&
-        event.type !== "thread.created" &&
-        event.type !== "thread.provider-switched"
+        (event.type === "thread.created"
+          ? thread.forkedFrom !== null
+          : event.type !== "thread.provider-switched")
       ) {
         return event;
       }

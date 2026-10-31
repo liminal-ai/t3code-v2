@@ -532,6 +532,27 @@ describe("engine binding seed", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.live(
+    "keeps a stock source's missing seed on its fork after the instance gains a template",
+    () =>
+      Effect.gen(function* () {
+        const runtime = yield* makeRuntime("stock-fork", [[LHC, null]]);
+        const sourceId = ThreadId.make("thread:engine-binding:stock-fork-source");
+        const forkId = ThreadId.make("thread:engine-binding:stock-fork-target");
+        yield* run(runtime, [
+          create(sourceId, LHC, runtime.cwd),
+          send(sourceId, "first", selection(LHC)),
+        ]);
+        yield* setTemplate(runtime.instances, LHC, lhcTemplate());
+        yield* run(runtime, [fork(sourceId, forkId)]);
+        const [source, target] = yield* reload(runtime, [sourceId, forkId]);
+        assert.notProperty(source?.projection.thread, "engineBinding");
+        assert.notProperty(target?.projection.thread, "engineBinding");
+        assert.notProperty(target?.shell, "engineBinding");
+        assert.lengthOf(target!.projection.providerThreads, 0);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.live("leaves existing threads alone when the template changes after creation", () =>
     Effect.gen(function* () {
       const runtime = yield* makeRuntime("template-change", [[LHC, lhcTemplate()]]);
