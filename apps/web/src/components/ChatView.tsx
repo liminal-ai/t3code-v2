@@ -2470,6 +2470,7 @@ export default function ChatView(props: ChatViewProps) {
       usedTokens: activeContextWindow.usedTokens,
       updatedAt: activeContextWindow.updatedAt,
       promptCacheTtlMs: activeThreadLiveTokenUsage?.promptCacheTtlMs,
+      compaction: activeThread?.source.engineBinding?.compaction,
       now: `${nowMinute}:00.000Z`,
     })
       ? activeContextWindow.usedTokens

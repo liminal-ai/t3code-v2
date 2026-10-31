@@ -153,4 +153,28 @@ describe("idleCompactionWindow", () => {
     archived.thread = { ...archived.thread, archivedAt: at() };
     expect(idleCompactionWindow(archived, NOW_MS)).toBeNull();
   });
+
+  it("schedules a stock thread but never one whose provider owns compaction", () => {
+    const cache = { cacheExpiresInMs: 60 * MINUTE_MS };
+    const endMs = NOW_MS + 60 * MINUTE_MS;
+    expect(idleCompactionWindow(records(cache), NOW_MS)).toEqual({
+      runId,
+      startMs: endMs - 2 * MINUTE_MS,
+      endMs,
+    });
+    const bound = records(cache);
+    bound.thread = {
+      ...bound.thread,
+      engineBinding: {
+        providerInstanceId: instanceId,
+        engine: "claude-lhc",
+        continuationKey: "claude-lhc:/home/user/.claude",
+        claudeHome: "/home/user/.claude",
+        compact: { trigger: 700_000, target: 140_000 },
+        nativeContinuation: "required",
+        compaction: "provider",
+      },
+    };
+    expect(idleCompactionWindow(bound, NOW_MS)).toBeNull();
+  });
 });

@@ -1,4 +1,9 @@
-import type { ModelSelection, ProviderDriverKind, ProviderInstanceId } from "@t3tools/contracts";
+import type {
+  ModelSelection,
+  OrchestrationV2EngineBinding,
+  ProviderDriverKind,
+  ProviderInstanceId,
+} from "@t3tools/contracts";
 import {
   CLAUDE_RESUME_COMPACTION_NEVER_ANSWER,
   COMPACTION_SUGGESTION_MIN_TOKENS,
@@ -66,10 +71,12 @@ export function shouldOfferResumeCompaction(input: {
   readonly usedTokens: number | null | undefined;
   readonly updatedAt: string | null | undefined;
   readonly promptCacheTtlMs?: number | undefined;
+  readonly compaction?: OrchestrationV2EngineBinding["compaction"] | undefined;
   readonly now: string;
 }): boolean {
   if (
     input.provider !== "claudeAgent" ||
+    input.compaction === "provider" ||
     (input.usedTokens ?? 0) < COMPACTION_SUGGESTION_MIN_TOKENS
   ) {
     return false;
