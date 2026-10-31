@@ -14029,6 +14029,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           };
 
           const error = yield* Effect.flip(Effect.asVoid(attempts[operation]));
+          yield* yieldTicks(50);
 
           assert.equal(error._tag, wrapper);
           const mismatch = mismatchCause(error);
@@ -14066,6 +14067,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             const error = yield* Effect.flip(
               harness.runtime.resumeThread({ providerThread: movedRow }),
             );
+            yield* yieldTicks(50);
             assert.equal(error._tag, "ProviderAdapterResumeThreadError");
             const mismatch = mismatchCause(error);
             assert.equal(mismatch.providerThreadId, movedRow.id);

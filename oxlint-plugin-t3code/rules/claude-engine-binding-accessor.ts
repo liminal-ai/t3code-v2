@@ -30,6 +30,15 @@ const memberPropertyName = (node: ESTree.MemberExpression): Option.Option<string
   );
 };
 
+const readsRowMetadata = (node: ESTree.MemberExpression) => {
+  const object = unwrapExpression(node.object);
+  return (
+    Option.isSome(object) &&
+    object.value.type === "MemberExpression" &&
+    Option.getOrUndefined(memberPropertyName(object.value)) === "nativeMetadata"
+  );
+};
+
 export default defineRule({
   meta: {
     type: "problem",
@@ -84,7 +93,9 @@ export default defineRule({
         }
       },
       MemberExpression(node) {
-        if (Option.getOrUndefined(memberPropertyName(node)) === "engineBinding") reads.push(node);
+        if (Option.getOrUndefined(memberPropertyName(node)) !== "engineBinding") return;
+        if (readsRowMetadata(node)) context.report({ node, message });
+        else reads.push(node);
       },
       ObjectPattern(node) {
         for (const property of node.properties) {

@@ -83,6 +83,22 @@ describe(RULE, () => {
   );
 
   adapter.invalid(
+    "reports a row's binding passed straight to the guard as its template",
+    `${IMPORTS}
+      export const check = (row: any) =>
+        checkClaudeEngineBinding(row, row.nativeMetadata!.engineBinding!, "instance");
+    `,
+  );
+
+  adapter.invalid(
+    "reports a row's binding passed straight to the traits",
+    `${IMPORTS}
+      export const traits = (row: any) =>
+        Traits.claudeThreadTraits(row.nativeMetadata.engineBinding, { nativeThreadId: "n" });
+    `,
+  );
+
+  adapter.invalid(
     "reports a destructured binding",
     `${IMPORTS}
       export const binding = (row: any) => {
