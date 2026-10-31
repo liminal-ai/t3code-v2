@@ -1321,8 +1321,9 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
           ),
           close: Queue.shutdown(promptQueue).pipe(
             Effect.andThen(closeClaudeQuery(queryRuntime)),
-            // The SDK signals its child after close returns (SIGTERM at 2 s, SIGKILL at 7 s); wait for the
-            // exit so a reopen of the same session never runs beside the old process.
+            // The SDK signals its child after close returns (SIGTERM at 2 s, SIGKILL at 7 s), so wait for the
+            // exit before a reopen. After 10 s, kill and settle anyway: only a process stuck in
+            // uninterruptible sleep outlives SIGKILL, and waiting on it would wedge the thread.
             Effect.andThen(
               Effect.promise(() => processExit ?? Promise.resolve()).pipe(
                 Effect.timeoutOrElse({
