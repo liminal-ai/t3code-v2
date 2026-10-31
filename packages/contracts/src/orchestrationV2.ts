@@ -443,6 +443,9 @@ export const OrchestrationV2EngineCompactPolicy = Schema.Struct({
 );
 export type OrchestrationV2EngineCompactPolicy = typeof OrchestrationV2EngineCompactPolicy.Type;
 
+// A key or a path is an identity, so it must not be trimmed.
+const ExactNonEmptyString = Schema.String.check(Schema.isNonEmpty());
+
 /**
  * The context engine a native session runs on. A provider thread's copy is the authority for
  * that session; an app thread's copy only seeds its next new session. Absent means stock.
@@ -451,8 +454,8 @@ export type OrchestrationV2EngineCompactPolicy = typeof OrchestrationV2EngineCom
 export const OrchestrationV2EngineBinding = Schema.Struct({
   providerInstanceId: ProviderInstanceId,
   engine: Schema.Literal("claude-lhc"),
-  continuationKey: TrimmedNonEmptyString,
-  claudeHome: TrimmedNonEmptyString,
+  continuationKey: ExactNonEmptyString,
+  claudeHome: ExactNonEmptyString,
   compact: Schema.NullOr(OrchestrationV2EngineCompactPolicy),
   nativeContinuation: Schema.Literal("required"),
   compaction: Schema.Literal("provider"),

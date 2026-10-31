@@ -797,9 +797,19 @@ describe("engine binding", () => {
     expect(
       engineBindingsAgree(decoded, {
         ...decoded,
-        continuationKey: TrimmedNonEmptyString.make("claude-lhc:home:/other"),
+        continuationKey: "claude-lhc:home:/other",
       }),
     ).toBe(false);
     expect(engineBindingsAgree(decoded, otherInstance)).toBe(true);
+  });
+
+  it("keeps a key and a home exactly, so padded paths stay distinct", () => {
+    const padded = decodeUnknownEngineBinding({
+      ...binding,
+      continuationKey: `${binding.continuationKey} `,
+      claudeHome: `${binding.claudeHome} `,
+    });
+    expect(padded.claudeHome).toBe(`${binding.claudeHome} `);
+    expect(engineBindingsAgree(padded, decodeEngineBinding(binding))).toBe(false);
   });
 });
