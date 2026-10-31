@@ -992,10 +992,9 @@ export const make = Effect.gen(function* () {
     return resolveClaudeConfigDir(config.value.homePath, environmentHome);
   };
 
-  // Disabled LHC instances count too, because their sessions stay in the home.
-  const readLhcHomes = Effect.fn("AgentSessionScanner.readLhcHomes")(function* (
-    providerInstances: Readonly<Record<string, ProviderInstanceConfig>>,
-  ) {
+  const readLhcHomesIncludingDisabled = Effect.fn(
+    "AgentSessionScanner.readLhcHomesIncludingDisabled",
+  )(function* (providerInstances: Readonly<Record<string, ProviderInstanceConfig>>) {
     const homes = new Map<string, Array<ProviderInstanceId>>();
     for (const [instanceId, instance] of Object.entries(providerInstances)) {
       if (
@@ -1081,10 +1080,9 @@ export const make = Effect.gen(function* () {
 
   const readCurrentLhcHomes = serverSettings.getSettings.pipe(
     Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
-    Effect.flatMap((settings) => readLhcHomes(settings.providerInstances)),
+    Effect.flatMap((settings) => readLhcHomesIncludingDisabled(settings.providerInstances)),
   );
 
-  // One store inspection per shared home, covering every session the caller found there.
   const checkLhcHomes = Effect.fn("AgentSessionScanner.checkLhcHomes")(function* (
     lhcHomes: ReadonlyMap<string, ReadonlyArray<ProviderInstanceId>>,
     candidates: ReadonlyArray<{
@@ -1391,7 +1389,6 @@ export const make = Effect.gen(function* () {
     return { candidates: raw, truncated };
   });
 
-  // Discovery keeps every transcript so an import can name each refusal; only the list hides them.
   const withoutLhcSessions = Effect.fn("AgentSessionScanner.withoutLhcSessions")(function* (
     candidates: ReadonlyArray<RawCandidate>,
   ) {
@@ -1430,11 +1427,11 @@ export const make = Effect.gen(function* () {
     return { candidates: listed, diagnostics };
   });
 
-  let cachedCandidates: ReadonlyArray<RawCandidate> | null = null;
+  let cachedDiscoveredCandidates: ReadonlyArray<RawCandidate> | null = null;
 
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
     const { candidates: discovered, truncated } = yield* collectCandidates();
-    cachedCandidates = discovered;
+    cachedDiscoveredCandidates = discovered;
     const { candidates: raw, diagnostics } = yield* withoutLhcSessions(discovered);
 
     const merged = new Map<
@@ -1564,9 +1561,8 @@ export const make = Effect.gen(function* () {
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
 
-    const candidates = cachedCandidates ?? (yield* collectCandidates()).candidates;
-    cachedCandidates = candidates;
-    // The cached list may predate a settings change, so ownership is checked again here.
+    const candidates = cachedDiscoveredCandidates ?? (yield* collectCandidates()).candidates;
+    cachedDiscoveredCandidates = candidates;
     const lhcHomes = yield* readCurrentLhcHomes;
     const lhcInstanceIds = new Set(Array.from(lhcHomes.values()).flat());
 
