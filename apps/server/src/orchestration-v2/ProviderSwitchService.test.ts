@@ -473,3 +473,27 @@ it.effect("hands off a lazy fork child that has a seed and no provider row", () 
     ),
   ),
 );
+
+it.effect("trusts an unbound row and reads a seed only for its own instance", () =>
+  Effect.gen(function* () {
+    const unboundRow = boundProjection({ sessions: "live" });
+    const seeded = (seed: OrchestrationV2EngineBinding, withRow: boolean) =>
+      ({
+        ...unboundRow,
+        thread: {
+          ...unboundRow.thread,
+          engineBinding: seed,
+          ...(withRow ? {} : { activeProviderThreadId: null }),
+        },
+        providerThreads: withRow ? unboundRow.providerThreads : [],
+      }) as OrchestrationV2ThreadProjection;
+    const ownSeed = engineBinding(homeA);
+    const foreignSeed = { ...ownSeed, providerInstanceId: otherInstanceId };
+    assert.equal(yield* planTransition(seeded(ownSeed, true), modelChange), "restart_and_resume");
+    assert.equal(
+      yield* planTransition(seeded(foreignSeed, false), modelChange),
+      "restart_and_resume",
+    );
+    assert.include(yield* planCause(seeded(ownSeed, false), modelChange), homeA);
+  }).pipe(Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: homeKey(homeB) } }))),
+);

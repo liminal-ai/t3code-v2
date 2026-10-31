@@ -112,7 +112,11 @@ export const layer: Layer.Layer<
               thread.nativeThreadRef !== null,
           );
           const binding =
-            currentProviderThread?.nativeMetadata?.engineBinding ?? projection.thread.engineBinding;
+            currentProviderThread !== undefined
+              ? currentProviderThread.nativeMetadata?.engineBinding
+              : projection.thread.engineBinding?.providerInstanceId === current.instanceId
+                ? projection.thread.engineBinding
+                : undefined;
           const boundInstanceMismatch =
             binding === undefined || instanceChanged
               ? undefined
