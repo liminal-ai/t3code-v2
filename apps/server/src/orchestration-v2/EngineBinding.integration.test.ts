@@ -559,9 +559,16 @@ describe("engine binding seed", () => {
       const threadId = ThreadId.make("thread:engine-binding:template-change");
       yield* run(runtime, [create(threadId, LHC, runtime.cwd)]);
       yield* setTemplate(runtime.instances, LHC, lhcTemplate("/home/test/.claude-other"));
-      yield* run(runtime, [setSelection(threadId, "model", selection(LHC, "claude-opus-4-8"))]);
+      yield* run(runtime, [
+        {
+          type: "thread.metadata.update",
+          commandId: CommandId.make(`command:${threadId}:rename`),
+          threadId,
+          title: "Renamed",
+        },
+      ]);
       const [reloaded] = yield* reload(runtime, [threadId]);
-      assert.equal(reloaded?.projection.thread.modelSelection.model, "claude-opus-4-8");
+      assert.equal(reloaded?.projection.thread.title, "Renamed");
       assert.deepEqual(reloaded?.projection.thread.engineBinding, bound(LHC, lhcTemplate()));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
