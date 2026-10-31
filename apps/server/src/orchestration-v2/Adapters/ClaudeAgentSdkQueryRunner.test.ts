@@ -8,7 +8,12 @@ import * as NodePath from "node:path";
 import * as NodeStream from "node:stream";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
-import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import {
+  type OrchestrationV2EngineBinding,
+  ProviderInstanceId,
+  ProviderSessionId,
+  ThreadId,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Deferred from "effect/Deferred";
@@ -20,7 +25,7 @@ import * as TestClock from "effect/testing/TestClock";
 import { vi } from "vite-plus/test";
 
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { AgentScope } from "@t3tools/shared/AgentScope";
+import { AgentScope, type AgentScopeShape } from "@t3tools/shared/AgentScope";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import { signalProcessGroup } from "@t3tools/provider-core/server/processGroup";
@@ -28,10 +33,10 @@ import * as PortScanner from "../../preview/PortScanner.ts";
 import {
   ClaudeAgentSdkQueryRunner,
   type ClaudeAgentSdkQueryOpenInput,
-  type ClaudeCreateQuery,
+  type ClaudeAgentSdkSessionForkInput,
+  type ClaudeAgentSdkSubagentLookupInput,
   type ClaudeQuerySeam,
-  claudeProviderCapabilities,
-  ClaudeProviderCapabilitiesV2,
+  type ClaudeThreadContext,
   layerQueryRunner,
   makeClaudeAgentSdkQueryRunner,
   spawnClaudeProcessGroup,
@@ -40,6 +45,11 @@ import {
 vi.mock("@anthropic-ai/claude-agent-sdk", { spy: true });
 
 const FORK_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+
+const stockThread = (appThreadId: ThreadId): ClaudeThreadContext => ({
+  appThreadId,
+  engineBinding: null,
+});
 
 const writeClaudeSession = Effect.fnUntraced(function* (configDir: string) {
   const fileSystem = yield* FileSystem.FileSystem;
@@ -96,6 +106,7 @@ it.effect("forks a session stored under the instance's own CLAUDE_CONFIG_DIR", (
         environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
         threadId: ThreadId.make("thread-fork-config-dir"),
         providerSessionId: ProviderSessionId.make("session-fork-config-dir"),
+        thread: stockThread(ThreadId.make("thread-fork-config-dir")),
       });
 
       assert.notEqual(forked.sessionId, FORK_SESSION_ID);
@@ -127,15 +138,10 @@ const realQueryRunner = layerQueryRunner.pipe(
   Layer.provide(NodeServices.layer),
 );
 
-const makeSeamRunner = (seam: ClaudeQuerySeam) =>
-  makeClaudeAgentSdkQueryRunner(seam).pipe(
-    Effect.provideService(ProviderEventLoggers, { native: undefined, canonical: undefined }),
-    Effect.provide(PortScanner.layerTest),
-  );
-
 const resumedMcpQueryInput = {
   threadId: ThreadId.make("thread-restart-registration"),
   providerSessionId: ProviderSessionId.make("session-restart-registration"),
+  thread: stockThread(ThreadId.make("thread-restart-registration")),
   options: {
     resume: FORK_SESSION_ID,
     model: "claude-sonnet-4-6",
@@ -151,98 +157,290 @@ const resumedMcpQueryInput = {
   },
 } satisfies ClaudeAgentSdkQueryOpenInput;
 
-it("advertises stock Claude capabilities for the stock seam", () => {
-  assert.deepEqual(claudeProviderCapabilities({}), ClaudeProviderCapabilitiesV2);
-});
+const lhcBinding = {
+  providerInstanceId: ProviderInstanceId.make("claude_lhc"),
+  engine: "claude-lhc",
+  continuationKey: "claude-lhc:home:/lhc/claude-home",
+  claudeHome: "/lhc/claude-home",
+  compact: { trigger: 700_000, target: 140_000 },
+  nativeContinuation: "required",
+  compaction: "provider",
+} satisfies OrchestrationV2EngineBinding;
+
+const scopeWrapper = (input: {
+  readonly command: string;
+  readonly args: ReadonlyArray<string>;
+}) => ["-c", "scope", "t3-agent", input.command, ...input.args];
 
 it.effect(
-  "runs every query of an overriding instance through its createQuery, forks included",
+  "sends every open, fork and subagent lookup of an overriding seam through it with the thread",
   () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const configDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-claude-seam-config-",
-        });
-        yield* writeClaudeSession(configDir);
         const sdkQuery = vi.spyOn(ClaudeSdk, "query");
-        yield* Effect.addFinalizer(() => Effect.sync(() => sdkQuery.mockRestore()));
+        const sdkFork = vi.spyOn(ClaudeSdk, "forkSession");
+        const sdkSubagentMessages = vi.spyOn(ClaudeSdk, "getSubagentMessages");
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            sdkQuery.mockRestore();
+            sdkFork.mockRestore();
+            sdkSubagentMessages.mockRestore();
+          }),
+        );
+        const program = { command: "/opt/lhc/node", args: ["/opt/lhc/sidecar.mjs"] };
+        const wrapped: Array<Parameters<AgentScopeShape["wrap"]>[0]> = [];
+        const queries: Array<Parameters<ClaudeQuerySeam["createQuery"]>> = [];
+        const forks: Array<ClaudeAgentSdkSessionForkInput> = [];
+        const lookups: Array<ClaudeAgentSdkSubagentLookupInput> = [];
         const setMcpServers = vi.fn(async () => ({ added: ["t3-code"], removed: [], errors: {} }));
-        const createQuery = vi.fn<ClaudeCreateQuery>(
-          () =>
-            ({
+        const runner = yield* makeClaudeAgentSdkQueryRunner({
+          program: () => program,
+          createQuery: (...call) => {
+            queries.push(call);
+            return {
               setMcpServers,
               close: vi.fn(),
               [Symbol.asyncDispose]: async () => {},
-            }) as unknown as ClaudeSdk.Query,
+            } as unknown as ClaudeSdk.Query;
+          },
+          forkSession: (input) =>
+            Effect.sync(() => {
+              forks.push(input);
+              return { sessionId: "forked-lhc-session" };
+            }),
+          subagentLaunchToolUseId: (input) =>
+            Effect.sync(() => {
+              lookups.push(input);
+              return "toolu-launch";
+            }),
+        }).pipe(
+          Effect.provideService(ProviderEventLoggers, { native: undefined, canonical: undefined }),
+          Effect.provide(PortScanner.layerTest),
+          Effect.provideService(AgentScope, {
+            ...AgentScope.defaultValue(),
+            wrap: (input) => {
+              wrapped.push(input);
+              return Effect.succeed({
+                command: "/bin/sh",
+                args: scopeWrapper(input),
+                unit: "t3code-claude-seam.scope",
+              });
+            },
+          }),
         );
-        const runner = yield* makeSeamRunner({ createQuery });
+        const threadId = ThreadId.make("thread-lhc-seam");
+        const providerSessionId = ProviderSessionId.make("session-lhc-seam");
+        const thread = {
+          appThreadId: threadId,
+          engineBinding: lhcBinding,
+        } satisfies ClaudeThreadContext;
 
-        const first = yield* runner.open(resumedMcpQueryInput);
-        yield* Effect.addFinalizer(() => first.close.pipe(Effect.orDie));
+        const session = yield* runner.open({
+          ...resumedMcpQueryInput,
+          threadId,
+          providerSessionId,
+          thread,
+          options: {
+            ...resumedMcpQueryInput.options,
+            pathToClaudeCodeExecutable: "/usr/local/bin/claude",
+          },
+        });
+        yield* Effect.addFinalizer(() => session.close.pipe(Effect.orDie));
         const forked = yield* runner.forkSession({
           sessionId: FORK_SESSION_ID,
           options: { dir: "/repo" },
-          environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
-          threadId: ThreadId.make("thread-seam-fork"),
-          providerSessionId: ProviderSessionId.make("session-seam-fork"),
+          environment: process.env,
+          threadId,
+          providerSessionId,
+          thread,
         });
-        const second = yield* runner.open({
-          ...resumedMcpQueryInput,
-          options: { ...resumedMcpQueryInput.options, resume: forked.sessionId },
+        const launchToolUseId = yield* runner.subagentLaunchToolUseId({
+          sessionId: FORK_SESSION_ID,
+          agentId: "agent-lhc-seam",
+          dir: "/repo",
+          threadId,
+          providerSessionId,
+          thread,
         });
-        yield* Effect.addFinalizer(() => second.close.pipe(Effect.orDie));
 
-        assert.notEqual(forked.sessionId, FORK_SESSION_ID);
         assert.deepEqual(
-          createQuery.mock.calls.map(([call]) => call.options?.resume),
-          [FORK_SESSION_ID, forked.sessionId],
+          wrapped.map(({ command, args, name, threadId }) => ({ command, args, name, threadId })),
+          [{ ...program, name: "claude", threadId }],
         );
-        for (const [call] of createQuery.mock.calls) {
-          assert.isUndefined(call.options?.mcpServers);
-          assert.isFunction(call.options?.spawnClaudeCodeProcess);
-        }
-        assert.deepEqual(setMcpServers.mock.calls, [
-          [resumedMcpQueryInput.options.mcpServers],
-          [resumedMcpQueryInput.options.mcpServers],
-        ]);
+        assert.equal(queries.length, 1);
+        const [, options, queryThread, launch] = queries[0]!;
+        assert.deepEqual(queryThread, thread);
+        assert.deepEqual(launch, { command: "/bin/sh", args: scopeWrapper(program) });
+        assert.equal(options.pathToClaudeCodeExecutable, "/usr/local/bin/claude");
+        assert.isUndefined(options.executableArgs);
+        assert.isUndefined(options.mcpServers);
+        assert.isFunction(options.spawnClaudeCodeProcess);
+        assert.deepEqual(setMcpServers.mock.calls, [[resumedMcpQueryInput.options.mcpServers]]);
+        assert.equal(forked.sessionId, "forked-lhc-session");
+        assert.deepEqual(
+          forks.map((input) => input.thread),
+          [thread],
+        );
+        assert.equal(launchToolUseId, "toolu-launch");
+        assert.deepEqual(
+          lookups.map((input) => input.thread),
+          [thread],
+        );
         assert.equal(sdkQuery.mock.calls.length, 0);
+        assert.equal(sdkFork.mock.calls.length, 0);
+        assert.equal(sdkSubagentMessages.mock.calls.length, 0);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each(["host", "instance"] as const)(
-  "refuses a fork on the %s Claude home without copying the session",
-  (home) =>
+it.effect.each(["exits", "hangs"] as const)(
+  "settles close only after the CLI it started exits or is killed: %s",
+  (outcome) =>
     Effect.scoped(
       Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const configDir = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-claude-seam-refusal-",
+        const events = new NodeEvents.EventEmitter();
+        const stdin = new NodeStream.PassThrough();
+        const stdout = new NodeStream.PassThrough();
+        const child = {
+          stdin,
+          stdout,
+          killed: false,
+          exitCode: null,
+          kill: vi.fn(() => true),
+          on: events.on.bind(events),
+          once: events.once.bind(events),
+          off: events.off.bind(events),
+        } satisfies ClaudeSdk.SpawnedProcess;
+        const signal = yield* Effect.abortSignal;
+        const closeQuery = vi.fn();
+        const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(({ options }) => {
+          options?.spawnClaudeCodeProcess?.({ command: "claude", args: [], env: {}, signal });
+          return {
+            close: closeQuery,
+            [Symbol.asyncDispose]: async () => {},
+          } as unknown as ClaudeSdk.Query;
         });
-        const projectDir = yield* writeClaudeSession(configDir);
-        const inProcessFork = vi
-          .spyOn(ClaudeSdk, "forkSession")
-          .mockRejectedValue(new Error("forked despite the refusal"));
-        yield* Effect.addFinalizer(() => Effect.sync(() => inProcessFork.mockRestore()));
-        const refusal = "This kind of Claude thread can't be forked.";
-        const runner = yield* makeSeamRunner({ forkRefusal: refusal });
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            querySpy.mockRestore();
+            stdin.destroy();
+            stdout.destroy();
+          }),
+        );
+        const runner = yield* ClaudeAgentSdkQueryRunner;
+        const { mcpServers: _mcpServers, ...options } = resumedMcpQueryInput.options;
+        const session = yield* runner.open({
+          ...resumedMcpQueryInput,
+          options: { ...options, spawnClaudeCodeProcess: () => child },
+        });
 
-        const error = yield* runner
-          .forkSession({
-            sessionId: FORK_SESSION_ID,
-            options: { dir: "/repo" },
-            environment:
-              home === "host" ? process.env : { ...process.env, CLAUDE_CONFIG_DIR: configDir },
-            threadId: ThreadId.make("thread-seam-refusal"),
-            providerSessionId: ProviderSessionId.make("session-seam-refusal"),
-          })
-          .pipe(Effect.flip);
+        const closing = yield* session.close.pipe(Effect.forkChild);
+        yield* TestClock.adjust("9 seconds");
+        assert.equal(closeQuery.mock.calls.length, 1);
+        assert.isUndefined(closing.pollUnsafe());
+        if (outcome === "exits") events.emit("exit", 0, null);
+        else yield* TestClock.adjust("1 second");
+        yield* Fiber.join(closing);
+        assert.deepEqual(child.kill.mock.calls, outcome === "exits" ? [] : [["SIGKILL"]]);
+      }).pipe(Effect.provide(realQueryRunner)),
+    ),
+);
 
-        assert.equal(error.method, "forkSession");
-        assert.include(String(error.cause), refusal);
-        assert.equal(inProcessFork.mock.calls.length, 0);
-        assert.deepEqual(yield* fileSystem.readDirectory(projectDir), [`${FORK_SESSION_ID}.jsonl`]);
+// Captured from trunk 6ee78589e6's runner with this input, so stock Claude's SDK options stay identical.
+const TRUNK_STOCK_QUERY_OPTIONS = {
+  scoped: {
+    sessionId: "native-thread-stock-options",
+    model: "claude-sonnet-4-6",
+    tools: { type: "preset", preset: "claude_code" },
+    permissionMode: "default",
+    cwd: "/repo",
+    env: { PATH: "/usr/bin", T3CODE_THREAD_ID: "thread-stock-options" },
+    executableArgs: ["-c", "scope", "t3-agent", "/usr/local/bin/claude", "--no-warnings"],
+    extraArgs: { "debug-to-stderr": null },
+    settings: { showThinkingSummaries: true },
+    canUseTool: "[function]",
+    pathToClaudeCodeExecutable: "/bin/sh",
+    spawnClaudeCodeProcess: "[function]",
+  },
+  script: {
+    sessionId: "native-thread-stock-options",
+    model: "claude-sonnet-4-6",
+    tools: { type: "preset", preset: "claude_code" },
+    permissionMode: "default",
+    cwd: "/repo",
+    env: { PATH: "/usr/bin", T3CODE_THREAD_ID: "thread-stock-options" },
+    executableArgs: ["--no-warnings"],
+    extraArgs: { "debug-to-stderr": null },
+    settings: { showThinkingSummaries: true },
+    canUseTool: "[function]",
+    pathToClaudeCodeExecutable: "/opt/claude/cli.js",
+    spawnClaudeCodeProcess: "[function]",
+  },
+} as const;
+
+it.effect.each(["scoped", "script"] as const)(
+  "hands the SDK the same %s stock query options as trunk",
+  (kind) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const querySpy = vi.spyOn(ClaudeSdk, "query").mockImplementation(
+          () =>
+            ({
+              setMcpServers: async () => ({ added: ["t3-code"], removed: [], errors: {} }),
+              close: vi.fn(),
+              [Symbol.asyncDispose]: async () => {},
+            }) as unknown as ClaudeSdk.Query,
+        );
+        yield* Effect.addFinalizer(() => Effect.sync(() => querySpy.mockRestore()));
+        const threadId = ThreadId.make("thread-stock-options");
+        const session = yield* Effect.gen(function* () {
+          const runner = yield* ClaudeAgentSdkQueryRunner;
+          return yield* runner.open({
+            threadId,
+            providerSessionId: ProviderSessionId.make("session-stock-options"),
+            thread: stockThread(threadId),
+            options: {
+              sessionId: "native-thread-stock-options",
+              model: "claude-sonnet-4-6",
+              tools: { type: "preset", preset: "claude_code" },
+              permissionMode: "default",
+              cwd: "/repo",
+              env: { PATH: "/usr/bin" },
+              executableArgs: ["--no-warnings"],
+              extraArgs: { "debug-to-stderr": null },
+              settings: { showThinkingSummaries: true },
+              canUseTool: async () => ({ behavior: "deny", message: "test" }),
+              mcpServers: resumedMcpQueryInput.options.mcpServers,
+              pathToClaudeCodeExecutable:
+                kind === "scoped" ? "/usr/local/bin/claude" : "/opt/claude/cli.js",
+            },
+          });
+        }).pipe(
+          Effect.provide(
+            realQueryRunner.pipe(
+              Layer.provide(
+                Layer.succeed(AgentScope, {
+                  ...AgentScope.defaultValue(),
+                  wrap: (input) =>
+                    Effect.succeed({
+                      command: "/bin/sh",
+                      args: scopeWrapper(input),
+                      unit: "t3code-claude-options.scope",
+                    }),
+                }),
+              ),
+            ),
+          ),
+        );
+        yield* Effect.addFinalizer(() => session.close.pipe(Effect.orDie));
+
+        assert.equal(querySpy.mock.calls.length, 1);
+        assert.equal(
+          JSON.stringify(querySpy.mock.calls[0]![0].options, (_key, value: unknown) =>
+            typeof value === "function" ? "[function]" : value,
+          ),
+          JSON.stringify(TRUNK_STOCK_QUERY_OPTIONS[kind]),
+        );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -504,6 +702,7 @@ const openFakeCli = (cli: string) =>
     return yield* runner.open({
       threadId: ThreadId.make("thread-fake-cli"),
       providerSessionId: ProviderSessionId.make("session-fake-cli"),
+      thread: stockThread(ThreadId.make("thread-fake-cli")),
       options: {
         sessionId: "native-session-fake-cli",
         model: "claude-sonnet-4-6",
@@ -562,6 +761,96 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
       assert.strictEqual(yield* Deferred.await(stopped), "t3code-claude-test.scope");
     }),
   );
+
+  it.effect("supervises a seam's program like the CLI and waits for its exit on close", () => {
+    let runningAgents = 0;
+    return Effect.gen(function* () {
+      const program = fakeClaudeCli(
+        [
+          'dir=$(dirname "$0")',
+          'sleep 600 > "$dir/alive" &',
+          'echo $! > "$dir/leftover.pid"',
+          "cat > /dev/null",
+        ].join("\n"),
+      );
+      const dir = NodePath.dirname(program);
+      NodeChildProcess.execFileSync("mkfifo", [NodePath.join(dir, "alive")]);
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          try {
+            process.kill(Number(NodeFS.readFileSync(NodePath.join(dir, "leftover.pid"), "utf8")));
+          } catch {}
+          NodeFS.rmSync(dir, { recursive: true, force: true });
+        }),
+      );
+      const alive = NodeFS.createReadStream(NodePath.join(dir, "alive"));
+      const leftoverStarted = new Promise<void>((resolve) => alive.once("open", () => resolve()));
+      const leftoverStopped = new Promise<void>((resolve) => alive.once("close", () => resolve()));
+      alive.resume();
+      const signal = yield* Effect.abortSignal;
+      const stopped = yield* Deferred.make<string>();
+      const wrapped: Array<string> = [];
+
+      const seamRunner = yield* makeClaudeAgentSdkQueryRunner({
+        program: () => ({ command: program, args: [] }),
+        createQuery: (_prompt, options, _thread, launch) => {
+          if (launch === undefined) throw new Error("Expected a supervised launch");
+          const child = options.spawnClaudeCodeProcess({
+            command: launch.command,
+            args: [...launch.args],
+            env: options.env ?? {},
+            signal,
+          });
+          return {
+            close: () => child.stdin.end(),
+            [Symbol.asyncDispose]: async () => {},
+          } as unknown as ClaudeSdk.Query;
+        },
+        forkSession: () => Effect.die("unused"),
+        subagentLaunchToolUseId: () => Effect.die("unused"),
+      }).pipe(
+        Effect.provideService(ProviderEventLoggers, { native: undefined, canonical: undefined }),
+        Effect.provide(
+          Layer.mock(PortScanner.PortDiscovery)({
+            trackAgent: () => {
+              runningAgents += 1;
+              return () => {
+                runningAgents -= 1;
+              };
+            },
+          }),
+        ),
+        Effect.provideService(AgentScope, {
+          ...AgentScope.defaultValue(),
+          wrap: ({ command, args }) => {
+            wrapped.push(command);
+            return Effect.succeed({ command, args, unit: "t3code-claude-seam.scope" });
+          },
+          stop: (unit) => Deferred.succeed(stopped, unit).pipe(Effect.asVoid),
+        }),
+      );
+      const session = yield* seamRunner.open({
+        threadId: ThreadId.make("thread-seam-program"),
+        providerSessionId: ProviderSessionId.make("session-seam-program"),
+        thread: stockThread(ThreadId.make("thread-seam-program")),
+        options: {
+          sessionId: "native-session-seam-program",
+          model: "claude-sonnet-4-6",
+          tools: [],
+          permissionMode: "default",
+          pathToClaudeCodeExecutable: "/usr/local/bin/claude",
+        },
+      });
+      yield* Effect.promise(() => leftoverStarted);
+      assert.deepEqual(wrapped, [program]);
+      assert.equal(runningAgents, 1);
+
+      yield* session.close;
+      assert.equal(runningAgents, 0);
+      yield* Effect.promise(() => leftoverStopped);
+      assert.strictEqual(yield* Deferred.await(stopped), "t3code-claude-seam.scope");
+    }).pipe(Effect.provide(NodeServices.layer));
+  });
 
   // The CLI keeps running its turn after its pipes close, so a server that
   // crashed would leave it working next to the session it resumes.
