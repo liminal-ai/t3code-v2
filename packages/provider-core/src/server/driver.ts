@@ -5,6 +5,7 @@ import type {
   AcpRegistryListProvidersResult,
   AcpRegistryOperationError,
   AcpRegistrySetProviderInput,
+  OrchestrationV2EngineBinding,
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
@@ -32,10 +33,25 @@ export interface ProviderDriverMetadata {
 export type ProviderWorkspaceSnapshot = ServerProvider &
   Pick<ServerProviderWorkspaceSnapshot, "slashCommandsPending" | "optionDescriptors">;
 
+/** The binding a new thread on this instance is seeded with, before it names the instance. */
+export type ProviderEngineBindingTemplate = Omit<
+  OrchestrationV2EngineBinding,
+  "providerInstanceId"
+>;
+
+/** The continuation key of an engine on a Claude home, so one home has one key. */
+export function engineContinuationKey(
+  template: Pick<ProviderEngineBindingTemplate, "engine" | "claudeHome">,
+): string {
+  return `${template.engine}:home:${template.claudeHome}`;
+}
+
 export interface ProviderInstance {
   readonly instanceId: ProviderInstanceId;
   readonly driverKind: ProviderDriverKind;
   readonly continuationIdentity: ProviderContinuationIdentity;
+  /** Absent for a stock instance. */
+  readonly engineBinding?: ProviderEngineBindingTemplate;
   readonly displayName: string | undefined;
   readonly accentColor?: string | undefined;
   readonly enabled: boolean;

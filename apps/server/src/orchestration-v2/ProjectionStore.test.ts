@@ -3621,6 +3621,73 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
       }),
   );
 
+  it.effect("carries a thread's engine binding seed into its SQL and memory shells", () =>
+    Effect.gen(function* () {
+      const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
+      const now = yield* DateTime.now;
+      const engineBinding = {
+        providerInstanceId,
+        engine: "claude-lhc",
+        continuationKey: "claude-lhc:home:/home/test/.claude-lhc",
+        claudeHome: "/home/test/.claude-lhc",
+        compact: { trigger: 700_000, target: 140_000 },
+        nativeContinuation: "required",
+        compaction: "provider",
+      } as const;
+      const shellsFor = Effect.fn("shellsFor")(function* (
+        key: string,
+        seed: typeof engineBinding | undefined,
+      ) {
+        const threadId = ThreadId.make(`thread:projection-shell-engine-binding:${key}`);
+        yield* projectionStore.apply({
+          id: EventId.make(`event:projection-shell-engine-binding:${key}`),
+          type: "thread.created",
+          threadId,
+          occurredAt: now,
+          payload: {
+            createdBy: "user",
+            creationSource: "web",
+            id: threadId,
+            projectId: ProjectId.make("project:projection-shell-engine-binding"),
+            title: "Engine binding",
+            providerInstanceId,
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            branch: null,
+            worktreePath: null,
+            activeProviderThreadId: null,
+            ...(seed === undefined ? {} : { engineBinding: seed }),
+            lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+            forkedFrom: null,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            settledOverride: null,
+            settledAt: null,
+            lastVisitedAt: null,
+            deletedAt: null,
+          },
+        });
+        const sqlShell = (yield* projectionStore.getShellSnapshot()).threads.find(
+          (thread) => thread.id === threadId,
+        );
+        const memoryShell = ProjectionStore.threadShellFromProjection(
+          yield* projectionStore.getThreadProjection(threadId),
+        );
+        return [sqlShell, memoryShell];
+      });
+
+      for (const shell of yield* shellsFor("bound", engineBinding)) {
+        assert.deepEqual(shell?.engineBinding, engineBinding);
+      }
+      for (const shell of yield* shellsFor("stock", undefined)) {
+        assert.isDefined(shell);
+        assert.notProperty(shell, "engineBinding");
+      }
+    }),
+  );
+
   it.effect("only exposes interruptible runs through the shell activeRunId", () =>
     Effect.gen(function* () {
       const projectionStore = yield* ProjectionStore.ProjectionStoreV2;
