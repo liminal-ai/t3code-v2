@@ -1619,7 +1619,8 @@ export const make = Effect.gen(function* () {
           const completed = completedByFile.get(
             `${candidate.providerInstanceId}\0${transcript.filePath}`,
           );
-          const sharedHome = sharedHomes.get(candidate.homePath);
+          const sharedHome =
+            candidate.source === "claudeAgent" ? sharedHomes.get(candidate.homePath) : undefined;
           const withheld = sharedHome === undefined ? null : withheldRefusal(sharedHome);
           if (completed === undefined && withheld !== null) {
             return Option.some<AgentSessionRecentThread>({ _tag: "Refused", refusal: withheld });
