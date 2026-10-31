@@ -868,6 +868,26 @@
       "name": "iobuffer",
       "license": "MIT",
       "sourceUrl": "https://github.com/image-js/iobuffer"
+    },
+    {
+      "name": "js-tiktoken",
+      "version": "1.0.21",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/dqbd/tiktoken",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2022 OpenAI, Shantanu Jain"]
+      }
+    },
+    {
+      "name": "lhc",
+      "version": "0.2.0",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/liminal-ai/long-horizon-context",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 Lee Moore"]
+      }
     }
   ]
 }

@@ -1,4 +1,6 @@
 import "vite-plus/test/config";
+// @effect-diagnostics-next-line nodeBuiltinImport:off
+import * as NodeFS from "node:fs";
 import { defineConfig, mergeConfig } from "vite-plus";
 
 import baseConfig from "../../vite.config.ts";
@@ -54,6 +56,7 @@ if (packExecutableTarget && !Object.hasOwn(SEA_TARGETS, packExecutableTarget)) {
     `T3CODE_PACK_EXE_TARGET must be one of ${Object.keys(SEA_TARGETS).join(", ")}, got "${packExecutableTarget}".`,
   );
 }
+const exeModuleList = packExecutable ? process.env.T3CODE_EXE_MODULE_LIST?.trim() : undefined;
 const packExecutableTargets = packExecutableTarget
   ? [
       {
@@ -90,6 +93,21 @@ export default mergeConfig(
       // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
       // SEA can only resolve built-ins; keep dynamic imports inside its one module.
       ...(packExecutable ? { outputOptions: { codeSplitting: false } } : {}),
+      ...(exeModuleList
+        ? {
+            plugins: [
+              {
+                name: "t3code:exe-module-list",
+                generateBundle(_options, bundle) {
+                  const moduleIds = Object.values(bundle).flatMap((output) =>
+                    output.type === "chunk" ? output.moduleIds : [],
+                  );
+                  NodeFS.writeFileSync(exeModuleList, JSON.stringify(moduleIds.toSorted()));
+                },
+              },
+            ],
+          }
+        : {}),
       ...(packMode === "1"
         ? {
             exe: {
