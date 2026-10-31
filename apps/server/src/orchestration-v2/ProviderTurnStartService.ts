@@ -92,7 +92,28 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
   }
 }
 
+class NativeContinuationRequiredError extends Schema.TaggedError<NativeContinuationRequiredError>()(
+  "NativeContinuationRequiredError",
+  {
+    reason: Schema.Literals([
+      "uncertain_history_delivery",
+      "resume_failed",
+      "handoff_budget_exhausted",
+    ]),
+    detail: Schema.String,
+    cause: Schema.optional(Schema.Defect()),
+  },
+) {
+  override get message(): string {
+    return `This thread can only continue in its own native session, so T3 did not start a fresh one (${this.reason}). ${this.detail}`;
+  }
+}
+
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
+
+const continuationMismatch = (error: unknown): boolean =>
+  Predicate.isTagged(error, "ProviderAdapterContinuationMismatchError") ||
+  (Predicate.hasProperty(error, "cause") && continuationMismatch(error.cause));
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
@@ -1037,6 +1058,10 @@ export const layer: Layer.Layer<
       };
       let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
+      const engineBindingSeed =
+        projection.thread.engineBinding === undefined
+          ? {}
+          : { engineBinding: projection.thread.engineBinding };
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadRecords(
@@ -1086,6 +1111,7 @@ export const layer: Layer.Layer<
               runtimePolicy: resolvedRuntimePolicy,
               providerSessionId,
               existingProviderThread: providerThread,
+              ...engineBindingSeed,
             }),
           );
         }
@@ -1169,17 +1195,49 @@ export const layer: Layer.Layer<
         resumedRetryHandoff = [];
         if (!(yield* isCurrentAttemptInStatus("starting"))) return undefined;
 
-        yield* Effect.logWarning("Recovering provider context in a fresh native session", {
+        const reason: NativeContinuationRequiredError["reason"] = uncertainDelivery
+          ? "uncertain_history_delivery"
+          : resumed._tag === "Success"
+            ? "handoff_budget_exhausted"
+            : "resume_failed";
+        const recovery = {
           driver: session.driver,
           providerThreadId: providerThread.id,
           runId,
-          reason: uncertainDelivery
-            ? "uncertain_history_delivery"
-            : resumed._tag === "Success"
-              ? "handoff_budget_exhausted"
-              : "resume_failed",
+          reason,
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
-        });
+        };
+        if (
+          providerThread.nativeMetadata?.engineBinding?.nativeContinuation === "required" ||
+          (resumed._tag === "Failure" && continuationMismatch(resumed.failure))
+        ) {
+          const failure = resumed._tag === "Failure" ? resumed.failure : undefined;
+          const refusal = new NativeContinuationRequiredError({
+            reason,
+            detail: uncertainDelivery
+              ? "T3 could not confirm whether earlier history reached it."
+              : failure === undefined
+                ? "The pending history does not fit its context."
+                : (knownProviderFailureMessage(failure) ??
+                  ("cause" in failure && failure.cause instanceof Error
+                    ? failure.cause.message
+                    : failure.message)),
+            cause: failure,
+          });
+          yield* Effect.logWarning("Refused to replace a native session that must continue", {
+            ...recovery,
+            nativeThreadId: providerThread.nativeThreadRef.nativeId,
+          });
+          if (input.willRetry === true) return yield* refusal;
+          yield* settleStartFailure({
+            signal: "native-continuation-refused",
+            title: "Native session could not continue",
+            error: refusal,
+            message: refusal.message,
+          });
+          return undefined;
+        }
+        yield* Effect.logWarning("Recovering provider context in a fresh native session", recovery);
         const replacement = yield* loadFromProvider(
           session.ensureThread({
             threadId: projection.thread.id,
@@ -1190,6 +1248,7 @@ export const layer: Layer.Layer<
             // Clear the native ref to force a fresh session while preserving row identity.
             existingProviderThread: { ...providerThread, nativeThreadRef: null },
             forceNewNativeThread: true,
+            ...engineBindingSeed,
           }),
         );
         if (replacement === undefined) return undefined;

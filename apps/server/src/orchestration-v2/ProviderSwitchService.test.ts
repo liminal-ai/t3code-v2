@@ -5,11 +5,13 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
+  type OrchestrationV2EngineBinding,
   type OrchestrationV2ThreadProjection,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
@@ -295,4 +297,203 @@ it.effect("distinguishes compatible and incompatible instances of the same drive
       }),
     ),
   ),
+);
+
+const otherInstanceId = ProviderInstanceId.make("claude_other");
+const homeA = "/homes/a";
+const homeB = "/homes/b";
+const homeKey = (home: string) => `claude:home:${home}`;
+const engineBinding = (home: string): OrchestrationV2EngineBinding => ({
+  providerInstanceId: currentInstanceId,
+  engine: "claude-lhc",
+  continuationKey: homeKey(home),
+  claudeHome: home,
+  compact: null,
+  nativeContinuation: "required",
+  compaction: "provider",
+});
+const modelChange = { instanceId: currentInstanceId, model: "gpt-5.2-codex" };
+const switchToOther = { instanceId: otherInstanceId, model: "gpt-5.1-codex" };
+
+function boundProjection(input: {
+  readonly row?: string;
+  readonly seed?: string;
+  readonly sessions?: "live" | "stopped";
+}): OrchestrationV2ThreadProjection {
+  const thread = deadNativeThreadProjection("stopped");
+  return {
+    ...thread,
+    thread: {
+      ...thread.thread,
+      ...(input.seed === undefined ? {} : { engineBinding: engineBinding(input.seed) }),
+    },
+    providerSessions: input.sessions === "live" ? projection().providerSessions : [],
+    providerThreads: thread.providerThreads.map((row) => ({
+      ...row,
+      ...(input.row === undefined
+        ? {}
+        : { nativeMetadata: { engineBinding: engineBinding(input.row) } }),
+    })),
+  };
+}
+
+const isPlanError = Schema.is(ProviderSwitch.ProviderSwitchPlanError);
+
+const planCause = (
+  projection: OrchestrationV2ThreadProjection,
+  targetModelSelection: typeof modelChange,
+) =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    const error = yield* service.plan({ projection, targetModelSelection }).pipe(Effect.flip);
+    let cause: unknown = error;
+    while (isPlanError(cause)) cause = cause.cause;
+    assert.isString(cause);
+    return cause as string;
+  });
+
+const planTransition = (
+  projection: OrchestrationV2ThreadProjection,
+  targetModelSelection: typeof modelChange,
+) =>
+  Effect.gen(function* () {
+    const service = yield* ProviderSwitch.ProviderSwitchServiceV2;
+    return (yield* service.plan({ projection, targetModelSelection })).transition.type;
+  });
+
+it.effect("rejects a bound thread whose current instance is missing and names its home", () =>
+  Effect.gen(function* () {
+    const cause = yield* planCause(boundProjection({ row: homeA, seed: homeA }), modelChange);
+    assert.include(cause, `Instance ${currentInstanceId} is missing`);
+    assert.include(cause, homeA);
+    assert.equal(
+      yield* planTransition(boundProjection({ row: homeA, seed: homeA }), switchToOther),
+      "create_with_handoff",
+    );
+  }).pipe(Effect.provide(layerTest({ [otherInstanceId]: { continuationKey: homeKey(homeB) } }))),
+);
+
+it.effect("keeps trunk's behavior for an unbound thread whose current instance is missing", () =>
+  Effect.gen(function* () {
+    assert.equal(
+      yield* planCause(boundProjection({}), modelChange),
+      "The target provider instance is unavailable.",
+    );
+    assert.equal(yield* planTransition(boundProjection({}), switchToOther), "create_with_handoff");
+  }).pipe(Effect.provide(layerTest({ [otherInstanceId]: { continuationKey: homeKey(homeB) } }))),
+);
+
+it.effect("rejects a bound thread whose same-id instance changed home and names both homes", () =>
+  Effect.gen(function* () {
+    const cause = yield* planCause(
+      boundProjection({ row: homeA, seed: homeA, sessions: "live" }),
+      modelChange,
+    );
+    assert.include(cause, `Instance ${currentInstanceId}`);
+    assert.include(cause, homeKey(homeB));
+    assert.include(cause, homeA);
+    assert.equal(
+      yield* planTransition(boundProjection({ sessions: "live" }), modelChange),
+      "restart_and_resume",
+    );
+  }).pipe(Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: homeKey(homeB) } }))),
+);
+
+it.effect("rejects a bound thread whose instance was deleted and re-added with another home", () =>
+  Effect.gen(function* () {
+    const cause = yield* planCause(boundProjection({ row: homeA, seed: homeA }), modelChange);
+    assert.include(cause, homeKey(homeB));
+    assert.include(cause, homeA);
+  }).pipe(Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: homeKey(homeB) } }))),
+);
+
+it.effect("hands a bound thread off to a live target with another key", () =>
+  Effect.gen(function* () {
+    assert.equal(
+      yield* planTransition(boundProjection({ row: homeA, seed: homeA }), switchToOther),
+      "create_with_handoff",
+    );
+  }).pipe(
+    Effect.provide(
+      layerTest({
+        [currentInstanceId]: { continuationKey: homeKey(homeA) },
+        [otherInstanceId]: { continuationKey: homeKey(homeB) },
+      }),
+    ),
+  ),
+);
+
+it.effect("resumes a bound row on another instance that uses its home", () =>
+  Effect.gen(function* () {
+    assert.equal(
+      yield* planTransition(boundProjection({ row: homeA, seed: homeA }), switchToOther),
+      "restart_and_resume",
+    );
+  }).pipe(
+    Effect.provide(
+      layerTest({
+        [currentInstanceId]: { continuationKey: homeKey(homeB) },
+        [otherInstanceId]: { continuationKey: homeKey(homeA) },
+      }),
+    ),
+  ),
+);
+
+it.effect("reads the active row's binding before the thread's seed", () =>
+  Effect.gen(function* () {
+    assert.equal(
+      yield* planTransition(boundProjection({ row: homeA, seed: homeB }), modelChange),
+      "restart_and_resume",
+    );
+    const cause = yield* planCause(boundProjection({ row: homeB, seed: homeA }), modelChange);
+    assert.include(cause, homeB);
+    assert.notInclude(cause, `home ${homeA}`);
+  }).pipe(Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: homeKey(homeA) } }))),
+);
+
+it.effect("hands off a lazy fork child that has a seed and no provider row", () =>
+  Effect.gen(function* () {
+    const child = {
+      ...boundProjection({ seed: homeA }),
+      providerThreads: [],
+    } as OrchestrationV2ThreadProjection;
+    assert.equal(
+      yield* planTransition(
+        { ...child, thread: { ...child.thread, activeProviderThreadId: null } },
+        switchToOther,
+      ),
+      "create_with_handoff",
+    );
+  }).pipe(
+    Effect.provide(
+      layerTest({
+        [currentInstanceId]: { continuationKey: homeKey(homeA) },
+        [otherInstanceId]: { continuationKey: homeKey(homeB) },
+      }),
+    ),
+  ),
+);
+
+it.effect("trusts an unbound row and reads a seed only for its own instance", () =>
+  Effect.gen(function* () {
+    const unboundRow = boundProjection({ sessions: "live" });
+    const seeded = (seed: OrchestrationV2EngineBinding, withRow: boolean) =>
+      ({
+        ...unboundRow,
+        thread: {
+          ...unboundRow.thread,
+          engineBinding: seed,
+          ...(withRow ? {} : { activeProviderThreadId: null }),
+        },
+        providerThreads: withRow ? unboundRow.providerThreads : [],
+      }) as OrchestrationV2ThreadProjection;
+    const ownSeed = engineBinding(homeA);
+    const foreignSeed = { ...ownSeed, providerInstanceId: otherInstanceId };
+    assert.equal(yield* planTransition(seeded(ownSeed, true), modelChange), "restart_and_resume");
+    assert.equal(
+      yield* planTransition(seeded(foreignSeed, false), modelChange),
+      "restart_and_resume",
+    );
+    assert.include(yield* planCause(seeded(ownSeed, false), modelChange), homeA);
+  }).pipe(Effect.provide(layerTest({ [currentInstanceId]: { continuationKey: homeKey(homeB) } }))),
 );

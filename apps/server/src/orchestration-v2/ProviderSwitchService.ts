@@ -1,6 +1,8 @@
 import {
   ModelSelection,
+  type OrchestrationV2EngineBinding,
   OrchestrationV2ThreadProjection,
+  ProviderInstanceId,
   ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
@@ -52,6 +54,17 @@ const isLiveProviderSession = (
   session: OrchestrationV2ThreadProjection["providerSessions"][number],
 ) => session.status !== "stopped" && session.status !== "error";
 
+const boundInstanceMismatchCause = (
+  instanceId: ProviderInstanceId,
+  instance: Option.Option<{ readonly continuationKey: string }>,
+  binding: OrchestrationV2EngineBinding,
+) =>
+  Option.isNone(instance)
+    ? `Instance ${instanceId} is missing. This thread continues in Claude home ${binding.claudeHome}; restore the instance with that home, or switch the thread to another instance to hand it off.`
+    : instance.value.continuationKey !== binding.continuationKey
+      ? `Instance ${instanceId} now continues as ${instance.value.continuationKey}, but this thread continues in Claude home ${binding.claudeHome}; restore that home, or switch the thread to another instance to hand it off.`
+      : undefined;
+
 export const layer: Layer.Layer<
   ProviderSwitchServiceV2,
   never,
@@ -98,6 +111,23 @@ export const layer: Layer.Layer<
               thread.providerInstanceId === current.instanceId &&
               thread.nativeThreadRef !== null,
           );
+          const binding =
+            currentProviderThread !== undefined
+              ? currentProviderThread.nativeMetadata?.engineBinding
+              : projection.thread.engineBinding?.providerInstanceId === current.instanceId
+                ? projection.thread.engineBinding
+                : undefined;
+          const boundInstanceMismatch =
+            binding === undefined || instanceChanged
+              ? undefined
+              : boundInstanceMismatchCause(current.instanceId, currentInstance, binding);
+          if (boundInstanceMismatch !== undefined) {
+            return yield* new ProviderSwitchPlanError({
+              threadId: projection.thread.id,
+              targetProviderInstanceId: targetModelSelection.instanceId,
+              cause: boundInstanceMismatch,
+            });
+          }
           const selectionTransition =
             current.instanceId === targetModelSelection.instanceId &&
             !modelSelectionsEqual(current, targetModelSelection) &&
@@ -125,7 +155,8 @@ export const layer: Layer.Layer<
                           driver: currentInstance.value.driver,
                           continuationIdentity: {
                             driverKind: currentInstance.value.driver,
-                            continuationKey: currentInstance.value.continuationKey,
+                            continuationKey:
+                              binding?.continuationKey ?? currentInstance.value.continuationKey,
                           },
                           modelSelection: current,
                           runtimeMode: projection.thread.runtimeMode,
