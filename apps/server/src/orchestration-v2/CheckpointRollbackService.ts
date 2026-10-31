@@ -85,9 +85,8 @@ const isProviderAdapterContinuationMismatchError = Schema.is(
 
 /**
  * The message clients see when a rollback fails. Only a held Git index lock
- * and a provider row whose engine binding no longer matches its instance get
- * their own explanation; other reasons carry internal ids or raw Git output,
- * so they fall back to the generic message.
+ * gets its own explanation; other reasons carry internal ids or raw Git
+ * output, so they fall back to the generic message.
  */
 export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionError): string {
   if (

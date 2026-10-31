@@ -2815,7 +2815,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly freshQueueOnReopen?: boolean;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
-    /** Gives the adapter this binding's template and seeds the harness row with it. */
     readonly engineBinding?: OrchestrationV2EngineBinding;
   }) =>
     Effect.gen(function* () {
@@ -13930,6 +13929,19 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
       assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
     });
+    const metadataOnlyTranscriptHome = Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const configDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-claude-metadata-only-",
+      });
+      const projectDir = NodePath.join(configDir, "projects", "-workspace");
+      yield* fileSystem.makeDirectory(projectDir, { recursive: true });
+      yield* fileSystem.writeFileString(
+        NodePath.join(projectDir, `${WAKE_NATIVE_SESSION}.jsonl`),
+        `{"type":"last-prompt","lastPrompt":"hello","sessionId":"${WAKE_NATIVE_SESSION}"}\n`,
+      );
+      return configDir;
+    });
     const providerThreadUpdates = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
       events.filter((event) => event.type === "provider_thread.updated").length;
 
@@ -14042,17 +14054,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       "rejects resumeThread of an unbound stock row moved by restart_and_resume to a same-home LHC instance",
       () =>
         Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const configDir = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "t3-claude-moved-row-",
-          });
-          const projectDir = NodePath.join(configDir, "projects", "-workspace");
-          yield* fileSystem.makeDirectory(projectDir, { recursive: true });
-          // Without the guard, this metadata-only transcript fails the resume for another reason.
-          yield* fileSystem.writeFileString(
-            NodePath.join(projectDir, `${WAKE_NATIVE_SESSION}.jsonl`),
-            `{"type":"last-prompt","lastPrompt":"hello","sessionId":"${WAKE_NATIVE_SESSION}"}\n`,
-          );
+          const configDir = yield* metadataOnlyTranscriptHome;
           const harness = yield* makeWakeHarnessWithOptions({
             engineBinding: CLAUDE_LHC_BINDING,
             environment: { CLAUDE_CONFIG_DIR: configDir },
@@ -14183,16 +14185,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       "lets an empty first-generation transcript block a resume only on $engine",
       ({ engineBinding, resumes }) =>
         Effect.gen(function* () {
-          const fileSystem = yield* FileSystem.FileSystem;
-          const configDir = yield* fileSystem.makeTempDirectoryScoped({
-            prefix: "t3-claude-empty-generation-",
-          });
-          const projectDir = NodePath.join(configDir, "projects", "-workspace");
-          yield* fileSystem.makeDirectory(projectDir, { recursive: true });
-          yield* fileSystem.writeFileString(
-            NodePath.join(projectDir, `${WAKE_NATIVE_SESSION}.jsonl`),
-            `{"type":"last-prompt","lastPrompt":"hello","sessionId":"${WAKE_NATIVE_SESSION}"}\n`,
-          );
+          const configDir = yield* metadataOnlyTranscriptHome;
           const harness = yield* makeWakeHarnessWithOptions({
             ...(engineBinding === undefined ? {} : { engineBinding }),
             environment: { CLAUDE_CONFIG_DIR: configDir },

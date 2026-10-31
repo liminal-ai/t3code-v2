@@ -1,6 +1,5 @@
 import { ProviderInstanceId, type OrchestrationV2EngineBinding } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
-import * as Effect from "effect/Effect";
 
 import { claudeAutoCompactWindow, claudeThreadTraits } from "./traits.ts";
 
@@ -14,38 +13,24 @@ const BINDING = {
   compaction: "provider",
 } satisfies OrchestrationV2EngineBinding;
 
-const LIVE = { nativeThreadId: "native-alias", frameSessionId: "generation-2" };
+const LIVE = { nativeThreadId: "native-alias", generation: "generation-2" };
 
 describe("claudeThreadTraits", () => {
-  it.effect("keeps stock Claude on its native session and its transcript check", () =>
-    Effect.gen(function* () {
-      const traits = claudeThreadTraits(null, LIVE);
-      assert.equal(traits.filesSessionId, "native-alias");
-      assert.isTrue(yield* traits.conversationMissing(Effect.succeed(true)));
-      assert.isFalse(yield* traits.conversationMissing(Effect.succeed(false)));
-      assert.isFalse(traits.compactionReplacesProcess);
-    }),
-  );
+  it("keeps stock Claude on its native session and its transcript", () => {
+    assert.deepEqual(claudeThreadTraits(null, LIVE), {
+      filesSessionId: "native-alias",
+      conversationInTranscript: true,
+      compactionReplacesProcess: false,
+    });
+  });
 
-  it.effect(
-    "reads LHC files under the live generation and never reports a missing conversation",
-    () =>
-      Effect.gen(function* () {
-        let checkedTranscript = false;
-        const traits = claudeThreadTraits(BINDING, LIVE);
-        assert.equal(traits.filesSessionId, "generation-2");
-        assert.isFalse(
-          yield* traits.conversationMissing(
-            Effect.sync(() => {
-              checkedTranscript = true;
-              return true;
-            }),
-          ),
-        );
-        assert.isFalse(checkedTranscript);
-        assert.isTrue(traits.compactionReplacesProcess);
-      }),
-  );
+  it("reads LHC files under the live generation and its conversation outside the transcript", () => {
+    assert.deepEqual(claudeThreadTraits(BINDING, LIVE), {
+      filesSessionId: "generation-2",
+      conversationInTranscript: false,
+      compactionReplacesProcess: true,
+    });
+  });
 
   it("falls back to the native id for LHC files when no frame names a generation", () => {
     assert.equal(

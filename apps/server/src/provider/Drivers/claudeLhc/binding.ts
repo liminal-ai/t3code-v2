@@ -9,14 +9,12 @@ import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/serve
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as Effect from "effect/Effect";
 
-/** The engine a provider row's native session runs on. Null means stock Claude. */
 export function rowEngineBinding(
   row: OrchestrationV2ProviderThread,
 ): OrchestrationV2EngineBinding | null {
   return row.nativeMetadata?.engineBinding ?? null;
 }
 
-/** A new row's metadata from the thread's seed, which applies only to the instance it names. */
 export function stampEngineBinding(
   seed: OrchestrationV2EngineBinding | undefined,
   instanceId: ProviderInstanceId,
@@ -24,10 +22,6 @@ export function stampEngineBinding(
   return seed?.providerInstanceId === instanceId ? { nativeMetadata: { engineBinding: seed } } : {};
 }
 
-/**
- * `nativeMetadata` for a row built from `source`, such as a fork or a thread-start reset. The new
- * row keeps the source's binding, so it keeps the source's pair after the instance's defaults change.
- */
 export function copyEngineBinding(
   source: OrchestrationV2ProviderThread,
   nativeMetadata: OrchestrationV2ProviderThreadNativeMetadata = {},
@@ -37,7 +31,6 @@ export function copyEngineBinding(
   return Object.keys(merged).length === 0 ? {} : { nativeMetadata: merged };
 }
 
-/** Fails when `row` would continue on an engine or Claude home other than its instance's. */
 export function checkClaudeEngineBinding(
   row: OrchestrationV2ProviderThread,
   template: ProviderEngineBindingTemplate | undefined,

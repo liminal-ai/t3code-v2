@@ -516,7 +516,6 @@ type ClaudeAgentSdkSessionOptions = Omit<
 export type ClaudeAgentSdkQueryOptions = ClaudeAgentSdkSessionOptions &
   ClaudeAgentSdkThreadIdentity;
 
-/** A seam query's options: the runner's, less the MCP servers it sends over stdin, with its spawner. */
 export type ClaudeSeamQueryOptions = Omit<
   ClaudeAgentSdkSessionOptions,
   "mcpServers" | "spawnClaudeCodeProcess"
@@ -4470,7 +4469,6 @@ export interface ClaudeAdapterV2Options {
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
   };
-  /** The instance's context engine. Absent for stock Claude. Every row must agree with it. */
   readonly engineBinding?: ProviderEngineBindingTemplate;
 }
 
@@ -9112,7 +9110,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ) {
               const { filesSessionId } = claudeThreadTraits(
                 rowEngineBinding(context.input.providerThread),
-                { nativeThreadId: liveQuery.nativeThreadId, frameSessionId: message.session_id },
+                { nativeThreadId: liveQuery.nativeThreadId, generation: message.session_id },
               );
               const taskLists = yield* Ref.get(taskListsByNativeThread);
               const knownTaskList = taskLists.get(filesSessionId);
@@ -10946,11 +10944,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 nativeThreadId !== null &&
                 // A live process holds the conversation even before saving it.
                 (yield* Ref.get(queryContext))?.nativeThreadId !== nativeThreadId &&
-                (yield* claudeThreadTraits(rowEngineBinding(threadInput.providerThread), {
-                  nativeThreadId,
-                }).conversationMissing(
-                  // An unreadable transcript leaves the resume to the CLI.
-                  hasEmptyClaudeTranscript(nativeThreadId).pipe(Effect.orElseSucceed(() => false)),
+                claudeThreadTraits(rowEngineBinding(threadInput.providerThread), { nativeThreadId })
+                  .conversationInTranscript &&
+                // An unreadable transcript leaves the resume to the CLI.
+                (yield* hasEmptyClaudeTranscript(nativeThreadId).pipe(
+                  Effect.orElseSucceed(() => false),
                 ))
               ) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
