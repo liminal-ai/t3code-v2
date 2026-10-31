@@ -10,6 +10,7 @@ import { Command, Flag } from "effect/cli";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { DEVELOPMENT_ICON_OVERRIDES } from "../../../scripts/lib/brand-assets.ts";
+import { checkBundledModules } from "../../../scripts/lib/check-bundled-modules.ts";
 import { findEsmImportsOfExternalPackages } from "../../../scripts/lib/cli-executable-imports.ts";
 import { injectLinuxArm64Sea } from "../../../scripts/lib/linux-arm64-sea.ts";
 import rootPackageJson from "../../../package.json" with { type: "json" };
@@ -111,6 +112,10 @@ const buildExeCmd = Command.make(
       ),
       Flag.optional,
     ),
+    moduleList: Flag.String("module-list").pipe(
+      Flag.withDescription("Also write the executable's sorted module ids, as JSON, to this file."),
+      Flag.optional,
+    ),
   },
   (config) =>
     Effect.gen(function* () {
@@ -118,6 +123,7 @@ const buildExeCmd = Command.make(
       const fs = yield* FileSystem.FileSystem;
       const repoRoot = yield* RepoRoot;
       const serverDir = path.join(repoRoot, "apps/server");
+      const moduleList = path.join(yield* fs.makeTempDirectoryScoped(), "modules.json");
 
       yield* Effect.log("[cli] Building single-executable...");
       const target = Option.getOrUndefined(config.target);
@@ -134,6 +140,7 @@ const buildExeCmd = Command.make(
             ...process.env,
             T3CODE_PACK_EXE: linuxArm64 ? "bundle" : "1",
             T3CODE_PACK_EXE_TARGET: target ?? "",
+            T3CODE_EXE_MODULE_LIST: moduleList,
           },
           stdout: config.verbose ? "inherit" : "ignore",
           stderr: "inherit",
@@ -147,6 +154,14 @@ const buildExeCmd = Command.make(
       if (specifiers.length > 0) {
         return yield* new ServerCliExecutableImportError({ bundlePath, specifiers });
       }
+      const keptModuleList = Option.getOrUndefined(config.moduleList);
+      if (keptModuleList !== undefined && (yield* fs.exists(moduleList))) {
+        yield* fs.copyFile(moduleList, path.resolve(keptModuleList));
+      }
+      const modules = yield* checkBundledModules(moduleList);
+      yield* Effect.log(
+        `[cli] Module check passed: ${modules.moduleCount} modules, claude-lhc/client ${modules.claudeLhcClient ? "in" : "not in"} the graph`,
+      );
       // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
       if (linuxArm64) {
         yield* injectLinuxArm64Sea({
