@@ -219,7 +219,7 @@ const runPatchCheck = files.some(
 );
 
 // Resolve without the lockfile in a temp copy to preserve the working tree and lockfile.
-// Copy mobile modules too: they are file: dependencies, not workspace packages.
+// Copy mobile modules and vendor/ too: they are file: dependencies, not workspace packages.
 // Cached registry metadata limits this to patches stranded by local changes, not registry drift.
 const checkPatches = (): boolean => {
   const temp = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-patch-check-"));
@@ -239,7 +239,7 @@ const checkPatches = (): boolean => {
         if (NodeFS.existsSync(NodePath.join(root, manifest))) copy(manifest);
       }
     }
-    for (const extra of ["apps/mobile/deps", "patches", ".pnpmfile.cjs"]) {
+    for (const extra of ["apps/mobile/deps", "patches", "vendor", ".pnpmfile.cjs"]) {
       if (NodeFS.existsSync(NodePath.join(root, extra))) copy(extra);
     }
     const { status, stdout, stderr, error } = NodeChildProcess.spawnSync(

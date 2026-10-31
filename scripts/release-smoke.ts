@@ -68,6 +68,11 @@ function copyWorkspaceManifestFixture(targetRoot: string): void {
     });
   }
 
+  const vendorDirectory = NodePath.resolve(repoRoot, "vendor");
+  if (NodeFS.existsSync(vendorDirectory)) {
+    NodeFS.cpSync(vendorDirectory, NodePath.resolve(targetRoot, "vendor"), { recursive: true });
+  }
+
   const patchesDirectory = NodePath.resolve(repoRoot, "patches");
   if (NodeFS.existsSync(patchesDirectory)) {
     NodeFS.cpSync(patchesDirectory, NodePath.resolve(targetRoot, "patches"), { recursive: true });
