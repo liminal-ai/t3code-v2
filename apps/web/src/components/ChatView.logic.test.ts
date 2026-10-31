@@ -767,6 +767,28 @@ describe("resolveComposerProviderSelection", () => {
       expect(selection.unavailableProviderInstanceId).toBeUndefined();
     });
 
+    it.each([null, "claudeAgent", "codex"])(
+      "keys a bound thread only on its binding when the locked driver is %s",
+      (driver) => {
+        const thread = fromShellList(true);
+        const resolve = (entries: ReadonlyArray<ProviderInstanceEntry>) =>
+          resolveComposerProviderSelection({
+            entries,
+            candidateInstanceIds: [thread.modelSelection.instanceId, stockClaude.instanceId],
+            lockedProvider: driver === null ? null : ProviderDriverKind.make(driver),
+            lockedInstanceId: thread.modelSelection.instanceId,
+            lockedEngineBinding: binding,
+          });
+
+        expect(resolve([stockClaude, entry("codex")]).unavailableProviderInstanceId).toBe(
+          binding.providerInstanceId,
+        );
+        expect(
+          resolve([stockClaude, entry("codex"), bound()]).selectedProviderEntry?.instanceId,
+        ).toBe(binding.providerInstanceId);
+      },
+    );
+
     it("lets no instance in the same key group stand in for a disabled bound instance", () => {
       const sameHome = entry("claudeAgent", "claude_lhc_copy", {
         continuation: { groupKey: binding.continuationKey },
