@@ -67,7 +67,7 @@ const locateRuntime = Effect.fn("claudeLhc.locateRuntime")(function* (
   }
 
   if (yield* HostProcess.IsExecutable) {
-    // scripts/lib/stage-claude-lhc.ts stages this tree beside the release executable.
+    // A release archive stages claude-lhc and its own Node here, beside the executable.
     const staged = path.join(path.dirname(yield* HostProcess.ExecutablePath), "lhc-runtime");
     if (!(yield* exists(staged))) {
       return yield* problem(`LHC runtime not staged for ${yield* releaseTarget}`);
