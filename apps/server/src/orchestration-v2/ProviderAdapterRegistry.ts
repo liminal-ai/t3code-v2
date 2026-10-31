@@ -62,7 +62,6 @@ export interface ProviderAdapterRegistryV2Shape {
   >;
 }
 
-/** Why the template cannot seed a binding with its instance's identity, or undefined when it can. */
 function engineBindingTemplateProblem(
   template: ProviderEngineBindingTemplate,
   instanceContinuationKey: string,

@@ -936,7 +936,6 @@ function appendContextHandoffId(
   return handoffId === null ? handoffIds : Array.from(new Set([...handoffIds, handoffId]));
 }
 
-/** Root rows on the instance that may continue under its current engine, newest first. */
 function rootProviderThreadsForProvider(
   projection: Pick<OrchestrationV2ThreadProjection, "providerThreads" | "thread">,
   providerInstanceId: ModelSelection["instanceId"],
@@ -1119,13 +1118,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
 
   const engineBindingTemplate = (providerInstanceId: ProviderInstanceId) =>
     providerAdapters.getMetadata === undefined
-      ? // @effect-diagnostics-next-line effectSucceedWithVoid:off - Without metadata the instance has no template.
+      ? // @effect-diagnostics-next-line effectSucceedWithVoid:off
         Effect.succeed(undefined)
       : providerAdapters
           .getMetadata(providerInstanceId)
           .pipe(Effect.map((metadata) => metadata.engineBinding));
 
-  // A new or switched thread takes its instance's binding as the seed for its next new session.
   const seedEngineBinding =
     /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
     Effect.fnUntraced(function* <Event extends Omit<OrchestrationV2DomainEvent, "id">>(
@@ -1705,22 +1703,24 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             }),
         ),
       );
+      const reusableStoredProviderThread = Effect.gen(function* () {
+        if (
+          storedProviderThread === undefined ||
+          storedProviderThread.nativeThreadRef === null ||
+          storedProviderThread.id === activeProviderThread?.id
+        ) {
+          return storedProviderThread;
+        }
+        const rows = yield* reusableRootProviderThreads;
+        return rows.some((row) => row.id === storedProviderThread.id)
+          ? storedProviderThread
+          : rows[0];
+      });
       const targetProviderThread = followsCurrent
         ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId
           ? activeProviderThread
           : (yield* reusableRootProviderThreads)[0]
-        : storedProviderThread === undefined ||
-            storedProviderThread.nativeThreadRef === null ||
-            storedProviderThread.id === activeProviderThread?.id
-          ? storedProviderThread
-          : // The row was picked at enqueue, and its instance's engine may have changed since.
-            yield* reusableRootProviderThreads.pipe(
-              Effect.map((rows) =>
-                rows.some((row) => row.id === storedProviderThread.id)
-                  ? storedProviderThread
-                  : rows[0],
-              ),
-            );
+        : yield* reusableStoredProviderThread;
       const queuedProviderThread: OrchestrationV2ProviderThread = targetProviderThread ?? {
         id: idAllocator.derive.providerThread({
           driver: targetAdapter.driver,

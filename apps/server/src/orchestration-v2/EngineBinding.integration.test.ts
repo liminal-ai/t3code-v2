@@ -119,7 +119,6 @@ const deleteInstance = (instances: Instances, instanceId: ProviderInstanceId) =>
 const unimplemented = (detail: string) =>
   Effect.fail(new ProviderAdapter.ProviderAdapterProtocolError({ driver: DRIVER, detail }));
 
-// Writes the instance's binding into each new row, as the Claude adapter's ensureThread will.
 const makeAdapter = (
   instances: Instances,
   instanceId: ProviderInstanceId,
@@ -257,7 +256,6 @@ const makeAdapter = (
     }),
 });
 
-// The real registry reads each live instance's template, so its boundary check runs too.
 const layerRegistry = (instances: Instances, failMetadata: Ref.Ref<boolean>) => {
   const adapters = new Map(
     [LHC, STOCK, LHC_OTHER].map((id) => [id, makeAdapter(instances, id)] as const),
@@ -338,7 +336,6 @@ const makeRuntime = (
     } satisfies Runtime;
   });
 
-// Each call is a fresh orchestrator runtime over the same database file, as after a restart.
 const layerRuntime = (runtime: Runtime) => {
   const layerDatabase = SqlitePersistence.layerFromPath(runtime.dbPath).pipe(
     Layer.provide(NodeServices.layer),
@@ -358,7 +355,6 @@ const layerRuntime = (runtime: Runtime) => {
   );
 };
 
-// Each send waits for its thread to go idle, so no turn outlives the runtime that started it.
 const run = (runtime: Runtime, commands: ReadonlyArray<OrchestrationV2Command>) =>
   runOrchestratorV2Scenario({
     name: "engine-binding",
@@ -371,7 +367,6 @@ const run = (runtime: Runtime, commands: ReadonlyArray<OrchestrationV2Command>) 
     ]),
   }).pipe(Effect.provide(layerRuntime(runtime)));
 
-/** Restarts the runtime, rebuilds every projection from the stored events, and reads them. */
 const reload = (runtime: Runtime, threadIds: ReadonlyArray<ThreadId>) =>
   Effect.gen(function* () {
     yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).rebuild;
@@ -697,7 +692,6 @@ const assertReturnedRow = (
 };
 
 describe("returning to an instance", () => {
-  // A row is resumed only while its binding agrees with the instance's current template.
   it.live.each(RETURN_CASES)("after the instance %s", ([, before, after, expectedRow]) =>
     Effect.gen(function* () {
       const runtime = yield* makeRuntime("return", [
@@ -718,7 +712,6 @@ describe("returning to an instance", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
-  // The queued message picks its row at enqueue, so promotion must check it again.
   it.live.each(RETURN_CASES)(
     "through a queued message after the instance %s while it waited",
     ([, before, after, expectedRow]) =>
