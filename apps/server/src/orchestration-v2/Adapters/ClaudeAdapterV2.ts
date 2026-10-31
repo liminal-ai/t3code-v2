@@ -10177,19 +10177,56 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId);
             const turn = context.lastTurn;
             if (turn === null) return;
-            const buffered = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
-            const wakeReplaySettles = (taskId: string) =>
-              buffered.some(
-                (message) =>
-                  message.type === "system" &&
-                  message.subtype === "task_notification" &&
-                  message.task_id === taskId,
-              );
+            // The wake replay owns any subagent with buffered lifecycle frames. A start it would
+            // replay as running gets a stop after it, because the replaced CLI never sends one.
+            const lastBufferedLifecycle = new Map<
+              string,
+              Extract<SDKMessage, { readonly subtype: "task_started" | "task_notification" }>
+            >();
+            for (const message of (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ??
+              []) {
+              if (
+                message.type === "system" &&
+                (message.subtype === "task_started" || message.subtype === "task_notification")
+              ) {
+                lastBufferedLifecycle.set(message.task_id, message);
+              }
+            }
+            const stops = [...lastBufferedLifecycle.values()].flatMap((message) =>
+              message.subtype === "task_started"
+                ? [
+                    {
+                      type: "system",
+                      subtype: "task_notification",
+                      task_id: message.task_id,
+                      ...(message.tool_use_id === undefined
+                        ? {}
+                        : { tool_use_id: message.tool_use_id }),
+                      status: "stopped",
+                      output_file: "",
+                      summary: CLAUDE_CONTEXT_REBUILT_NOTE,
+                      uuid: message.uuid,
+                      session_id: replaced,
+                    } satisfies SDKMessage,
+                  ]
+                : [],
+            );
+            if (stops.length > 0) {
+              yield* Ref.update(wakeBuffers, (current) => {
+                const entry = current.get(nativeThreadId);
+                return entry === undefined
+                  ? current
+                  : new Map(current).set(nativeThreadId, {
+                      ...entry,
+                      messages: [...entry.messages, ...stops],
+                    });
+              });
+            }
             for (const [taskId, subagent] of yield* Ref.get(sessionSubagentsByTaskId)) {
               if (
                 subagent.task.status !== "running" ||
                 context.subagentsFromEarlierProcesses.has(subagent) ||
-                wakeReplaySettles(taskId)
+                lastBufferedLifecycle.has(taskId)
               )
                 continue;
               yield* updateClaudeSubagentNode({

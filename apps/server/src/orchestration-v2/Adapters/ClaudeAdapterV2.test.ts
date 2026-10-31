@@ -15744,6 +15744,131 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       },
     );
 
+    const subagentStatus = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) => {
+      const subagent = lastSubagentStatus(events, SUBAGENT_TASK_ID);
+      return subagent?.type === "subagent.updated" ? subagent.subagent : undefined;
+    };
+    const continueNativeWake = Effect.fnUntraced(function* (
+      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
+      attempt: string,
+    ) {
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(attempt),
+          text: "Continue the native wake.",
+          attachments: [],
+          providerTurnOrdinal: 2,
+          messageCreatedBy: "agent",
+          messageCreationSource: "provider",
+        }),
+      );
+    });
+    const compactToGeneration2 = midTurnFrames({
+      old: WAKE_NATIVE_SESSION,
+      next: "lhc-generation-2",
+      last: "lhc-generation-2",
+    }).boundaryThenInit;
+
+    it.effect(
+      "stops a subagent an idle wake started in the replaced generation when the wake replays",
+      () =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
+          yield* startLhcTurn(harness, "attempt-lhc-buffered-1", "Start work.");
+          yield* harness.offerAndWait(wakeTurnInit);
+          yield* harness.offerAndWait(turnOneResult);
+          yield* harness.awaitTerminal(1);
+          yield* harness.offerAndWait(
+            makeSubagentTaskStartedFrame({
+              taskId: SUBAGENT_TASK_ID,
+              toolUseId: "toolu-lhc-buffered",
+              uuid: "00000000-0000-4000-8000-000000006101",
+            }),
+          );
+          yield* harness.offerAndWait(wakeAssistant);
+          for (const frame of compactToGeneration2) yield* harness.offerAndWait(frame);
+          assert.lengthOf(harness.continuationRequests, 1);
+
+          yield* continueNativeWake(harness, "attempt-lhc-buffered-2");
+          yield* harness.until(() => subagentStatus(harness.events)?.status === "cancelled");
+          assert.equal(subagentStatus(harness.events)?.result, CLAUDE_CONTEXT_REBUILT_NOTE);
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000006105", result: "Done." }),
+              session_id: "lhc-generation-2",
+            }),
+          );
+          yield* harness.awaitTerminal(2);
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          const modelChange = yield* harness.runtime
+            .startTurn(
+              makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make("attempt-lhc-buffered-3"),
+                text: "Switch model after compaction.",
+                attachments: [],
+                providerTurnOrdinal: 3,
+                modelSelection: CLAUDE_TEST_RESTART_MODEL_SELECTION,
+              }),
+            )
+            .pipe(Effect.result);
+          assert.equal(modelChange._tag, "Success");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+    );
+
+    it.effect("stops a subagent whose last buffered lifecycle frame is a resumed start", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
+        yield* startLhcTurn(harness, "attempt-lhc-resumed-1", "Start work.");
+        yield* harness.offerAndWait(wakeTurnInit);
+        yield* harness.offerAndWait(
+          makeSubagentTaskStartedFrame({
+            taskId: SUBAGENT_TASK_ID,
+            toolUseId: "toolu-lhc-resumed",
+            uuid: "00000000-0000-4000-8000-000000006102",
+          }),
+        );
+        yield* harness.offerAndWait(turnOneResult);
+        yield* harness.awaitTerminal(1);
+        yield* harness.offerAndWait(
+          makeSubagentNotificationFrame({
+            taskId: SUBAGENT_TASK_ID,
+            toolUseId: "toolu-lhc-resumed",
+            summary: "First attempt finished.",
+            uuid: "00000000-0000-4000-8000-000000006103",
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeSubagentTaskStartedFrame({
+            taskId: SUBAGENT_TASK_ID,
+            toolUseId: "toolu-lhc-resumed-2",
+            uuid: "00000000-0000-4000-8000-000000006104",
+          }),
+        );
+        for (const frame of compactToGeneration2) yield* harness.offerAndWait(frame);
+        assert.lengthOf(harness.continuationRequests, 1);
+
+        yield* continueNativeWake(harness, "attempt-lhc-resumed-2");
+        yield* harness.until(() => subagentStatus(harness.events)?.status === "cancelled");
+        assert.equal(subagentStatus(harness.events)?.result, CLAUDE_CONTEXT_REBUILT_NOTE);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
     it.effect.each([
       { compactIds: "one session id, as stock sends", next: WAKE_NATIVE_SESSION },
       { compactIds: "new session ids", next: "stock-other-session" },
