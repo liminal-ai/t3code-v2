@@ -433,7 +433,6 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
-/** claude-lhc's own `lhc.compact` names, so nothing maps between them. */
 export const OrchestrationV2EngineCompactPolicy = Schema.Struct({
   trigger: PositiveInt,
   target: PositiveInt,
@@ -462,11 +461,7 @@ export type OrchestrationV2EngineBinding = typeof OrchestrationV2EngineBinding.T
 
 type EngineBindingIdentity = Pick<OrchestrationV2EngineBinding, "engine" | "continuationKey">;
 
-/**
- * Whether a session bound as `binding` may continue under `template`. The instance id and the
- * compact policy are not part of the identity, so a row resumed on another instance with the
- * same home agrees and keeps its own policy.
- */
+/** Whether a session bound as `binding` may continue under `template`. */
 export function engineBindingsAgree(
   binding: EngineBindingIdentity | null | undefined,
   template: EngineBindingIdentity | null | undefined,
