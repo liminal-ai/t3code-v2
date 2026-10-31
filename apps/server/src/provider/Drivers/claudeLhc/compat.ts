@@ -4,6 +4,7 @@ import type {
   Options as ClaudeQueryOptions,
   Query as ClaudeQuery,
   SDKMessage,
+  SDKMessageOrigin,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { LhcOptions, LhcQuery } from "claude-lhc/client";
 
@@ -39,8 +40,59 @@ function withoutInProcessMcpServers(
   );
 }
 
+type LhcOrigin = NonNullable<Extract<LhcMessage, { type: "user" }>["origin"]>;
+type LhcResultError = Exclude<Extract<LhcMessage, { type: "result" }>, { subtype: "success" }>;
+type LhcStartupFailureReason = NonNullable<LhcResultError["startup_failure_reason"]>;
+
+// SDK 0.3.312 startup failures that 0.3.276 cannot name. T3 never reads the reason.
+const LHC_ONLY_STARTUP_FAILURE_REASONS = [
+  "org_config_refused",
+  "org_config_required_unavailable",
+  "provider_not_allowed",
+] as const satisfies ReadonlyArray<LhcStartupFailureReason>;
+
+function isLhcOnlyStartupFailureReason(
+  reason: LhcStartupFailureReason,
+): reason is (typeof LHC_ONLY_STARTUP_FAILURE_REASONS)[number] {
+  return LHC_ONLY_STARTUP_FAILURE_REASONS.some((lhcOnly) => lhcOnly === reason);
+}
+
+// T3 reads only `origin.kind`, so a session-inbox delivery stays a task notification without its subkind.
+function stockOrigin(origin: LhcOrigin): SDKMessageOrigin {
+  if (origin.kind !== "task-notification") return origin;
+  const { subkind, ...notification } = origin;
+  return subkind === undefined || subkind === "session-inbox"
+    ? notification
+    : { ...notification, subkind };
+}
+
+function withStockOrigin<M extends { readonly origin?: LhcOrigin }>(
+  message: M,
+): Omit<M, "origin"> & { origin?: SDKMessageOrigin } {
+  const { origin, ...rest } = message;
+  return origin === undefined ? rest : { ...rest, origin: stockOrigin(origin) };
+}
+
+function stockResultError(message: LhcResultError) {
+  const { startup_failure_reason: reason, ...rest } = withStockOrigin(message);
+  return reason === undefined || isLhcOnlyStartupFailureReason(reason)
+    ? rest
+    : { ...rest, startup_failure_reason: reason };
+}
+
+export function stockMessage(message: LhcMessage): SDKMessage {
+  switch (message.type) {
+    case "user":
+      return withStockOrigin(message);
+    case "result":
+      return message.subtype === "success" ? withStockOrigin(message) : stockResultError(message);
+    default:
+      return message;
+  }
+}
+
 function stockResult(result: IteratorResult<LhcMessage, void>): IteratorResult<SDKMessage, void> {
-  return result.done === true ? result : { done: false, value: result.value as SDKMessage };
+  return result.done === true ? result : { done: false, value: stockMessage(result.value) };
 }
 
 export function claudeRunnerQuery(query: LhcQuery): ClaudeRunnerQuery {
