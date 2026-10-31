@@ -656,19 +656,49 @@ describe("engine binding seed", () => {
   );
 });
 
+const RETURN_CASES = [
+  ["flipped from LHC to stock", lhcTemplate(), null, "new"],
+  ["flipped from stock to LHC", null, lhcTemplate(), "new"],
+  ["changed its Claude home", lhcTemplate(), lhcTemplate("/home/test/.claude-moved"), "new"],
+  [
+    "changed only its compact pair",
+    lhcTemplate(),
+    lhcTemplate(HOME, { trigger: 400_000, target: 80_000 }),
+    "reused",
+  ],
+] as const;
+
+const assertReturnedRow = (
+  projection: OrchestrationV2ThreadProjection,
+  before: ProviderEngineBindingTemplate | null,
+  after: ProviderEngineBindingTemplate | null,
+  expectedRow: "new" | "reused",
+) => {
+  const runs = projection.runs.toSorted((left, right) => left.ordinal - right.ordinal);
+  assert.isTrue(runs.every((run) => run.status === "completed"));
+  assert.equal(runs.at(-1)?.providerInstanceId, LHC);
+  const first = rowOf(projection, runs[0]!.ordinal)!;
+  const returned = rowOf(projection, runs.at(-1)!.ordinal)!;
+  assert.equal(first.providerInstanceId, LHC);
+  assert.equal(returned.providerInstanceId, LHC);
+  assert.deepEqual(
+    first.nativeMetadata?.engineBinding,
+    before === null ? undefined : bound(LHC, before),
+  );
+  if (expectedRow === "reused") {
+    assert.equal(returned.id, first.id);
+  } else {
+    assert.notEqual(returned.id, first.id);
+    assert.deepEqual(
+      returned.nativeMetadata?.engineBinding,
+      after === null ? undefined : bound(LHC, after),
+    );
+  }
+};
+
 describe("returning to an instance", () => {
   // A row is resumed only while its binding agrees with the instance's current template.
-  it.live.each([
-    ["flipped from LHC to stock", lhcTemplate(), null, "new"],
-    ["flipped from stock to LHC", null, lhcTemplate(), "new"],
-    ["changed its Claude home", lhcTemplate(), lhcTemplate("/home/test/.claude-moved"), "new"],
-    [
-      "changed only its compact pair",
-      lhcTemplate(),
-      lhcTemplate(HOME, { trigger: 400_000, target: 80_000 }),
-      "reused",
-    ],
-  ] as const)("after the instance %s", ([, before, after, expectedRow]) =>
+  it.live.each(RETURN_CASES)("after the instance %s", ([, before, after, expectedRow]) =>
     Effect.gen(function* () {
       const runtime = yield* makeRuntime("return", [
         [LHC, before],
@@ -683,32 +713,45 @@ describe("returning to an instance", () => {
       yield* setTemplate(runtime.instances, LHC, after);
       yield* run(runtime, [send(threadId, "back-on-a", selection(LHC))]);
       const [reloaded] = yield* reload(runtime, [threadId]);
-      const projection = reloaded!.projection;
-      const first = rowOf(projection, 1)!;
-      const returned = rowOf(projection, 3)!;
-      assert.equal(first.providerInstanceId, LHC);
-      assert.equal(returned.providerInstanceId, LHC);
-      assert.deepEqual(
-        first.nativeMetadata?.engineBinding,
-        before === null ? undefined : bound(LHC, before),
-      );
-      if (expectedRow === "reused") {
-        assert.equal(returned.id, first.id);
-      } else {
-        assert.notEqual(returned.id, first.id);
-        assert.deepEqual(
-          returned.nativeMetadata?.engineBinding,
-          after === null ? undefined : bound(LHC, after),
-        );
-      }
-      assert.deepEqual(
-        projection.runs.map((run) => [run.providerInstanceId, run.status]),
-        [
-          [LHC, "completed"],
-          [STOCK, "completed"],
-          [LHC, "completed"],
-        ],
-      );
+      assert.lengthOf(reloaded!.projection.runs, 3);
+      assertReturnedRow(reloaded!.projection, before, after, expectedRow);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  // The queued message picks its row at enqueue, so promotion must check it again.
+  it.live.each(RETURN_CASES)(
+    "through a queued message after the instance %s while it waited",
+    ([, before, after, expectedRow]) =>
+      Effect.gen(function* () {
+        const runtime = yield* makeRuntime("queued-return", [
+          [LHC, before],
+          [STOCK, null],
+        ]);
+        const threadId = ThreadId.make("thread:engine-binding:queued-return");
+        yield* run(runtime, [
+          create(threadId, LHC, runtime.cwd),
+          send(threadId, "on-a", selection(LHC)),
+          send(threadId, "on-b", selection(STOCK)),
+        ]);
+        const held: HeldTurn = {
+          started: yield* Deferred.make<void>(),
+          release: yield* Deferred.make<void>(),
+        };
+        yield* Ref.set(runtime.instances.holdNextTurn, held);
+        yield* Effect.gen(function* () {
+          const orchestrator = yield* Orchestrator.OrchestratorV2;
+          yield* orchestrator.dispatch(send(threadId, "again-on-b", selection(STOCK)));
+          yield* Deferred.await(held.started);
+          yield* orchestrator.dispatch(
+            send(threadId, "back-on-a", selection(LHC), "queue_after_active"),
+          );
+          yield* setTemplate(runtime.instances, LHC, after);
+          yield* Deferred.succeed(held.release, undefined);
+          yield* awaitIdle(threadId);
+        }).pipe(Effect.provide(layerRuntime(runtime)));
+        const [reloaded] = yield* reload(runtime, [threadId]);
+        assert.lengthOf(reloaded!.projection.runs, 4);
+        assertReturnedRow(reloaded!.projection, before, after, expectedRow);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

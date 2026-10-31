@@ -1692,24 +1692,35 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         (candidate) => candidate.id === projection.thread.activeProviderThreadId,
       );
       const followsCurrent = followsCurrentConversation(queuedMessage);
+      const reusableRootProviderThreads = engineBindingTemplate(queuedRun.providerInstanceId).pipe(
+        Effect.map((template) =>
+          rootProviderThreadsForProvider(projection, queuedRun.providerInstanceId, template),
+        ),
+        Effect.mapError(
+          (cause) =>
+            new OrchestratorDispatchError({
+              commandId,
+              commandType: "message.dispatch",
+              cause,
+            }),
+        ),
+      );
       const targetProviderThread = followsCurrent
         ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId
           ? activeProviderThread
-          : rootProviderThreadsForProvider(
-              projection,
-              queuedRun.providerInstanceId,
-              yield* engineBindingTemplate(queuedRun.providerInstanceId).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new OrchestratorDispatchError({
-                      commandId,
-                      commandType: "message.dispatch",
-                      cause,
-                    }),
-                ),
+          : (yield* reusableRootProviderThreads)[0]
+        : storedProviderThread === undefined ||
+            storedProviderThread.nativeThreadRef === null ||
+            storedProviderThread.id === activeProviderThread?.id
+          ? storedProviderThread
+          : // The row was picked at enqueue, and its instance's engine may have changed since.
+            yield* reusableRootProviderThreads.pipe(
+              Effect.map((rows) =>
+                rows.some((row) => row.id === storedProviderThread.id)
+                  ? storedProviderThread
+                  : rows[0],
               ),
-            )[0]
-        : storedProviderThread;
+            );
       const queuedProviderThread: OrchestrationV2ProviderThread = targetProviderThread ?? {
         id: idAllocator.derive.providerThread({
           driver: targetAdapter.driver,
