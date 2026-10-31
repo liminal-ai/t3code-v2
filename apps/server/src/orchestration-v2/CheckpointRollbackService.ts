@@ -31,13 +31,15 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import { GIT_INDEX_LOCKED_DETAIL } from "../vcs/VcsProcess.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import { RuntimePolicyV2 } from "./RuntimePolicy.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 
 export const ROLLBACK_FAILED_MESSAGE =
   "The provider could not roll back this conversation. Try again; if it keeps failing, check the provider and server logs.";
+export const ROLLBACK_CONTINUATION_MISMATCH_MESSAGE =
+  "Rollback refused. This thread's Claude instance changed its context engine or Claude home since the thread last ran, so its history and files are unchanged.";
 
 export class CheckpointRollbackExecutionError extends Schema.TaggedError<CheckpointRollbackExecutionError>()(
   "CheckpointRollbackExecutionError",
@@ -74,13 +76,26 @@ export class CheckpointRollbackExecutionError extends Schema.TaggedError<Checkpo
 const isCheckpointRollbackExecutionError = Schema.is(CheckpointRollbackExecutionError);
 const isVcsProcessExitError = Schema.is(VcsProcessExitError);
 const isCheckpointRestoreError = Schema.is(CheckpointRestoreError);
+const isProviderAdapterRollbackThreadError = Schema.is(
+  ProviderAdapter.ProviderAdapterRollbackThreadError,
+);
+const isProviderAdapterContinuationMismatchError = Schema.is(
+  ProviderAdapter.ProviderAdapterContinuationMismatchError,
+);
 
 /**
  * The message clients see when a rollback fails. Only a held Git index lock
- * gets its own explanation; other reasons carry internal ids or raw Git
- * output, so they fall back to the generic message.
+ * and a provider row whose engine binding no longer matches its instance get
+ * their own explanation; other reasons carry internal ids or raw Git output,
+ * so they fall back to the generic message.
  */
 export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionError): string {
+  if (
+    isProviderAdapterRollbackThreadError(error.cause) &&
+    isProviderAdapterContinuationMismatchError(error.cause.cause)
+  ) {
+    return ROLLBACK_CONTINUATION_MISMATCH_MESSAGE;
+  }
   const restoreCause = isCheckpointRestoreError(error.cause) ? error.cause.cause : undefined;
   return isVcsProcessExitError(restoreCause) && restoreCause.detail === GIT_INDEX_LOCKED_DETAIL
     ? GIT_INDEX_LOCKED_DETAIL

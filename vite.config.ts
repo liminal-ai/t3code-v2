@@ -374,6 +374,10 @@ export default defineConfig({
         rules: { "t3code/no-raw-mcp-registration": "off" },
       },
       {
+        files: ["apps/server/src/orchestration-v2/Adapters/ClaudeAdapterV2.ts"],
+        rules: { "t3code/claude-engine-binding-accessor": "error" },
+      },
+      {
         files: ["apps/web/src/**"],
         excludeFiles: ["apps/web/src/components/ui/**"],
         rules: {

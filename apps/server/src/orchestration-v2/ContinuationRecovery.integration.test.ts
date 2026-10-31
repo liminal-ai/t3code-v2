@@ -209,6 +209,18 @@ it.effect.each(cases)("$name", ({ route, bound }) => {
         crypto: yield* Crypto.Crypto,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         queryRunner: runner.queryRunner,
+        ...(bound
+          ? {
+              engineBinding: {
+                engine: binding.engine,
+                continuationKey: binding.continuationKey,
+                claudeHome: binding.claudeHome,
+                compact: binding.compact,
+                nativeContinuation: binding.nativeContinuation,
+                compaction: binding.compaction,
+              },
+            }
+          : {}),
       });
       const adapter = bound ? boundAdapter(stock, faults) : stock;
       yield* Effect.gen(function* () {
