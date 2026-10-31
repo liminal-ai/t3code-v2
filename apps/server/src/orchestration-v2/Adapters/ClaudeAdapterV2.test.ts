@@ -15427,8 +15427,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           if (entry.type !== "emit_inbound" || entry.frame === undefined) continue;
           frames++;
           const step = adoptClaudeGeneration(generation, entry.frame);
-          assert.isNull(step.replaced, `${scenario} replaced a generation at ${entry.label}`);
-          generation = step.generation;
+          assert.notEqual(
+            step.kind,
+            "replaced",
+            `${scenario} replaced a generation at ${entry.label}`,
+          );
+          if (step.kind !== "stayed") generation = step.generation;
         }
       }
       assert.isAtLeast(frames, 2000);
@@ -15493,9 +15497,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       .trim()
       .split("\n")
       .map((line) => claudeSdkFrame(JSON.parse(line)));
-    const fixtureSession = (index: number) => {
-      const sessionId = Reflect.get(P_REPLAY[index] ?? {}, "session_id");
-      if (typeof sessionId !== "string") throw new Error(`Frame ${index} has no session id.`);
+    const sessionOf = (frame: SDKMessage | undefined) => {
+      const sessionId = frame === undefined ? undefined : Reflect.get(frame, "session_id");
+      if (typeof sessionId !== "string") throw new Error("P-replay frame has no session id.");
       return sessionId;
     };
     const fixturePromptIds = P_REPLAY.flatMap((frame) =>
@@ -15505,42 +15509,50 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     );
     const withPrompt = (frame: SDKMessage, fixtureId: string, promptUuid: string) =>
       claudeSdkFrame(JSON.parse(JSON.stringify(frame).replaceAll(fixtureId, promptUuid)));
-    // P-replay: two turns and a /compact in generation 1, then a restart into generation 3.
-    // Its /compact names generation 2 only on the boundary and result, with no init.
-    const [GEN_1, GEN_2, GEN_3] = [fixtureSession(0), fixtureSession(15), fixtureSession(20)];
-    const RESTART_INIT = 20;
+    const P_REPLAY_TURN_1 = P_REPLAY.slice(0, 7);
+    const P_REPLAY_TURN_2_TO_REPLY = P_REPLAY.slice(7, 11);
+    const P_REPLAY_TURN_2_RESULT = P_REPLAY.slice(11, 13);
+    const P_REPLAY_COMPACT = P_REPLAY.slice(13, 17);
+    const P_REPLAY_RESTART = P_REPLAY.slice(17);
+    const COMPACT_BOUNDARY = P_REPLAY_COMPACT[2];
+    const RESTART_INIT = P_REPLAY_RESTART[3];
+    const [GEN_1, GEN_2, GEN_3] = [
+      sessionOf(P_REPLAY_TURN_1[0]),
+      sessionOf(COMPACT_BOUNDARY),
+      sessionOf(RESTART_INIT),
+    ];
 
     it.effect.each([
-      { variant: "the live trace", restartFrames: P_REPLAY.slice(17) },
+      { variant: "the live trace", restartFrames: P_REPLAY_RESTART },
       {
         variant: "its restart init moved ahead of any turn frame",
         restartFrames: [
-          P_REPLAY[RESTART_INIT]!,
-          ...P_REPLAY.slice(17).filter((frame) => frame !== P_REPLAY[RESTART_INIT]),
+          RESTART_INIT!,
+          ...P_REPLAY_RESTART.filter((frame) => frame !== RESTART_INIT),
         ],
       },
     ])("replays P-replay's generations from $variant", ({ restartFrames }) => {
       const { adoptions, layer } = captureAdoptions();
       return Effect.gen(function* () {
         assert.equal(new Set([GEN_1, GEN_2, GEN_3]).size, 3);
-        assert.equal(Reflect.get(P_REPLAY[15]!, "subtype"), "compact_boundary");
-        assert.equal(Reflect.get(P_REPLAY[RESTART_INIT]!, "subtype"), "init");
+        assert.equal(Reflect.get(COMPACT_BOUNDARY!, "subtype"), "compact_boundary");
+        assert.equal(Reflect.get(RESTART_INIT!, "subtype"), "init");
 
         const initial = yield* makeWakeHarnessWithOptions({
           engineBinding: CLAUDE_LHC_BINDING,
           nativeSessionId: GEN_1,
         });
         yield* startLhcTurn(initial, "attempt-p-replay-1", "Remember ALPHA.");
-        for (const frame of P_REPLAY.slice(0, 7)) {
+        for (const frame of P_REPLAY_TURN_1) {
           yield* initial.offerAndWait(
             withPrompt(frame, fixturePromptIds[0]!, initial.promptUuid(0)),
           );
         }
         yield* startLhcTurn(initial, "attempt-p-replay-2", "Remember BRAVO.");
         for (const frame of [
-          ...P_REPLAY.slice(7, 11),
+          ...P_REPLAY_TURN_2_TO_REPLY,
           claudeSdkFrame({ ...wakeTaskStarted, session_id: GEN_1 }),
-          ...P_REPLAY.slice(11, 13),
+          ...P_REPLAY_TURN_2_RESULT,
         ]) {
           yield* initial.offerAndWait(
             withPrompt(frame, fixturePromptIds[1]!, initial.promptUuid(1)),
@@ -15548,7 +15560,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }
         yield* initial.until(() => lastRoster(initial.events).includes(WAKE_TASK_ID));
         yield* startLhcTurn(initial, "attempt-p-replay-compact", "/compact");
-        for (const frame of P_REPLAY.slice(13, 17)) yield* initial.offerAndWait(frame);
+        for (const frame of P_REPLAY_COMPACT) yield* initial.offerAndWait(frame);
         yield* initial.awaitTerminal(3);
         assert.deepEqual(
           initial.terminalEvents().map((event) => event.status),
@@ -15609,8 +15621,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }),
         wakeTaskStarted,
       ],
-      // claude-lhc's order: old-id statuses, then the boundary and the init under the new id.
-      firstCompact: [
+      boundaryThenInit: [
         claudeSdkFrame({
           type: "system",
           subtype: "status",
@@ -15640,8 +15651,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           session_id: sessions.next,
         }),
       ],
-      // The new init ahead of the old generation's success status.
-      secondCompact: [
+      initBeforeOldStatus: [
         claudeSdkFrame({
           type: "system",
           subtype: "status",
@@ -15692,7 +15702,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           for (const frame of frames.work) yield* harness.offerAndWait(frame);
           yield* harness.until(() => lastRoster(harness.events).includes(WAKE_TASK_ID));
 
-          for (const frame of frames.firstCompact) yield* harness.offerAndWait(frame);
+          for (const frame of frames.boundaryThenInit) yield* harness.offerAndWait(frame);
           yield* harness.until(() => rebuiltNotices(harness.events).length > 0);
           assert.deepEqual(lastRoster(harness.events), []);
           const subagent = lastSubagentStatus(harness.events, SUBAGENT_TASK_ID);
@@ -15708,7 +15718,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             `Command "${WAKE_TASK_DESCRIPTION}" and subagent "Audit recent commits" were stopped. ${CLAUDE_CONTEXT_REBUILT_NOTE}`,
           ]);
 
-          for (const frame of frames.secondCompact) yield* harness.offerAndWait(frame);
+          for (const frame of frames.initBeforeOldStatus) yield* harness.offerAndWait(frame);
           yield* yieldTicks(20);
           assert.lengthOf(harness.terminalEvents(), 0);
           yield* harness.offerAndWait(frames.result);
@@ -15742,7 +15752,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const harness = yield* makeWakeHarnessWithOptions();
         const frames = midTurnFrames({ old: WAKE_NATIVE_SESSION, next, last: next });
         yield* startLhcTurn(harness, "attempt-stock-compact", "Audit and build.");
-        for (const frame of [...frames.work, ...frames.firstCompact, ...frames.secondCompact]) {
+        for (const frame of [
+          ...frames.work,
+          ...frames.boundaryThenInit,
+          ...frames.initBeforeOldStatus,
+        ]) {
           yield* harness.offerAndWait(frame);
         }
         yield* harness.offerAndWait(frames.result);

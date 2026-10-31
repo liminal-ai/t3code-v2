@@ -56,8 +56,8 @@ function replay(frames: ReadonlyArray<ClaudeGenerationFrame>, start = NO_CLAUDE_
   const lives: Array<string | null> = [];
   frames.forEach((frame, at) => {
     const step = adoptClaudeGeneration(generation, frame);
-    generation = step.generation;
-    if (step.replaced !== null) resets.push({ at, replaced: step.replaced });
+    if (step.kind !== "stayed") generation = step.generation;
+    if (step.kind === "replaced") resets.push({ at, replaced: step.replaced });
     lives.push(generation.live);
   });
   return { generation, resets, lives };

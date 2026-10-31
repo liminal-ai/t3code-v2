@@ -17,19 +17,17 @@ export interface ClaudeGeneration {
   readonly retired: ReadonlySet<string>;
 }
 
-export interface ClaudeGenerationStep {
-  readonly generation: ClaudeGeneration;
-  /** The generation this frame replaced, or null when the live generation stayed or was first seen. */
-  readonly replaced: string | null;
-}
+export type ClaudeGenerationStep =
+  | { readonly kind: "stayed" }
+  | { readonly kind: "first"; readonly generation: ClaudeGeneration }
+  | { readonly kind: "replaced"; readonly generation: ClaudeGeneration; readonly replaced: string };
 
 export const NO_CLAUDE_GENERATION: ClaudeGeneration = { live: null, retired: new Set() };
 
 /**
  * claude-lhc mints a new session id when it swaps the CLI, and names it first on that
  * generation's `system/init` or, after a manual compact, on the `compact_boundary`, with no
- * init. Status and result frames from the old process can still arrive after it, so only
- * those two frames move the generation, and an id once replaced is never adopted again.
+ * init. Status and result frames from the old process can still arrive after it.
  */
 export function adoptClaudeGeneration(
   generation: ClaudeGeneration,
@@ -43,12 +41,13 @@ export function adoptClaudeGeneration(
     sessionId === generation.live ||
     generation.retired.has(sessionId)
   ) {
-    return { generation, replaced: null };
+    return { kind: "stayed" };
   }
   if (generation.live === null) {
-    return { generation: { live: sessionId, retired: generation.retired }, replaced: null };
+    return { kind: "first", generation: { live: sessionId, retired: generation.retired } };
   }
   return {
+    kind: "replaced",
     generation: { live: sessionId, retired: new Set(generation.retired).add(generation.live) },
     replaced: generation.live,
   };
