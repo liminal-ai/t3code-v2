@@ -1129,15 +1129,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     Effect.fnUntraced(function* <Event extends Omit<OrchestrationV2DomainEvent, "id">>(
       event: Event,
     ) {
-      if (event.type !== "thread.created" && event.type !== "thread.provider-switched") {
-        return event;
-      }
+      if (!event.type.startsWith("thread.")) return event;
       const thread = (
         event as Omit<OrchestrationV2DomainEvent, "id"> & {
           readonly payload: OrchestrationV2AppThread;
         }
       ).payload;
       if (thread.engineBinding?.providerInstanceId === thread.providerInstanceId) return event;
+      // A restart steer moves the thread to its run's instance as a model-selection update.
+      if (
+        thread.engineBinding === undefined &&
+        event.type !== "thread.created" &&
+        event.type !== "thread.provider-switched"
+      ) {
+        return event;
+      }
       const template = yield* engineBindingTemplate(thread.providerInstanceId).pipe(
         Effect.catch((cause) =>
           Effect.logWarning("Engine binding template unreadable, thread keeps no seed", {

@@ -37,6 +37,7 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventStore from "./EventStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
@@ -49,6 +50,11 @@ const DRIVER = ProviderDriverKind.make("claudeAgent");
 const LHC = ProviderInstanceId.make("claude-lhc-a");
 const STOCK = ProviderInstanceId.make("claude-stock");
 const LHC_OTHER = ProviderInstanceId.make("claude-lhc-b");
+// Codex's capabilities allow a restart steer, which Claude's do not.
+const RESTARTABLE_STOCK = ProviderInstanceId.make("restartable-stock");
+
+const capabilitiesOf = (instanceId: ProviderInstanceId) =>
+  instanceId === RESTARTABLE_STOCK ? CodexProviderCapabilitiesV2 : ClaudeProviderCapabilitiesV2;
 const projectId = ProjectId.make("project:engine-binding");
 
 const HOME = "/home/test/.claude-lhc";
@@ -83,6 +89,11 @@ interface HeldTurn {
   readonly started: Deferred.Deferred<void>;
   readonly release: Deferred.Deferred<void>;
 }
+
+const makeHeldTurn = Effect.all({
+  started: Deferred.make<void>(),
+  release: Deferred.make<void>(),
+});
 
 interface Instances {
   readonly templates: Ref.Ref<
@@ -125,7 +136,7 @@ const makeAdapter = (
 ): ProviderAdapter.ProviderAdapterV2["Service"] => ({
   instanceId,
   driver: DRIVER,
-  getCapabilities: () => Effect.succeed(ClaudeProviderCapabilitiesV2),
+  getCapabilities: () => Effect.succeed(capabilitiesOf(instanceId)),
   planSelectionTransition: () => Effect.succeed({ type: "apply_on_next_turn" }),
   openSession: (sessionInput) =>
     Effect.gen(function* () {
@@ -139,7 +150,7 @@ const makeAdapter = (
         status: "ready",
         cwd: sessionInput.runtimePolicy.cwd ?? process.cwd(),
         model: sessionInput.modelSelection.model,
-        capabilities: ClaudeProviderCapabilitiesV2,
+        capabilities: capabilitiesOf(instanceId),
         createdAt: now,
         updatedAt: now,
         lastError: null,
@@ -180,14 +191,34 @@ const makeAdapter = (
         resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
         startTurn: (turnInput) =>
           Effect.gen(function* () {
+            const key = `${turnInput.threadId}:${turnInput.runOrdinal}`;
+            const providerTurnId = ProviderTurnId.make(`provider-turn:${key}`);
             const hold = yield* Ref.getAndSet(instances.holdNextTurn, null);
             if (hold !== null) {
+              const startedAt = yield* DateTime.now;
+              yield* PubSub.publish(events, {
+                type: "provider_turn.updated",
+                driver: DRIVER,
+                providerTurn: {
+                  id: providerTurnId,
+                  providerThreadId: turnInput.providerThread.id,
+                  nodeId: turnInput.rootNodeId,
+                  runAttemptId: turnInput.attemptId,
+                  nativeTurnRef: {
+                    driver: DRIVER,
+                    nativeId: `native-turn:${key}`,
+                    strength: "strong",
+                  },
+                  ordinal: turnInput.runOrdinal,
+                  status: "running",
+                  startedAt,
+                  completedAt: null,
+                },
+              });
               yield* Deferred.succeed(hold.started, undefined);
               yield* Deferred.await(hold.release);
             }
             const eventTime = yield* DateTime.now;
-            const key = `${turnInput.threadId}:${turnInput.runOrdinal}`;
-            const providerTurnId = ProviderTurnId.make(`provider-turn:${key}`);
             const providerEvents: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event> = [
               {
                 type: "provider_turn.updated",
@@ -258,7 +289,9 @@ const makeAdapter = (
 
 const layerRegistry = (instances: Instances, failMetadata: Ref.Ref<boolean>) => {
   const adapters = new Map(
-    [LHC, STOCK, LHC_OTHER].map((id) => [id, makeAdapter(instances, id)] as const),
+    [LHC, STOCK, LHC_OTHER, RESTARTABLE_STOCK].map(
+      (id) => [id, makeAdapter(instances, id)] as const,
+    ),
   );
   const instanceFor = (
     instanceId: ProviderInstanceId,
@@ -282,7 +315,7 @@ const layerRegistry = (instances: Instances, failMetadata: Ref.Ref<boolean>) => 
             Effect.flatMap((fail) =>
               fail
                 ? unimplemented("capabilities are unavailable")
-                : Effect.succeed(ClaudeProviderCapabilitiesV2),
+                : Effect.succeed(capabilitiesOf(instanceId)),
             ),
           ),
       },
@@ -610,10 +643,7 @@ describe("engine binding seed", () => {
         [STOCK, null],
       ]);
       const threadId = ThreadId.make("thread:engine-binding:queued");
-      const held: HeldTurn = {
-        started: yield* Deferred.make<void>(),
-        release: yield* Deferred.make<void>(),
-      };
+      const held = yield* makeHeldTurn;
       yield* run(runtime, [create(threadId, from, runtime.cwd)]);
       yield* Ref.set(runtime.instances.holdNextTurn, held);
       const queued = yield* Effect.gen(function* () {
@@ -647,6 +677,57 @@ describe("engine binding seed", () => {
       assert.equal(reloaded?.projection.thread.providerInstanceId, to);
       assert.deepEqual(reloaded?.projection.thread.engineBinding, expected);
       assert.deepEqual(reloaded?.shell?.engineBinding, expected);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.live("drops an LHC seed when a restart steer moves the thread back to its stock run", () =>
+    Effect.gen(function* () {
+      const runtime = yield* makeRuntime("restart-steer", [
+        [LHC, lhcTemplate()],
+        [RESTARTABLE_STOCK, null],
+      ]);
+      const threadId = ThreadId.make("thread:engine-binding:restart-steer");
+      yield* run(runtime, [create(threadId, RESTARTABLE_STOCK, runtime.cwd)]);
+      const held = yield* makeHeldTurn;
+      yield* Ref.set(runtime.instances.holdNextTurn, held);
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        yield* orchestrator.dispatch(send(threadId, "first", selection(RESTARTABLE_STOCK)));
+        yield* Deferred.await(held.started);
+        const runId = (yield* orchestrator.getThreadProjection(threadId)).runs[0]!.id;
+        yield* runOrchestratorV2Scenario({
+          name: "engine-binding:steerable",
+          commands: [],
+          steps: [{ type: "await_run_steerable", threadId, runId }],
+          projectionThreadIds: [threadId],
+        });
+        yield* orchestrator.dispatch(setSelection(threadId, "picker", selection(LHC)));
+        yield* orchestrator.dispatch({
+          ...send(threadId, "restart", selection(RESTARTABLE_STOCK, "gpt-6-astra")),
+          dispatchMode: { type: "restart_active", targetRunId: runId },
+        });
+        yield* Deferred.succeed(held.release, undefined);
+        yield* awaitIdle(threadId);
+      }).pipe(Effect.provide(layerRuntime(runtime)));
+      const [reloaded] = yield* reload(runtime, [threadId]);
+      const moves = reloaded!.storedEvents.flatMap((stored) =>
+        stored.event.type === "thread.provider-switched" ||
+        stored.event.type === "thread.model-selection-updated"
+          ? [
+              [
+                stored.event.type,
+                stored.event.payload.providerInstanceId,
+                stored.event.payload.engineBinding?.providerInstanceId ?? null,
+              ],
+            ]
+          : [],
+      );
+      assert.deepEqual(moves, [
+        ["thread.provider-switched", LHC, LHC],
+        ["thread.model-selection-updated", RESTARTABLE_STOCK, null],
+      ]);
+      assert.equal(reloaded?.projection.thread.providerInstanceId, RESTARTABLE_STOCK);
+      assert.notProperty(reloaded?.projection.thread, "engineBinding");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });
@@ -726,10 +807,7 @@ describe("returning to an instance", () => {
           send(threadId, "on-a", selection(LHC)),
           send(threadId, "on-b", selection(STOCK)),
         ]);
-        const held: HeldTurn = {
-          started: yield* Deferred.make<void>(),
-          release: yield* Deferred.make<void>(),
-        };
+        const held = yield* makeHeldTurn;
         yield* Ref.set(runtime.instances.holdNextTurn, held);
         yield* Effect.gen(function* () {
           const orchestrator = yield* Orchestrator.OrchestratorV2;
