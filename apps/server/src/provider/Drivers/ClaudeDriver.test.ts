@@ -10,10 +10,8 @@ import {
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import * as ProviderLatestVersions from "@t3tools/provider-core/server/ProviderLatestVersions";
-import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientResponse } from "effect/http";
 
@@ -27,7 +25,7 @@ import * as ModelManifest from "../ModelManifest.ts";
 import * as ProviderHostLive from "../ProviderHostLive.ts";
 import * as ProviderOrchestrationAdapterInfrastructure from "../ProviderOrchestrationAdapterInfrastructure.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
-import { ClaudeDriver, makeClaudeDriver, type ClaudeQuerySeamInput } from "./ClaudeDriver.ts";
+import { ClaudeDriver } from "./ClaudeDriver.ts";
 
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -61,11 +59,11 @@ const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-const createInstance = (driver: typeof ClaudeDriver) =>
-  driver.create({
+const createInstance = () =>
+  ClaudeDriver.create({
     instanceId: ProviderInstanceId.make("claude_seam"),
     displayName: undefined,
-    environment: [{ name: "T3_CLAUDE_SEAM_TEST", value: "instance", sensitive: false }],
+    environment: [],
     enabled: true,
     config: decodeClaudeSettings({ binaryPath: "~/bin/claude" }),
   });
@@ -93,47 +91,16 @@ const policyOutcomes = (capabilities: OrchestrationV2ProviderCapabilities) =>
     return { fork, rollback };
   }).pipe(Effect.provide(CommandPolicy.layer));
 
-describe("ClaudeDriver query seam", () => {
+describe("ClaudeDriver", () => {
   it.effect("keeps stock Claude on native forks and rollback", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const instance = yield* createInstance(ClaudeDriver);
+        const instance = yield* createInstance();
         const capabilities = yield* instance.orchestrationAdapter.getCapabilities();
 
         assert.deepEqual(yield* policyOutcomes(capabilities), {
           fork: "native_fork",
           rollback: "allowed",
-        });
-      }),
-    ).pipe(Effect.provide(layerTest)),
-  );
-
-  it.effect("hands a kind's seam this instance's environment, home and config", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const seamInputs: Array<ClaudeQuerySeamInput> = [];
-        const driver = makeClaudeDriver({
-          querySeam: (input) => {
-            seamInputs.push(input);
-            return {
-              forkRefusal: "This kind of Claude thread can't be forked.",
-              canRollback: false,
-            };
-          },
-        });
-        const instance = yield* createInstance(driver);
-        const capabilities = yield* instance.orchestrationAdapter.getCapabilities();
-        const { baseDir } = yield* ServerConfig.ServerConfig;
-        const path = yield* Path.Path;
-        const homeDirectory = yield* HostProcess.HomeDirectory;
-
-        assert.equal(seamInputs.length, 1);
-        assert.equal(seamInputs[0]!.baseDir, baseDir);
-        assert.equal(seamInputs[0]!.environment.T3_CLAUDE_SEAM_TEST, "instance");
-        assert.equal(seamInputs[0]!.config.binaryPath, path.join(homeDirectory, "bin", "claude"));
-        assert.deepEqual(yield* policyOutcomes(capabilities), {
-          fork: "portable_context",
-          rollback: "refused",
         });
       }),
     ).pipe(Effect.provide(layerTest)),

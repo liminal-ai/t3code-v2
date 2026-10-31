@@ -36,6 +36,7 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2AppThread,
+  type OrchestrationV2EngineBinding,
   type OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   ProjectId,
@@ -2276,6 +2277,7 @@ describe("ClaudeAdapterV2 native fork", () => {
             environment: { CLAUDE_CONFIG_DIR: "/custom/claude-home" },
             threadId: targetThreadId,
             providerSessionId,
+            thread: { appThreadId: targetThreadId, engineBinding: null },
           },
         ]);
         assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
@@ -2412,6 +2414,7 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
       return yield* runner.open({
         threadId: ThreadId.make("thread-claude-mcp-channel"),
         providerSessionId: ProviderSessionId.make("provider-session-claude-mcp-channel"),
+        thread: { appThreadId: ThreadId.make("thread-claude-mcp-channel"), engineBinding: null },
         options: {
           ...ClaudeAdapterV2.makeClaudeQueryOptions({
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -2842,6 +2845,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_thread.updated" }>
         >();
       let openedOptions: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined;
+      const runnerCalls: Array<{
+        readonly method: "open" | "forkSession" | "subagentLaunchToolUseId";
+        readonly thread: ClaudeAdapterV2.ClaudeThreadContext;
+      }> = [];
       const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
         instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
         settings: options?.settings ?? DEFAULT_CLAUDE_SETTINGS,
@@ -2867,6 +2874,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           open: (input) =>
             Effect.gen(function* () {
               openedOptions = input.options;
+              runnerCalls.push({ method: "open", thread: input.thread });
               const processMessages =
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
@@ -2934,8 +2942,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 close: options?.close?.(sdkMessages) ?? Effect.void,
               };
             }),
-          forkSession: options?.forkSession ?? (() => Effect.die("unused forkSession")),
-          subagentLaunchToolUseId: () => Effect.succeed(options?.subagentLaunchToolUseId ?? null),
+          forkSession: (input) =>
+            Effect.suspend(() => {
+              runnerCalls.push({ method: "forkSession", thread: input.thread });
+              return options?.forkSession?.(input) ?? Effect.die("unused forkSession");
+            }),
+          subagentLaunchToolUseId: (input) =>
+            Effect.sync(() => {
+              runnerCalls.push({ method: "subagentLaunchToolUseId", thread: input.thread });
+              return options?.subagentLaunchToolUseId ?? null;
+            }),
           assertComplete: Effect.void,
         },
       });
@@ -3016,6 +3032,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         planReceipts,
         providerThreadReceipts,
         getOpenedOptions: () => openedOptions,
+        runnerCalls,
         terminalEvents,
         hasPendingBackgroundWork,
         until: changes.until,
@@ -13735,6 +13752,82 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
+  );
+
+  it.effect(
+    "hands the runner the app thread and the provider row's binding on open, subagent lookup and fork",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const harness = yield* makeWorkflowHarnessWithOptions({
+            close: Queue.shutdown,
+            subagentLaunchToolUseId: WORKFLOW_TOOL_USE_ID,
+            forkSession: () => Effect.succeed({ sessionId: "forked-bound-session" }),
+          });
+          const engineBinding = {
+            providerInstanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+            engine: "claude-lhc",
+            continuationKey: "claude-lhc:home:/lhc/claude-home",
+            claudeHome: "/lhc/claude-home",
+            compact: { trigger: 700_000, target: 140_000 },
+            nativeContinuation: "required",
+            compaction: "provider",
+          } satisfies OrchestrationV2EngineBinding;
+          const providerThread = {
+            ...harness.providerThread,
+            nativeMetadata: { ...harness.providerThread.nativeMetadata, engineBinding },
+          };
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread,
+              now: yield* DateTime.now,
+              attemptId: RunAttemptId.make("attempt-claude-bound-runner"),
+              text: "Continue the workflow.",
+              attachments: [],
+            }),
+          );
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...workflowToolUse,
+              message: {
+                model: "claude-sonnet-4-6",
+                content: [
+                  { type: "tool_use", id: "toolu-resume-workflow", name: "SendMessage", input: {} },
+                ],
+              },
+            }),
+          );
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...workflowTaskStarted,
+              tool_use_id: "toolu-resume-workflow",
+              prompt: "Continue the workflow.",
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({ uuid: "00000000-0000-4000-8000-000000001050", result: "Done." }),
+          );
+          yield* Queue.take(harness.terminalReceipts);
+          const targetThreadId = ThreadId.make("thread-claude-bound-fork");
+          yield* harness.runtime.forkThread({
+            sourceProviderThread: providerThread,
+            sourceProviderTurns: [],
+            targetThreadId,
+          });
+
+          const rowThread = { appThreadId: harness.threadId, engineBinding };
+          assert.deepEqual(harness.runnerCalls, [
+            { method: "open", thread: rowThread },
+            { method: "subagentLaunchToolUseId", thread: rowThread },
+            { method: "forkSession", thread: { appThreadId: targetThreadId, engineBinding } },
+          ]);
+        }).pipe(
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+      ),
   );
 
   it.effect.each([
