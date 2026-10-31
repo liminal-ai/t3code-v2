@@ -433,6 +433,46 @@ const LenientThreadOpens = Schema.NullOr(OrchestrationV2ThreadOpens).pipe(
   Schema.catchDecoding(() => Effect.succeedSome(null)),
 );
 
+export const OrchestrationV2EngineCompactPolicy = Schema.Struct({
+  trigger: PositiveInt,
+  target: PositiveInt,
+}).check(
+  Schema.makeFilter(
+    (policy) => policy.target < policy.trigger || "The compact target must be below its trigger.",
+  ),
+);
+export type OrchestrationV2EngineCompactPolicy = typeof OrchestrationV2EngineCompactPolicy.Type;
+
+// A key or a path is an identity, so it must not be trimmed.
+const ExactNonEmptyString = Schema.String.check(Schema.isNonEmpty());
+
+/**
+ * The context engine a native session runs on. A provider thread's copy is the authority for
+ * that session; an app thread's copy only seeds its next new session. Absent means stock.
+ * `compact` is null when the instance's config was invalid.
+ */
+export const OrchestrationV2EngineBinding = Schema.Struct({
+  providerInstanceId: ProviderInstanceId,
+  engine: Schema.Literal("claude-lhc"),
+  continuationKey: ExactNonEmptyString,
+  claudeHome: ExactNonEmptyString,
+  compact: Schema.NullOr(OrchestrationV2EngineCompactPolicy),
+  nativeContinuation: Schema.Literal("required"),
+  compaction: Schema.Literal("provider"),
+});
+export type OrchestrationV2EngineBinding = typeof OrchestrationV2EngineBinding.Type;
+
+type EngineBindingIdentity = Pick<OrchestrationV2EngineBinding, "engine" | "continuationKey">;
+
+/** Whether a session bound as `binding` may continue under `template`. */
+export function engineBindingsAgree(
+  binding: EngineBindingIdentity | null | undefined,
+  template: EngineBindingIdentity | null | undefined,
+): boolean {
+  if (binding == null || template == null) return binding == null && template == null;
+  return binding.engine === template.engine && binding.continuationKey === template.continuationKey;
+}
+
 export const OrchestrationV2AppThread = Schema.Struct({
   ...OrchestrationV2CreationFields,
   id: ThreadId,
@@ -451,6 +491,7 @@ export const OrchestrationV2AppThread = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  engineBinding: Schema.optional(OrchestrationV2EngineBinding),
   lineage: OrchestrationV2AppThreadLineage,
   forkedFrom: Schema.NullOr(
     Schema.Union([
@@ -1018,6 +1059,7 @@ export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   claudeAttachmentBudget: Schema.optional(
     Schema.Struct({ bytesUsed: NonNegativeInt, pagesUsed: NonNegativeInt }),
   ),
+  engineBinding: Schema.optional(OrchestrationV2EngineBinding),
 });
 export type OrchestrationV2ProviderThreadNativeMetadata =
   typeof OrchestrationV2ProviderThreadNativeMetadata.Type;
@@ -2040,6 +2082,7 @@ export const OrchestrationV2ThreadShell = Schema.Struct({
   historyOrigin: Schema.optional(OrchestrationV2ThreadHistoryOrigin),
   linkOrigin: Schema.optional(OrchestrationV2LinkOrigin),
   delegatedFrom: Schema.optional(OrchestrationV2DelegatedFrom),
+  engineBinding: Schema.optional(OrchestrationV2EngineBinding),
   latestRunId: Schema.NullOr(RunId),
   latestRunRequestedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),
   latestRunStartedAt: Schema.optional(Schema.NullOr(Schema.DateTimeUtc)),

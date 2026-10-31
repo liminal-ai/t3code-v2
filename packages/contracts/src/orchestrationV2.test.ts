@@ -2,9 +2,12 @@ import { describe, expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
 
-import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
+import { NodeId, ProviderInstanceId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
+  engineBindingsAgree,
   latestProviderTurnForAttempt,
+  OrchestrationV2AppThreadJson,
+  OrchestrationV2EngineBinding,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
@@ -33,6 +36,8 @@ const decodeOrchestrationV2ProviderThread = Schema.decodeUnknownSync(Orchestrati
 const decodeOrchestrationV2ProviderCapabilities = Schema.decodeUnknownSync(
   OrchestrationV2ProviderCapabilities,
 );
+const decodeEngineBinding = Schema.decodeSync(OrchestrationV2EngineBinding);
+const decodeUnknownEngineBinding = Schema.decodeUnknownSync(OrchestrationV2EngineBinding);
 
 describe("orchestration V2 contracts", () => {
   it("decodes thread event types from a newer server as skippable items", () => {
@@ -637,5 +642,174 @@ describe("latestProviderTurnForAttempt", () => {
     ];
     expect(latestProviderTurnForAttempt(turns, RunAttemptId.make("goal-attempt"))?.id).toBe("last");
     expect(latestProviderTurnForAttempt(turns, null)).toBeUndefined();
+  });
+});
+
+describe("engine binding", () => {
+  const binding = {
+    providerInstanceId: "claudeLhc",
+    engine: "claude-lhc",
+    continuationKey: "claude-lhc:home:/home/user/.claude",
+    claudeHome: "/home/user/.claude",
+    compact: { trigger: 700000, target: 140000 },
+    nativeContinuation: "required",
+    compaction: "provider",
+  } as const;
+  const appThread = {
+    createdBy: "user",
+    creationSource: "web",
+    id: "thread-1",
+    projectId: "project-1",
+    title: "Thread",
+    providerInstanceId: "claudeAgent",
+    modelSelection: { instanceId: "claudeAgent", model: "claude-opus-4-6" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    activeProviderThreadId: null,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
+    forkedFrom: null,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    lastVisitedAt: null,
+    deletedAt: null,
+  };
+  const shell = {
+    createdBy: "user",
+    creationSource: "web",
+    id: "thread-1",
+    projectId: "project-1",
+    title: "Thread",
+    providerInstanceId: "claudeAgent",
+    modelSelection: { instanceId: "claudeAgent", model: "claude-opus-4-6" },
+    runtimeMode: "full-access",
+    interactionMode: "default",
+    branch: null,
+    worktreePath: null,
+    lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: "thread-1" },
+    forkedFrom: null,
+    activeProviderThreadId: null,
+    latestRunId: null,
+    activeRunId: null,
+    status: "idle",
+    pendingRuntimeRequest: null,
+    latestVisibleMessage: null,
+    latestUserMessageAt: null,
+    hasActionableProposedPlan: false,
+    pendingBackgroundTasks: [],
+    providerInstanceHistory: [],
+    itemCount: 0,
+    visibleItemCount: 0,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+    archivedAt: null,
+    settledOverride: null,
+    settledAt: null,
+    deletedAt: null,
+  };
+  const providerThread = {
+    id: "provider-thread-1",
+    driver: "claudeAgent",
+    providerInstanceId: "claudeAgent",
+    providerSessionId: "provider-session-1",
+    appThreadId: "thread-1",
+    ownerNodeId: null,
+    nativeThreadRef: { driver: "claudeAgent", nativeId: "native-session-1", strength: "strong" },
+    nativeConversationHeadRef: null,
+    status: "idle",
+    firstRunOrdinal: 1,
+    lastRunOrdinal: 1,
+    handoffIds: [],
+    forkedFrom: null,
+    pendingBackgroundTasks: [],
+    contextUsage: null,
+    nativeMetadata: { itemIdentityVersion: 2 },
+    goal: null,
+    createdAt: "2026-10-01T00:00:00.000Z",
+    updatedAt: "2026-10-01T00:00:00.000Z",
+  };
+  const codecs = {
+    appThread: [Schema.toCodecJson(OrchestrationV2AppThreadJson), appThread],
+    shell: [Schema.toCodecJson(OrchestrationV2ThreadShellJson), shell],
+    providerThread: [Schema.toCodecJson(OrchestrationV2ProviderThreadJson), providerThread],
+  } as const;
+  const roundTrip = (codec: Schema.Codec<unknown, unknown>, value: unknown) =>
+    JSON.stringify(Schema.encodeSync(codec)(Schema.decodeUnknownSync(codec)(value)));
+
+  it.each(Object.entries(codecs))(
+    "re-encodes a %s without a binding byte-identical",
+    (_, entry) => {
+      const [codec, fixture] = entry;
+      expect(roundTrip(codec, fixture)).toBe(JSON.stringify(fixture));
+      expect(roundTrip(codec, fixture)).not.toContain("engineBinding");
+    },
+  );
+
+  it("round-trips a binding on an app thread, a shell and a provider row", () => {
+    const bound = [
+      [codecs.appThread[0], { ...appThread, engineBinding: binding }],
+      [codecs.shell[0], { ...shell, engineBinding: binding }],
+      [
+        codecs.providerThread[0],
+        { ...providerThread, nativeMetadata: { itemIdentityVersion: 2, engineBinding: binding } },
+      ],
+    ] as const;
+    for (const [codec, fixture] of bound) {
+      expect(JSON.parse(roundTrip(codec, fixture))).toEqual(fixture);
+    }
+    const row = decodeOrchestrationV2ProviderThreadJson(bound[2][1]);
+    expect(row.nativeMetadata?.engineBinding).toEqual(binding);
+  });
+
+  it("keeps a null compact and refuses a target at or above its trigger", () => {
+    expect(decodeUnknownEngineBinding({ ...binding, compact: null }).compact).toBeNull();
+    expect(() =>
+      decodeUnknownEngineBinding({ ...binding, compact: { trigger: 140000, target: 140000 } }),
+    ).toThrow("The compact target must be below its trigger.");
+    expect(() =>
+      decodeUnknownEngineBinding({ ...binding, compact: { trigger: 140000, target: 700000 } }),
+    ).toThrow("The compact target must be below its trigger.");
+    expect(() =>
+      decodeUnknownEngineBinding({ ...binding, compact: { trigger: 700000, target: 0 } }),
+    ).toThrow();
+  });
+
+  it("agrees on presence, engine and key, and ignores instance id and compact", () => {
+    const decoded = decodeEngineBinding(binding);
+    const otherInstance = {
+      ...decoded,
+      providerInstanceId: ProviderInstanceId.make("claudeLhcWork"),
+      compact: { trigger: 900000, target: 200000 },
+    };
+    expect(engineBindingsAgree(undefined, undefined)).toBe(true);
+    expect(engineBindingsAgree(decoded, undefined)).toBe(false);
+    expect(engineBindingsAgree(undefined, decoded)).toBe(false);
+    expect(
+      engineBindingsAgree(decoded, {
+        ...decoded,
+        engine: "stock" as unknown as typeof decoded.engine,
+      }),
+    ).toBe(false);
+    expect(
+      engineBindingsAgree(decoded, {
+        ...decoded,
+        continuationKey: "claude-lhc:home:/other",
+      }),
+    ).toBe(false);
+    expect(engineBindingsAgree(decoded, otherInstance)).toBe(true);
+  });
+
+  it("keeps a key and a home exactly, so padded paths stay distinct", () => {
+    const padded = decodeUnknownEngineBinding({
+      ...binding,
+      continuationKey: `${binding.continuationKey} `,
+      claudeHome: `${binding.claudeHome} `,
+    });
+    expect(padded.claudeHome).toBe(`${binding.claudeHome} `);
+    expect(engineBindingsAgree(padded, decodeEngineBinding(binding))).toBe(false);
   });
 });
