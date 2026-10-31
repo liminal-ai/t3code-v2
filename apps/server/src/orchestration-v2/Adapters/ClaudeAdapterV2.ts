@@ -144,6 +144,14 @@ import {
   stampEngineBinding,
 } from "../../provider/Drivers/claudeLhc/binding.ts";
 import {
+  adoptClaudeGeneration,
+  CLAUDE_CONTEXT_REBUILT_NOTE,
+  claudeContextRebuiltNotice,
+  NO_CLAUDE_GENERATION,
+  type ClaudeGeneration,
+  type ClaudeGenerationStep,
+} from "../../provider/Drivers/claudeLhc/generation.ts";
+import {
   claudeAutoCompactWindow,
   claudeThreadTraits,
 } from "../../provider/Drivers/claudeLhc/traits.ts";
@@ -209,6 +217,7 @@ import {
 } from "@t3tools/provider-core/server/adapterDriver";
 import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import {
+  type BackgroundWork,
   type BackgroundWorkReport,
   backgroundWorkNotification,
 } from "@t3tools/provider-core/server/notification";
@@ -4062,6 +4071,8 @@ interface ActiveClaudeSubagent {
 interface ClaudeLiveQueryContext {
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
   readonly nativeThreadId: string;
+  // Null for stock Claude, whose compaction keeps its process and session id.
+  generation: ClaudeGeneration | null;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
   selection: CompiledClaudeModelSelection;
@@ -10115,6 +10126,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
             nativeThreadId,
+            generation: claudeThreadTraits(rowEngineBinding(turnInput.providerThread), {
+              nativeThreadId,
+            }).compactionReplacesProcess
+              ? NO_CLAUDE_GENERATION
+              : null,
             query: querySession,
             queryPolicyKey,
             selection: compiledSelection,
@@ -10131,6 +10147,95 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ),
             ),
           };
+          // claude-lhc drops a replaced generation's frames, so work in its CLI never reports an
+          // end. Settle that work as a closed process would, but leave the turn to its result.
+          const adoptGeneration = Effect.fnUntraced(function* (step: ClaudeGenerationStep) {
+            yield* Effect.logInfo("orchestration-v2.claude-generation-adopted", {
+              providerSessionId: input.providerSessionId,
+              nativeThreadId,
+              generation: step.generation.live,
+              replaced: step.replaced,
+            });
+            if (step.replaced === null) return;
+            for (const toolUseId of taskOutputTails.keys()) {
+              yield* stopTaskOutputTail(toolUseId);
+            }
+            const ended = new Map<string, BackgroundWork>();
+            for (const [taskId, task] of rosterForNativeThread(
+              yield* Ref.get(pendingBackgroundTasksByNativeThread),
+              nativeThreadId,
+            )) {
+              ended.set(
+                taskId,
+                task.kind === "subagent"
+                  ? { kind: task.kind, label: task.description, childThreadId: task.childThreadId }
+                  : { kind: task.kind, label: task.description },
+              );
+            }
+            yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId);
+            const turn = context.lastTurn;
+            if (turn === null) return;
+            // A buffered outcome settles its subagent when the wake replays it.
+            const buffered = (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [];
+            for (const [taskId, subagent] of yield* Ref.get(sessionSubagentsByTaskId)) {
+              if (
+                subagent.task.status !== "running" ||
+                context.subagentsFromEarlierProcesses.has(subagent) ||
+                buffered.some(
+                  (message) =>
+                    message.type === "system" &&
+                    message.subtype === "task_notification" &&
+                    message.task_id === taskId,
+                )
+              )
+                continue;
+              yield* updateClaudeSubagentNode({
+                context: turn,
+                taskId,
+                status: "cancelled",
+                result: CLAUDE_CONTEXT_REBUILT_NOTE,
+                onlyIfRunningInRun: subagent.task.runId,
+              });
+              ended.set(taskId, {
+                kind: "subagent",
+                label: subagent.task.title ?? subagent.task.prompt,
+                childThreadId: subagent.childThreadId,
+              });
+            }
+            const notice = claudeContextRebuiltNotice([...ended.values()]);
+            if (notice === null || (yield* Ref.get(activeTurn)) !== turn) return;
+            const now = yield* DateTime.now;
+            const nativeItemId = `claude-generation:${step.replaced}`;
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: {
+                id: idAllocator.derive.turnItemFromProviderItem({
+                  driver: CLAUDE_PROVIDER,
+                  nativeItemId,
+                }),
+                threadId: turn.input.threadId,
+                runId: turn.input.runId,
+                nodeId: turn.input.rootNodeId,
+                providerThreadId: turn.input.providerThread.id,
+                providerTurnId: turn.providerTurnId,
+                nativeItemRef: {
+                  driver: CLAUDE_PROVIDER,
+                  nativeId: nativeItemId,
+                  strength: "weak",
+                },
+                parentItemId: null,
+                ordinal: yield* resolveItemOrdinal(turn, nativeItemId),
+                type: "system_notice",
+                status: "completed",
+                title: notice,
+                message: notice,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+              },
+            });
+          });
           yield* Ref.set(queryContext, context);
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
@@ -10152,7 +10257,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ) {
                     context.permissionMode = message.permissionMode;
                   }
-                  return handleSdkMessage({ query: querySession, message });
+                  const step =
+                    context.generation === null
+                      ? null
+                      : adoptClaudeGeneration(context.generation, message);
+                  if (step === null || step.generation === context.generation) {
+                    return handleSdkMessage({ query: querySession, message });
+                  }
+                  context.generation = step.generation;
+                  return adoptGeneration(step).pipe(
+                    Effect.andThen(handleSdkMessage({ query: querySession, message })),
+                  );
                 }),
               ),
             ),
