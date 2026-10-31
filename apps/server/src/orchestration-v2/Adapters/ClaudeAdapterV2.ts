@@ -144,6 +144,14 @@ import {
   stampEngineBinding,
 } from "../../provider/Drivers/claudeLhc/binding.ts";
 import {
+  adoptClaudeGeneration,
+  CLAUDE_CONTEXT_REBUILT_NOTE,
+  claudeContextRebuiltNotice,
+  NO_CLAUDE_GENERATION,
+  type ClaudeGeneration,
+  type ClaudeGenerationStep,
+} from "../../provider/Drivers/claudeLhc/generation.ts";
+import {
   claudeAutoCompactWindow,
   claudeThreadTraits,
 } from "../../provider/Drivers/claudeLhc/traits.ts";
@@ -209,6 +217,7 @@ import {
 } from "@t3tools/provider-core/server/adapterDriver";
 import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import {
+  type BackgroundWork,
   type BackgroundWorkReport,
   backgroundWorkNotification,
 } from "@t3tools/provider-core/server/notification";
@@ -4062,6 +4071,7 @@ interface ActiveClaudeSubagent {
 interface ClaudeLiveQueryContext {
   readonly queryPolicy: ClaudeRuntimeQueryPolicy;
   readonly nativeThreadId: string;
+  lhcGeneration: ClaudeGeneration | null;
   readonly query: ClaudeAgentSdkQuerySession;
   readonly queryPolicyKey: string;
   selection: CompiledClaudeModelSelection;
@@ -10115,6 +10125,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
             nativeThreadId,
+            lhcGeneration: claudeThreadTraits(rowEngineBinding(turnInput.providerThread), {
+              nativeThreadId,
+            }).compactionReplacesProcess
+              ? NO_CLAUDE_GENERATION
+              : null,
             query: querySession,
             queryPolicyKey,
             selection: compiledSelection,
@@ -10131,6 +10146,136 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ),
             ),
           };
+          // claude-lhc drops a replaced generation's frames, so work in its CLI
+          // never reports an end.
+          const adoptGeneration = Effect.fnUntraced(function* (
+            step: Exclude<ClaudeGenerationStep, { readonly kind: "stayed" }>,
+          ) {
+            const replaced = step.kind === "replaced" ? step.replaced : null;
+            yield* Effect.logInfo("orchestration-v2.claude-generation-adopted", {
+              providerSessionId: input.providerSessionId,
+              nativeThreadId,
+              generation: step.generation.live,
+              replaced,
+            });
+            if (replaced === null) return;
+            for (const toolUseId of taskOutputTails.keys()) {
+              yield* stopTaskOutputTail(toolUseId);
+            }
+            const ended = new Map<string, BackgroundWork>();
+            for (const [taskId, task] of rosterForNativeThread(
+              yield* Ref.get(pendingBackgroundTasksByNativeThread),
+              nativeThreadId,
+            )) {
+              ended.set(
+                taskId,
+                task.kind === "subagent"
+                  ? { kind: task.kind, label: task.description, childThreadId: task.childThreadId }
+                  : { kind: task.kind, label: task.description },
+              );
+            }
+            yield* resetBackgroundTaskStateForNativeThreadProcess(nativeThreadId);
+            const turn = context.lastTurn;
+            if (turn === null) return;
+            // The wake replay owns any subagent with buffered lifecycle frames. A start it would
+            // replay as running gets a stop after it, because the replaced CLI never sends one.
+            const lastBufferedLifecycle = new Map<
+              string,
+              Extract<SDKMessage, { readonly subtype: "task_started" | "task_notification" }>
+            >();
+            for (const message of (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ??
+              []) {
+              if (
+                message.type === "system" &&
+                (message.subtype === "task_started" || message.subtype === "task_notification")
+              ) {
+                lastBufferedLifecycle.set(message.task_id, message);
+              }
+            }
+            const stops = [...lastBufferedLifecycle.values()].flatMap((message) =>
+              message.subtype === "task_started"
+                ? [
+                    {
+                      type: "system",
+                      subtype: "task_notification",
+                      task_id: message.task_id,
+                      ...(message.tool_use_id === undefined
+                        ? {}
+                        : { tool_use_id: message.tool_use_id }),
+                      status: "stopped",
+                      output_file: "",
+                      summary: CLAUDE_CONTEXT_REBUILT_NOTE,
+                      uuid: message.uuid,
+                      session_id: replaced,
+                    } satisfies SDKMessage,
+                  ]
+                : [],
+            );
+            if (stops.length > 0) {
+              yield* Ref.update(wakeBuffers, (current) => {
+                const entry = current.get(nativeThreadId);
+                return entry === undefined
+                  ? current
+                  : new Map(current).set(nativeThreadId, {
+                      ...entry,
+                      messages: [...entry.messages, ...stops],
+                    });
+              });
+            }
+            for (const [taskId, subagent] of yield* Ref.get(sessionSubagentsByTaskId)) {
+              if (
+                subagent.task.status !== "running" ||
+                context.subagentsFromEarlierProcesses.has(subagent) ||
+                lastBufferedLifecycle.has(taskId)
+              )
+                continue;
+              yield* updateClaudeSubagentNode({
+                context: turn,
+                taskId,
+                status: "cancelled",
+                result: CLAUDE_CONTEXT_REBUILT_NOTE,
+                onlyIfRunningInRun: subagent.task.runId,
+              });
+              ended.set(taskId, {
+                kind: "subagent",
+                label: subagent.task.title ?? subagent.task.prompt,
+                childThreadId: subagent.childThreadId,
+              });
+            }
+            const notice = claudeContextRebuiltNotice([...ended.values()]);
+            if (notice === null || (yield* Ref.get(activeTurn)) !== turn) return;
+            const now = yield* DateTime.now;
+            const nativeItemId = `claude-generation:${replaced}`;
+            yield* emitProviderEvent({
+              type: "turn_item.updated",
+              driver: CLAUDE_PROVIDER,
+              turnItem: {
+                id: idAllocator.derive.turnItemFromProviderItem({
+                  driver: CLAUDE_PROVIDER,
+                  nativeItemId,
+                }),
+                threadId: turn.input.threadId,
+                runId: turn.input.runId,
+                nodeId: turn.input.rootNodeId,
+                providerThreadId: turn.input.providerThread.id,
+                providerTurnId: turn.providerTurnId,
+                nativeItemRef: {
+                  driver: CLAUDE_PROVIDER,
+                  nativeId: nativeItemId,
+                  strength: "weak",
+                },
+                parentItemId: null,
+                ordinal: yield* resolveItemOrdinal(turn, nativeItemId),
+                type: "system_notice",
+                status: "completed",
+                title: notice,
+                message: notice,
+                startedAt: now,
+                completedAt: now,
+                updatedAt: now,
+              },
+            });
+          });
           yield* Ref.set(queryContext, context);
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
@@ -10152,7 +10297,17 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ) {
                     context.permissionMode = message.permissionMode;
                   }
-                  return handleSdkMessage({ query: querySession, message });
+                  const step =
+                    context.lhcGeneration === null
+                      ? null
+                      : adoptClaudeGeneration(context.lhcGeneration, message);
+                  if (step === null || step.kind === "stayed") {
+                    return handleSdkMessage({ query: querySession, message });
+                  }
+                  context.lhcGeneration = step.generation;
+                  return adoptGeneration(step).pipe(
+                    Effect.andThen(handleSdkMessage({ query: querySession, message })),
+                  );
                 }),
               ),
             ),

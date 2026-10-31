@@ -61,6 +61,7 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -98,6 +99,11 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
+import {
+  adoptClaudeGeneration,
+  CLAUDE_CONTEXT_REBUILT_NOTE,
+  NO_CLAUDE_GENERATION,
+} from "../../provider/Drivers/claudeLhc/generation.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
 import { layerProviderReplay } from "../testkit/ProviderReplayHarness.ts";
@@ -15395,6 +15401,510 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
     ),
   );
+
+  describe("LHC generations", () => {
+    const stockFixturesDir = new URL("../testkit/fixtures/", import.meta.url);
+
+    it("finds no generation change in any stock fixture's query", () => {
+      const transcripts = NodeFS.readdirSync(stockFixturesDir).flatMap((scenario) => {
+        const file = new URL(`${scenario}/claude_transcript.ndjson`, stockFixturesDir);
+        return NodeFS.existsSync(file) ? [{ scenario, file }] : [];
+      });
+      assert.isAtLeast(transcripts.length, 39);
+      let frames = 0;
+      for (const { scenario, file } of transcripts) {
+        let generation = NO_CLAUDE_GENERATION;
+        for (const line of NodeFS.readFileSync(file, "utf8").split("\n")) {
+          if (line.trim() === "") continue;
+          const entry = JSON.parse(line) as {
+            readonly type: string;
+            readonly label?: string;
+            readonly frame?: SDKMessage;
+          };
+          if (entry.type === "expect_outbound" && entry.label?.startsWith("query.open")) {
+            generation = NO_CLAUDE_GENERATION;
+          }
+          if (entry.type !== "emit_inbound" || entry.frame === undefined) continue;
+          frames++;
+          const step = adoptClaudeGeneration(generation, entry.frame);
+          assert.notEqual(
+            step.kind,
+            "replaced",
+            `${scenario} replaced a generation at ${entry.label}`,
+          );
+          if (step.kind !== "stayed") generation = step.generation;
+        }
+      }
+      assert.isAtLeast(frames, 2000);
+    });
+
+    const captureAdoptions = () => {
+      const adoptions: Array<{ readonly generation: string; readonly replaced: string | null }> =
+        [];
+      const logger = Logger.make(({ message }) => {
+        const [name, fields] = Array.isArray(message) ? message : [message];
+        if (name === "orchestration-v2.claude-generation-adopted") {
+          const { generation, replaced } = fields as {
+            generation: string;
+            replaced: string | null;
+          };
+          adoptions.push({ generation, replaced });
+        }
+      });
+      return { adoptions, layer: Logger.layer([logger], { mergeWithExisting: false }) };
+    };
+    const rebuiltNotices = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+      events.flatMap((event) =>
+        event.type === "turn_item.updated" &&
+        event.turnItem.type === "system_notice" &&
+        event.turnItem.message.includes(CLAUDE_CONTEXT_REBUILT_NOTE)
+          ? [event.turnItem.message]
+          : [],
+      );
+    const lastRoster = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
+      (providerThreadRosterEvents(events).at(-1)?.providerThread.pendingBackgroundTasks ?? []).map(
+        (task) => task.taskId,
+      );
+    const lastSubagentStatus = (
+      events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>,
+      taskId: string,
+    ) =>
+      events.findLast(
+        (event) =>
+          event.type === "subagent.updated" && event.subagent.nativeTaskRef?.nativeId === taskId,
+      );
+    const startLhcTurn = Effect.fnUntraced(function* (
+      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
+      attempt: string,
+      text: string,
+    ) {
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(attempt),
+          text,
+          attachments: [],
+        }),
+      );
+    });
+
+    const P_REPLAY = NodeFS.readFileSync(
+      new URL("./testkit/fixtures/claude-lhc-generation.jsonl", import.meta.url),
+      "utf8",
+    )
+      .trim()
+      .split("\n")
+      .map((line) => claudeSdkFrame(JSON.parse(line)));
+    const sessionOf = (frame: SDKMessage | undefined) => {
+      const sessionId = frame === undefined ? undefined : Reflect.get(frame, "session_id");
+      if (typeof sessionId !== "string") throw new Error("P-replay frame has no session id.");
+      return sessionId;
+    };
+    const fixturePromptIds = P_REPLAY.flatMap((frame) => {
+      const type: unknown = Reflect.get(frame, "type");
+      return type === "command_lifecycle" && Reflect.get(frame, "state") === "queued"
+        ? [String(Reflect.get(frame, "command_uuid"))]
+        : [];
+    });
+    const withPrompt = (frame: SDKMessage, fixtureId: string, promptUuid: string) =>
+      claudeSdkFrame(JSON.parse(JSON.stringify(frame).replaceAll(fixtureId, promptUuid)));
+    const P_REPLAY_TURN_1 = P_REPLAY.slice(0, 7);
+    const P_REPLAY_TURN_2_TO_REPLY = P_REPLAY.slice(7, 11);
+    const P_REPLAY_TURN_2_RESULT = P_REPLAY.slice(11, 13);
+    const P_REPLAY_COMPACT = P_REPLAY.slice(13, 17);
+    const P_REPLAY_RESTART = P_REPLAY.slice(17);
+    const COMPACT_BOUNDARY = P_REPLAY_COMPACT[2];
+    const RESTART_INIT = P_REPLAY_RESTART[3];
+    const [GEN_1, GEN_2, GEN_3] = [
+      sessionOf(P_REPLAY_TURN_1[0]),
+      sessionOf(COMPACT_BOUNDARY),
+      sessionOf(RESTART_INIT),
+    ];
+
+    it.effect.each([
+      { variant: "the live trace", restartFrames: P_REPLAY_RESTART },
+      {
+        variant: "its restart init moved ahead of any turn frame",
+        restartFrames: [
+          RESTART_INIT!,
+          ...P_REPLAY_RESTART.filter((frame) => frame !== RESTART_INIT),
+        ],
+      },
+    ])("replays P-replay's generations from $variant", ({ restartFrames }) => {
+      const { adoptions, layer } = captureAdoptions();
+      return Effect.gen(function* () {
+        assert.equal(new Set([GEN_1, GEN_2, GEN_3]).size, 3);
+        assert.equal(Reflect.get(COMPACT_BOUNDARY!, "subtype"), "compact_boundary");
+        assert.equal(Reflect.get(RESTART_INIT!, "subtype"), "init");
+
+        const initial = yield* makeWakeHarnessWithOptions({
+          engineBinding: CLAUDE_LHC_BINDING,
+          nativeSessionId: GEN_1,
+        });
+        yield* startLhcTurn(initial, "attempt-p-replay-1", "Remember ALPHA.");
+        for (const frame of P_REPLAY_TURN_1) {
+          yield* initial.offerAndWait(
+            withPrompt(frame, fixturePromptIds[0]!, initial.promptUuid(0)),
+          );
+        }
+        yield* startLhcTurn(initial, "attempt-p-replay-2", "Remember BRAVO.");
+        for (const frame of [
+          ...P_REPLAY_TURN_2_TO_REPLY,
+          claudeSdkFrame({ ...wakeTaskStarted, session_id: GEN_1 }),
+          ...P_REPLAY_TURN_2_RESULT,
+        ]) {
+          yield* initial.offerAndWait(
+            withPrompt(frame, fixturePromptIds[1]!, initial.promptUuid(1)),
+          );
+        }
+        yield* initial.until(() => lastRoster(initial.events).includes(WAKE_TASK_ID));
+        yield* startLhcTurn(initial, "attempt-p-replay-compact", "/compact");
+        for (const frame of P_REPLAY_COMPACT) yield* initial.offerAndWait(frame);
+        yield* initial.awaitTerminal(3);
+        assert.deepEqual(
+          initial.terminalEvents().map((event) => event.status),
+          ["completed", "completed", "completed"],
+        );
+        assert.deepEqual(lastRoster(initial.events), []);
+        assert.deepEqual(rebuiltNotices(initial.events), [
+          `Command "${WAKE_TASK_DESCRIPTION}" was stopped. ${CLAUDE_CONTEXT_REBUILT_NOTE}`,
+        ]);
+
+        const restarted = yield* makeWakeHarnessWithOptions({
+          engineBinding: CLAUDE_LHC_BINDING,
+          nativeSessionId: GEN_1,
+        });
+        yield* startLhcTurn(restarted, "attempt-p-replay-restart", "Reply REPLAYPROBE.");
+        for (const frame of restartFrames) {
+          yield* restarted.offerAndWait(
+            withPrompt(frame, fixturePromptIds[2]!, restarted.promptUuid(0)),
+          );
+        }
+        yield* restarted.awaitTerminal(1);
+        yield* yieldTicks(20);
+        assert.deepEqual(
+          restarted.terminalEvents().map((event) => event.status),
+          ["completed"],
+        );
+        assert.deepEqual(rebuiltNotices(restarted.events), []);
+        assert.deepEqual(adoptions, [
+          { generation: GEN_1, replaced: null },
+          { generation: GEN_2, replaced: GEN_1 },
+          { generation: GEN_3, replaced: null },
+        ]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer, layer),
+        ),
+      );
+    });
+
+    const SUBAGENT_TASK_ID = "task-lhc-generation-subagent";
+    const midTurnFrames = (sessions: {
+      readonly old: string;
+      readonly next: string;
+      readonly last: string;
+    }) => ({
+      work: [
+        claudeSdkFrame({
+          type: "system",
+          subtype: "init",
+          uuid: "00000000-0000-4000-8000-000000006001",
+          session_id: sessions.old,
+        }),
+        makeSubagentTaskStartedFrame({
+          taskId: SUBAGENT_TASK_ID,
+          toolUseId: "toolu-lhc-generation-subagent",
+          uuid: "00000000-0000-4000-8000-000000006002",
+        }),
+        wakeTaskStarted,
+      ],
+      boundaryThenInit: [
+        claudeSdkFrame({
+          type: "system",
+          subtype: "status",
+          status: "compacting",
+          uuid: "00000000-0000-4000-8000-000000006003",
+          session_id: sessions.old,
+        }),
+        claudeSdkFrame({
+          type: "system",
+          subtype: "status",
+          status: null,
+          compact_result: "success",
+          uuid: "00000000-0000-4000-8000-000000006004",
+          session_id: sessions.old,
+        }),
+        claudeSdkFrame({
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 1_000, post_tokens: 200 },
+          uuid: "00000000-0000-4000-8000-000000006005",
+          session_id: sessions.next,
+        }),
+        claudeSdkFrame({
+          type: "system",
+          subtype: "init",
+          uuid: "00000000-0000-4000-8000-000000006006",
+          session_id: sessions.next,
+        }),
+      ],
+      initBeforeOldStatus: [
+        claudeSdkFrame({
+          type: "system",
+          subtype: "status",
+          status: "compacting",
+          uuid: "00000000-0000-4000-8000-000000006007",
+          session_id: sessions.next,
+        }),
+        claudeSdkFrame({
+          type: "system",
+          subtype: "init",
+          uuid: "00000000-0000-4000-8000-000000006008",
+          session_id: sessions.last,
+        }),
+        claudeSdkFrame({
+          type: "system",
+          subtype: "status",
+          status: null,
+          compact_result: "success",
+          uuid: "00000000-0000-4000-8000-000000006009",
+          session_id: sessions.next,
+        }),
+        claudeSdkFrame({
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "auto", pre_tokens: 1_000, post_tokens: 200 },
+          uuid: "00000000-0000-4000-8000-000000006010",
+          session_id: sessions.last,
+        }),
+      ],
+      result: claudeSdkFrame({
+        ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000006011", result: "Done." }),
+        session_id: sessions.last,
+      }),
+    });
+
+    it.effect(
+      "ends the old generation's work once per mid-turn compact and keeps the root turn open",
+      () => {
+        const { adoptions, layer } = captureAdoptions();
+        return Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
+          const frames = midTurnFrames({
+            old: WAKE_NATIVE_SESSION,
+            next: "lhc-generation-2",
+            last: "lhc-generation-3",
+          });
+          yield* startLhcTurn(harness, "attempt-lhc-mid-turn", "Audit and build.");
+          for (const frame of frames.work) yield* harness.offerAndWait(frame);
+          yield* harness.until(() => lastRoster(harness.events).includes(WAKE_TASK_ID));
+
+          for (const frame of frames.boundaryThenInit) yield* harness.offerAndWait(frame);
+          yield* harness.until(() => rebuiltNotices(harness.events).length > 0);
+          assert.deepEqual(lastRoster(harness.events), []);
+          const subagent = lastSubagentStatus(harness.events, SUBAGENT_TASK_ID);
+          assert.equal(
+            subagent?.type === "subagent.updated" && subagent.subagent.status,
+            "cancelled",
+          );
+          assert.equal(
+            subagent?.type === "subagent.updated" && subagent.subagent.result,
+            CLAUDE_CONTEXT_REBUILT_NOTE,
+          );
+          assert.deepEqual(rebuiltNotices(harness.events), [
+            `Command "${WAKE_TASK_DESCRIPTION}" and subagent "Audit recent commits" were stopped. ${CLAUDE_CONTEXT_REBUILT_NOTE}`,
+          ]);
+
+          for (const frame of frames.initBeforeOldStatus) yield* harness.offerAndWait(frame);
+          yield* yieldTicks(20);
+          assert.lengthOf(harness.terminalEvents(), 0);
+          yield* harness.offerAndWait(frames.result);
+          yield* harness.awaitTerminal(1);
+          yield* yieldTicks(20);
+          assert.deepEqual(
+            harness.terminalEvents().map((event) => event.status),
+            ["completed"],
+          );
+          assert.lengthOf(rebuiltNotices(harness.events), 1);
+          assert.deepEqual(adoptions, [
+            { generation: WAKE_NATIVE_SESSION, replaced: null },
+            { generation: "lhc-generation-2", replaced: WAKE_NATIVE_SESSION },
+            { generation: "lhc-generation-3", replaced: "lhc-generation-2" },
+          ]);
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer, layer),
+          ),
+        );
+      },
+    );
+
+    const subagentStatus = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) => {
+      const subagent = lastSubagentStatus(events, SUBAGENT_TASK_ID);
+      return subagent?.type === "subagent.updated" ? subagent.subagent : undefined;
+    };
+    const continueNativeWake = Effect.fnUntraced(function* (
+      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
+      attempt: string,
+    ) {
+      yield* harness.runtime.startTurn(
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make(attempt),
+          text: "Continue the native wake.",
+          attachments: [],
+          providerTurnOrdinal: 2,
+          messageCreatedBy: "agent",
+          messageCreationSource: "provider",
+        }),
+      );
+    });
+    const compactToGeneration2 = midTurnFrames({
+      old: WAKE_NATIVE_SESSION,
+      next: "lhc-generation-2",
+      last: "lhc-generation-2",
+    }).boundaryThenInit;
+
+    it.effect(
+      "stops a subagent an idle wake started in the replaced generation when the wake replays",
+      () =>
+        Effect.gen(function* () {
+          const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
+          yield* startLhcTurn(harness, "attempt-lhc-buffered-1", "Start work.");
+          yield* harness.offerAndWait(wakeTurnInit);
+          yield* harness.offerAndWait(turnOneResult);
+          yield* harness.awaitTerminal(1);
+          yield* harness.offerAndWait(
+            makeSubagentTaskStartedFrame({
+              taskId: SUBAGENT_TASK_ID,
+              toolUseId: "toolu-lhc-buffered",
+              uuid: "00000000-0000-4000-8000-000000006101",
+            }),
+          );
+          yield* harness.offerAndWait(wakeAssistant);
+          for (const frame of compactToGeneration2) yield* harness.offerAndWait(frame);
+          assert.lengthOf(harness.continuationRequests, 1);
+
+          yield* continueNativeWake(harness, "attempt-lhc-buffered-2");
+          yield* harness.until(() => subagentStatus(harness.events)?.status === "cancelled");
+          assert.equal(subagentStatus(harness.events)?.result, CLAUDE_CONTEXT_REBUILT_NOTE);
+          yield* harness.offerAndWait(
+            claudeSdkFrame({
+              ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000006105", result: "Done." }),
+              session_id: "lhc-generation-2",
+            }),
+          );
+          yield* harness.awaitTerminal(2);
+          assert.isFalse(yield* harness.hasPendingBackgroundWork);
+          const modelChange = yield* harness.runtime
+            .startTurn(
+              makeClaudeTestTurnInput({
+                threadId: harness.threadId,
+                providerThread: harness.providerThread,
+                now: yield* DateTime.now,
+                attemptId: RunAttemptId.make("attempt-lhc-buffered-3"),
+                text: "Switch model after compaction.",
+                attachments: [],
+                providerTurnOrdinal: 3,
+                modelSelection: CLAUDE_TEST_RESTART_MODEL_SELECTION,
+              }),
+            )
+            .pipe(Effect.result);
+          assert.equal(modelChange._tag, "Success");
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(
+            Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+          ),
+        ),
+    );
+
+    it.effect("stops a subagent whose last buffered lifecycle frame is a resumed start", () =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
+        yield* startLhcTurn(harness, "attempt-lhc-resumed-1", "Start work.");
+        yield* harness.offerAndWait(wakeTurnInit);
+        yield* harness.offerAndWait(
+          makeSubagentTaskStartedFrame({
+            taskId: SUBAGENT_TASK_ID,
+            toolUseId: "toolu-lhc-resumed",
+            uuid: "00000000-0000-4000-8000-000000006102",
+          }),
+        );
+        yield* harness.offerAndWait(turnOneResult);
+        yield* harness.awaitTerminal(1);
+        yield* harness.offerAndWait(
+          makeSubagentNotificationFrame({
+            taskId: SUBAGENT_TASK_ID,
+            toolUseId: "toolu-lhc-resumed",
+            summary: "First attempt finished.",
+            uuid: "00000000-0000-4000-8000-000000006103",
+          }),
+        );
+        yield* harness.offerAndWait(
+          makeSubagentTaskStartedFrame({
+            taskId: SUBAGENT_TASK_ID,
+            toolUseId: "toolu-lhc-resumed-2",
+            uuid: "00000000-0000-4000-8000-000000006104",
+          }),
+        );
+        for (const frame of compactToGeneration2) yield* harness.offerAndWait(frame);
+        assert.lengthOf(harness.continuationRequests, 1);
+
+        yield* continueNativeWake(harness, "attempt-lhc-resumed-2");
+        yield* harness.until(() => subagentStatus(harness.events)?.status === "cancelled");
+        assert.equal(subagentStatus(harness.events)?.result, CLAUDE_CONTEXT_REBUILT_NOTE);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        ),
+      ),
+    );
+
+    it.effect.each([
+      { compactIds: "one session id, as stock sends", next: WAKE_NATIVE_SESSION },
+      { compactIds: "new session ids", next: "stock-other-session" },
+    ])("leaves a stock thread's work running across a compact with $compactIds", ({ next }) => {
+      const { adoptions, layer } = captureAdoptions();
+      return Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions();
+        const frames = midTurnFrames({ old: WAKE_NATIVE_SESSION, next, last: next });
+        yield* startLhcTurn(harness, "attempt-stock-compact", "Audit and build.");
+        for (const frame of [
+          ...frames.work,
+          ...frames.boundaryThenInit,
+          ...frames.initBeforeOldStatus,
+        ]) {
+          yield* harness.offerAndWait(frame);
+        }
+        yield* harness.offerAndWait(frames.result);
+        yield* harness.awaitTerminal(1);
+        yield* yieldTicks(20);
+        assert.deepEqual(
+          harness.terminalEvents().map((event) => event.status),
+          ["completed"],
+        );
+        assert.deepEqual(lastRoster(harness.events), [WAKE_TASK_ID]);
+        const subagent = lastSubagentStatus(harness.events, SUBAGENT_TASK_ID);
+        assert.equal(subagent?.type === "subagent.updated" && subagent.subagent.status, "running");
+        assert.deepEqual(rebuiltNotices(harness.events), []);
+        assert.deepEqual(adoptions, []);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer, layer),
+        ),
+      );
+    });
+  });
 
   describe("native goals", () => {
     const syntheticFrame = (uuid: string, text: string) =>
