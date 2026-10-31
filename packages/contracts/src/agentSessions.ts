@@ -41,10 +41,27 @@ export const AgentSessionProjectCandidate = Schema.Struct({
 });
 export type AgentSessionProjectCandidate = typeof AgentSessionProjectCandidate.Type;
 
+export const AgentSessionHomeDiagnosticReason = Schema.Literals([
+  "lhc-store-missing",
+  "lhc-store-unreadable",
+  "lhc-managed",
+]);
+export type AgentSessionHomeDiagnosticReason = typeof AgentSessionHomeDiagnosticReason.Type;
+
+export const AgentSessionHomeDiagnostic = Schema.Struct({
+  claudeHome: TrimmedNonEmptyString,
+  lhcInstanceIds: Schema.Array(ProviderInstanceId),
+  reason: AgentSessionHomeDiagnosticReason,
+  detail: Schema.optionalKey(Schema.String),
+  sessionCount: NonNegativeInt,
+});
+export type AgentSessionHomeDiagnostic = typeof AgentSessionHomeDiagnostic.Type;
+
 export const AgentSessionScanResult = Schema.Struct({
   candidates: Schema.Array(AgentSessionProjectCandidate),
   scannedAt: IsoDateTime,
   truncated: Schema.optional(Schema.Boolean),
+  diagnostics: Schema.optionalKey(Schema.Array(AgentSessionHomeDiagnostic)),
 });
 export type AgentSessionScanResult = typeof AgentSessionScanResult.Type;
 
@@ -75,6 +92,7 @@ export class AgentSessionImportProjectChangedError extends Schema.TaggedError<Ag
 export const AgentSessionImportResult = Schema.Struct({
   importedCount: NonNegativeInt,
   skippedCount: NonNegativeInt,
+  refused: Schema.optionalKey(Schema.Array(AgentSessionHomeDiagnostic)),
 });
 export type AgentSessionImportResult = typeof AgentSessionImportResult.Type;
 
