@@ -2,7 +2,6 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
-// claude-lhc 0.2.0 (vendor/claude-lhc) pins this Agent SDK; stock Claude keeps its own.
 export const CLAUDE_LHC_AGENT_SDK = "0.3.312";
 
 interface BundledPackage {
@@ -10,7 +9,6 @@ interface BundledPackage {
   readonly version: string | undefined;
 }
 
-/** Packages that run only in claude-lhc's sidecar, so the server executable must never bundle them. */
 const SIDECAR_ONLY: ReadonlyArray<{
   readonly label: string;
   readonly matches: (pkg: BundledPackage) => boolean;
@@ -67,7 +65,6 @@ const decodeModuleList = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
 
-/** Reads the module list the executable build wrote and fails on any sidecar-only module. */
 export const checkBundledModules = Effect.fn("checkBundledModules")(function* (listPath: string) {
   const fs = yield* FileSystem.FileSystem;
   const moduleIds = yield* fs.readFileString(listPath).pipe(

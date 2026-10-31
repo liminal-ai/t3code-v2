@@ -7,7 +7,6 @@ import * as Path from "effect/Path";
 
 import { resolveClaudeLhcRuntime } from "./runtime.ts";
 
-// The fake Node binaries are shell scripts, and claude-lhc ships no Windows runtime.
 const unix = HostProcess.Platform.defaultValue() !== "win32";
 
 const fakeNode = Effect.fn(function* (file: string, version: string) {
@@ -27,7 +26,6 @@ const touch = Effect.fn(function* (file: string) {
   return file;
 });
 
-/** A release directory holding `t3`, as `dist-exe/` does. */
 const release = Effect.fn(function* (options: { readonly staged: boolean }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

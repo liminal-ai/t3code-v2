@@ -323,8 +323,7 @@ overrides:
   # stays pinned on its own.
   "@opencode/protocol>effect": "catalog:"
   "@opencode/schema>effect": "catalog:"
-  # The claude-lhc sidecar and its bundled lhc run on Effect 3. T3's server never
-  # bundles them (scripts/lib/check-bundled-modules.ts fails the exe build if it does).
+  # The vendored claude-lhc 0.2.0 and its bundled lhc run on Effect 3.
   "claude-lhc>effect": ^3.21.2
   node-abi: 4.33.0
   # The desktop app installs these without a lockfile when it packages them, so

@@ -7,7 +7,6 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import type { LhcOptions, LhcQuery } from "claude-lhc/client";
 
-/** The members of the stock SDK's `Query` that `ClaudeAgentSdkQueryRunner` calls, and no others. */
 export type ClaudeRunnerQuery = AsyncIterator<SDKMessage, void> &
   AsyncDisposable &
   Pick<
@@ -22,7 +21,6 @@ export type ClaudeRunnerQuery = AsyncIterator<SDKMessage, void> &
     | "close"
   >;
 
-/** Stock query options for a sidecar open. The runner sends MCP servers with `setMcpServers`. */
 export type ClaudeLhcQueryOptions = Omit<ClaudeQueryOptions, "mcpServers"> & {
   readonly lhc: LhcOptions;
 };
@@ -31,8 +29,7 @@ type ClaudeProcessMcpServerConfig = Exclude<McpServerConfig, McpSdkServerConfigW
 
 type LhcMessage = LhcQuery extends AsyncGenerator<infer Message, void> ? Message : never;
 
-// claude-lhc drops in-process servers itself; dropping them here keeps the stock MCP SDK's class out of its type.
-function processMcpServers(
+function withoutInProcessMcpServers(
   servers: Record<string, McpServerConfig>,
 ): Record<string, ClaudeProcessMcpServerConfig> {
   return Object.fromEntries(
@@ -43,7 +40,6 @@ function processMcpServers(
 }
 
 function stockResult(result: IteratorResult<LhcMessage, void>): IteratorResult<SDKMessage, void> {
-  // Both SDKs type the same CLI JSON; 0.3.312 only widens literal unions the runner passes through.
   return result.done === true ? result : { done: false, value: result.value as SDKMessage };
 }
 
@@ -52,7 +48,7 @@ export function claudeRunnerQuery(query: LhcQuery): ClaudeRunnerQuery {
     next: () => query.next().then(stockResult),
     return: () => query.return().then(stockResult),
     [Symbol.asyncDispose]: () => query[Symbol.asyncDispose](),
-    setMcpServers: (servers) => query.setMcpServers(processMcpServers(servers)),
+    setMcpServers: (servers) => query.setMcpServers(withoutInProcessMcpServers(servers)),
     setModel: (model) => query.setModel(model),
     applyFlagSettings: (settings) => query.applyFlagSettings(settings),
     setPermissionMode: (mode) => query.setPermissionMode(mode),

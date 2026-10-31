@@ -13,7 +13,6 @@ import { ChildProcess } from "effect/process";
 
 const CLAUDE_LHC_MINIMUM_NODE = "24.3.0";
 
-/** The Node binary and the claude-lhc sidecar entry it runs. */
 export interface ClaudeLhcRuntime {
   readonly node: string;
   readonly sidecar: string;
@@ -67,7 +66,6 @@ const locateRuntime = Effect.fn("claudeLhc.locateRuntime")(function* (
   }
 
   if (yield* HostProcess.IsExecutable) {
-    // A release archive stages claude-lhc and its own Node here, beside the executable.
     const staged = path.join(path.dirname(yield* HostProcess.ExecutablePath), "lhc-runtime");
     if (!(yield* exists(staged))) {
       return yield* problem(`LHC runtime not staged for ${yield* releaseTarget}`);
@@ -98,10 +96,6 @@ const nodeVersion = (node: string) =>
     Effect.orElseSucceed(() => null),
   );
 
-/**
- * The override (`CLAUDE_LHC_NODE` and `CLAUDE_LHC_SIDECAR`), else the release layout beside the
- * executable, else the installed package under the current Node. Never the executable as Node.
- */
 export const resolveClaudeLhcRuntime = Effect.fn("claudeLhc.resolveRuntime")(function* (
   environment?: NodeJS.ProcessEnv,
 ) {
