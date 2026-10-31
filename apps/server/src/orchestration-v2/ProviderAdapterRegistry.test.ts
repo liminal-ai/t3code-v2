@@ -16,8 +16,13 @@ import * as Stream from "effect/Stream";
 
 import * as ProviderAuthFlow from "@t3tools/provider-core/server/providerAuthFlow";
 import type { ProviderAuthController } from "../provider/ProviderAuthService.ts";
-import type { ProviderInstance } from "@t3tools/provider-core/server/driver";
+import {
+  engineContinuationKey,
+  type ProviderEngineBindingTemplate,
+  type ProviderInstance,
+} from "@t3tools/provider-core/server/driver";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
+import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 
@@ -194,4 +199,89 @@ it.effect("interrupts admitted session startup when a shared peer signs out", ()
     yield* Deferred.await(stopped);
     assert.isTrue(Exit.isFailure(yield* Fiber.await(startup)));
   }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const LHC_HOME = "/home/test/.claude-lhc";
+
+const lhcTemplate = (
+  claudeHome: string,
+  continuationKey = engineContinuationKey({ engine: "claude-lhc", claudeHome }),
+): ProviderEngineBindingTemplate => ({
+  engine: "claude-lhc",
+  continuationKey,
+  claudeHome,
+  compact: { trigger: 700_000, target: 140_000 },
+  nativeContinuation: "required",
+  compaction: "provider",
+});
+
+const metadataOf = (instance: ProviderInstance) =>
+  Effect.service(ProviderAdapterRegistry.ProviderAdapterRegistryV2).pipe(
+    Effect.flatMap((registry) => registry.getMetadata!(instance.instanceId)),
+    Effect.provide(
+      ProviderAdapterRegistry.layerFromProviderInstanceRegistry.pipe(
+        Layer.provide(
+          Layer.mock(ProviderInstanceRegistry.ProviderInstanceRegistry)({
+            getInstance: () => Effect.succeed(instance),
+            listInstances: Effect.succeed([instance]),
+          }),
+        ),
+      ),
+    ),
+  );
+
+const instanceWith = (
+  template: ProviderEngineBindingTemplate | undefined,
+  continuationKey = template?.continuationKey ?? `codex:test:${personalId}`,
+): ProviderInstance => ({
+  ...makeInstance(personalId, {
+    ...personalAdapter,
+    getCapabilities: () => Effect.succeed(CodexProviderCapabilitiesV2),
+  }),
+  continuationIdentity: { driverKind: driver, continuationKey },
+  ...(template === undefined ? {} : { engineBinding: template }),
+});
+
+it.effect("returns a templated instance's engine binding and no binding for a stock one", () =>
+  Effect.gen(function* () {
+    const template = lhcTemplate(LHC_HOME);
+    const bound = yield* metadataOf(instanceWith(template));
+    assert.deepEqual(bound.engineBinding, template);
+    assert.equal(bound.continuationKey, `claude-lhc:home:${LHC_HOME}`);
+    assert.notProperty(yield* metadataOf(instanceWith(undefined)), "engineBinding");
+  }),
+);
+
+it.effect.each([
+  [
+    "its Claude home is relative",
+    instanceWith(lhcTemplate("home/test/.claude-lhc")),
+    "normalized absolute",
+  ],
+  [
+    "its Claude home has a trailing slash",
+    instanceWith(lhcTemplate(`${LHC_HOME}/`)),
+    "normalized absolute",
+  ],
+  [
+    "its Claude home has dot segments",
+    instanceWith(lhcTemplate("/home/test/./.claude-lhc")),
+    "normalized absolute",
+  ],
+  [
+    "its key names another home",
+    instanceWith(lhcTemplate(LHC_HOME, "claude-lhc:home:/home/test/.claude")),
+    "does not name its Claude home",
+  ],
+  [
+    "its key differs from the instance's",
+    instanceWith(lhcTemplate(LHC_HOME), "claude:home:/home/test/.claude-lhc"),
+    "differs from its instance's",
+  ],
+] as const)("refuses a template when %s", ([, instance, reason]) =>
+  Effect.gen(function* () {
+    const error = yield* metadataOf(instance).pipe(Effect.flip);
+    assert.instanceOf(error, ProviderAdapterRegistry.ProviderAdapterRegistryMetadataError);
+    assert.include(String(error.cause), reason);
+  }),
 );
