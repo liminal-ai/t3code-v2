@@ -600,7 +600,9 @@ export interface ClaudeAgentSdkQueryRunnerShape {
   readonly open: (
     input: ClaudeAgentSdkQueryOpenInput,
   ) => Effect.Effect<ClaudeAgentSdkQuerySession, ClaudeAgentSdkQueryRunnerError>;
-  readonly forkSession: ClaudeQuerySeam["forkSession"];
+  readonly forkSession: (
+    input: ClaudeAgentSdkSessionForkInput,
+  ) => Effect.Effect<ClaudeForkSessionResult, ClaudeAgentSdkQueryRunnerError>;
   readonly subagentLaunchToolUseId: ClaudeQuerySeam["subagentLaunchToolUseId"];
   readonly assertComplete: Effect.Effect<void, ClaudeAgentSdkQueryRunnerError>;
 }
@@ -640,6 +642,12 @@ export interface ClaudeProgram {
 
 export type ClaudeForkSessionResult = ForkSessionResult & { readonly headMessageId?: string };
 
+/** A seam's fork, and the read of its inherited head, which the runner runs after it logs the fork. */
+export interface ClaudeSeamFork {
+  readonly result: ClaudeForkSessionResult;
+  readonly inheritedHead: Effect.Effect<string | undefined>;
+}
+
 /**
  * Where a runner's queries, forks and subagent lookups go. The runner scope-wraps `program` into
  * `launch` and supervises what `options.spawnClaudeCodeProcess` starts, so a seam that runs its own
@@ -657,7 +665,7 @@ export interface ClaudeQuerySeam {
   ) => ClaudeQuery;
   readonly forkSession: (
     input: ClaudeAgentSdkSessionForkInput,
-  ) => Effect.Effect<ClaudeForkSessionResult, ClaudeAgentSdkQueryRunnerError>;
+  ) => Effect.Effect<ClaudeSeamFork, ClaudeAgentSdkQueryRunnerError>;
   readonly subagentLaunchToolUseId: (
     input: ClaudeAgentSdkSubagentLookupInput,
   ) => Effect.Effect<string | null, ClaudeAgentSdkQueryRunnerError>;
@@ -993,22 +1001,24 @@ function stockClaudeQuerySeam(
               Effect.mapError((cause) => queryRunnerError(cause, "forkSession")),
             );
       const result = yield* fork;
-      // The SDK remaps copied UUIDs. Capture the inherited head before the
-      // fork's first run appends messages.
-      const headMessageId = usesHostConfig
-        ? yield* Effect.tryPromise({
-            try: () =>
-              getSessionMessages(
-                result.sessionId,
-                input.options.dir === undefined ? {} : { dir: input.options.dir },
-              ),
-            catch: (cause) => queryRunnerError(cause, "getSessionMessages"),
-          }).pipe(
-            Effect.map((messages) => messages.at(-1)?.uuid),
-            Effect.orElseSucceed(() => undefined),
-          )
-        : result.headMessageId;
-      return headMessageId === undefined ? result : { ...result, headMessageId };
+      return {
+        result,
+        // The SDK remaps copied UUIDs. Capture the inherited head before the
+        // fork's first run appends messages.
+        inheritedHead: usesHostConfig
+          ? Effect.tryPromise({
+              try: () =>
+                getSessionMessages(
+                  result.sessionId,
+                  input.options.dir === undefined ? {} : { dir: input.options.dir },
+                ),
+              catch: (cause) => queryRunnerError(cause, "getSessionMessages"),
+            }).pipe(
+              Effect.map((messages) => messages.at(-1)?.uuid),
+              Effect.orElseSucceed(() => undefined),
+            )
+          : Effect.succeed(result.headMessageId),
+      };
     }),
     subagentLaunchToolUseId: (input) =>
       Effect.tryPromise({
@@ -1117,6 +1127,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
           });
           return child;
         };
+        const awaitProcessExit = Effect.promise(() => processExit ?? Promise.resolve());
         const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
           Effect.try({
             try: () =>
@@ -1322,13 +1333,24 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
           close: Queue.shutdown(promptQueue).pipe(
             Effect.andThen(closeClaudeQuery(queryRuntime)),
             // The SDK signals its child after close returns (SIGTERM at 2 s, SIGKILL at 7 s), so wait for the
-            // exit before a reopen. After 10 s, kill and settle anyway: only a process stuck in
-            // uninterruptible sleep outlives SIGKILL, and waiting on it would wedge the thread.
+            // exit before a reopen. Only a process stuck in uninterruptible sleep outlives our own SIGKILL;
+            // waiting on it would wedge the thread, and its exit listeners still release it later.
             Effect.andThen(
-              Effect.promise(() => processExit ?? Promise.resolve()).pipe(
+              awaitProcessExit.pipe(
                 Effect.timeoutOrElse({
                   duration: "10 seconds",
-                  orElse: () => Effect.sync(() => void spawnedProcess?.kill("SIGKILL")),
+                  orElse: () =>
+                    Effect.sync(() => void spawnedProcess?.kill("SIGKILL")).pipe(
+                      Effect.andThen(awaitProcessExit),
+                      Effect.timeoutOrElse({
+                        duration: "2 seconds",
+                        orElse: () =>
+                          Effect.logWarning("orchestration-v2.claude-process-outlived-sigkill", {
+                            threadId: input.threadId,
+                            providerSessionId: input.providerSessionId,
+                          }),
+                      }),
+                    ),
                 }),
               ),
             ),
@@ -1374,7 +1396,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
           options: input.options,
         },
       });
-      const result = yield* seam.forkSession(input);
+      const { result, inheritedHead } = yield* seam.forkSession(input);
       yield* logProtocolEvent({
         direction: "incoming",
         stage: "decoded",
@@ -1383,7 +1405,8 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
           sessionId: result.sessionId,
         },
       });
-      return result;
+      const headMessageId = yield* inheritedHead;
+      return headMessageId === undefined ? result : { ...result, headMessageId };
     }),
     subagentLaunchToolUseId: Effect.fn("ClaudeAgentSdkQueryRunner.subagentLaunchToolUseId")(
       function* (input: ClaudeAgentSdkSubagentLookupInput) {

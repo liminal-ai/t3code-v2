@@ -206,7 +206,10 @@ it.effect(
           forkSession: (input) =>
             Effect.sync(() => {
               forks.push(input);
-              return { sessionId: "forked-lhc-session" };
+              return {
+                result: { sessionId: "forked-lhc-session" },
+                inheritedHead: Effect.undefined,
+              };
             }),
           subagentLaunchToolUseId: (input) =>
             Effect.sync(() => {
@@ -293,10 +296,27 @@ it.effect(
     ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect.each(["exits", "hangs"] as const)(
-  "settles close only after the CLI it started exits or is killed: %s",
-  (outcome) =>
-    Effect.scoped(
+it.effect.each(["exits", "exits after SIGKILL", "outlives SIGKILL"] as const)(
+  "settles close once the CLI it started %s, and releases it on exit",
+  (outcome) => {
+    let runningAgents = 0;
+    const countingRunner = layerQueryRunner.pipe(
+      Layer.provide(
+        Layer.mock(PortScanner.PortDiscovery)({
+          trackAgent: () => {
+            runningAgents += 1;
+            return () => {
+              runningAgents -= 1;
+            };
+          },
+        }),
+      ),
+      Layer.provide(
+        Layer.succeed(ProviderEventLoggers, { native: undefined, canonical: undefined }),
+      ),
+      Layer.provide(NodeServices.layer),
+    );
+    return Effect.scoped(
       Effect.gen(function* () {
         const events = new NodeEvents.EventEmitter();
         const stdin = new NodeStream.PassThrough();
@@ -333,17 +353,86 @@ it.effect.each(["exits", "hangs"] as const)(
           ...resumedMcpQueryInput,
           options: { ...options, spawnClaudeCodeProcess: () => child },
         });
+        assert.equal(runningAgents, 1);
 
         const closing = yield* session.close.pipe(Effect.forkChild);
         yield* TestClock.adjust("9 seconds");
         assert.equal(closeQuery.mock.calls.length, 1);
         assert.isUndefined(closing.pollUnsafe());
-        if (outcome === "exits") events.emit("exit", 0, null);
-        else yield* TestClock.adjust("1 second");
+        if (outcome === "exits") {
+          events.emit("exit", 0, null);
+        } else {
+          yield* TestClock.adjust("1 second");
+          assert.deepEqual(child.kill.mock.calls, [["SIGKILL"]]);
+          yield* TestClock.adjust("1 second");
+          assert.isUndefined(closing.pollUnsafe());
+          if (outcome === "exits after SIGKILL") events.emit("exit", null, "SIGKILL");
+          else yield* TestClock.adjust("1 second");
+        }
         yield* Fiber.join(closing);
         assert.deepEqual(child.kill.mock.calls, outcome === "exits" ? [] : [["SIGKILL"]]);
-      }).pipe(Effect.provide(realQueryRunner)),
-    ),
+        assert.equal(runningAgents, outcome === "outlives SIGKILL" ? 1 : 0);
+        if (outcome === "outlives SIGKILL") {
+          events.emit("exit", null, "SIGKILL");
+          assert.equal(runningAgents, 0);
+        }
+      }).pipe(Effect.provide(countingRunner)),
+    );
+  },
+);
+
+it.effect("logs a host fork before it reads the inherited head, as trunk does", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const order: Array<string> = [];
+      const sdkFork = vi
+        .spyOn(ClaudeSdk, "forkSession")
+        .mockImplementation(async () => ({ sessionId: "forked-host-session" }));
+      const sdkMessages = vi.spyOn(ClaudeSdk, "getSessionMessages").mockImplementation(async () => {
+        order.push("read inherited head");
+        return [{ uuid: "inherited-head" }] as Awaited<
+          ReturnType<typeof ClaudeSdk.getSessionMessages>
+        >;
+      });
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          sdkFork.mockRestore();
+          sdkMessages.mockRestore();
+        }),
+      );
+      const runner = yield* makeClaudeAgentSdkQueryRunner().pipe(
+        Effect.provideService(ProviderEventLoggers, {
+          native: {
+            filePath: "native.ndjson",
+            write: (event) =>
+              Effect.sync(() => {
+                const payload = (event as { event: { payload: { type: string } } }).event.payload;
+                order.push(`log ${payload.type}`);
+              }),
+            close: () => Effect.void,
+          },
+          canonical: undefined,
+        }),
+        Effect.provide(PortScanner.layerTest),
+      );
+      const threadId = ThreadId.make("thread-host-fork");
+
+      const forked = yield* runner.forkSession({
+        sessionId: FORK_SESSION_ID,
+        options: { dir: "/repo" },
+        environment: process.env,
+        threadId,
+        providerSessionId: ProviderSessionId.make("session-host-fork"),
+        thread: stockThread(threadId),
+      });
+
+      assert.deepEqual(forked, {
+        sessionId: "forked-host-session",
+        headMessageId: "inherited-head",
+      });
+      assert.deepEqual(order, ["log session.fork", "log session.forked", "read inherited head"]);
+    }),
+  ).pipe(Effect.provide(NodeServices.layer)),
 );
 
 const TRUNK_STOCK_QUERY_OPTIONS = {
