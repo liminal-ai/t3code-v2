@@ -888,6 +888,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     lockedProvider,
     lockedInstanceId:
       activeThread?.runtime?.providerInstanceId ?? activeThreadModelSelection?.instanceId,
+    lockedEngineBinding: activeThread?.source.engineBinding ?? null,
   });
   const noProviderAvailable =
     selectedProviderEntry === undefined && multipleModelSelections === null;

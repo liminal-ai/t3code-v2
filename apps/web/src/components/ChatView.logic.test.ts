@@ -9,7 +9,8 @@ import {
 } from "./ChatView.logic";
 import { recallCheckoutIsRepo, rememberCheckoutIsRepo } from "./ChatView.logic";
 import { ProviderDriverKind, type ServerProvider } from "@t3tools/contracts";
-import { deriveProviderInstanceEntries } from "../providerInstances";
+import { deriveProviderInstanceEntries, type ProviderInstanceEntry } from "../providerInstances";
+import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { ensureInlineContextReferences } from "../lib/composerContextReferences";
 import { terminalContextReference } from "../lib/composerContextRecords";
 import {
@@ -24,7 +25,9 @@ import {
   ThreadId,
   RunId,
   TurnItemId,
+  type OrchestrationV2EngineBinding,
   type OrchestrationV2ProjectedTurnItem,
+  type OrchestrationV2TurnItem,
   type WorktreeSetupSnapshot,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
@@ -50,6 +53,7 @@ import {
   deriveComposerSendState,
   deriveLockedProvider,
   hasServerAcknowledgedLocalDispatch,
+  presentThreadShellFromProjection,
   waitForRevertedMessage,
 } from "./ChatView.logic";
 
@@ -493,6 +497,7 @@ describe("resolveComposerProviderSelection", () => {
         candidateInstanceIds: [thread.modelSelection.instanceId],
         lockedProvider,
         lockedInstanceId: thread.modelSelection.instanceId,
+        lockedEngineBinding: null,
       }).selectedProviderEntry?.instanceId,
     ).toBe(importedEntry.instanceId);
   });
@@ -540,6 +545,7 @@ describe("resolveComposerProviderSelection", () => {
           candidateInstanceIds: [other.instanceId, imported.instanceId],
           lockedProvider,
           lockedInstanceId: imported.instanceId,
+          lockedEngineBinding: null,
         }).selectedProviderEntry,
       ).toBeUndefined();
     },
@@ -556,6 +562,7 @@ describe("resolveComposerProviderSelection", () => {
       candidateInstanceIds: [signedOutEntry.instanceId],
       lockedProvider: null,
       lockedInstanceId: null,
+      lockedEngineBinding: null,
     });
 
     expect(selection.selectedProviderEntry?.instanceId).toBe(signedOutEntry.instanceId);
@@ -594,6 +601,7 @@ describe("resolveComposerProviderSelection", () => {
       candidateInstanceIds: [missingInstanceId],
       lockedProvider: ProviderDriverKind.make("antigravity"),
       lockedInstanceId: missingInstanceId,
+      lockedEngineBinding: null,
     });
 
     expect(selection.selectedProviderEntry).toBeUndefined();
@@ -613,9 +621,206 @@ describe("resolveComposerProviderSelection", () => {
       candidateInstanceIds: [anotherEntry.instanceId, sessionEntry.instanceId],
       lockedProvider: ProviderDriverKind.make("antigravity"),
       lockedInstanceId: sessionEntry.instanceId,
+      lockedEngineBinding: null,
     });
 
     expect(selection.selectedProviderEntry).toBeUndefined();
+  });
+
+  describe("on a thread with an engine binding", () => {
+    const lhcHome = "/home/user/.claude-lhc";
+    const binding: OrchestrationV2EngineBinding = {
+      providerInstanceId: ProviderInstanceId.make("claude_lhc"),
+      engine: "claude-lhc",
+      continuationKey: `claude:home:${lhcHome}`,
+      claudeHome: lhcHome,
+      compact: { trigger: 700_000, target: 140_000 },
+      nativeContinuation: "required",
+      compaction: "provider",
+    };
+    const bound = (overrides: Partial<ServerProvider> = {}) =>
+      entry("claudeAgent", binding.providerInstanceId, {
+        continuation: { groupKey: binding.continuationKey },
+        ...overrides,
+      });
+    const stockClaude = entry("claudeAgent", "claudeAgent", {
+      continuation: { groupKey: "claude:home:/home/user/.claude" },
+    });
+    const modelSelection = { instanceId: binding.providerInstanceId, model: "claude-opus-5-5" };
+
+    function fromShellList(started: boolean): Thread {
+      const { source } = makeThread({
+        modelSelection,
+        itemCount: started ? 2 : 0,
+        activeProviderThreadId: started ? ProviderThreadId.make("provider-thread-1") : null,
+      });
+      return presentThreadShell(environmentId, { ...source, engineBinding: binding });
+    }
+
+    function fromProjection(started: boolean): Thread {
+      const projection = makeThreadProjectionFixture();
+      const userItem: OrchestrationV2TurnItem = {
+        id: TurnItemId.make("turn-item:bound-user"),
+        threadId: projection.thread.id,
+        runId: RunId.make("run-bound"),
+        nodeId: null,
+        providerThreadId: ProviderThreadId.make("provider-thread-1"),
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "completed",
+        title: null,
+        startedAt: projection.updatedAt,
+        completedAt: projection.updatedAt,
+        updatedAt: projection.updatedAt,
+        createdBy: "user",
+        creationSource: "web",
+        type: "user_message",
+        messageId: MessageId.make("bound-user"),
+        inputIntent: "turn_start",
+        text: "start",
+        attachments: [],
+      };
+      return presentThreadShellFromProjection(
+        environmentId,
+        projection.thread.id,
+        {
+          ...projection,
+          thread: {
+            ...projection.thread,
+            providerInstanceId: binding.providerInstanceId,
+            modelSelection,
+            activeProviderThreadId: started ? ProviderThreadId.make("provider-thread-1") : null,
+            engineBinding: binding,
+          },
+          turnItems: started ? [userItem] : [],
+        },
+        { updatedAt: projection.updatedAt, lastVisitedAt: null },
+      );
+    }
+
+    function select(
+      thread: Thread,
+      entries: ReadonlyArray<ProviderInstanceEntry>,
+      caller: "composer" | "chatView",
+      pickedInstanceId: ProviderInstanceId | null = null,
+    ) {
+      const lockedProvider =
+        caller === "composer"
+          ? null
+          : deriveLockedProvider({
+              thread,
+              selectedProvider: pickedInstanceId,
+              threadProvider: thread.modelSelection.instanceId,
+              providers: entries.map((providerEntry) => providerEntry.snapshot),
+            });
+      return resolveComposerProviderSelection({
+        entries,
+        candidateInstanceIds: [
+          pickedInstanceId,
+          thread.runtime?.providerInstanceId,
+          thread.modelSelection.instanceId,
+          stockClaude.instanceId,
+        ],
+        lockedProvider,
+        lockedInstanceId: thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
+        lockedEngineBinding: thread.source.engineBinding ?? null,
+      });
+    }
+
+    const threads = [
+      ["from the shell list with turns", () => fromShellList(true)],
+      ["from the shell list with no provider row", () => fromShellList(false)],
+      ["from a projection with turns", () => fromProjection(true)],
+      ["from a projection with no provider row", () => fromProjection(false)],
+    ] as const;
+    const cases = threads.flatMap(([name, thread]) =>
+      (["composer", "chatView"] as const).map((caller) => [name, caller, thread] as const),
+    );
+
+    it.each(cases)(
+      "shows a deleted bound instance as unavailable for a thread %s (%s)",
+      (_name, caller, thread) => {
+        const selection = select(thread(), [stockClaude], caller);
+
+        expect(selection.selectedProviderEntry).toBeUndefined();
+        expect(selection.unavailableProviderInstanceId).toBe(binding.providerInstanceId);
+      },
+    );
+
+    it.each(cases)(
+      "shows a bound instance whose home changed as unavailable for a thread %s (%s)",
+      (_name, caller, thread) => {
+        const rehomed = bound({ continuation: { groupKey: "claude:home:/home/user/.other" } });
+        const selection = select(thread(), [stockClaude, rehomed], caller);
+
+        expect(selection.selectedProviderEntry).toBeUndefined();
+        expect(selection.unavailableProviderInstanceId).toBe(binding.providerInstanceId);
+      },
+    );
+
+    it.each(cases)("selects the bound instance for a thread %s (%s)", (_name, caller, thread) => {
+      const selection = select(thread(), [stockClaude, bound()], caller);
+
+      expect(selection.selectedProviderEntry?.instanceId).toBe(binding.providerInstanceId);
+      expect(selection.unavailableProviderInstanceId).toBeUndefined();
+    });
+
+    it.each([null, "claudeAgent", "codex"])(
+      "keys a bound thread only on its binding when the locked driver is %s",
+      (driver) => {
+        const thread = fromShellList(true);
+        const resolve = (entries: ReadonlyArray<ProviderInstanceEntry>) =>
+          resolveComposerProviderSelection({
+            entries,
+            candidateInstanceIds: [thread.modelSelection.instanceId, stockClaude.instanceId],
+            lockedProvider: driver === null ? null : ProviderDriverKind.make(driver),
+            lockedInstanceId: thread.modelSelection.instanceId,
+            lockedEngineBinding: binding,
+          });
+
+        expect(resolve([stockClaude, entry("codex")]).unavailableProviderInstanceId).toBe(
+          binding.providerInstanceId,
+        );
+        expect(
+          resolve([stockClaude, entry("codex"), bound()]).selectedProviderEntry?.instanceId,
+        ).toBe(binding.providerInstanceId);
+      },
+    );
+
+    it("lets no instance in the same key group stand in for a disabled bound instance", () => {
+      const sameHome = entry("claudeAgent", "claude_lhc_copy", {
+        continuation: { groupKey: binding.continuationKey },
+      });
+      const selection = select(
+        fromShellList(true),
+        [sameHome, bound({ enabled: false })],
+        "chatView",
+      );
+
+      expect(selection.selectedProviderEntry).toBeUndefined();
+      expect(selection.unavailableProviderInstanceId).toBe(binding.providerInstanceId);
+    });
+
+    it("keeps an explicit pick of another live instance so the user can hand off", () => {
+      const selection = select(
+        fromShellList(true),
+        [stockClaude, bound()],
+        "composer",
+        stockClaude.instanceId,
+      );
+
+      expect(selection.selectedProviderEntry?.instanceId).toBe(stockClaude.instanceId);
+    });
+
+    it("still selects another Claude instance for a stock thread whose instance is gone", () => {
+      const stockThread = makeThread({ modelSelection, itemCount: 2 });
+
+      expect(select(stockThread, [stockClaude], "composer").selectedProviderEntry?.instanceId).toBe(
+        stockClaude.instanceId,
+      );
+    });
   });
 });
 

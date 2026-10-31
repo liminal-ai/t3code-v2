@@ -31,6 +31,7 @@ import {
   type MessageId,
   type ModelSelection,
   type OrchestrationMessageContext,
+  type OrchestrationV2EngineBinding,
   type PreviewAnnotationPayload,
   type ProviderInteractionMode,
   ProviderDriverKind,
@@ -489,6 +490,7 @@ export function resolveComposerProviderSelection(input: {
   candidateInstanceIds: ReadonlyArray<ProviderInstanceId | null | undefined>;
   lockedProvider: ProviderDriverKind | null;
   lockedInstanceId: ProviderInstanceId | null | undefined;
+  lockedEngineBinding: OrchestrationV2EngineBinding | null;
 }) {
   const requestedInstanceId = input.candidateInstanceIds.find(
     (candidate) => candidate != null && candidate !== NO_PROVIDER_MODEL_SELECTION.instanceId,
@@ -513,24 +515,39 @@ export function resolveComposerProviderSelection(input: {
       (!lockedContinuationGroupKey || entry.continuationGroupKey === lockedContinuationGroupKey) &&
       (!requiresExactInstance || entry.instanceId === input.lockedInstanceId),
   );
-  const selectedProviderEntry =
-    input.candidateInstanceIds
-      .map((candidate) =>
-        compatibleEntries.find(
-          (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
-        ),
+  const binding = input.lockedEngineBinding;
+  const usableBoundEntry = binding
+    ? input.entries.find(
+        (entry) =>
+          entry.instanceId === binding.providerInstanceId &&
+          entry.continuationGroupKey === binding.continuationKey &&
+          entry.enabled &&
+          entry.isAvailable,
       )
-      .find((entry) => entry !== undefined) ??
-    resolveSelectableProviderInstanceEntry(
-      compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
-      undefined,
-    ) ??
-    resolveSelectableProviderInstanceEntry(compatibleEntries, undefined);
+    : undefined;
+  const boundInstanceUnusable = binding !== null && usableBoundEntry === undefined;
+  const selectedProviderEntry = boundInstanceUnusable
+    ? undefined
+    : (input.candidateInstanceIds
+        .map((candidate) =>
+          compatibleEntries.find(
+            (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
+          ),
+        )
+        .find((entry) => entry !== undefined) ??
+      usableBoundEntry ??
+      resolveSelectableProviderInstanceEntry(
+        compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
+        undefined,
+      ) ??
+      resolveSelectableProviderInstanceEntry(compatibleEntries, undefined));
   const unavailableProviderInstanceId = selectedProviderEntry
     ? undefined
-    : input.lockedProvider
-      ? (input.lockedInstanceId ?? requestedInstanceId)
-      : requestedInstanceId;
+    : boundInstanceUnusable
+      ? binding.providerInstanceId
+      : input.lockedProvider
+        ? (input.lockedInstanceId ?? requestedInstanceId)
+        : requestedInstanceId;
   return {
     selectedProviderEntry,
     requestedDriverKind,

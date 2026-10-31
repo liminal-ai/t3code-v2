@@ -1278,6 +1278,7 @@ export default function ChatView(props: ChatViewProps) {
     ],
     lockedProvider,
     lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
+    lockedEngineBinding: activeThread?.source.engineBinding ?? null,
   });
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
