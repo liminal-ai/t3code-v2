@@ -15502,11 +15502,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       if (typeof sessionId !== "string") throw new Error("P-replay frame has no session id.");
       return sessionId;
     };
-    const fixturePromptIds = P_REPLAY.flatMap((frame) =>
-      Reflect.get(frame, "type") === "command_lifecycle" && Reflect.get(frame, "state") === "queued"
+    const fixturePromptIds = P_REPLAY.flatMap((frame) => {
+      const type: unknown = Reflect.get(frame, "type");
+      return type === "command_lifecycle" && Reflect.get(frame, "state") === "queued"
         ? [String(Reflect.get(frame, "command_uuid"))]
-        : [],
-    );
+        : [];
+    });
     const withPrompt = (frame: SDKMessage, fixtureId: string, promptUuid: string) =>
       claudeSdkFrame(JSON.parse(JSON.stringify(frame).replaceAll(fixtureId, promptUuid)));
     const P_REPLAY_TURN_1 = P_REPLAY.slice(0, 7);
