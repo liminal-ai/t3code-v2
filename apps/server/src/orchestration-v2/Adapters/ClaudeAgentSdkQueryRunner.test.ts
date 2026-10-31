@@ -346,7 +346,6 @@ it.effect.each(["exits", "hangs"] as const)(
     ),
 );
 
-// Captured from trunk 6ee78589e6's runner with this input, so stock Claude's SDK options stay identical.
 const TRUNK_STOCK_QUERY_OPTIONS = {
   scoped: {
     sessionId: "native-thread-stock-options",

@@ -628,7 +628,6 @@ export interface ClaudeAgentSdkSubagentLookupInput {
   readonly thread: ClaudeThreadContext;
 }
 
-/** The app thread a query serves, and the engine binding of the provider row it continues. */
 export interface ClaudeThreadContext {
   readonly appThreadId: ThreadId;
   readonly engineBinding: OrchestrationV2EngineBinding | null;
