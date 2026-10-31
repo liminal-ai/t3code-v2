@@ -111,6 +111,31 @@ describe.runIf(unix)("resolveClaudeLhcRuntime", () => {
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("never runs a hard link of the executable as Node", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const bare = yield* release({ staged: false });
+      const node = path.join(bare.directory, "lhc-runtime", "node");
+      const sidecar = yield* touch(
+        path.join(
+          bare.directory,
+          "lhc-runtime",
+          "node_modules",
+          "claude-lhc",
+          "dist",
+          "sidecar.js",
+        ),
+      );
+      yield* fs.link(bare.executable, node);
+      const message = yield* failure({ CLAUDE_LHC_NODE: node, CLAUDE_LHC_SIDECAR: sidecar }).pipe(
+        Effect.provideService(HostProcess.ExecutablePath, bare.executable),
+        Effect.provideService(HostProcess.IsExecutable, true),
+      );
+      expect(message).toBe(`${node} is the T3 executable, not Node.`);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("runs the installed package under the current Node in development", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

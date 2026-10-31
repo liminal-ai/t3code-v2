@@ -7,6 +7,7 @@ import { resolveNodeExecutable } from "@t3tools/shared/nodeRuntime";
 import { compareSemverVersions } from "@t3tools/shared/semver";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { ChildProcess } from "effect/process";
@@ -40,8 +41,14 @@ const exists = Effect.fn("claudeLhc.exists")(
 const sameFile = Effect.fn("claudeLhc.sameFile")(
   function* (left: string, right: string) {
     const fs = yield* FileSystem.FileSystem;
-    const [a, b] = yield* Effect.all([fs.realPath(left), fs.realPath(right)]);
-    return a === b;
+    const [a, b] = yield* Effect.all([fs.stat(left), fs.stat(right)]);
+    return (
+      a.dev === b.dev &&
+      Option.isSome(a.ino) &&
+      Option.isSome(b.ino) &&
+      a.ino.value > 0n &&
+      a.ino.value === b.ino.value
+    );
   },
   Effect.orElseSucceed(() => false),
 );
