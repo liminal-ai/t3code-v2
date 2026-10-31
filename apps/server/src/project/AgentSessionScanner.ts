@@ -231,6 +231,7 @@ type LhcStoreVerdict =
 interface LhcSharedHome {
   readonly claudeHome: string;
   readonly lhcInstanceIds: ReadonlyArray<ProviderInstanceId>;
+  readonly sessionCount: number;
   verdict: LhcStoreVerdict;
 }
 
@@ -1078,6 +1079,43 @@ export const make = Effect.gen(function* () {
       : null;
   });
 
+  const readCurrentLhcHomes = serverSettings.getSettings.pipe(
+    Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
+    Effect.flatMap((settings) => readLhcHomes(settings.providerInstances)),
+  );
+
+  // One store inspection per shared home, covering every session the caller found there.
+  const checkLhcHomes = Effect.fn("AgentSessionScanner.checkLhcHomes")(function* (
+    lhcHomes: ReadonlyMap<string, ReadonlyArray<ProviderInstanceId>>,
+    candidates: ReadonlyArray<{
+      readonly candidate: RawCandidate;
+      readonly transcript: RawCandidate["transcripts"][number];
+    }>,
+  ) {
+    const sessionIdsByHome = new Map<string, Array<string> | null>();
+    for (const { candidate, transcript } of candidates) {
+      if (candidate.source !== "claudeAgent") continue;
+      let sessionIds = sessionIdsByHome.get(candidate.homePath);
+      if (sessionIds === undefined) {
+        const shared = lhcHomes.has(yield* directoryIdentity(candidate.homePath));
+        sessionIds = shared ? [] : null;
+        sessionIdsByHome.set(candidate.homePath, sessionIds);
+      }
+      sessionIds?.push(claudeSessionIdOf(transcript.filePath));
+    }
+    const homes = new Map<string, LhcSharedHome>();
+    for (const [homePath, sessionIds] of sessionIdsByHome) {
+      if (sessionIds === null) continue;
+      homes.set(homePath, {
+        claudeHome: homePath,
+        lhcInstanceIds: lhcHomes.get(yield* directoryIdentity(homePath)) ?? [],
+        sessionCount: sessionIds.length,
+        verdict: yield* inspectLhcStore(sessionIds),
+      });
+    }
+    return homes;
+  });
+
   const discoverClaudeTranscripts = Effect.fn("AgentSessionScanner.discoverClaudeTranscripts")(
     function* (homePath: string, providerInstanceId: ProviderInstanceId, operationBudget: number) {
       const projectsDir = path.join(homePath, "projects");
@@ -1248,9 +1286,7 @@ export const make = Effect.gen(function* () {
     );
 
     const raw: Array<RawCandidate> = [];
-    const diagnostics: Array<AgentSessionHomeDiagnostic> = [];
     let truncated = false;
-    const lhcHomes = yield* readLhcHomes(settings.providerInstances);
 
     for (const source of ["claudeAgent", "codex"] as const) {
       const instances: Array<{
@@ -1282,11 +1318,7 @@ export const make = Effect.gen(function* () {
         const rightDefault = right.instanceId === source ? 0 : 1;
         return leftDefault - rightDefault;
       });
-      const homes: Array<{
-        homePath: string;
-        identity: string;
-        providerInstanceId: ProviderInstanceId;
-      }> = [];
+      const homes: Array<{ homePath: string; providerInstanceId: ProviderInstanceId }> = [];
       const seenHomes = new Set<string>();
       for (const { instanceId, config: instance } of instances) {
         const homeVariable = source === "claudeAgent" ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
@@ -1314,11 +1346,10 @@ export const make = Effect.gen(function* () {
           homePath = layout.sharedHomePath;
         }
 
-        const identity = yield* directoryIdentity(homePath);
-        const homeKey = `${source}\0${identity}`;
+        const homeKey = `${source}\0${yield* directoryIdentity(homePath)}`;
         if (seenHomes.has(homeKey)) continue;
         seenHomes.add(homeKey);
-        homes.push({ homePath, identity, providerInstanceId: instanceId });
+        homes.push({ homePath, providerInstanceId: instanceId });
       }
 
       const transcriptCandidates: Array<TranscriptCandidate> = [];
@@ -1336,31 +1367,7 @@ export const make = Effect.gen(function* () {
           ? discoverClaudeTranscripts(home.homePath, home.providerInstanceId, operationBudget)
           : discoverCodexTranscripts(home.homePath, home.providerInstanceId, operationBudget);
         truncated ||= discovered.truncated;
-        const lhcInstanceIds = source === "claudeAgent" ? lhcHomes.get(home.identity) : undefined;
-        if (lhcInstanceIds === undefined) {
-          transcriptCandidates.push(...discovered.transcripts);
-          continue;
-        }
-        const sessionIds = discovered.transcripts.map((transcript) =>
-          claudeSessionIdOf(transcript.filePath),
-        );
-        const verdict = yield* inspectLhcStore(sessionIds);
-        if (verdict._tag === "Withheld") {
-          diagnostics.push({
-            claudeHome: home.homePath,
-            lhcInstanceIds,
-            reason: verdict.reason,
-            ...(verdict.detail === undefined ? {} : { detail: verdict.detail }),
-            sessionCount: discovered.transcripts.length,
-          });
-          continue;
-        }
-        transcriptCandidates.push(
-          ...discovered.transcripts.filter(
-            (transcript) =>
-              verdict.managedById.get(claudeSessionIdOf(transcript.filePath)) !== true,
-          ),
-        );
+        transcriptCandidates.push(...discovered.transcripts);
       }
 
       transcriptCandidates.sort(
@@ -1381,14 +1388,54 @@ export const make = Effect.gen(function* () {
       truncated ||= metadataBudget.truncated;
     }
 
-    return { candidates: raw, truncated, diagnostics };
+    return { candidates: raw, truncated };
+  });
+
+  // Discovery keeps every transcript so an import can name each refusal; only the list hides them.
+  const withoutLhcSessions = Effect.fn("AgentSessionScanner.withoutLhcSessions")(function* (
+    candidates: ReadonlyArray<RawCandidate>,
+  ) {
+    const sharedHomes = yield* checkLhcHomes(
+      yield* readCurrentLhcHomes,
+      candidates.flatMap((candidate) =>
+        candidate.transcripts.map((transcript) => ({ candidate, transcript })),
+      ),
+    );
+    const diagnostics: Array<AgentSessionHomeDiagnostic> = [];
+    for (const home of sharedHomes.values()) {
+      const withheld = withheldRefusal(home);
+      if (withheld !== null) diagnostics.push({ ...withheld, sessionCount: home.sessionCount });
+    }
+    const listed = candidates.flatMap((candidate): Array<RawCandidate> => {
+      const home = sharedHomes.get(candidate.homePath);
+      if (candidate.source !== "claudeAgent" || home === undefined) return [candidate];
+      if (home.verdict._tag === "Withheld") return [];
+      const managedById = home.verdict.managedById;
+      const transcripts = candidate.transcripts.filter(
+        (transcript) => managedById.get(claudeSessionIdOf(transcript.filePath)) !== true,
+      );
+      if (transcripts.length === 0) return [];
+      const activity = transcripts.flatMap((transcript) =>
+        transcript.mtimeMs === null ? [] : [transcript.mtimeMs],
+      );
+      return [
+        {
+          ...candidate,
+          transcripts,
+          threadCount: transcripts.length,
+          lastActiveAtMs: activity.length === 0 ? null : Math.max(...activity),
+        },
+      ];
+    });
+    return { candidates: listed, diagnostics };
   });
 
   let cachedCandidates: ReadonlyArray<RawCandidate> | null = null;
 
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
-    const { candidates: raw, truncated, diagnostics } = yield* collectCandidates();
-    cachedCandidates = raw;
+    const { candidates: discovered, truncated } = yield* collectCandidates();
+    cachedCandidates = discovered;
+    const { candidates: raw, diagnostics } = yield* withoutLhcSessions(discovered);
 
     const merged = new Map<
       string,
@@ -1520,10 +1567,7 @@ export const make = Effect.gen(function* () {
     const candidates = cachedCandidates ?? (yield* collectCandidates()).candidates;
     cachedCandidates = candidates;
     // The cached list may predate a settings change, so ownership is checked again here.
-    const settings = yield* serverSettings.getSettings.pipe(
-      Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
-    );
-    const lhcHomes = yield* readLhcHomes(settings.providerInstances);
+    const lhcHomes = yield* readCurrentLhcHomes;
     const lhcInstanceIds = new Set(Array.from(lhcHomes.values()).flat());
 
     const eligibleTranscripts: Array<{
@@ -1559,27 +1603,7 @@ export const make = Effect.gen(function* () {
       return left.transcript.filePath.localeCompare(right.transcript.filePath);
     });
 
-    const sharedHomes = new Map<string, LhcSharedHome>();
-    const sharedHomeSessions = new Map<LhcSharedHome, Array<string>>();
-    for (const { candidate, transcript } of eligibleTranscripts) {
-      if (candidate.source !== "claudeAgent") continue;
-      let home = sharedHomes.get(candidate.homePath);
-      if (home === undefined) {
-        const ids = lhcHomes.get(yield* directoryIdentity(candidate.homePath));
-        if (ids === undefined) continue;
-        home = {
-          claudeHome: candidate.homePath,
-          lhcInstanceIds: ids,
-          verdict: { _tag: "Inspected", managedById: new Map() },
-        };
-        sharedHomes.set(candidate.homePath, home);
-        sharedHomeSessions.set(home, []);
-      }
-      sharedHomeSessions.get(home)?.push(claudeSessionIdOf(transcript.filePath));
-    }
-    for (const [home, sessionIds] of sharedHomeSessions) {
-      home.verdict = yield* inspectLhcStore(sessionIds);
-    }
+    const sharedHomes = yield* checkLhcHomes(lhcHomes, eligibleTranscripts);
 
     const completedByFile = Map.groupBy(
       completedSources,

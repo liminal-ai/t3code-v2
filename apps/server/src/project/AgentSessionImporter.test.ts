@@ -1,3 +1,4 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import {
   EventId,
@@ -15,21 +16,28 @@ import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
 
+import * as ServerConfig from "../config.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as EventStore from "../orchestration-v2/EventStore.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
+import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import {
   CLAUDE_MODEL_SELECTION,
   CODEX_MODEL_SELECTION,
 } from "../orchestration-v2/testkit/fixtures/shared.ts";
 import * as ProviderSessionRuntime from "../persistence/ProviderSessionRuntime.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import { ClaudeLhcOperationError } from "../provider/Drivers/claudeLhc/client.ts";
+import * as ServerSettings from "../serverSettings.ts";
 import * as AgentSessionImporter from "./AgentSessionImporter.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 import * as ProjectService from "./ProjectService.ts";
@@ -385,4 +393,260 @@ it.effect(
         runtimePayload: { importedTranscripts: [source.source] },
       });
     }).pipe(Effect.scoped, Effect.provide(persistence)),
+);
+
+const STOCK_INSTANCE = ProviderInstanceId.make("claudeAgent");
+const LHC_INSTANCE = ProviderInstanceId.make("claude-lhc-work");
+const STOCK_SESSION = "11111111-1111-4111-8111-111111111111";
+const GENERATION = "22222222-2222-4222-8222-222222222222";
+const RENAMED_GENERATION = "33333333-3333-4333-8333-333333333333";
+const COPIED_FILE = "44444444-4444-4444-8444-444444444444";
+const COPIED_GENERATION = "55555555-5555-4555-8555-555555555555";
+const importNow = Date.parse("2026-09-01T12:00:00.000Z");
+
+const claudeTranscript = (cwd: string, sessionId: string, title: object = {}) =>
+  `${JSON.stringify({
+    type: "user",
+    cwd,
+    sessionId,
+    timestamp: "2026-09-01T10:00:00.000Z",
+    message: { role: "user", content: "Fix it" },
+    ...title,
+  })}\n${JSON.stringify({
+    type: "assistant",
+    sessionId,
+    timestamp: "2026-09-01T10:01:00.000Z",
+    message: { role: "assistant", content: [{ type: "text", text: "Fixed" }] },
+  })}\n`;
+
+const makeLhcFixture = Effect.fn(function* () {
+  const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const tempDir = () =>
+    fileSystem
+      .makeTempDirectoryScoped({ prefix: "t3code-lhc-import-" })
+      .pipe(Effect.flatMap((dir) => fileSystem.realPath(dir)));
+  const baseDir = yield* tempDir();
+  const claudeHome = yield* tempDir();
+  const codexHome = yield* tempDir();
+  const workspace = yield* tempDir();
+  const write = (fileId: string, contents: string) =>
+    Effect.gen(function* () {
+      const filePath = path.join(claudeHome, "projects", "-workspace", `${fileId}.jsonl`);
+      yield* fileSystem.makeDirectory(path.dirname(filePath), { recursive: true });
+      yield* fileSystem.writeFileString(filePath, contents);
+      const seconds = (importNow - 60 * 60 * 1000) / 1000;
+      yield* fileSystem.utimes(filePath, seconds, seconds);
+    });
+  yield* write(STOCK_SESSION, claudeTranscript(workspace, STOCK_SESSION));
+  yield* write(GENERATION, claudeTranscript(workspace, GENERATION, { aiTitle: "Fix the build" }));
+  yield* write(
+    RENAMED_GENERATION,
+    claudeTranscript(workspace, RENAMED_GENERATION, { customTitle: "Plain title" }),
+  );
+  return {
+    baseDir,
+    claudeHome,
+    codexHome,
+    workspace,
+    lhcStore: path.join(baseDir, "userdata", "lhc"),
+    write,
+  };
+});
+
+const makeLhcImporter = Effect.fn(function* (input: {
+  readonly fixture: Effect.Success<ReturnType<typeof makeLhcFixture>>;
+  readonly lhcConfig: Record<string, unknown>;
+  readonly managed: ReadonlySet<string>;
+  readonly storeFails?: boolean;
+}) {
+  const calls: Array<ReadonlyArray<string>> = [];
+  const { fixture } = input;
+  const context = yield* Layer.build(
+    AgentSessionImporter.layer.pipe(
+      Layer.provideMerge(
+        Layer.effect(AgentSessionScanner.AgentSessionScanner, AgentSessionScanner.make),
+      ),
+      Layer.provideMerge(
+        Layer.mergeAll(
+          ServerSettings.layerTest({
+            providerInstances: {
+              [STOCK_INSTANCE]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                config: { homePath: fixture.claudeHome },
+              },
+              [LHC_INSTANCE]: {
+                driver: ProviderDriverKind.make("claudeAgent"),
+                config: { homePath: fixture.claudeHome, ...input.lhcConfig },
+              },
+              [ProviderInstanceId.make("codex")]: {
+                driver: ProviderDriverKind.make("codex"),
+                config: { homePath: fixture.codexHome },
+              },
+            },
+          }),
+          ServerConfig.layerTest(fixture.baseDir, fixture.baseDir),
+          Layer.mock(ProjectStore.ProjectStoreV2)({ listShells: () => Effect.succeed([]) }),
+          Layer.succeed(AgentSessionScanner.ClaudeLhcSessionInspector, {
+            inspect: (sessionIds) =>
+              Effect.sync(() => calls.push(sessionIds)).pipe(
+                Effect.andThen(
+                  input.storeFails === true
+                    ? Effect.fail(
+                        new ClaudeLhcOperationError({
+                          operation: "inspectSessions",
+                          cause: new Error("LHC registry read failed: SQLITE_CANTOPEN"),
+                        }),
+                      )
+                    : Effect.succeed(
+                        sessionIds.map((id) =>
+                          input.managed.has(id)
+                            ? { kind: "managed" as const, threadId: "t", currentSessionId: id }
+                            : { kind: "unknown" as const },
+                        ),
+                      ),
+                ),
+              ),
+          }),
+          Layer.succeed(IdAllocator.IdAllocatorV2, yield* IdAllocator.IdAllocatorV2),
+          Layer.succeed(EventSink.EventSinkV2, yield* EventSink.EventSinkV2),
+          Layer.succeed(
+            ProviderSessionRuntime.ProviderSessionRuntimeRepository,
+            yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository,
+          ),
+          Layer.mock(ProjectService.ProjectService)({
+            getById: () =>
+              Effect.succeedSome({
+                id: projectId,
+                title: "Project",
+                workspaceRoot: fixture.workspace,
+                defaultModelSelection: null,
+                scripts: [],
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                deletedAt: null,
+              }),
+          }),
+          Layer.mock(Orchestrator.OrchestratorV2)({
+            getThreadRecords: (threadId) =>
+              Effect.fail(new Orchestrator.OrchestratorProjectionError({ threadId, cause: null })),
+          }),
+        ),
+      ),
+    ),
+  );
+  return {
+    calls,
+    scanner: Context.get(context, AgentSessionScanner.AgentSessionScanner),
+    settings: Context.get(context, ServerSettings.ServerSettingsService),
+    run: Context.get(context, AgentSessionImporter.AgentSessionImporter).importRecentAgentThreads({
+      projectId,
+    }),
+  };
+});
+
+const importedNativeIds = Effect.gen(function* () {
+  const runtimes = yield* ProviderSessionRuntime.ProviderSessionRuntimeRepository;
+  return (yield* runtimes.list()).map((runtime) => runtime.resumeCursor).sort();
+});
+
+it.effect("refuses LHC generations from a stale list and imports the stock sessions", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(importNow);
+    const fileSystem = yield* FileSystem.FileSystem;
+    const fixture = yield* makeLhcFixture();
+    yield* fixture.write(COPIED_FILE, claudeTranscript(fixture.workspace, COPIED_GENERATION));
+    yield* fileSystem.makeDirectory(fixture.lhcStore, { recursive: true });
+    const importer = yield* makeLhcImporter({
+      fixture,
+      lhcConfig: {},
+      managed: new Set([GENERATION, RENAMED_GENERATION, COPIED_GENERATION]),
+    });
+    const stale = yield* importer.scanner.scan;
+    expect(stale.candidates.map((candidate) => candidate.threadCount)).toEqual([4]);
+    yield* importer.settings.updateSettings({
+      providerInstances: {
+        [LHC_INSTANCE]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { homePath: fixture.claudeHome, contextEngine: "claude-lhc" },
+        },
+      },
+    });
+
+    expect(yield* importer.run).toEqual({
+      importedCount: 1,
+      skippedCount: 3,
+      refused: [
+        {
+          claudeHome: fixture.claudeHome,
+          lhcInstanceIds: [LHC_INSTANCE],
+          reason: "lhc-managed",
+          sessionCount: 3,
+        },
+      ],
+    });
+    expect(yield* importedNativeIds).toEqual([
+      { threadId: `import:${STOCK_INSTANCE}:${STOCK_SESSION}`, resume: STOCK_SESSION },
+    ]);
+    expect(importer.calls).toEqual([
+      expect.arrayContaining([STOCK_SESSION, GENERATION, RENAMED_GENERATION, COPIED_FILE]),
+      [COPIED_GENERATION],
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeServices.layer))),
+);
+
+it.effect.each([
+  { case: "missing", reason: "lhc-store-missing", calls: 0 },
+  {
+    case: "unreadable",
+    reason: "lhc-store-unreadable",
+    detail: "claude-lhc inspectSessions failed: LHC registry read failed: SQLITE_CANTOPEN",
+    calls: 1,
+  },
+] as const)("refuses every session of a shared home whose LHC store is $case", (store) =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(importNow);
+    const fileSystem = yield* FileSystem.FileSystem;
+    const fixture = yield* makeLhcFixture();
+    if (store.case === "unreadable") {
+      yield* fileSystem.makeDirectory(fixture.lhcStore, { recursive: true });
+    }
+    const importer = yield* makeLhcImporter({
+      fixture,
+      lhcConfig: { contextEngine: "claude-lhc" },
+      managed: new Set([GENERATION]),
+      storeFails: store.case === "unreadable",
+    });
+
+    expect(yield* importer.run).toEqual({
+      importedCount: 0,
+      skippedCount: 3,
+      refused: [
+        {
+          claudeHome: fixture.claudeHome,
+          lhcInstanceIds: [LHC_INSTANCE],
+          reason: store.reason,
+          ...("detail" in store ? { detail: store.detail } : {}),
+          sessionCount: 3,
+        },
+      ],
+    });
+    expect(yield* importedNativeIds).toEqual([]);
+    expect(importer.calls).toHaveLength(store.calls);
+  }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeServices.layer))),
+);
+
+it.effect("imports every session from a home no LHC instance uses, with no refusals", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(importNow);
+    const fixture = yield* makeLhcFixture();
+    const importer = yield* makeLhcImporter({
+      fixture,
+      lhcConfig: { contextEngine: "claude" },
+      managed: new Set([GENERATION]),
+    });
+
+    expect(yield* importer.run).toEqual({ importedCount: 3, skippedCount: 0 });
+    expect(importer.calls).toEqual([]);
+  }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeServices.layer))),
 );

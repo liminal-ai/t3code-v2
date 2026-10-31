@@ -23,6 +23,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerConfig from "../config.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
 import * as ServerSettings from "../serverSettings.ts";
+import { ClaudeLhcOperationError } from "../provider/Drivers/claudeLhc/client.ts";
 import * as AgentSessionScanner from "./AgentSessionScanner.ts";
 
 const makeProjectShell = (workspaceRoot: string): OrchestrationProjectShell => ({
@@ -2194,4 +2195,285 @@ describe("parseAgentSessionTranscript", () => {
 
     expect(thread).toBeNull();
   });
+});
+
+const STOCK_INSTANCE = ProviderInstanceId.make("claudeAgent");
+const LHC_INSTANCE = ProviderInstanceId.make("claude-lhc-work");
+
+interface FakeLhcStore {
+  readonly managed: ReadonlySet<string>;
+  readonly fails?: boolean;
+}
+
+const layerLhcScannerTest = (input: {
+  readonly baseDir: string;
+  readonly providerInstances: ContractServerSettings["providerInstances"];
+  readonly store: FakeLhcStore;
+  readonly calls: Array<{ readonly sessionIds: ReadonlyArray<string>; readonly home: string }>;
+}) =>
+  Layer.effect(AgentSessionScanner.AgentSessionScanner, AgentSessionScanner.make).pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        ServerSettings.layerTest({ providerInstances: input.providerInstances }),
+        ServerConfig.layerTest(input.baseDir, input.baseDir),
+        layerProjectStore([]),
+        Layer.succeed(AgentSessionScanner.ClaudeLhcSessionInspector, {
+          inspect: (sessionIds, home) =>
+            Effect.sync(() => input.calls.push({ sessionIds, home })).pipe(
+              Effect.andThen(
+                input.store.fails === true
+                  ? Effect.fail(
+                      new ClaudeLhcOperationError({
+                        operation: "inspectSessions",
+                        cause: new Error("LHC registry read failed: SQLITE_CANTOPEN"),
+                      }),
+                    )
+                  : Effect.succeed(
+                      sessionIds.map((id) =>
+                        input.store.managed.has(id)
+                          ? { kind: "managed" as const, threadId: "thread-1", currentSessionId: id }
+                          : { kind: "unknown" as const },
+                      ),
+                    ),
+              ),
+            ),
+        }),
+      ),
+    ),
+  );
+
+const claudeTitledLine = (
+  cwd: string,
+  sessionId: string,
+  title: { readonly aiTitle?: string; readonly customTitle?: string } = {},
+) =>
+  `${JSON.stringify({ type: "user", cwd, sessionId, ...title })}\n${JSON.stringify({ type: "assistant", sessionId })}\n`;
+
+const lhcInstance = (homePath: string, extra: { readonly enabled?: boolean } = {}) => ({
+  driver: ProviderDriverKind.make("claudeAgent"),
+  ...extra,
+  config: { homePath, contextEngine: "claude-lhc" },
+});
+
+const stockInstance = (homePath: string) => ({
+  driver: ProviderDriverKind.make("claudeAgent"),
+  config: { homePath },
+});
+
+it.layer(NodeServices.layer)("AgentSessionScanner with LHC instances", (it) => {
+  const makeSharedHome = Effect.fn("makeSharedHome")(function* () {
+    const path = yield* Path.Path;
+    const fileSystem = yield* FileSystem.FileSystem;
+    const baseDir = yield* fileSystem.realPath(yield* makeTempDir("t3code-lhc-base-"));
+    const sharedHome = yield* makeTempDir("t3code-claude-shared-");
+    const otherHome = yield* makeTempDir("t3code-claude-other-");
+    const lhcOnlyHome = yield* makeTempDir("t3code-claude-lhc-only-");
+    const codexHome = yield* makeTempDir("t3code-codex-home-");
+    const workspace = yield* makeTempDir("t3code-workspace-shared-");
+    const otherWorkspace = yield* makeTempDir("t3code-workspace-other-");
+    const lhcOnlyWorkspace = yield* makeTempDir("t3code-workspace-lhc-only-");
+    const sessions = [
+      ["stock-1", claudeTitledLine(workspace, "stock-1")],
+      ["generation-1", claudeTitledLine(workspace, "generation-1", { aiTitle: "Fix the build" })],
+      [
+        "generation-renamed",
+        claudeTitledLine(workspace, "generation-renamed", { customTitle: "Plain title" }),
+      ],
+    ] as const;
+    for (const [id, contents] of sessions) {
+      yield* writeTranscript({
+        filePath: path.join(sharedHome, "projects", "-shared", `${id}.jsonl`),
+        contents,
+        mtimeMs: Date.parse("2026-08-24T12:00:00.000Z"),
+      });
+    }
+    yield* writeTranscript({
+      filePath: path.join(otherHome, "projects", "-other", "other-1.jsonl"),
+      contents: claudeTitledLine(otherWorkspace, "other-1"),
+      mtimeMs: Date.parse("2026-08-23T12:00:00.000Z"),
+    });
+    yield* writeTranscript({
+      filePath: path.join(lhcOnlyHome, "projects", "-lhc-only", "lhc-only-1.jsonl"),
+      contents: claudeTitledLine(lhcOnlyWorkspace, "lhc-only-1"),
+      mtimeMs: Date.parse("2026-08-22T12:00:00.000Z"),
+    });
+    return {
+      baseDir,
+      sharedHome,
+      otherHome,
+      lhcOnlyHome,
+      codexHome,
+      workspace,
+      otherWorkspace,
+      lhcStore: path.join(baseDir, "userdata", "lhc"),
+    };
+  });
+
+  const scanWith = (
+    fixture: Effect.Success<ReturnType<typeof makeSharedHome>>,
+    input: {
+      readonly providerInstances: ContractServerSettings["providerInstances"];
+      readonly store: FakeLhcStore;
+      readonly createStore?: boolean;
+    },
+  ) =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      if (input.createStore !== false) {
+        yield* fileSystem.makeDirectory(fixture.lhcStore, { recursive: true });
+      }
+      const calls: Array<{ readonly sessionIds: ReadonlyArray<string>; readonly home: string }> =
+        [];
+      const result = yield* Effect.gen(function* () {
+        const scanner = yield* AgentSessionScanner.AgentSessionScanner;
+        return yield* scanner.scan;
+      }).pipe(
+        Effect.provide(
+          layerLhcScannerTest({
+            baseDir: fixture.baseDir,
+            providerInstances: {
+              [ProviderInstanceId.make("codex")]: {
+                driver: ProviderDriverKind.make("codex"),
+                config: { homePath: fixture.codexHome },
+              },
+              ...input.providerInstances,
+            },
+            store: input.store,
+            calls,
+          }),
+        ),
+      );
+      return { result, calls };
+    });
+
+  const threadCounts = (result: {
+    readonly candidates: ReadonlyArray<{ path: string; threadCount: number }>;
+  }) =>
+    Object.fromEntries(
+      result.candidates.map((candidate) => [candidate.path, candidate.threadCount]),
+    );
+
+  it.effect("drops managed generations by id, renamed or not, and keeps stock sessions", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeSharedHome();
+      const { result, calls } = yield* scanWith(fixture, {
+        providerInstances: {
+          [STOCK_INSTANCE]: stockInstance(fixture.sharedHome),
+          [LHC_INSTANCE]: lhcInstance(fixture.sharedHome),
+          [ProviderInstanceId.make("claude-other")]: stockInstance(fixture.otherHome),
+        },
+        store: { managed: new Set(["generation-1", "generation-renamed"]) },
+      });
+
+      expect(threadCounts(result)).toEqual({
+        [fixture.workspace]: 1,
+        [fixture.otherWorkspace]: 1,
+      });
+      expect("diagnostics" in result).toBe(false);
+      expect(calls).toEqual([
+        {
+          sessionIds: expect.arrayContaining(["stock-1", "generation-1", "generation-renamed"]),
+          home: fixture.lhcStore,
+        },
+      ]);
+      expect(calls[0]?.sessionIds).toHaveLength(3);
+    }),
+  );
+
+  it.effect("withholds a shared home whose LHC store is missing and says why", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeSharedHome();
+      const { result, calls } = yield* scanWith(fixture, {
+        providerInstances: {
+          [STOCK_INSTANCE]: stockInstance(fixture.sharedHome),
+          [LHC_INSTANCE]: lhcInstance(fixture.sharedHome),
+          [ProviderInstanceId.make("claude-other")]: stockInstance(fixture.otherHome),
+        },
+        store: { managed: new Set() },
+        createStore: false,
+      });
+
+      expect(threadCounts(result)).toEqual({ [fixture.otherWorkspace]: 1 });
+      expect(result.diagnostics).toEqual([
+        {
+          claudeHome: fixture.sharedHome,
+          lhcInstanceIds: [LHC_INSTANCE],
+          reason: "lhc-store-missing",
+          sessionCount: 3,
+        },
+      ]);
+      expect(calls).toEqual([]);
+    }),
+  );
+
+  it.effect("withholds a shared home whose LHC store cannot be read and says why", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeSharedHome();
+      const { result, calls } = yield* scanWith(fixture, {
+        providerInstances: {
+          [STOCK_INSTANCE]: stockInstance(fixture.sharedHome),
+          [LHC_INSTANCE]: lhcInstance(fixture.sharedHome),
+          [ProviderInstanceId.make("claude-other")]: stockInstance(fixture.otherHome),
+        },
+        store: { managed: new Set(), fails: true },
+      });
+
+      expect(threadCounts(result)).toEqual({ [fixture.otherWorkspace]: 1 });
+      expect(result.diagnostics).toEqual([
+        {
+          claudeHome: fixture.sharedHome,
+          lhcInstanceIds: [LHC_INSTANCE],
+          reason: "lhc-store-unreadable",
+          detail: "claude-lhc inspectSessions failed: LHC registry read failed: SQLITE_CANTOPEN",
+          sessionCount: 3,
+        },
+      ]);
+      expect(calls).toHaveLength(1);
+    }),
+  );
+
+  it.effect("counts a home that a disabled LHC instance uses as shared", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeSharedHome();
+      const { result } = yield* scanWith(fixture, {
+        providerInstances: {
+          [STOCK_INSTANCE]: stockInstance(fixture.sharedHome),
+          [LHC_INSTANCE]: lhcInstance(fixture.sharedHome, { enabled: false }),
+        },
+        store: { managed: new Set() },
+        createStore: false,
+      });
+
+      expect(threadCounts(result)).toEqual({});
+      expect(result.diagnostics).toEqual([
+        {
+          claudeHome: fixture.sharedHome,
+          lhcInstanceIds: [LHC_INSTANCE],
+          reason: "lhc-store-missing",
+          sessionCount: 3,
+        },
+      ]);
+    }),
+  );
+
+  it.effect("scans unshared homes as before and never offers an LHC instance's own home", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeSharedHome();
+      const { result, calls } = yield* scanWith(fixture, {
+        providerInstances: {
+          [STOCK_INSTANCE]: stockInstance(fixture.sharedHome),
+          [ProviderInstanceId.make("claude-other")]: stockInstance(fixture.otherHome),
+          [LHC_INSTANCE]: lhcInstance(fixture.lhcOnlyHome),
+        },
+        store: { managed: new Set(["generation-1", "generation-renamed", "lhc-only-1"]) },
+      });
+
+      expect(threadCounts(result)).toEqual({
+        [fixture.workspace]: 3,
+        [fixture.otherWorkspace]: 1,
+      });
+      expect(Object.keys(result).sort()).toEqual(["candidates", "scannedAt"]);
+      expect(calls).toEqual([]);
+    }),
+  );
 });
