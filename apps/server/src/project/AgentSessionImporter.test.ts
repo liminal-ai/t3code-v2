@@ -430,12 +430,12 @@ const makeLhcFixture = Effect.fn(function* () {
   const claudeHome = yield* tempDir();
   const codexHome = yield* tempDir();
   const workspace = yield* tempDir();
-  const write = (fileId: string, contents: string) =>
+  const write = (fileId: string, contents: string, ageMs = 60 * 60 * 1000) =>
     Effect.gen(function* () {
       const filePath = path.join(claudeHome, "projects", "-workspace", `${fileId}.jsonl`);
       yield* fileSystem.makeDirectory(path.dirname(filePath), { recursive: true });
       yield* fileSystem.writeFileString(filePath, contents);
-      const seconds = (importNow - 60 * 60 * 1000) / 1000;
+      const seconds = (importNow - ageMs) / 1000;
       yield* fileSystem.utimes(filePath, seconds, seconds);
     });
   yield* write(STOCK_SESSION, claudeTranscript(workspace, STOCK_SESSION));
@@ -444,14 +444,11 @@ const makeLhcFixture = Effect.fn(function* () {
     RENAMED_GENERATION,
     claudeTranscript(workspace, RENAMED_GENERATION, { customTitle: "Plain title" }),
   );
-  return {
-    baseDir,
-    claudeHome,
-    codexHome,
-    workspace,
-    lhcStore: path.join(baseDir, "userdata", "lhc"),
-    write,
-  };
+  const lhcStore = path.join(baseDir, "userdata", "lhc");
+  const createStore = fileSystem
+    .makeDirectory(lhcStore, { recursive: true })
+    .pipe(Effect.andThen(fileSystem.writeFileString(path.join(lhcStore, "registry.sqlite"), "")));
+  return { baseDir, claudeHome, codexHome, workspace, lhcStore, write, createStore };
 });
 
 const makeLhcImporter = Effect.fn(function* (input: {
@@ -553,10 +550,9 @@ const importedNativeIds = Effect.gen(function* () {
 it.effect("refuses LHC generations from a stale list and imports the stock sessions", () =>
   Effect.gen(function* () {
     yield* TestClock.setTime(importNow);
-    const fileSystem = yield* FileSystem.FileSystem;
     const fixture = yield* makeLhcFixture();
     yield* fixture.write(COPIED_FILE, claudeTranscript(fixture.workspace, COPIED_GENERATION));
-    yield* fileSystem.makeDirectory(fixture.lhcStore, { recursive: true });
+    yield* fixture.createStore;
     const importer = yield* makeLhcImporter({
       fixture,
       lhcConfig: {},
@@ -606,10 +602,9 @@ it.effect.each([
 ] as const)("refuses every session of a shared home whose LHC store is $case", (store) =>
   Effect.gen(function* () {
     yield* TestClock.setTime(importNow);
-    const fileSystem = yield* FileSystem.FileSystem;
     const fixture = yield* makeLhcFixture();
     if (store.case === "unreadable") {
-      yield* fileSystem.makeDirectory(fixture.lhcStore, { recursive: true });
+      yield* fixture.createStore;
     }
     const importer = yield* makeLhcImporter({
       fixture,
@@ -648,5 +643,60 @@ it.effect("imports every session from a home no LHC instance uses, with no refus
 
     expect(yield* importer.run).toEqual({ importedCount: 3, skippedCount: 0 });
     expect(importer.calls).toEqual([]);
+  }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeServices.layer))),
+);
+
+it.effect("refuses known LHC generations before they use the import budget", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(importNow);
+    const fixture = yield* makeLhcFixture();
+    const generations = Array.from(
+      { length: 100 },
+      (_, index) => `66666666-6666-4666-8666-${String(index).padStart(12, "0")}`,
+    );
+    for (const id of generations) {
+      yield* fixture.write(id, claudeTranscript(fixture.workspace, id));
+    }
+    yield* fixture.write(
+      STOCK_SESSION,
+      claudeTranscript(fixture.workspace, STOCK_SESSION),
+      2 * 60 * 60 * 1000,
+    );
+    yield* fixture.createStore;
+    const importer = yield* makeLhcImporter({
+      fixture,
+      lhcConfig: { contextEngine: "claude-lhc" },
+      managed: new Set([...generations, GENERATION, RENAMED_GENERATION]),
+    });
+
+    expect(yield* importer.run).toMatchObject({ importedCount: 1, skippedCount: 102 });
+    expect(yield* importedNativeIds).toEqual([
+      { threadId: `import:${STOCK_INSTANCE}:${STOCK_SESSION}`, resume: STOCK_SESSION },
+    ]);
+  }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeServices.layer))),
+);
+
+it.effect("skips a stale list's sessions when their instance has become an LHC instance", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(importNow);
+    const fixture = yield* makeLhcFixture();
+    yield* fixture.createStore;
+    const importer = yield* makeLhcImporter({
+      fixture,
+      lhcConfig: {},
+      managed: new Set([GENERATION, RENAMED_GENERATION]),
+    });
+    yield* importer.scanner.scan;
+    yield* importer.settings.updateSettings({
+      providerInstances: {
+        [STOCK_INSTANCE]: {
+          driver: ProviderDriverKind.make("claudeAgent"),
+          config: { homePath: fixture.claudeHome, contextEngine: "claude-lhc" },
+        },
+      },
+    });
+
+    expect(yield* importer.run).toEqual({ importedCount: 0, skippedCount: 3 });
+    expect(yield* importedNativeIds).toEqual([]);
   }).pipe(Effect.scoped, Effect.provide(Layer.merge(persistence, NodeServices.layer))),
 );

@@ -2314,13 +2314,17 @@ it.layer(NodeServices.layer)("AgentSessionScanner with LHC instances", (it) => {
     input: {
       readonly providerInstances: ContractServerSettings["providerInstances"];
       readonly store: FakeLhcStore;
-      readonly createStore?: boolean;
+      readonly storeOnDisk?: "registry" | "empty-dir" | "none";
     },
   ) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
-      if (input.createStore !== false) {
+      const storeOnDisk = input.storeOnDisk ?? "registry";
+      if (storeOnDisk !== "none") {
         yield* fileSystem.makeDirectory(fixture.lhcStore, { recursive: true });
+      }
+      if (storeOnDisk === "registry") {
+        yield* fileSystem.writeFileString(`${fixture.lhcStore}/registry.sqlite`, "");
       }
       const calls: Array<{ readonly sessionIds: ReadonlyArray<string>; readonly home: string }> =
         [];
@@ -2390,7 +2394,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner with LHC instances", (it) => {
           [ProviderInstanceId.make("claude-other")]: stockInstance(fixture.otherHome),
         },
         store: { managed: new Set() },
-        createStore: false,
+        storeOnDisk: "none",
       });
 
       expect(threadCounts(result)).toEqual({ [fixture.otherWorkspace]: 1 });
@@ -2401,6 +2405,26 @@ it.layer(NodeServices.layer)("AgentSessionScanner with LHC instances", (it) => {
           reason: "lhc-store-missing",
           sessionCount: 3,
         },
+      ]);
+      expect(calls).toEqual([]);
+    }),
+  );
+
+  it.effect("withholds a shared home whose LHC store has no registry", () =>
+    Effect.gen(function* () {
+      const fixture = yield* makeSharedHome();
+      const { result, calls } = yield* scanWith(fixture, {
+        providerInstances: {
+          [STOCK_INSTANCE]: stockInstance(fixture.sharedHome),
+          [LHC_INSTANCE]: lhcInstance(fixture.sharedHome),
+        },
+        store: { managed: new Set() },
+        storeOnDisk: "empty-dir",
+      });
+
+      expect(threadCounts(result)).toEqual({});
+      expect(result.diagnostics?.map((diagnostic) => diagnostic.reason)).toEqual([
+        "lhc-store-missing",
       ]);
       expect(calls).toEqual([]);
     }),
@@ -2441,7 +2465,7 @@ it.layer(NodeServices.layer)("AgentSessionScanner with LHC instances", (it) => {
           [LHC_INSTANCE]: lhcInstance(fixture.sharedHome, { enabled: false }),
         },
         store: { managed: new Set() },
-        createStore: false,
+        storeOnDisk: "none",
       });
 
       expect(threadCounts(result)).toEqual({});

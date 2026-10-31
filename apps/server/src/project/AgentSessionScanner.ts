@@ -1012,10 +1012,12 @@ export const make = Effect.gen(function* () {
   });
 
   const lhcStore = path.join(serverConfig.stateDir, "lhc");
+  // claude-lhc answers "unknown" for every id when its registry is absent.
+  const lhcRegistry = path.join(lhcStore, "registry.sqlite");
   const claudeSessionIdOf = (filePath: string) => path.basename(filePath, ".jsonl");
 
   const inspectLhcStore = (sessionIds: ReadonlyArray<string>): Effect.Effect<LhcStoreVerdict> =>
-    fileSystem.exists(lhcStore).pipe(
+    fileSystem.exists(lhcRegistry).pipe(
       Effect.flatMap((exists) => {
         if (!exists) {
           return Effect.succeed<LhcStoreVerdict>({ _tag: "Withheld", reason: "lhc-store-missing" });
@@ -1575,7 +1577,6 @@ export const make = Effect.gen(function* () {
       if (!path.isAbsolute(expanded)) continue;
       const resolved = path.resolve(expanded);
       if ((yield* directoryIdentity(resolved)) !== rootIdentity) continue;
-      if (lhcInstanceIds.has(candidate.providerInstanceId)) continue;
 
       for (const transcript of candidate.transcripts) {
         if (
@@ -1617,9 +1618,14 @@ export const make = Effect.gen(function* () {
           );
           const sharedHome =
             candidate.source === "claudeAgent" ? sharedHomes.get(candidate.homePath) : undefined;
-          const withheld = sharedHome === undefined ? null : withheldRefusal(sharedHome);
-          if (completed === undefined && withheld !== null) {
-            return Option.some<AgentSessionRecentThread>({ _tag: "Refused", refusal: withheld });
+          if (lhcInstanceIds.has(candidate.providerInstanceId)) {
+            return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
+          }
+          if (completed === undefined && sharedHome !== undefined) {
+            const refusal = yield* lhcRefusal(sharedHome, [claudeSessionIdOf(transcript.filePath)]);
+            if (refusal !== null) {
+              return Option.some<AgentSessionRecentThread>({ _tag: "Refused", refusal });
+            }
           }
           if (
             completed === undefined &&
