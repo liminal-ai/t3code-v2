@@ -104,7 +104,6 @@ it.effect("forks a session stored under the instance's own CLAUDE_CONFIG_DIR", (
         sessionId: FORK_SESSION_ID,
         options: { dir: "/repo" },
         environment: { ...process.env, CLAUDE_CONFIG_DIR: configDir },
-        threadId: ThreadId.make("thread-fork-config-dir"),
         providerSessionId: ProviderSessionId.make("session-fork-config-dir"),
         thread: stockThread(ThreadId.make("thread-fork-config-dir")),
       });
@@ -139,7 +138,6 @@ const realQueryRunner = layerQueryRunner.pipe(
 );
 
 const resumedMcpQueryInput = {
-  threadId: ThreadId.make("thread-restart-registration"),
   providerSessionId: ProviderSessionId.make("session-restart-registration"),
   thread: stockThread(ThreadId.make("thread-restart-registration")),
   options: {
@@ -240,7 +238,6 @@ it.effect(
 
         const session = yield* runner.open({
           ...resumedMcpQueryInput,
-          threadId,
           providerSessionId,
           thread,
           options: {
@@ -253,7 +250,6 @@ it.effect(
           sessionId: FORK_SESSION_ID,
           options: { dir: "/repo" },
           environment: process.env,
-          threadId,
           providerSessionId,
           thread,
         });
@@ -261,7 +257,6 @@ it.effect(
           sessionId: FORK_SESSION_ID,
           agentId: "agent-lhc-seam",
           dir: "/repo",
-          threadId,
           providerSessionId,
           thread,
         });
@@ -276,7 +271,7 @@ it.effect(
         assert.deepEqual(launch, { command: "/bin/sh", args: scopeWrapper(program) });
         assert.equal(options.pathToClaudeCodeExecutable, "/usr/local/bin/claude");
         assert.isUndefined(options.executableArgs);
-        assert.isUndefined(options.mcpServers);
+        assert.notProperty(options, "mcpServers");
         assert.isFunction(options.spawnClaudeCodeProcess);
         assert.deepEqual(setMcpServers.mock.calls, [[resumedMcpQueryInput.options.mcpServers]]);
         assert.equal(forked.sessionId, "forked-lhc-session");
@@ -421,7 +416,6 @@ it.effect("logs a host fork before it reads the inherited head, as trunk does", 
         sessionId: FORK_SESSION_ID,
         options: { dir: "/repo" },
         environment: process.env,
-        threadId,
         providerSessionId: ProviderSessionId.make("session-host-fork"),
         thread: stockThread(threadId),
       });
@@ -484,7 +478,6 @@ it.effect.each(["scoped", "script"] as const)(
         const session = yield* Effect.gen(function* () {
           const runner = yield* ClaudeAgentSdkQueryRunner;
           return yield* runner.open({
-            threadId,
             providerSessionId: ProviderSessionId.make("session-stock-options"),
             thread: stockThread(threadId),
             options: {
@@ -788,7 +781,6 @@ const openFakeCli = (cli: string) =>
   Effect.gen(function* () {
     const runner = yield* ClaudeAgentSdkQueryRunner;
     return yield* runner.open({
-      threadId: ThreadId.make("thread-fake-cli"),
       providerSessionId: ProviderSessionId.make("session-fake-cli"),
       thread: stockThread(ThreadId.make("thread-fake-cli")),
       options: {
@@ -918,7 +910,6 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
         }),
       );
       const session = yield* seamRunner.open({
-        threadId: ThreadId.make("thread-seam-program"),
         providerSessionId: ProviderSessionId.make("session-seam-program"),
         thread: stockThread(ThreadId.make("thread-seam-program")),
         options: {

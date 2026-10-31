@@ -138,6 +138,16 @@ import {
 } from "../../provider/Drivers/ClaudeSkillDispatch.ts";
 import { discoverClaudeSkills } from "../../provider/Drivers/ClaudeSkills.ts";
 import {
+  checkClaudeEngineBinding,
+  copyEngineBinding,
+  rowEngineBinding,
+  stampEngineBinding,
+} from "../../provider/Drivers/claudeLhc/binding.ts";
+import {
+  claudeAutoCompactWindow,
+  claudeThreadTraits,
+} from "../../provider/Drivers/claudeLhc/traits.ts";
+import {
   compileClaudeModelSelection,
   type CompiledClaudeModelSelection,
 } from "../../claudeModelOptions.ts";
@@ -197,6 +207,7 @@ import {
   ProviderAdapterDriverCreateError,
   type ProviderAdapterDriverCreateInput,
 } from "@t3tools/provider-core/server/adapterDriver";
+import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import {
   type BackgroundWorkReport,
   backgroundWorkNotification,
@@ -493,18 +504,28 @@ type ClaudeAgentSdkThreadIdentity =
       readonly resume: string;
     };
 
-export type ClaudeAgentSdkQueryOptions = Omit<
+type ClaudeAgentSdkSessionOptions = Omit<
   ClaudeQueryOptions,
   "maxTurns" | "model" | "permissionMode" | "resume" | "sessionId" | "tools"
 > & {
   readonly model: string;
   readonly tools: NonNullable<ClaudeQueryOptions["tools"]>;
   readonly permissionMode: NonNullable<ClaudeQueryOptions["permissionMode"]>;
-} & ClaudeAgentSdkThreadIdentity;
+};
+
+export type ClaudeAgentSdkQueryOptions = ClaudeAgentSdkSessionOptions &
+  ClaudeAgentSdkThreadIdentity;
+
+export type ClaudeSeamQueryOptions = Omit<
+  ClaudeAgentSdkSessionOptions,
+  "mcpServers" | "spawnClaudeCodeProcess"
+> &
+  ClaudeAgentSdkThreadIdentity & {
+    readonly spawnClaudeCodeProcess: NonNullable<ClaudeQueryOptions["spawnClaudeCodeProcess"]>;
+  };
 
 export interface ClaudeAgentSdkQueryOpenInput {
   readonly options: ClaudeAgentSdkQueryOptions;
-  readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
   readonly thread: ClaudeThreadContext;
 }
@@ -616,7 +637,6 @@ export interface ClaudeAgentSdkSessionForkInput {
   readonly sessionId: string;
   readonly options: ForkSessionOptions;
   readonly environment: NodeJS.ProcessEnv;
-  readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
   readonly thread: ClaudeThreadContext;
 }
@@ -625,7 +645,6 @@ export interface ClaudeAgentSdkSubagentLookupInput {
   readonly sessionId: string;
   readonly agentId: string;
   readonly dir: string | null;
-  readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
   readonly thread: ClaudeThreadContext;
 }
@@ -657,9 +676,7 @@ export interface ClaudeQuerySeam {
   readonly program: (options: ClaudeAgentSdkQueryOptions) => ClaudeProgram | undefined;
   readonly createQuery: (
     prompt: AsyncIterable<SDKUserMessage>,
-    options: ClaudeQueryOptions & {
-      readonly spawnClaudeCodeProcess: NonNullable<ClaudeQueryOptions["spawnClaudeCodeProcess"]>;
-    },
+    options: ClaudeSeamQueryOptions,
     thread: ClaudeThreadContext,
     launch: ClaudeProgram | undefined,
   ) => ClaudeQuery;
@@ -1054,7 +1071,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
       function* (input: ClaudeAgentSdkQueryOpenInput) {
         const protocolLogger = makeClaudeAgentSdkProtocolLogger({
           nativeEventLogger,
-          threadId: input.threadId,
+          threadId: input.thread.appThreadId,
           providerSessionId: input.providerSessionId,
         });
         const logProtocolEvent = (event: ClaudeAgentSdkProtocolLogEvent) =>
@@ -1074,7 +1091,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
           ...sdkOptions,
           env: {
             ...(sdkOptions.env ?? hostEnvironment),
-            [PortScanner.AGENT_THREAD_ENV]: input.threadId,
+            [PortScanner.AGENT_THREAD_ENV]: input.thread.appThreadId,
           },
         };
         const program = seam.program(queryOptions);
@@ -1084,7 +1101,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
             : yield* agentScope.wrap({
                 ...program,
                 name: "claude",
-                threadId: input.threadId,
+                threadId: input.thread.appThreadId,
                 env: queryOptions.env,
               });
         const unit = launch?.unit;
@@ -1153,7 +1170,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
                         duration: CLAUDE_MCP_REGISTRATION_TIMEOUT,
                         orElse: () =>
                           Effect.logWarning("orchestration-v2.claude-mcp-registration-timeout", {
-                            threadId: input.threadId,
+                            threadId: input.thread.appThreadId,
                             providerSessionId: input.providerSessionId,
                           }).pipe(
                             Effect.andThen(
@@ -1169,7 +1186,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
                     );
                     if (failed.length > 0) {
                       yield* Effect.logWarning("orchestration-v2.claude-mcp-servers-unavailable", {
-                        threadId: input.threadId,
+                        threadId: input.thread.appThreadId,
                         servers: failed,
                       });
                     }
@@ -1346,7 +1363,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
                         duration: "2 seconds",
                         orElse: () =>
                           Effect.logWarning("orchestration-v2.claude-process-outlived-sigkill", {
-                            threadId: input.threadId,
+                            threadId: input.thread.appThreadId,
                             providerSessionId: input.providerSessionId,
                           }),
                       }),
@@ -1382,7 +1399,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
     ) {
       const protocolLogger = makeClaudeAgentSdkProtocolLogger({
         nativeEventLogger,
-        threadId: input.threadId,
+        threadId: input.thread.appThreadId,
         providerSessionId: input.providerSessionId,
       });
       const logProtocolEvent = (event: ClaudeAgentSdkProtocolLogEvent) =>
@@ -1412,7 +1429,7 @@ export const makeClaudeAgentSdkQueryRunner = Effect.fn("makeClaudeAgentSdkQueryR
       function* (input: ClaudeAgentSdkSubagentLookupInput) {
         const protocolLogger = makeClaudeAgentSdkProtocolLogger({
           nativeEventLogger,
-          threadId: input.threadId,
+          threadId: input.thread.appThreadId,
           providerSessionId: input.providerSessionId,
         });
         const logProtocolEvent = (event: ClaudeAgentSdkProtocolLogEvent) =>
@@ -4452,6 +4469,7 @@ export interface ClaudeAdapterV2Options {
       request: ProviderContinuationRequests.ProviderContinuationRequest,
     ) => Effect.Effect<void>;
   };
+  readonly engineBinding?: ProviderEngineBindingTemplate;
 }
 
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
@@ -4993,7 +5011,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             usage,
             context.input.modelSelection,
             DateTime.formatIso(now),
-            adapterOptions.settings.autoCompactWindow,
+            claudeAutoCompactWindow(
+              rowEngineBinding(context.input.providerThread),
+              adapterOptions.settings.autoCompactWindow,
+            ),
             context.streamUsage?.requestedAt,
           );
           if (tokenUsage.inputTokens <= 0) return;
@@ -5729,12 +5750,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               sessionId: resume.nativeThreadId,
               agentId: resume.taskId,
               dir: resume.context.input.runtimePolicy.cwd,
-              threadId: resume.context.input.threadId,
               providerSessionId: input.providerSessionId,
               thread: {
                 appThreadId: resume.context.input.threadId,
-                engineBinding:
-                  resume.context.input.providerThread.nativeMetadata?.engineBinding ?? null,
+                engineBinding: rowEngineBinding(resume.context.input.providerThread),
               },
             })
             .pipe(
@@ -8555,7 +8574,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     usedTokens: afterTokenCount,
                     maxTokens,
                     ...claudeAutoCompactThreshold(
-                      adapterOptions.settings.autoCompactWindow,
+                      claudeAutoCompactWindow(
+                        rowEngineBinding(context.input.providerThread),
+                        adapterOptions.settings.autoCompactWindow,
+                      ),
                       maxTokens,
                     ),
                     updatedAt: DateTime.formatIso(now),
@@ -9086,14 +9108,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               !isClaudeToolResultError(toolResult) &&
               CLAUDE_TASK_TOOL_NAMES.has(toolCall.toolName)
             ) {
+              const { filesSessionId } = claudeThreadTraits(
+                rowEngineBinding(context.input.providerThread),
+                { nativeThreadId: liveQuery.nativeThreadId, generation: message.session_id },
+              );
               const taskLists = yield* Ref.get(taskListsByNativeThread);
-              const knownTaskList = taskLists.get(liveQuery.nativeThreadId);
+              const knownTaskList = taskLists.get(filesSessionId);
               const outputValue = claudeNativeToolOutputValue(output);
               // A structured TaskList already supplies a snapshot. Anything else, including
               // a subagent's text-only TaskList, needs Claude's persisted list once;
               // afterward the cache also records an unavailable store.
               const storedTaskList =
-                !taskLists.has(liveQuery.nativeThreadId) &&
+                !taskLists.has(filesSessionId) &&
                 !(
                   toolCall.toolName === "TaskList" &&
                   Array.isArray(claudeTaskField(outputValue, "tasks"))
@@ -9101,7 +9127,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   ? yield* readClaudeTaskList({
                       environment: adapterOptions.environment,
                       cwd: context.input.runtimePolicy.cwd,
-                      nativeThreadId: liveQuery.nativeThreadId,
+                      nativeThreadId: filesSessionId,
                     }).pipe(
                       Effect.provideService(FileSystem.FileSystem, fileSystem),
                       Effect.provideService(Path.Path, path),
@@ -9116,7 +9142,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ) ?? storedTaskList;
               yield* Ref.set(
                 taskListsByNativeThread,
-                new Map(taskLists).set(liveQuery.nativeThreadId, taskList ?? knownTaskList),
+                new Map(taskLists).set(filesSessionId, taskList ?? knownTaskList),
               );
               if (taskList !== undefined) {
                 yield* emitClaudePlanProjection({
@@ -10054,12 +10080,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           const querySession = yield* queryRunner
             .open({
-              threadId: turnInput.threadId,
               providerSessionId: input.providerSessionId,
               options: queryOptions,
               thread: {
                 appThreadId: turnInput.threadId,
-                engineBinding: turnInput.providerThread.nativeMetadata?.engineBinding ?? null,
+                engineBinding: rowEngineBinding(turnInput.providerThread),
               },
             })
             .pipe(
@@ -10165,6 +10190,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
           function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+            yield* checkClaudeEngineBinding(
+              turnInput.providerThread,
+              adapterOptions.engineBinding,
+              adapterOptions.instanceId,
+            );
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
             const nativeTurnId = `turn:${turnInput.attemptId}`;
@@ -10885,6 +10915,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 appThreadId: threadInput.threadId,
                 providerSessionId: input.providerSessionId,
                 nativeThreadId,
+                ...stampEngineBinding(threadInput.engineBinding, adapterOptions.instanceId),
                 now: createdAt,
               });
             },
@@ -10902,12 +10933,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
           resumeThread: Effect.fn("ClaudeAdapterV2.resumeThread")(
             function* (threadInput: { readonly providerThread: OrchestrationV2ProviderThread }) {
+              yield* checkClaudeEngineBinding(
+                threadInput.providerThread,
+                adapterOptions.engineBinding,
+                adapterOptions.instanceId,
+              );
               const nativeThreadId = threadInput.providerThread.nativeThreadRef?.nativeId;
               if (
                 nativeThreadId !== undefined &&
                 nativeThreadId !== null &&
                 // A live process holds the conversation even before saving it.
                 (yield* Ref.get(queryContext))?.nativeThreadId !== nativeThreadId &&
+                claudeThreadTraits(rowEngineBinding(threadInput.providerThread), { nativeThreadId })
+                  .conversationInTranscript &&
                 // An unreadable transcript leaves the resume to the CLI.
                 (yield* hasEmptyClaudeTranscript(nativeThreadId).pipe(
                   Effect.orElseSucceed(() => false),
@@ -11132,6 +11170,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             ),
           rollbackThread: Effect.fn("ClaudeAdapterV2.rollbackThread")(
             function* (rollbackInput) {
+              yield* checkClaudeEngineBinding(
+                rollbackInput.providerThread,
+                adapterOptions.engineBinding,
+                adapterOptions.instanceId,
+              );
               const currentTurn = yield* Ref.get(activeTurn);
               if (currentTurn !== null) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
@@ -11161,6 +11204,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       ...(rollbackInput.providerThread.forkedFrom === null
                         ? {}
                         : { forkedFrom: rollbackInput.providerThread.forkedFrom }),
+                      ...copyEngineBinding(rollbackInput.providerThread),
                       now,
                     }),
                     handoffIds: rollbackInput.providerThread.handoffIds,
@@ -11207,6 +11251,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
           forkThread: Effect.fn("ClaudeAdapterV2.forkThread")(
             function* (forkInput) {
+              yield* checkClaudeEngineBinding(
+                forkInput.sourceProviderThread,
+                adapterOptions.engineBinding,
+                adapterOptions.instanceId,
+              );
               const currentTurn = yield* Ref.get(activeTurn);
               if (currentTurn !== null) {
                 return yield* new ProviderAdapter.ProviderAdapterProtocolError({
@@ -11226,12 +11275,10 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 sessionId: sourceNativeThreadId,
                 options: forkOptions,
                 environment: adapterOptions.environment,
-                threadId: forkInput.targetThreadId,
                 providerSessionId: input.providerSessionId,
                 thread: {
                   appThreadId: forkInput.targetThreadId,
-                  engineBinding:
-                    forkInput.sourceProviderThread.nativeMetadata?.engineBinding ?? null,
+                  engineBinding: rowEngineBinding(forkInput.sourceProviderThread),
                 },
               });
               yield* Ref.update(openedNativeThreads, (current) => {
@@ -11257,16 +11304,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     ? {}
                     : { providerTurnId: forkInput.providerTurnId }),
                 },
-                ...(forked.headMessageId === undefined && claudeAttachmentBudget === undefined
-                  ? {}
-                  : {
-                      nativeMetadata: {
-                        ...(forked.headMessageId === undefined
-                          ? {}
-                          : { forkHeadMessageId: forked.headMessageId }),
-                        ...(claudeAttachmentBudget === undefined ? {} : { claudeAttachmentBudget }),
-                      },
-                    }),
+                ...copyEngineBinding(forkInput.sourceProviderThread, {
+                  ...(forked.headMessageId === undefined
+                    ? {}
+                    : { forkHeadMessageId: forked.headMessageId }),
+                  ...(claudeAttachmentBudget === undefined ? {} : { claudeAttachmentBudget }),
+                }),
                 now,
               });
             },
@@ -11317,7 +11360,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     hooks: Partial<
       Pick<
         ClaudeAdapterV2Options,
-        "queryRunner" | "capabilities" | "scopedLimitNames" | "onUsageLimits"
+        "queryRunner" | "capabilities" | "scopedLimitNames" | "onUsageLimits" | "engineBinding"
       >
     > = {},
   ) {

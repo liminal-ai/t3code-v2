@@ -17,6 +17,7 @@ import {
   ProviderSessionId,
   ProviderThreadId,
   ThreadId,
+  VcsProcessExitError,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
@@ -39,10 +40,11 @@ import * as CheckpointService from "./CheckpointService.ts";
 import * as CheckpointRollbackService from "./CheckpointRollbackService.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import * as EventSink from "./EventSink.ts";
+import { GIT_INDEX_LOCKED_DETAIL } from "../vcs/VcsProcess.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProjectStore from "./ProjectStore.ts";
-import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import * as RuntimePolicy from "./RuntimePolicy.ts";
 
@@ -559,6 +561,7 @@ const seedRollbackHistory = Effect.gen(function* () {
 
   const rollbackCounts: number[] = [];
   const rollbackPolicies: unknown[] = [];
+  let rollbackFailure: ProviderAdapter.ProviderAdapterRollbackThreadError | undefined;
   const resolvedPolicy = { cwd: "/project", projectTmpDir: "/project/.pstack/tmp" };
   const restored: CheckpointId[] = [];
   const deletedRefs: CheckpointId[] = [];
@@ -599,6 +602,7 @@ const seedRollbackHistory = Effect.gen(function* () {
             Effect.succeed({
               rollbackThread: (input: ProviderAdapter.ProviderAdapterV2RollbackThreadInput) =>
                 Effect.gen(function* () {
+                  if (rollbackFailure !== undefined) return yield* rollbackFailure;
                   rollbackCounts.push(yield* resolveCodexRollbackTurnCount(input));
                   rollbackPolicies.push(input.runtimePolicy);
                   return { providerThread: input.providerThread };
@@ -636,6 +640,9 @@ const seedRollbackHistory = Effect.gen(function* () {
     restored,
     deletedRefs,
     committed,
+    refuseRollbacks: (error: ProviderAdapter.ProviderAdapterRollbackThreadError) => {
+      rollbackFailure = error;
+    },
   };
 });
 
@@ -704,6 +711,52 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
       }),
     );
 
+    it.effect("changes no file, ref or row when the adapter refuses a mismatched binding", () =>
+      Effect.gen(function* () {
+        const mismatch = new ProviderAdapter.ProviderAdapterContinuationMismatchError({
+          driver: ProviderDriverKind.make("claudeAgent"),
+          providerThreadId: ProviderThreadId.make("rollback-history-provider"),
+          providerInstanceId: ProviderInstanceId.make("claude-lhc"),
+          rowContinuationKey: null,
+          instanceContinuationKey: "claude-lhc:home:/lhc/home",
+        });
+        const history = yield* seedRollbackHistory;
+        history.refuseRollbacks(
+          new ProviderAdapter.ProviderAdapterRollbackThreadError({
+            driver: mismatch.driver,
+            providerThreadId: mismatch.providerThreadId,
+            cause: mismatch,
+          }),
+        );
+        const before = yield* history.store.getThreadRecords(history.threadId, [
+          "providerThreads",
+          "runs",
+          "checkpoints",
+        ]);
+
+        const error = yield* Effect.flip(history.rollback(2));
+
+        assert.equal(error._tag, "CheckpointRollbackExecutionError");
+        if (error._tag !== "CheckpointRollbackExecutionError") return;
+        assert.equal(error.reason, "unexpected-failure");
+        assert.equal(
+          CheckpointRollbackService.rollbackFailureClientMessage(error),
+          CheckpointRollbackService.ROLLBACK_CONTINUATION_MISMATCH_MESSAGE,
+        );
+        assert.deepEqual(history.restored, []);
+        assert.deepEqual(history.deletedRefs, []);
+        assert.deepEqual(history.committed, []);
+        assert.deepEqual(
+          yield* history.store.getThreadRecords(history.threadId, [
+            "providerThreads",
+            "runs",
+            "checkpoints",
+          ]),
+          before,
+        );
+      }),
+    );
+
     it.effect(
       "rewinds stopped runs repeatedly without counting discarded provider turns again",
       () =>
@@ -739,3 +792,54 @@ it.layer(ProjectionStore.layer.pipe(Layer.provideMerge(SqlitePersistence.layerMe
     );
   },
 );
+
+it.each([
+  {
+    name: "a refused continuation mismatch",
+    cause: new ProviderAdapter.ProviderAdapterRollbackThreadError({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      providerThreadId: ProviderThreadId.make("rollback-message-provider"),
+      cause: new ProviderAdapter.ProviderAdapterContinuationMismatchError({
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerThreadId: ProviderThreadId.make("rollback-message-provider"),
+        providerInstanceId: ProviderInstanceId.make("claude-lhc"),
+        rowContinuationKey: "claude-lhc:home:/lhc/home",
+        instanceContinuationKey: null,
+      }),
+    }),
+    message: CheckpointRollbackService.ROLLBACK_CONTINUATION_MISMATCH_MESSAGE,
+  },
+  {
+    name: "a held Git index lock",
+    cause: new CheckpointService.CheckpointRestoreError({
+      scopeId: CheckpointScopeId.make("rollback-message-scope"),
+      checkpointId: CheckpointId.make("rollback-message-checkpoint"),
+      cause: new VcsProcessExitError({
+        operation: "checkpoint.restore",
+        command: "git",
+        cwd: "/project",
+        exitCode: 128,
+        detail: GIT_INDEX_LOCKED_DETAIL,
+      }),
+    }),
+    message: GIT_INDEX_LOCKED_DETAIL,
+  },
+  {
+    name: "any other adapter failure",
+    cause: new ProviderAdapter.ProviderAdapterRollbackThreadError({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      providerThreadId: ProviderThreadId.make("rollback-message-provider"),
+      cause: "Cannot roll back while provider turn turn-1 is active.",
+    }),
+    message: CheckpointRollbackService.ROLLBACK_FAILED_MESSAGE,
+  },
+])("shows the client $name as its rollback failure", ({ cause, message }) => {
+  const error = new CheckpointRollbackService.CheckpointRollbackExecutionError({
+    reason: "unexpected-failure",
+    threadId: ThreadId.make("rollback-message-thread"),
+    providerThreadId: ProviderThreadId.make("rollback-message-provider"),
+    checkpointId: CheckpointId.make("rollback-message-checkpoint"),
+    cause,
+  });
+  assert.equal(CheckpointRollbackService.rollbackFailureClientMessage(error), message);
+});
