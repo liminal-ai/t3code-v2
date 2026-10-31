@@ -700,15 +700,14 @@ describe("resolveComposerProviderSelection", () => {
       );
     }
 
-    // The composer locks no driver while handoff is possible; the chat view locks a started one.
     function select(
       thread: Thread,
       entries: ReadonlyArray<ProviderInstanceEntry>,
-      locking: "unlocked" | "locked",
+      caller: "composer" | "chatView",
       pickedInstanceId: ProviderInstanceId | null = null,
     ) {
       const lockedProvider =
-        locking === "unlocked"
+        caller === "composer"
           ? null
           : deriveLockedProvider({
               thread,
@@ -737,13 +736,13 @@ describe("resolveComposerProviderSelection", () => {
       ["from a projection with no provider row", () => fromProjection(false)],
     ] as const;
     const cases = threads.flatMap(([name, thread]) =>
-      (["unlocked", "locked"] as const).map((locking) => [name, locking, thread] as const),
+      (["composer", "chatView"] as const).map((caller) => [name, caller, thread] as const),
     );
 
     it.each(cases)(
       "shows a deleted bound instance as unavailable for a thread %s (%s)",
-      (_name, locking, thread) => {
-        const selection = select(thread(), [stockClaude], locking);
+      (_name, caller, thread) => {
+        const selection = select(thread(), [stockClaude], caller);
 
         expect(selection.selectedProviderEntry).toBeUndefined();
         expect(selection.unavailableProviderInstanceId).toBe(binding.providerInstanceId);
@@ -752,17 +751,17 @@ describe("resolveComposerProviderSelection", () => {
 
     it.each(cases)(
       "shows a bound instance whose home changed as unavailable for a thread %s (%s)",
-      (_name, locking, thread) => {
+      (_name, caller, thread) => {
         const rehomed = bound({ continuation: { groupKey: "claude:home:/home/user/.other" } });
-        const selection = select(thread(), [stockClaude, rehomed], locking);
+        const selection = select(thread(), [stockClaude, rehomed], caller);
 
         expect(selection.selectedProviderEntry).toBeUndefined();
         expect(selection.unavailableProviderInstanceId).toBe(binding.providerInstanceId);
       },
     );
 
-    it.each(cases)("selects the bound instance for a thread %s (%s)", (_name, locking, thread) => {
-      const selection = select(thread(), [stockClaude, bound()], locking);
+    it.each(cases)("selects the bound instance for a thread %s (%s)", (_name, caller, thread) => {
+      const selection = select(thread(), [stockClaude, bound()], caller);
 
       expect(selection.selectedProviderEntry?.instanceId).toBe(binding.providerInstanceId);
       expect(selection.unavailableProviderInstanceId).toBeUndefined();
@@ -775,7 +774,7 @@ describe("resolveComposerProviderSelection", () => {
       const selection = select(
         fromShellList(true),
         [sameHome, bound({ enabled: false })],
-        "locked",
+        "chatView",
       );
 
       expect(selection.selectedProviderEntry).toBeUndefined();
@@ -786,7 +785,7 @@ describe("resolveComposerProviderSelection", () => {
       const selection = select(
         fromShellList(true),
         [stockClaude, bound()],
-        "unlocked",
+        "composer",
         stockClaude.instanceId,
       );
 
@@ -796,7 +795,7 @@ describe("resolveComposerProviderSelection", () => {
     it("still selects another Claude instance for a stock thread whose instance is gone", () => {
       const stockThread = makeThread({ modelSelection, itemCount: 2 });
 
-      expect(select(stockThread, [stockClaude], "unlocked").selectedProviderEntry?.instanceId).toBe(
+      expect(select(stockThread, [stockClaude], "composer").selectedProviderEntry?.instanceId).toBe(
         stockClaude.instanceId,
       );
     });

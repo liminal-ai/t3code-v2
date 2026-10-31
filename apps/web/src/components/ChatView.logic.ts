@@ -516,9 +516,7 @@ export function resolveComposerProviderSelection(input: {
       (!requiresExactInstance || entry.instanceId === input.lockedInstanceId),
   );
   const binding = input.lockedEngineBinding;
-  // A bound session resumes only on its own instance and Claude home, so no other
-  // instance stands in for it. The user can still pick another one to hand off.
-  const boundEntry = binding
+  const usableBoundEntry = binding
     ? input.entries.find(
         (entry) =>
           entry.instanceId === binding.providerInstanceId &&
@@ -527,16 +525,17 @@ export function resolveComposerProviderSelection(input: {
           entry.isAvailable,
       )
     : undefined;
-  const candidateEntry = input.candidateInstanceIds
-    .map((candidate) =>
-      compatibleEntries.find(
-        (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
-      ),
-    )
-    .find((entry) => entry !== undefined);
-  const selectedProviderEntry = binding
-    ? boundEntry && (candidateEntry ?? boundEntry)
-    : (candidateEntry ??
+  const boundInstanceUnusable = binding !== null && usableBoundEntry === undefined;
+  const selectedProviderEntry = boundInstanceUnusable
+    ? undefined
+    : (input.candidateInstanceIds
+        .map((candidate) =>
+          compatibleEntries.find(
+            (entry) => entry.instanceId === candidate && entry.enabled && entry.isAvailable,
+          ),
+        )
+        .find((entry) => entry !== undefined) ??
+      usableBoundEntry ??
       resolveSelectableProviderInstanceEntry(
         compatibleEntries.filter((entry) => entry.driverKind === requestedDriverKind),
         undefined,
@@ -544,7 +543,7 @@ export function resolveComposerProviderSelection(input: {
       resolveSelectableProviderInstanceEntry(compatibleEntries, undefined));
   const unavailableProviderInstanceId = selectedProviderEntry
     ? undefined
-    : binding
+    : boundInstanceUnusable
       ? binding.providerInstanceId
       : input.lockedProvider
         ? (input.lockedInstanceId ?? requestedInstanceId)
