@@ -383,7 +383,8 @@ const layerRuntime = (runtime: Runtime) => {
     ProviderReplayHarness.layerWithRegistry(
       { name: "engine-binding", runtimePolicyOverride: { cwd: runtime.cwd } },
       layerRegistry(runtime.instances, runtime.failMetadata),
-      { databaseLayer: layerDatabase },
+      // A checkpoint capture can still run when a phase ends, and it would block the thread's next turn.
+      { databaseLayer: layerDatabase, recoverOnStartup: true },
     ),
   );
 };
