@@ -64,6 +64,7 @@ interface WatchedEnvironment {
   unsubscribe: () => void;
   previous: Map<ThreadId, NotificationState>;
   threads: ReadonlyArray<OrchestrationV2ThreadShell> | null;
+  reconnecting: boolean;
   readonly gate: ReturnType<typeof createThreadNotificationGate<ThreadId>>;
 }
 
@@ -135,6 +136,8 @@ export function startThreadNotifications(
               <CircleCheckIcon aria-hidden className="size-4 text-success-foreground" />
             ) : status === "approval" ? (
               <ShieldQuestionIcon aria-hidden className="size-4 text-warning-foreground" />
+            ) : status === "limited" ? (
+              <CircleAlertIcon aria-hidden className="size-4 text-warning-foreground" />
             ) : status === "failed" ? (
               <CircleAlertIcon aria-hidden className="size-4 text-destructive-foreground" />
             ) : (
@@ -212,6 +215,7 @@ export function startThreadNotifications(
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
       const attentionEntry = workflowAttention.get(rawThread.id) ?? null;
       if (
+        !entry.reconnecting &&
         prior?.raw === rawThread &&
         prior.subagentRequest === subagentRequest &&
         sameWorkflowAttention(prior.workflowAttention, attentionEntry)
@@ -243,6 +247,7 @@ export function startThreadNotifications(
       next.set(thread.id, state);
       changed.push([prior, state]);
     }
+    entry.reconnecting = false;
     entry.previous = next;
     entry.gate.retain(new Set(next.keys()));
     for (const [prior, state] of changed) {
@@ -257,6 +262,7 @@ export function startThreadNotifications(
     const entry: WatchedEnvironment = {
       previous: new Map(),
       threads: null,
+      reconnecting: false,
       unsubscribe: () => {},
       gate: createThreadNotificationGate<ThreadId>((threadId, kind) => {
         const state = entry.previous.get(threadId);
@@ -265,13 +271,14 @@ export function startThreadNotifications(
     };
     // A baseline recorded before the attention snapshot arrives would make every open question
     // look new once it does, so both snapshots have to be live before anything is remembered.
+    // While either is down the last baseline stays, so alerts missed meanwhile fire on reconnect.
     const observe = () => {
       if (entry.threads !== null && registry.get(threadWorkflowAttentionReadyAtom(environmentId))) {
         observeThreads(environmentId, entry, entry.threads);
         return;
       }
-      entry.gate.clear();
-      entry.previous = new Map();
+      entry.gate.cancelPending();
+      entry.reconnecting = true;
     };
     const unsubscribeShell = registry.subscribe(
       environmentShell.stateValueAtom(environmentId),

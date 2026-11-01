@@ -105,22 +105,37 @@ describe("tailClaudeTaskOutput", () => {
 });
 
 describe("claudeTaskOutputRoot", () => {
-  it.effect("follows the TMPDIR Claude gets, under CLAUDE_CODE_TMPDIR", () =>
-    Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const uid = process.getuid?.();
-      if (uid === undefined) return;
-      const root = (environment: Record<string, string>) => claudeTaskOutputRoot(environment, path);
-
-      assert.equal(root({}), `/tmp/claude-${uid}`);
-      assert.equal(
-        root({ TMPDIR: "/work/app/.pstack/tmp" }),
-        `/work/app/.pstack/tmp/claude-${uid}`,
-      );
-      assert.equal(
-        root({ TMPDIR: "/work/app/.pstack/tmp", CLAUDE_CODE_TMPDIR: "/claude-tmp" }),
-        `/claude-tmp/claude-${uid}`,
-      );
-    }).pipe(Effect.provide(NodeServices.layer)),
+  it.effect.skipIf(process.getuid === undefined)(
+    "uses the temp dir Claude Code resolves from its environment on each platform",
+    () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const user = `claude-${process.getuid?.()}`;
+        const root = (
+          environment: Record<string, string>,
+          platform: NodeJS.Platform,
+          cwd: string | null = null,
+        ) => claudeTaskOutputRoot(environment, path, cwd, platform);
+        assert.equal(root({ TMPDIR: "/var/folders/x/T/" }, "linux"), `/var/folders/x/T/${user}`);
+        assert.equal(root({ TMP: "/tmp/user/1000" }, "linux"), `/tmp/user/1000/${user}`);
+        assert.equal(root({}, "linux"), `/tmp/${user}`);
+        assert.equal(root({ TMPDIR: "/var/folders/x/T/" }, "darwin"), `/tmp/${user}`);
+        assert.equal(
+          root({ CLAUDE_CODE_TMPDIR: "/srv/claude", TMPDIR: "/var/folders/x/T/" }, "linux"),
+          `/srv/claude/${user}`,
+        );
+        assert.equal(
+          root({ CLAUDE_CODE_TMPDIR: "/srv/claude", TMPDIR: "/var/folders/x/T/" }, "darwin"),
+          `/srv/claude/${user}`,
+        );
+        assert.equal(
+          root({ TMPDIR: "tmp" }, "linux", "/work/project"),
+          `/work/project/tmp/${user}`,
+        );
+        assert.equal(
+          root({ CLAUDE_CODE_TMPDIR: "../claude" }, "darwin", "/work/project"),
+          `/work/claude/${user}`,
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
   );
 });
