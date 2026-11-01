@@ -50,14 +50,8 @@ import { makeClaudeLhcInstance } from "./instance.ts";
 import { resolveClaudeLhcRuntime } from "./runtime.ts";
 import { makeClaudeLhcSeam } from "./seam.ts";
 
-/**
- * Live mode (`T3_CLAUDE_LHC_LIVE=1`) runs the real `claude` CLI on a real model with the env
- * credential. Its turns take minutes, so run it with `--testTimeout=1800000`, and set
- * `T3_CLAUDE_LHC_EVIDENCE` to keep its homes and logs. Without it, the sidecar runs a fake Agent SDK
- * that answers from its prompts and its projected session file, so nothing calls a model.
- */
 const LIVE = process.env.T3_CLAUDE_LHC_LIVE === "1";
-const EVIDENCE = process.env.T3_CLAUDE_LHC_EVIDENCE;
+const EVIDENCE_DIR = process.env.T3_CLAUDE_LHC_EVIDENCE;
 const unix = HostProcess.Platform.defaultValue() !== "win32";
 
 const DRIVER = ProviderDriverKind.make("claudeAgent");
@@ -167,13 +161,13 @@ export function query({ prompt, options }) {
 }
 `;
 
-// The fake re-exports the sidecar's own Agent SDK, so it resolves that import from the sidecar.
 const fakeSdkHooks = (fakeUrl: string, sidecarUrl: string) => `
 import { registerHooks } from "node:module";
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (specifier !== "@anthropic-ai/claude-agent-sdk") return nextResolve(specifier, context);
-    if (context.parentURL === ${JSON.stringify(fakeUrl)}) {
+    const fakeImportsRealSdk = context.parentURL === ${JSON.stringify(fakeUrl)};
+    if (fakeImportsRealSdk) {
       return nextResolve(specifier, { ...context, parentURL: ${JSON.stringify(sidecarUrl)} });
     }
     return { url: ${JSON.stringify(fakeUrl)}, shortCircuit: true };
@@ -208,8 +202,7 @@ const incomingTypes = (events: ReadonlyArray<Recorded>) =>
       : [];
   });
 
-// `exec` keeps the PID, so each line is the sidecar's own PID and its process group.
-const SIDECAR_RECORDER = 'log=$1; shift; echo $$ >> "$0"; exec "$@" 2>> "$log"';
+const RECORD_PID_THEN_EXEC = 'log=$1; shift; echo $$ >> "$0"; exec "$@" 2>> "$log"';
 
 const alive = (pid: number) => {
   try {
@@ -243,9 +236,9 @@ const makeHarness = Effect.fn("makeHarness")(function* (name: string, compact: H
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const root =
-    EVIDENCE === undefined
+    EVIDENCE_DIR === undefined
       ? yield* fs.makeTempDirectoryScoped({ prefix: `t3-claude-lhc-${name}-` })
-      : path.join(EVIDENCE, name);
+      : path.join(EVIDENCE_DIR, name);
   const stateDir = path.join(root, "userdata");
   const claudeHome = path.join(root, "claude-home");
   for (const directory of [stateDir, claudeHome]) {
@@ -298,7 +291,6 @@ const threadContext = (harness: Harness, appThreadId: ThreadId) => ({
   engineBinding: { ...lhcInstance(harness).engineBinding, providerInstanceId: INSTANCE_ID },
 });
 
-/** The runner over a seam, or stock's when there is none, recording each sidecar or CLI it starts. */
 const makeRunner = (harness: Harness, seam?: ClaudeAdapterV2.ClaudeQuerySeam) =>
   ClaudeAdapterV2.makeClaudeAgentSdkQueryRunner(seam).pipe(
     Effect.provideService(ProviderEventLoggers, {
@@ -310,7 +302,7 @@ const makeRunner = (harness: Harness, seam?: ClaudeAdapterV2.ClaudeQuerySeam) =>
       wrap: ({ command, args }) =>
         Effect.succeed({
           command: "/bin/sh",
-          args: ["-c", SIDECAR_RECORDER, harness.pidFile, harness.sidecarLog, command, ...args],
+          args: ["-c", RECORD_PID_THEN_EXEC, harness.pidFile, harness.sidecarLog, command, ...args],
         }),
     }),
     Effect.provide(PortScanner.layerTest),
@@ -326,7 +318,6 @@ const makeLhcSeam = (harness: Harness) =>
     });
   });
 
-/** The server's Claude LHC instance as T13 builds it: the seam, the stock runner and adapter. */
 const makeAdapter = Effect.fn("makeAdapter")(function* (harness: Harness) {
   const instance = lhcInstance(harness);
   const queryRunner = yield* makeRunner(harness, yield* makeLhcSeam(harness));
@@ -359,8 +350,7 @@ const makeAdapter = Effect.fn("makeAdapter")(function* (harness: Harness) {
   } satisfies ProviderInstance;
 });
 
-/** One server lifetime over the harness's database. A second layer over the same file is a restart. */
-const serverLayer = (harness: Harness) => {
+const serverLifetime = (harness: Harness) => {
   const database = SqlitePersistence.layerFromPath(harness.dbPath).pipe(
     Layer.provide(NodeServices.layer),
   );
@@ -421,8 +411,7 @@ const send = (threadId: ThreadId, label: string, text: string) =>
     } satisfies OrchestrationV2Command);
   });
 
-/** Watches from now, so a milestone that follows the next dispatch cannot be missed. */
-const watchFor = (matches: (event: OrchestrationV2DomainEvent) => boolean) =>
+const subscribeBeforeDispatch = (matches: (event: OrchestrationV2DomainEvent) => boolean) =>
   Effect.gen(function* () {
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     return yield* orchestrator.streamDomainEvents.pipe(
@@ -444,11 +433,10 @@ const runReaches =
 const projectionOf = (threadId: ThreadId) =>
   Orchestrator.OrchestratorV2.use((orchestrator) => orchestrator.getThreadProjection(threadId));
 
-/** Sends the prompt that starts run `ordinal` and returns the thread once that run settles. */
 const turn = (threadId: ThreadId, ordinal: number, text: string) =>
   Effect.scoped(
     Effect.gen(function* () {
-      const done = yield* watchFor(runReaches(threadId, ordinal, settled));
+      const done = yield* subscribeBeforeDispatch(runReaches(threadId, ordinal, settled));
       yield* send(threadId, `run-${ordinal}`, text);
       yield* Fiber.join(done);
       return yield* projectionOf(threadId);
@@ -483,7 +471,7 @@ const RECALL = LIVE
   : "recall";
 
 const saveEvidence = (harness: Harness, name: string, contents: string) =>
-  EVIDENCE === undefined
+  EVIDENCE_DIR === undefined
     ? Effect.void
     : Effect.sync(() => NodeFS.writeFileSync(NodePath.join(harness.root, name), contents));
 
@@ -523,7 +511,7 @@ describe.runIf(unix)("Claude LHC through the real adapter, runner and sidecar", 
         assert.include(answerOf(recalled, 4), ALPHA);
         assert.include(answerOf(recalled, 4), BRAVO);
         return recalled;
-      }).pipe(Effect.provide(serverLayer(harness)));
+      }).pipe(Effect.provide(serverLifetime(harness)));
       const nativeId = beforeRestart.providerThreads[0]!.nativeThreadRef?.nativeId;
       assert.isString(nativeId);
 
@@ -561,7 +549,9 @@ describe.runIf(unix)("Claude LHC through the real adapter, runner and sidecar", 
         assert.isDefined(checkpoint, "run 1 left a checkpoint");
         const rolledBack = yield* Effect.scoped(
           Effect.gen(function* () {
-            const done = yield* watchFor(runReaches(source, 5, new Set(["rolled_back"])));
+            const done = yield* subscribeBeforeDispatch(
+              runReaches(source, 5, new Set(["rolled_back"])),
+            );
             yield* orchestrator.dispatch({
               type: "checkpoint.rollback",
               restoreFiles: false,
@@ -582,7 +572,7 @@ describe.runIf(unix)("Claude LHC through the real adapter, runner and sidecar", 
         assert.equal(runOf(afterRollback, 6).status, "completed");
         assert.include(answerOf(afterRollback, 6), ALPHA);
         assert.notInclude(answerOf(afterRollback, 6), BRAVO);
-      }).pipe(Effect.provide(serverLayer(harness)));
+      }).pipe(Effect.provide(serverLifetime(harness)));
 
       const types = incomingTypes(harness.native.events);
       assert.include(types, "command_lifecycle");
@@ -617,7 +607,6 @@ const processTable = () =>
         : [{ pid: Number(match[1]), ppid: Number(match[2]), pgid: Number(match[3]), line }];
     });
 
-/** Every live process under the recorded sidecars, with its forest line. */
 const descendants = (roots: ReadonlyArray<number>) => {
   const table = processTable();
   const found = new Set(roots.filter(alive));
@@ -639,7 +628,6 @@ const userMessage = (text: string): SDKUserMessage => ({
   parent_tool_use_id: null,
 });
 
-// A stdio MCP server with one tool, so each open registers a server the CLI starts and lists.
 const PROBE_MCP = `
 import { createInterface } from "node:readline";
 const send = (message) => process.stdout.write(JSON.stringify(message) + "\\n");
@@ -664,7 +652,6 @@ interface OpenSample {
   readonly sessionId: string;
 }
 
-/** Opens one query, sends one short prompt, and times the open and the first `init`. */
 const probeOpen = Effect.fn("probeOpen")(function* (
   runner: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape,
   harness: Harness,
@@ -738,14 +725,14 @@ describe.runIf(unix && LIVE)("Claude LHC on a real model", () => {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         yield* createThread(threadId, harness.cwd);
         yield* turn(threadId, 1, teach(ALPHA));
-        const toolRunning = yield* watchFor(
+        const toolRunning = yield* subscribeBeforeDispatch(
           (event) =>
             event.type === "turn-item.updated" &&
             event.threadId === threadId &&
             event.payload.type === "command_execution",
         );
-        const workDone = yield* watchFor(runReaches(threadId, 2, settled));
-        const queuedDone = yield* watchFor(runReaches(threadId, 3, settled));
+        const workDone = yield* subscribeBeforeDispatch(runReaches(threadId, 2, settled));
+        const queuedDone = yield* subscribeBeforeDispatch(runReaches(threadId, 3, settled));
         yield* send(threadId, "work", WORK);
         yield* Fiber.join(toolRunning);
         const forest = descendants(recordedPids(harness.pidFile));
@@ -764,7 +751,7 @@ describe.runIf(unix && LIVE)("Claude LHC on a real model", () => {
         yield* Fiber.join(workDone);
         yield* Fiber.join(queuedDone);
         return { projection: yield* projectionOf(threadId), forest };
-      }).pipe(Effect.scoped, Effect.provide(serverLayer(harness)));
+      }).pipe(Effect.scoped, Effect.provide(serverLifetime(harness)));
 
       yield* saveEvidence(harness, "ps-forest.txt", forest.map((row) => row.line).join("\n"));
       yield* saveNativeLog(harness);

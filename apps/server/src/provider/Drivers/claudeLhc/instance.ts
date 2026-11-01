@@ -8,9 +8,7 @@ import { ClaudeProviderCapabilitiesV2 } from "../../../orchestration-v2/Adapters
 
 export interface ClaudeLhcInstanceInput {
   readonly continuationKey: string;
-  /** The instance's Claude home, normalized. */
   readonly claudeHome: string;
-  /** Null when the instance's pair did not parse. */
   readonly compact: OrchestrationV2EngineCompactPolicy | null;
 }
 

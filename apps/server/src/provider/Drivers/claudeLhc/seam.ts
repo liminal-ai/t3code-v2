@@ -31,10 +31,8 @@ export type ClaudeLhcSeamClient = Pick<
 >;
 
 export interface ClaudeLhcSeamInput {
-  /** `resolveClaudeLhcRuntime`'s answer. A problem fails every open, fork and subagent lookup. */
   readonly runtime: Result.Result<ClaudeLhcRuntime, ClaudeLhcRuntimeProblem>;
   readonly stateDir: string;
-  /** The instance's Claude environment and real CLI, for the store operations. */
   readonly environment: NodeJS.ProcessEnv;
   readonly binaryPath: string;
   readonly client?: ClaudeLhcSeamClient;
@@ -84,7 +82,6 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
         lhc: {
           home,
           compact: binding.compact,
-          // The runner wraps `program` into `launch`, so a resolved runtime always has one.
           spawn: sidecarCommand(launch ?? sidecarProgram(input.runtime.success), options.env),
           spawnProcess: ({ command, args, env, signal }) => {
             const child = spawnClaudeCodeProcess({ command, args, env, signal });
