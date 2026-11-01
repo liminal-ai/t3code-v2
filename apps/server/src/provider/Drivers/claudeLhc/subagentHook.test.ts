@@ -201,6 +201,26 @@ describe("the Claude LHC seam's subagent device hook", () => {
       }),
   );
 
+  it.effect("appends the command hook to the user's hooks and keeps every other settings key", () =>
+    Effect.gen(function* () {
+      const userHook = { matcher: "*", hooks: [{ type: "command" as const, command: "notify" }] };
+      const options = stockOptions(true);
+      const sent = yield* openThroughSeam({
+        ...options,
+        settings: {
+          ...(options.settings as Settings),
+          model: "opus",
+          hooks: { SubagentStart: [userHook], Stop: [userHook] },
+        },
+      });
+      const settings = sent.settings as Settings;
+      assert.deepEqual(commandHooks(settings), ["notify", SUBAGENT_DEVICE_HOOK_COMMAND]);
+      assert.deepEqual(settings.hooks?.Stop, [userHook]);
+      assert.equal(settings.model, "opus");
+      assert.isTrue(settings.showThinkingSummaries);
+    }),
+  );
+
   it.effect("sends a thread without device instructions no subagent hook", () =>
     Effect.gen(function* () {
       const options = stockOptions(false);
