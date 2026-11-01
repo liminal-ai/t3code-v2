@@ -1,7 +1,7 @@
 import { ProviderInstanceId, type OrchestrationV2EngineBinding } from "@t3tools/contracts";
 import { assert, describe, it } from "@effect/vitest";
 
-import { claudeAutoCompactWindow, claudeThreadTraits } from "./traits.ts";
+import { claudeRowAutoCompactThreshold, claudeThreadTraits } from "./traits.ts";
 
 const BINDING = {
   providerInstanceId: ProviderInstanceId.make("claude-lhc"),
@@ -40,36 +40,45 @@ describe("claudeThreadTraits", () => {
   });
 });
 
-describe("claudeAutoCompactWindow", () => {
-  it("marks nothing for an invalid policy and the instance window for stock, whatever the model's window", () => {
-    assert.equal(claudeAutoCompactWindow({ ...BINDING, compact: null }, "300000", 200_000), "");
-    assert.equal(claudeAutoCompactWindow(null, "300000", 200_000), "300000");
-    assert.equal(claudeAutoCompactWindow(null, "300000", null), "300000");
-    assert.equal(claudeAutoCompactWindow(null, "", 200_000), "");
+describe("claudeRowAutoCompactThreshold", () => {
+  const STOCK = { autoCompactThreshold: 267_000 };
+
+  it("paints nothing for an invalid policy and Claude's own threshold for stock, whatever the model's window", () => {
+    assert.deepEqual(
+      claudeRowAutoCompactThreshold({ ...BINDING, compact: null }, 200_000, STOCK),
+      {},
+    );
+    assert.deepEqual(claudeRowAutoCompactThreshold(null, 200_000, STOCK), STOCK);
+    assert.deepEqual(claudeRowAutoCompactThreshold(null, null, STOCK), STOCK);
+    assert.deepEqual(claudeRowAutoCompactThreshold(null, 200_000, {}), {});
   });
 
   // From long-horizon-context packages/claude-lhc/test/compact-policy.test.ts at f64af8df.
   it.each([
-    { window: 200_000, trigger: 700_000, effective: "160000" },
-    { window: 1_000_000, trigger: 700_000, effective: "700000" },
-    { window: null, trigger: 700_000, effective: "700000" },
+    { window: 200_000, trigger: 700_000, effective: 160_000 },
+    { window: 1_000_000, trigger: 700_000, effective: 700_000 },
+    { window: null, trigger: 700_000, effective: 700_000 },
   ])(
     "matches claude-lhc's trigger for $trigger on a $window window",
     ({ window, trigger, effective }) => {
       const binding = { ...BINDING, compact: { trigger, target: 140_000 } };
-      assert.equal(claudeAutoCompactWindow(binding, "300000", window), effective);
+      assert.deepEqual(claudeRowAutoCompactThreshold(binding, window, STOCK), {
+        autoCompactThreshold: effective,
+      });
     },
   );
 
   it.each([
-    { trigger: 100_000, effective: "100000" },
-    { trigger: 160_000, effective: "160000" },
-    { trigger: 180_000, effective: "160000" },
+    { trigger: 100_000, effective: 100_000 },
+    { trigger: 160_000, effective: 160_000 },
+    { trigger: 180_000, effective: 160_000 },
   ])(
     "marks an LHC trigger of $trigger on a 200k window at $effective",
     ({ trigger, effective }) => {
       const binding = { ...BINDING, compact: { trigger, target: 50_000 } };
-      assert.equal(claudeAutoCompactWindow(binding, "300000", 200_000), effective);
+      assert.deepEqual(claudeRowAutoCompactThreshold(binding, 200_000, STOCK), {
+        autoCompactThreshold: effective,
+      });
     },
   );
 });

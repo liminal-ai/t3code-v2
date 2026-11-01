@@ -20,7 +20,7 @@ const layerTest = ProjectTmpDir.layer.pipe(
       providerInstances: {
         [codexWithTmpDir]: {
           driver: ProviderDriverKind.make("codex"),
-          environment: [{ name: "TMPDIR", value: "/instance-tmp" }],
+          environment: [{ name: "TMPDIR", value: "/instance-tmp", sensitive: false }],
         },
       },
     }),

@@ -76,7 +76,7 @@ interface StartedTurn {
 
 const makeAdapter = (cwd: string) => {
   const started: Array<StartedTurn> = [];
-  const control = { failNextStart: false };
+  const control = { failStarts: 0 };
   const adapter: ProviderAdapter.ProviderAdapterV2["Service"] = {
     instanceId,
     driver,
@@ -124,8 +124,8 @@ const makeAdapter = (cwd: string) => {
           resumeThread: ({ providerThread }) => Effect.succeed(providerThread),
           startTurn: (turn) =>
             Effect.gen(function* () {
-              if (control.failNextStart) {
-                control.failNextStart = false;
+              if (control.failStarts > 0) {
+                control.failStarts -= 1;
                 return yield* new ProviderAdapter.ProviderAdapterTurnStartError({
                   driver,
                   threadId: turn.threadId,
@@ -513,7 +513,7 @@ const withHarness = <A, E>(
   body: (harness: {
     readonly cwd: string;
     readonly started: Array<StartedTurn>;
-    readonly control: { failNextStart: boolean };
+    readonly control: { failStarts: number };
   }) => Effect.Effect<A, E, Harness | Scope.Scope>,
   settings: Partial<ServerSettingsShape> = {},
 ) =>
@@ -1013,17 +1013,24 @@ it.effect("leaves a queue held behind a missing worktree", () =>
   ),
 );
 
-it.effect("leaves the hold when the continuation fails before the scan reads it", () =>
+it.effect("leaves the hold when the continuation and its start retries fail", () =>
   withHarness("failed-continuation", ({ cwd, control }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:failed-continuation");
       const { active, queued } = yield* busyThread({ threadId, cwd });
       yield* restartOneSecondLater;
-      control.failNextStart = true;
+      const startRetryDelays = ["1 minute", "3 minutes"] as const;
+      control.failStarts = 1 + startRetryDelays.length;
       yield* drain;
       const continuation = continuationOf(yield* runsOf(threadId), active.id);
       assert.equal(continuation?.status, "failed");
-      yield* scan;
+      const scanning = yield* scan.pipe(Effect.forkScoped);
+      for (const delay of startRetryDelays) {
+        yield* TestClock.adjust(delay);
+        yield* drain;
+      }
+      yield* Fiber.join(scanning);
+      assert.equal(control.failStarts, 0);
       const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
       assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
       assert.deepEqual(yield* resumeCommandIds(threadId), []);
@@ -1356,10 +1363,11 @@ it.effect.each(["a reorder", "a newer sibling"] as const)(
         yield* finishContinuation(threadId, active.id, started);
         yield* Fiber.join(scanning);
         yield* drain;
-        const runs = yield* runsOf(threadId);
-        const stillQueued = runs.filter((run) => run.status === "queued");
-        assert.lengthOf(stillQueued, 2);
-        assert.isTrue(stillQueued.every((run) => run.queueHeld === true));
+        const userRuns = (yield* runsOf(threadId)).filter((run) =>
+          queued.some((held) => held.id === run.id),
+        );
+        assert.lengthOf(userRuns, queued.length);
+        assert.isTrue(userRuns.every((run) => run.status === "queued" && run.queueHeld === true));
         assert.deepEqual(yield* resumeCommandIds(threadId), []);
       }),
     ),

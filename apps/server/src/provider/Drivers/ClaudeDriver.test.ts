@@ -5,7 +5,7 @@ import {
   CommandId,
   ProviderInstanceId,
   ThreadId,
-  type ProviderInstanceEnvironment,
+  type ResolvedProviderInstanceEnvironment,
   type OrchestrationV2ProviderCapabilities,
 } from "@t3tools/contracts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -65,7 +65,7 @@ const CLAUDE_HOME = "/home/test/.claude-work";
 
 const createInstance = (
   config: Record<string, unknown> = {},
-  environment: ProviderInstanceEnvironment = [],
+  environment: ResolvedProviderInstanceEnvironment = [],
 ) =>
   ClaudeDriver.create({
     instanceId: ProviderInstanceId.make("claude_seam"),
@@ -107,6 +107,7 @@ const policyOutcomes = (capabilities: OrchestrationV2ProviderCapabilities) =>
       hasStrongNativeSource: true,
       sourceRunStatus: "completed",
       fromSpecificTurn: true,
+      sourceBusy: false,
     });
     const rollback = yield* policy.ensureRollback(input).pipe(
       Effect.as("allowed" as const),
