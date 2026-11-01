@@ -1029,6 +1029,7 @@ describe("composer fallback to another instance of the same driver", () => {
       candidateInstanceIds: [input.threadModelSelection.instanceId],
       lockedProvider: null,
       lockedInstanceId: undefined,
+      lockedEngineBinding: null,
     });
     const selectedInstanceId = selection.selectedProviderEntry!.instanceId;
     const selectedProvider = selection.selectedProviderEntry!.driverKind;
