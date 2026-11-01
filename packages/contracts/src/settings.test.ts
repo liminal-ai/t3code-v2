@@ -138,6 +138,67 @@ describe("custom model settings", () => {
   });
 });
 
+describe("Claude context engine settings", () => {
+  const encodeClaudeSettings = Schema.encodeSync(ClaudeSettings);
+  const stockConfig = {
+    enabled: true,
+    binaryPath: "claude",
+    homePath: "",
+    customModels: [],
+    launchArgs: "",
+    autoCompactWindow: "",
+    idleCompaction: "default",
+  };
+  // Configs as a release from before LHC writes them back after decoding what it read.
+  const storedStockConfigs = [
+    stockConfig,
+    { ...stockConfig, enabled: false, binaryPath: "~/bin/claude" },
+    {
+      ...stockConfig,
+      homePath: "~/.claude-work",
+      customModels: ["bare-slug", { slug: "named", name: "Named" }],
+      launchArgs: "--chrome",
+      autoCompactWindow: "300000",
+      idleCompaction: "onReturn",
+    },
+  ];
+
+  it.each(storedStockConfigs)(
+    "reads a stored stock config as Claude Code and writes it back unchanged",
+    (stored) => {
+      const decoded = decodeClaudeSettings(stored);
+      expect(decoded.contextEngine).toBe("claude");
+      expect(decoded.lhcCompactTrigger).toBeUndefined();
+      expect(decoded.lhcCompactTarget).toBeUndefined();
+      expect(JSON.stringify(encodeClaudeSettings(decoded))).toBe(JSON.stringify(stored));
+    },
+  );
+
+  it("reads a config with no keys as Claude Code", () => {
+    expect(decodeClaudeSettings({}).contextEngine).toBe("claude");
+  });
+
+  it("keeps an LHC config's engine and raw values", () => {
+    const stored = {
+      ...stockConfig,
+      contextEngine: "claude-lhc",
+      lhcCompactTrigger: "700000",
+      lhcCompactTarget: "140000",
+    };
+    const decoded = decodeClaudeSettings(stored);
+    expect(decoded).toMatchObject({
+      contextEngine: "claude-lhc",
+      lhcCompactTrigger: "700000",
+      lhcCompactTarget: "140000",
+    });
+    expect(JSON.stringify(encodeClaudeSettings(decoded))).toBe(JSON.stringify(stored));
+  });
+
+  it("refuses an engine it does not know instead of reading it as stock", () => {
+    expect(() => decodeClaudeSettings({ contextEngine: "claude-lhc-v2" })).toThrow();
+  });
+});
+
 describe("resolveIdleCompaction", () => {
   it("lets a Claude instance override the global default", () => {
     const settings = decodeServerSettings({

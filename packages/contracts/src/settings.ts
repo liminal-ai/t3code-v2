@@ -702,6 +702,24 @@ const InstanceIdleCompaction = Schema.Literals(
   INSTANCE_IDLE_COMPACTION_MODES.map((mode) => mode.value),
 );
 
+const CLAUDE_CONTEXT_ENGINES = [
+  { value: "claude", label: "Claude Code" },
+  { value: "claude-lhc", label: "Long-horizon context (LHC)" },
+] as const;
+const ClaudeContextEngine = Schema.Literals(CLAUDE_CONTEXT_ENGINES.map((engine) => engine.value));
+type ClaudeContextEngine = typeof ClaudeContextEngine.Type;
+
+// Stock is stored as an absent key, so a stock instance saves the config it saved before LHC.
+const StoredClaudeContextEngine = Schema.optionalKey(ClaudeContextEngine).pipe(
+  Schema.decodeTo(
+    Schema.toType(ClaudeContextEngine),
+    SchemaTransformation.transformOptional<ClaudeContextEngine, ClaudeContextEngine>({
+      decode: (stored) => Option.some(Option.getOrElse(stored, () => "claude" as const)),
+      encode: (engine) => Option.filter(engine, (value) => value !== "claude"),
+    }),
+  ),
+);
+
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -766,9 +784,45 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    contextEngine: StoredClaudeContextEngine.pipe(
+      Schema.annotateKey({
+        title: "Context",
+        description:
+          "How threads on this instance keep their context. LHC records every message, compacts at the trigger below, and starts each compacted thread from its own record.",
+        providerSettingsForm: {
+          control: "select",
+          options: CLAUDE_CONTEXT_ENGINES,
+          clearWhenEmpty: "omit",
+        },
+      }),
+    ),
+    lhcCompactTrigger: Schema.optionalKey(TrimmedString).pipe(
+      Schema.annotateKey({
+        title: "LHC compact trigger",
+        description:
+          "Tokens at which LHC compacts a thread. Required for LHC. A new thread keeps the value it starts with.",
+        providerSettingsForm: { placeholder: "e.g. 700000", clearWhenEmpty: "omit" },
+      }),
+    ),
+    lhcCompactTarget: Schema.optionalKey(TrimmedString).pipe(
+      Schema.annotateKey({
+        title: "LHC compact target",
+        description: "Tokens LHC compacts a thread down to. Required for LHC, below the trigger.",
+        providerSettingsForm: { placeholder: "e.g. 140000", clearWhenEmpty: "omit" },
+      }),
+    ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "contextEngine",
+      "lhcCompactTrigger",
+      "lhcCompactTarget",
+      "autoCompactWindow",
+      "idleCompaction",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
