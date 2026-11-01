@@ -5,6 +5,7 @@ import {
   CommandId,
   ProviderInstanceId,
   ThreadId,
+  type ProviderInstanceEnvironment,
   type OrchestrationV2ProviderCapabilities,
 } from "@t3tools/contracts";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -64,7 +65,7 @@ const CLAUDE_HOME = "/home/test/.claude-work";
 
 const createInstance = (
   config: Record<string, unknown> = {},
-  environment: ReadonlyArray<{ readonly name: string; readonly value: string }> = [],
+  environment: ProviderInstanceEnvironment = [],
 ) =>
   ClaudeDriver.create({
     instanceId: ProviderInstanceId.make("claude_seam"),
@@ -196,8 +197,8 @@ describe("ClaudeDriver", () => {
     Effect.scoped(
       Effect.gen(function* () {
         const instance = yield* createInstance(lhcConfig("40000", "20000"), [
-          { name: "CLAUDE_LHC_NODE", value: "/missing/node" },
-          { name: "CLAUDE_LHC_SIDECAR", value: "/missing/sidecar.js" },
+          { name: "CLAUDE_LHC_NODE", value: "/missing/node", sensitive: false },
+          { name: "CLAUDE_LHC_SIDECAR", value: "/missing/sidecar.js", sensitive: false },
         ]);
         const snapshot = yield* instance.snapshot.refresh;
 
