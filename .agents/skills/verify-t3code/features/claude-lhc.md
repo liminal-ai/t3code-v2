@@ -47,5 +47,5 @@ Preconditions:
 - A thread's trigger and target freeze when the server creates the thread, at its first send. Changing the instance's pair afterwards changes only newer threads. A thread first sent while the instance was invalid has no pair and keeps refusing after the fix.
 - LHC starts a new native session at each compaction and each restart, so `thread_current_alias` moves forward while the thread stays one LHC thread.
 - Without `CLAUDE_LHC_NO_INFERENCE=1`, LHC's summary workers spend the credential's quota.
-- The meter paints the binding's trigger. A trigger at or above the model's window shows no threshold.
+- The meter paints the binding's trigger capped at 80% of the model's context window, where LHC compacts, so a 700000 trigger on a 200k model shows 160000.
 - An LHC instance on Windows or a CLI archive built for another host reports `LHC runtime not staged for <target>`.
