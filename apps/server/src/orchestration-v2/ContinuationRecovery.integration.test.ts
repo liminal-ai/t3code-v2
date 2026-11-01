@@ -37,6 +37,7 @@ import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   resolveClaudeCatalogContextWindowTokens,
 } from "../provider/ClaudeModelCatalog.ts";
+import { ClaudeLhcRuntimeProblem } from "../provider/Drivers/claudeLhc/runtime.ts";
 import * as ClaudeAdapterV2 from "./Adapters/ClaudeAdapterV2.ts";
 import * as EffectWorker from "./EffectWorker.ts";
 import * as EventSink from "./EventSink.ts";
@@ -66,11 +67,22 @@ function frame(value: unknown): SDKMessage {
 }
 
 function makeQueryRunner(inputTokens: () => number) {
-  const state = { allocations: 0, resumes: [] as Array<string | undefined>, frames: 0 };
+  const state = {
+    allocations: 0,
+    resumes: [] as Array<string | undefined>,
+    frames: 0,
+    openFailure: null as ClaudeLhcRuntimeProblem | null,
+  };
   const queryRunner: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape = {
     allocateSessionId: Effect.sync(() => `native-${++state.allocations}`),
     open: ({ options }) =>
       Effect.gen(function* () {
+        if (state.openFailure !== null) {
+          return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+            method: "query",
+            cause: state.openFailure,
+          });
+        }
         const nativeId = options.resume ?? options.sessionId;
         state.resumes.push(options.resume);
         const messages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
@@ -413,3 +425,146 @@ it.effect.each(cases)("$name", ({ route, bound }) => {
     ),
   );
 });
+
+it.effect.each([
+  { bound: false, name: "on an unbound row" },
+  { bound: true, name: "on a bound row" },
+])("keeps the native session after query-open failures before the prompt $name", ({ bound }) =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const cwd = yield* checkpointWorkspace(`continuation-open-failure-${bound}`);
+      const configDir = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-continuation-claude-",
+      });
+      const runner = makeQueryRunner(() => 1);
+      const stock = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
+        instanceId,
+        settings,
+        environment: { CLAUDE_CONFIG_DIR: configDir },
+        attachmentsDir: cwd,
+        fileSystem,
+        path: yield* Path.Path,
+        crypto: yield* Crypto.Crypto,
+        idAllocator: yield* IdAllocator.IdAllocatorV2,
+        queryRunner: runner.queryRunner,
+        ...(bound
+          ? {
+              engineBinding: {
+                engine: binding.engine,
+                continuationKey: binding.continuationKey,
+                claudeHome: binding.claudeHome,
+                compact: binding.compact,
+                nativeContinuation: binding.nativeContinuation,
+                compaction: binding.compaction,
+              },
+            }
+          : {}),
+      });
+      const adapter = bound ? boundAdapter(stock, { failNextResume: false }) : stock;
+      yield* Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
+        const sessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
+        const threadId = ThreadId.make(`thread:continuation-open-failure-${bound}`);
+        const run = (ordinal: number) =>
+          orchestrator
+            .getThreadProjection(threadId)
+            .pipe(Effect.map((projection) => projection.runs.find((r) => r.ordinal === ordinal)!));
+        const send = (ordinal: number) =>
+          Effect.gen(function* () {
+            const settled = yield* orchestrator.streamDomainEvents.pipe(
+              Stream.filter(
+                (event: OrchestrationV2DomainEvent) =>
+                  event.type === "run.updated" &&
+                  event.payload.ordinal === ordinal &&
+                  settledRunStatuses.has(event.payload.status),
+              ),
+              Stream.take(1),
+              Stream.runDrain,
+              Effect.forkScoped,
+            );
+            yield* orchestrator.dispatch({
+              type: "message.dispatch",
+              commandId: CommandId.make(`send-${ordinal}`),
+              threadId,
+              messageId: MessageId.make(`message-${ordinal}`),
+              text: `Turn ${ordinal}`,
+              attachments: [],
+              dispatchMode: { type: "start_immediately" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            yield* worker.drain();
+            for (let attempt = 0; attempt < 10; attempt++) {
+              if ((yield* run(ordinal)).status !== "starting") break;
+              yield* TestClock.adjust("1 second");
+              yield* worker.drain();
+            }
+            yield* Fiber.join(settled);
+            yield* worker.drain();
+            return yield* run(ordinal);
+          });
+
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("create"),
+          threadId,
+          projectId: ProjectId.make("project:continuation"),
+          title: "Continuation recovery",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          branch: null,
+          worktreePath: cwd,
+          createdBy: "user",
+          creationSource: "web",
+        });
+        assert.equal((yield* send(1)).status, "completed");
+        const row = (yield* orchestrator.getThreadProjection(threadId)).providerThreads[0]!;
+        yield* sessions.release({
+          providerSessionId: row.providerSessionId!,
+          reason: "idle_timeout",
+        });
+
+        runner.state.openFailure = new ClaudeLhcRuntimeProblem({
+          detail: "claude-lhc sidecar not found at /opt/lhc-runtime/sidecar.js.",
+        });
+        for (const ordinal of [2, 3]) {
+          const failed = yield* send(ordinal);
+          assert.equal(failed.status, "failed");
+          const failure = (yield* orchestrator.getThreadProjection(threadId)).turnItems.find(
+            (item) => item.runId === failed.id && item.type === "error",
+          );
+          assert.equal(
+            failure?.type === "error" ? failure.failure.message : undefined,
+            runner.state.openFailure.detail,
+          );
+        }
+        runner.state.openFailure = null;
+        const opens = runner.state.resumes.length;
+        assert.equal((yield* send(4)).status, "completed");
+
+        const after = yield* orchestrator.getThreadProjection(threadId);
+        assert.deepEqual(runner.state.resumes.slice(opens), ["native-1"]);
+        assert.equal(runner.state.allocations, 1);
+        assert.equal(after.providerThreads[0]!.nativeThreadRef?.nativeId, "native-1");
+        assert.isFalse(
+          after.contextHandoffs.some((handoff) => handoff.delivery?.status === "pending"),
+        );
+      }).pipe(
+        Effect.provide(
+          ProviderReplayHarness.layerWithRegistry(
+            { name: `continuation-open-failure-${bound}` },
+            ProviderAdapterRegistry.layerSingle(adapter),
+            { runEffectWorker: false },
+          ),
+        ),
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  ),
+);

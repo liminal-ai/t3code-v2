@@ -82,6 +82,34 @@ it("preserves actionable handoff errors wrapped by turn startup", () => {
   }
 });
 
+it("shows why Claude LHC could not open the query", () => {
+  for (const [tag, reason] of [
+    ["ClaudeLhcRuntimeProblem", "claude-lhc sidecar not found at /opt/t3/lhc-runtime/sidecar.js."],
+    [
+      "ClaudeLhcOpenRefusedError",
+      "Claude LHC cannot open thread thread:lhc, because its engine binding has no compact policy.",
+    ],
+  ] as const) {
+    const cause = new ProviderAdapter.ProviderAdapterTurnStartError({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread:lhc"),
+      providerThreadId: ProviderThreadId.make("provider-thread:lhc"),
+      runId: RunId.make("run:lhc"),
+      cause: {
+        _tag: "ClaudeQueryOpenError",
+        message: "Claude Agent SDK query failed.",
+        cause: {
+          _tag: "ClaudeAgentSdkQueryRunnerError",
+          method: "query",
+          message: "Claude Agent SDK query failed.",
+          cause: { _tag: tag, message: reason },
+        },
+      },
+    });
+    assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, reason);
+  }
+});
+
 it("keeps unrecognized reasons and provider text out of category messages", () => {
   for (const cause of [
     "Private launch command",
