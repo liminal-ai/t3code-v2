@@ -14218,12 +14218,22 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       },
       {
         compact: { trigger: 700_000, target: 140_000 },
+        model: "claude-sonnet-4-6",
+        threshold: 160_000,
+      },
+      {
+        compact: { trigger: 180_000, target: 30_000 },
+        model: "claude-sonnet-4-6",
+        threshold: 160_000,
+      },
+      {
+        compact: { trigger: 700_000, target: 140_000 },
         model: "uncatalogued-model",
         threshold: 700_000,
       },
       { compact: null, model: "claude-sonnet-4-6", threshold: undefined },
     ])(
-      "paints an LHC row's compact trigger $threshold for $model over the instance's window",
+      "paints an LHC row's compact trigger capped to $threshold for $model over the instance's window",
       ({ compact, model, threshold }) =>
         Effect.gen(function* () {
           const harness = yield* makeWakeHarnessWithOptions({

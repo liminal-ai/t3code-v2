@@ -5027,6 +5027,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             claudeAutoCompactWindow(
               rowEngineBinding(context.input.providerThread),
               adapterOptions.settings.autoCompactWindow,
+              claudeContextWindow(context.input.modelSelection),
             ),
             context.streamUsage?.requestedAt,
           );
@@ -8590,6 +8591,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       claudeAutoCompactWindow(
                         rowEngineBinding(context.input.providerThread),
                         adapterOptions.settings.autoCompactWindow,
+                        maxTokens,
                       ),
                       maxTokens,
                     ),

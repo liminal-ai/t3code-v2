@@ -29,10 +29,20 @@ export function claudeThreadTraits(
   };
 }
 
+// claude-lhc compacts at no more than this share of the model's window (capCompactPolicyToWindow).
+const LHC_TRIGGER_WINDOW_SHARE = 0.8;
+
 export function claudeAutoCompactWindow(
   binding: OrchestrationV2EngineBinding | null,
   instanceWindow: string,
+  maxTokens: number | null,
 ): string {
   if (binding === null) return instanceWindow;
-  return binding.compact === null ? "" : String(binding.compact.trigger);
+  if (binding.compact === null) return "";
+  const { trigger } = binding.compact;
+  return String(
+    maxTokens === null
+      ? trigger
+      : Math.min(trigger, Math.floor(maxTokens * LHC_TRIGGER_WINDOW_SHARE)),
+  );
 }

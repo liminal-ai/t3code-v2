@@ -41,10 +41,36 @@ describe("claudeThreadTraits", () => {
 });
 
 describe("claudeAutoCompactWindow", () => {
-  it("marks the row's LHC trigger, nothing for an invalid policy, and the instance window for stock", () => {
-    assert.equal(claudeAutoCompactWindow(BINDING, "300000"), "700000");
-    assert.equal(claudeAutoCompactWindow({ ...BINDING, compact: null }, "300000"), "");
-    assert.equal(claudeAutoCompactWindow(null, "300000"), "300000");
-    assert.equal(claudeAutoCompactWindow(null, ""), "");
+  it("marks nothing for an invalid policy and the instance window for stock, whatever the model's window", () => {
+    assert.equal(claudeAutoCompactWindow({ ...BINDING, compact: null }, "300000", 200_000), "");
+    assert.equal(claudeAutoCompactWindow(null, "300000", 200_000), "300000");
+    assert.equal(claudeAutoCompactWindow(null, "300000", null), "300000");
+    assert.equal(claudeAutoCompactWindow(null, "", 200_000), "");
   });
+
+  // Window, stored trigger and effective trigger from claude-lhc's "compact policy against the
+  // live window" tests, long-horizon-context packages/claude-lhc/test/compact-policy.test.ts at f64af8df.
+  it.each([
+    { window: 200_000, trigger: 700_000, effective: "160000" },
+    { window: 1_000_000, trigger: 700_000, effective: "700000" },
+    { window: null, trigger: 700_000, effective: "700000" },
+  ])(
+    "matches claude-lhc's trigger for $trigger on a $window window",
+    ({ window, trigger, effective }) => {
+      const binding = { ...BINDING, compact: { trigger, target: 140_000 } };
+      assert.equal(claudeAutoCompactWindow(binding, "300000", window), effective);
+    },
+  );
+
+  it.each([
+    { trigger: 100_000, effective: "100000" },
+    { trigger: 160_000, effective: "160000" },
+    { trigger: 180_000, effective: "160000" },
+  ])(
+    "marks an LHC trigger of $trigger on a 200k window at $effective",
+    ({ trigger, effective }) => {
+      const binding = { ...BINDING, compact: { trigger, target: 50_000 } };
+      assert.equal(claudeAutoCompactWindow(binding, "300000", 200_000), effective);
+    },
+  );
 });
