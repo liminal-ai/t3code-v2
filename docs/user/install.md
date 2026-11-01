@@ -207,6 +207,7 @@ For provider-specific setup and accounts, see [Codex](./providers-codex.md),
 [Claude](./providers-claude.md), [OpenCode](./providers-opencode.md),
 [Antigravity](./providers-antigravity.md), [Pi](./providers-pi.md),
 [Muse Code](./providers-muse.md), and [fx](./providers-fx.md).
+To run Claude threads on long-horizon context, see [Claude with LHC](./claude-lhc.md).
 
 ## Next steps
 

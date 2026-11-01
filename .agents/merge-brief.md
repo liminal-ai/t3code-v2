@@ -7,6 +7,7 @@
   - `packages/provider-cursor/`: one real Cursor turn on a throwaway release, per the skill's "Release check", because a fresh dev server's Cursor is signed out and nobody signs an unattended verifier in ([#45](https://github.com/liminal-ai/t3code-v2/pull/45)'s first verdict).
   - `apps/web/src/groupChat/`, `apps/server/src/groupChat/`, `routes/group-chat*` or `mainAppLocation.ts`: `features/group-chat.md`.
   - `apps/server/src/fork/`: `features/agent-turn.md`, and `features/delegated-requests.md` for `DelegatedRequestTimeout.ts`.
+  - `apps/server/src/provider/Drivers/claudeLhc/`, `ClaudeDriver.ts`, `ClaudeHome.ts`, or the `contextEngine` and `lhcCompact*` keys in `packages/contracts/src/settings.ts`: `features/claude-lhc.md`, and `features/agent-turn.md` with a stock Claude turn.
   - `apps/server/src/peer/`, `apps/server/src/cli/environment.ts`, `070_PeerLinks.ts`, `071_PeerLinkFence.ts` or `072_WaitingLinkRequestIndex.ts`: `features/linked-environments.md`.
   - Any other `apps/web/` or `apps/server/` change: the feature file for each flow it touches, and `features/agent-turn.md` at least.
   - Docs only (`docs/`, `*.md`): no drive. Read the changed text against the code it describes.

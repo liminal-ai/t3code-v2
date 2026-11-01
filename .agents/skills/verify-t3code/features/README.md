@@ -49,4 +49,5 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Settings for verification](./settings.md) covers `threadWorkflowsEnabled` and provider instances.
 - [Pair another browser](./pairing.md) covers a fresh pairing URL, the pairing page, and a second browser.
 - [Link another environment](./linked-environments.md) covers the Labs flag, linking two throwaway servers, the link list, a `delegate_task` on the linked one, and Forget.
+- [Claude with long-horizon context (LHC)](./claude-lhc.md) covers adding an LHC instance, its error status, recall across compaction, restart, idle release, rollback, fork, refusals and handoff.
 - [Import Claude Code and Codex history](./session-import.md) covers the welcome screen's project list, Claude homes an LHC instance shares, the line shown when the LHC store is missing or unreadable, and the refusals an import names.

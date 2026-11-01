@@ -47,7 +47,7 @@ const RESTRICTED_IMPORT_PATHS = [
   },
 ];
 
-// claude-lhc's client pulls in packages only its sidecar may load, so T3 loads it in one module.
+// Only claude-lhc's client entry may reach the server bundle, and only its sidecar loads the rest.
 const RESTRICTED_CLAUDE_LHC_IMPORT = {
   group: ["claude-lhc", "claude-lhc/*"],
   allowTypeImports: true,
