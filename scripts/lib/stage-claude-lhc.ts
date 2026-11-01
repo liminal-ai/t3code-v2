@@ -121,7 +121,6 @@ export const stageClaudeLhcRuntime = Effect.fn("stageClaudeLhcRuntime")(function
   readonly vendorDir: string;
   readonly releaseDir: string;
   readonly target: string;
-  /** Omitted when the host app runs the sidecar, as the desktop app's Electron does. */
   readonly nodeVersion?: string;
 }) {
   const fs = yield* FileSystem.FileSystem;

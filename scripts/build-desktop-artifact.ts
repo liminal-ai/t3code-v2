@@ -3819,7 +3819,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
-  // The packaged server runs claude-lhc's sidecar on the app's Electron in run-as-node mode.
   yield* stageClaudeLhcRuntime({
     vendorDir: path.join(repoRoot, "vendor/claude-lhc"),
     releaseDir: stageProdResourcesDir,

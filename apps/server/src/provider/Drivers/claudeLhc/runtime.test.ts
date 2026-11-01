@@ -39,7 +39,6 @@ const release = Effect.fn(function* (options: { readonly staged: boolean }) {
   return { directory, executable, node, sidecar };
 });
 
-/** Like Electron, it aborts unless ELECTRON_RUN_AS_NODE=1, and then answers as its Node. */
 const fakeElectron = Effect.fn(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

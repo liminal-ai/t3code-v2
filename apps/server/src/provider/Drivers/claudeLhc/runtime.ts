@@ -71,10 +71,9 @@ const releaseTarget = Effect.gen(function* () {
   return `${platform === "win32" ? "win" : platform}-${arch}`;
 });
 
-/** `hostNode` runs the sidecar when the stage holds no Node of its own. */
 const stagedRuntime = Effect.fn("claudeLhc.stagedRuntime")(function* (
   staged: string,
-  hostNode: string | undefined,
+  fallbackNode: string | undefined,
 ) {
   const path = yield* Path.Path;
   if (!(yield* exists(staged))) {
@@ -82,7 +81,7 @@ const stagedRuntime = Effect.fn("claudeLhc.stagedRuntime")(function* (
   }
   const stagedNode = path.join(staged, "node");
   return {
-    node: hostNode === undefined || (yield* exists(stagedNode)) ? stagedNode : hostNode,
+    node: fallbackNode === undefined || (yield* exists(stagedNode)) ? stagedNode : fallbackNode,
     sidecar: path.join(staged, "node_modules", "claude-lhc", "dist", "sidecar.js"),
   } satisfies ClaudeLhcRuntime;
 });
@@ -105,7 +104,6 @@ const locateRuntime = Effect.fn("claudeLhc.locateRuntime")(function* (
     return yield* stagedRuntime(path.join(path.dirname(executable), "lhc-runtime"), undefined);
   }
 
-  // The packaged desktop app runs this server on its Electron binary in run-as-node mode.
   const resources = yield* ElectronResourcesPath;
   if (resources !== undefined && (yield* exists(path.join(resources, "app.asar")))) {
     const electron = yield* HostProcess.ExecutablePath;
