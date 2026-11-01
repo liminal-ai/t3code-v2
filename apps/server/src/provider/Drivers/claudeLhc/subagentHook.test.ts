@@ -24,7 +24,6 @@ import { engineContinuationKey } from "@t3tools/provider-core/server/driver";
 import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
@@ -280,18 +279,20 @@ const startedEnvironment = (): NodeJS.ProcessEnv => {
   );
 };
 
-interface Timed {
-  readonly at: number;
-  readonly message: SDKMessage;
+interface TranscriptEntry {
+  readonly type: string;
+  readonly timestamp?: string;
+  readonly attachment?: { readonly type: string; readonly hookEvent?: string };
 }
 
 interface SubagentLaunch {
   readonly side: "stock" | "lhc";
   readonly label: string;
   readonly taskId: string;
-  readonly startedToFirstMessageMs: number | null;
+  /** From the subagent's task prompt to its first reply, both stamped in its own transcript. */
+  readonly promptToFirstReplyMs: number | null;
+  readonly hookContextEntries: number;
   readonly answer: string;
-  readonly transcript: string;
 }
 
 const findFile = (root: string, name: string): string | undefined =>
@@ -367,13 +368,9 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
               allowDangerouslySkipPermissions: true,
             }),
           });
-          const inbox = yield* Queue.unbounded<Timed>();
+          const inbox = yield* Queue.unbounded<SDKMessage>();
           yield* session.messages.pipe(
-            Stream.runForEach((message) =>
-              Clock.currentTimeMillis.pipe(
-                Effect.flatMap((at) => Queue.offer(inbox, { at, message })),
-              ),
-            ),
+            Stream.runForEach((message) => Queue.offer(inbox, message)),
             Effect.forkScoped,
           );
           const exchange = Effect.fn("exchange")(function* (text: string) {
@@ -382,11 +379,11 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
               message: { role: "user", content: [{ type: "text", text }] },
               parent_tool_use_id: null,
             });
-            const received: Array<Timed> = [];
+            const received: Array<SDKMessage> = [];
             for (;;) {
               const next = yield* Queue.take(inbox);
               received.push(next);
-              if (next.message.type === "result") return received;
+              if (next.type === "result") return received;
             }
           });
           return { side, nativeThreadId, exchange };
@@ -397,22 +394,37 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
           label: string,
         ) {
           const received = yield* opened.exchange(SUBAGENT_REQUEST);
-          const started = received.find(
-            (entry) => entry.message.type === "system" && entry.message.subtype === "task_started",
+          const task = received.find(
+            (message): message is SDKTaskStartedMessage =>
+              message.type === "system" && message.subtype === "task_started",
           );
-          assert.isDefined(started, `${opened.side} ${label} launched a subagent`);
-          const task = started!.message as SDKTaskStartedMessage;
-          const first = received.find(
+          assert.isDefined(task, `${opened.side} ${label} launched a subagent`);
+          const result = received.at(-1) as SDKResultMessage;
+          const file = findFile(claudeHome, `agent-${task!.task_id}.jsonl`);
+          assert.isDefined(file, `${opened.side} ${label} subagent wrote a transcript`);
+          const transcript = NodeFS.readFileSync(file!, "utf8")
+            .split("\n")
+            .filter((line) => line.length > 0)
+            .map((line) => JSON.parse(line) as TranscriptEntry);
+          const hookContext = transcript.filter(
             (entry) =>
-              entry.at >= started!.at &&
-              "parent_tool_use_id" in entry.message &&
-              entry.message.parent_tool_use_id === task.tool_use_id,
+              entry.attachment?.type === "hook_additional_context" &&
+              entry.attachment.hookEvent === "SubagentStart" &&
+              JSON.stringify(entry).includes(DEVICE_HEADING),
           );
-          const result = received.at(-1)!.message as SDKResultMessage;
-          const file = findFile(claudeHome, `agent-${task.task_id}.jsonl`);
+          NodeFS.writeFileSync(
+            NodePath.join(root, `hook-context-${label}.jsonl`),
+            hookContext.map((entry) => JSON.stringify(entry)).join("\n"),
+          );
+          const stamp = (type: string) => {
+            const timestamp = transcript.find((entry) => entry.type === type)?.timestamp;
+            return timestamp === undefined ? undefined : Date.parse(timestamp);
+          };
+          const prompted = stamp("user");
+          const replied = stamp("assistant");
           const lookedUp =
             opened.side === "lhc"
-              ? yield* ClaudeLhcClient.getSubagentMessages(opened.nativeThreadId, task.task_id, {
+              ? yield* ClaudeLhcClient.getSubagentMessages(opened.nativeThreadId, task!.task_id, {
                   dir: cwd,
                   env: environment,
                   pathToClaudeCodeExecutable: binaryPath,
@@ -422,10 +434,11 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
           const launched: SubagentLaunch = {
             side: opened.side,
             label,
-            taskId: task.task_id,
-            startedToFirstMessageMs: first === undefined ? null : first.at - started!.at,
+            taskId: task!.task_id,
+            promptToFirstReplyMs:
+              prompted === undefined || replied === undefined ? null : replied - prompted,
+            hookContextEntries: hookContext.length,
             answer: result.subtype === "success" ? result.result : result.subtype,
-            transcript: file === undefined ? "" : NodeFS.readFileSync(file, "utf8"),
           };
           if (lookedUp !== null) {
             NodeFS.writeFileSync(
@@ -433,13 +446,16 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
               JSON.stringify(lookedUp, null, 2),
             );
           }
-          return { launched, lookedUp: lookedUp === null ? "" : JSON.stringify(lookedUp) };
+          return { launched, lookedUp: lookedUp ?? [] };
         });
 
         const stock = yield* openSide("stock");
         const lhc = yield* openSide("lhc");
         const launches: Array<SubagentLaunch> = [];
-        const lookups = new Map<string, string>();
+        const lookups = new Map<
+          string,
+          Effect.Success<ReturnType<typeof ClaudeLhcClient.getSubagentMessages>>
+        >();
         for (const round of [1, 2, 3]) {
           launches.push((yield* launch(stock, `stock-${round}`)).launched);
           const label = round === 1 ? "before" : round === 2 ? "after" : `lhc-${round}`;
@@ -453,7 +469,7 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
           const values = launches
             .filter((entry) => entry.side === side)
             .flatMap((entry) =>
-              entry.startedToFirstMessageMs === null ? [] : [entry.startedToFirstMessageMs],
+              entry.promptToFirstReplyMs === null ? [] : [entry.promptToFirstReplyMs],
             )
             .toSorted((left, right) => left - right);
           return values[Math.floor(values.length / 2)];
@@ -462,29 +478,31 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
           model: MODEL,
           stockMedianMs: medianOf("stock"),
           lhcMedianMs: medianOf("lhc"),
-          launches: launches.map(({ transcript, ...entry }) => ({
-            ...entry,
-            transcriptCarriesDeviceText: transcript.includes(DEVICE_HEADING),
-          })),
+          launches,
         };
         NodeFS.writeFileSync(NodePath.join(root, "perf.json"), JSON.stringify(summary, null, 2));
 
         for (const entry of launches) {
-          assert.include(
-            entry.transcript,
-            DEVICE_HEADING,
-            `${entry.side} ${entry.label} subagent transcript carries the device-tool text`,
+          assert.equal(
+            entry.hookContextEntries,
+            1,
+            `${entry.side} ${entry.label} subagent transcript carries the device-tool text as SubagentStart hook context`,
           );
         }
+        // getSubagentMessages returns only the user and assistant chain, so it shows that the text
+        // reached the subagent from somewhere other than its task prompt.
         for (const label of ["before", "after"]) {
+          const messages = lookups.get(label) ?? [];
+          const prompt = messages.find((message) => message.type === "user");
+          assert.notInclude(JSON.stringify(prompt), DEVICE_HEADING, `${label} task prompt`);
           assert.include(
-            lookups.get(label),
+            JSON.stringify(messages.filter((message) => message.type === "assistant")),
             DEVICE_HEADING,
-            `getSubagentMessages returns the device-tool text ${label} the compact`,
+            `the subagent names the device-tool text ${label} the compact`,
           );
         }
-        assert.isDefined(summary.stockMedianMs, "stock subagents stream a first message");
-        assert.isDefined(summary.lhcMedianMs, "LHC subagents stream a first message");
+        assert.isDefined(summary.stockMedianMs, "stock subagents reply");
+        assert.isDefined(summary.lhcMedianMs, "LHC subagents reply");
         assert.isAtMost(summary.lhcMedianMs! - summary.stockMedianMs!, 2_000);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
