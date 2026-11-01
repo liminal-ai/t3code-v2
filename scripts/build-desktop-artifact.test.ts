@@ -694,6 +694,58 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("ships a staged LHC runtime as resources outside app.asar", () =>
+    Effect.gen(function* () {
+      const entries = ["engine.json", "node_modules"];
+      const staged = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "0.1.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "x64",
+        entries,
+      );
+      const unstaged = yield* createBuildConfig(
+        "linux",
+        "AppImage",
+        "0.1.1",
+        false,
+        false,
+        undefined,
+        undefined,
+        false,
+        "x64",
+      );
+      const lhcResources = (config: Record<string, unknown>) =>
+        (
+          config.extraResources as ReadonlyArray<{ readonly from: string; readonly to: string }>
+        ).filter((resource) => resource.to.startsWith("lhc-runtime"));
+      assert.deepStrictEqual(lhcResources(staged), [
+        {
+          from: "apps/desktop/prod-resources/lhc-runtime/engine.json",
+          to: "lhc-runtime/engine.json",
+        },
+        {
+          from: "apps/desktop/prod-resources/lhc-runtime/node_modules",
+          to: "lhc-runtime/node_modules",
+        },
+      ]);
+      assert.deepStrictEqual(lhcResources(unstaged), []);
+      for (const packagedPath of [
+        "apps/desktop/prod-resources/lhc-runtime/engine.json",
+        "apps/desktop/prod-resources/lhc-runtime/node_modules/claude-lhc/dist/sidecar.js",
+      ]) {
+        assert.isTrue(
+          DESKTOP_FILE_EXCLUSIONS.some((glob) => NodePath.matchesGlob(packagedPath, glob.slice(1))),
+        );
+      }
+    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
+  );
+
   it.effect("unpacks target Windows natives while excluding the other architecture", () =>
     Effect.scoped(
       Effect.gen(function* () {

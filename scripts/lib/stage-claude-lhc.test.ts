@@ -152,6 +152,31 @@ describe("stageClaudeLhcRuntime", () => {
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
+  it.effect("stages the sidecar without Node for a host app, on a cross host too", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const { vendorDir, releaseDir } = yield* fixture({});
+      const stagedNode = yield* stageClaudeLhcRuntime({
+        vendorDir,
+        releaseDir,
+        target: "linux-arm64",
+      }).pipe(onHost("linux-x64"));
+      const runtimeDir = path.join(releaseDir, "lhc-runtime");
+      expect(stagedNode).toEqual(Option.none());
+      expect(yield* listTree(runtimeDir)).toEqual([
+        "engine.json",
+        "node_modules/claude-lhc/bin/claude-lhc.js",
+        "node_modules/claude-lhc/dist/sidecar.js",
+        "node_modules/claude-lhc/package.json",
+        "node_modules/claude-lhc/src/runtime.js",
+      ]);
+      expect(yield* fs.readFileString(path.join(runtimeDir, "engine.json"))).toBe(
+        '{"contextEngine":"claude-lhc","bindingSchema":1}\n',
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
   it.effect("skips a Windows target and a cross-host target with the log line", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;

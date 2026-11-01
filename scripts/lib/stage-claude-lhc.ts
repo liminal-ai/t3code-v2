@@ -54,13 +54,14 @@ export class ClaudeLhcStageError extends Schema.TaggedError<ClaudeLhcStageError>
 }
 
 function claudeLhcStageSkipReason(
-  target: NodePlatformKey,
+  target: string,
   host: NodePlatformKey,
+  stagesNode: boolean,
 ): string | undefined {
-  if (!(CLAUDE_LHC_STAGE_TARGETS as ReadonlyArray<NodePlatformKey>).includes(target)) {
+  if (!(CLAUDE_LHC_STAGE_TARGETS as ReadonlyArray<string>).includes(target)) {
     return `claude-lhc ships for ${CLAUDE_LHC_STAGE_TARGETS.join(", ")} only`;
   }
-  if (target !== host) {
+  if (stagesNode && target !== host) {
     return `built on ${host}, and the staged Node must run on ${target}`;
   }
   return undefined;
@@ -119,13 +120,13 @@ const resolvePinnedNode = Effect.fn("stage-claude-lhc.resolvePinnedNode")(functi
 export const stageClaudeLhcRuntime = Effect.fn("stageClaudeLhcRuntime")(function* (input: {
   readonly vendorDir: string;
   readonly releaseDir: string;
-  readonly target: NodePlatformKey;
-  readonly nodeVersion: string;
+  readonly target: string;
+  readonly nodeVersion?: string;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const host: NodePlatformKey = `${yield* HostProcess.Platform}-${yield* HostProcess.Architecture}`;
-  const skip = claudeLhcStageSkipReason(input.target, host);
+  const skip = claudeLhcStageSkipReason(input.target, host, input.nodeVersion !== undefined);
   if (skip !== undefined) {
     yield* Effect.log(`lhc-runtime: skipped for ${input.target} (${skip})`);
     return Option.none<string>();
@@ -145,7 +146,8 @@ export const stageClaudeLhcRuntime = Effect.fn("stageClaudeLhcRuntime")(function
   }
   const lockText = yield* fs.readFileString(path.join(input.vendorDir, "sidecar-lock.json"));
   const root = (yield* decodeSidecarLock(lockText)).packages[""];
-  const node = yield* resolvePinnedNode(input.nodeVersion);
+  const node =
+    input.nodeVersion === undefined ? undefined : yield* resolvePinnedNode(input.nodeVersion);
   yield* Effect.log(`lhc-runtime: staging claude-lhc ${pin.version} for ${input.target}...`);
 
   const runtimeDir = path.join(input.releaseDir, "lhc-runtime");
@@ -190,14 +192,16 @@ export const stageClaudeLhcRuntime = Effect.fn("stageClaudeLhcRuntime")(function
   yield* stripTree(fs, path, path.join(runtimeDir, "node_modules"));
 
   const stagedNode = path.join(runtimeDir, "node");
-  yield* fs.copyFile(node, stagedNode);
-  yield* fs.chmod(stagedNode, 0o755);
+  if (node !== undefined) {
+    yield* fs.copyFile(node, stagedNode);
+    yield* fs.chmod(stagedNode, 0o755);
+  }
   yield* fs.writeFileString(
     path.join(runtimeDir, "engine.json"),
     `${yield* encodeEngineMarker({ contextEngine: "claude-lhc", bindingSchema: 1 })}\n`,
   );
   yield* Effect.log(
-    `lhc-runtime: staged claude-lhc ${pin.version} and Node ${input.nodeVersion} for ${input.target} in ${(((yield* Clock.currentTimeMillis) - started) / 1000).toFixed(1)}s.`,
+    `lhc-runtime: staged claude-lhc ${pin.version} ${node === undefined ? "without Node" : `and Node ${input.nodeVersion}`} for ${input.target} in ${(((yield* Clock.currentTimeMillis) - started) / 1000).toFixed(1)}s.`,
   );
-  return Option.some(stagedNode);
+  return node === undefined ? Option.none<string>() : Option.some(stagedNode);
 });
