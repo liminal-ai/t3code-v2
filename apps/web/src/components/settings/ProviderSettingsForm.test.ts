@@ -43,6 +43,61 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
+  it("offers Claude's context engine and the two LHC fields", () => {
+    const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"));
+    expect(claude).toBeDefined();
+
+    const fields = deriveProviderSettingsFields(claude!);
+    expect(fields.map((field) => field.key)).toEqual([
+      "binaryPath",
+      "homePath",
+      "contextEngine",
+      "lhcCompactTrigger",
+      "lhcCompactTarget",
+      "autoCompactWindow",
+      "idleCompaction",
+      "launchArgs",
+    ]);
+    const [contextEngine, trigger, target] = fields.slice(2, 5);
+    expect(contextEngine).toMatchObject({
+      label: "Context",
+      control: "select",
+      options: [
+        { value: "claude", label: "Claude Code" },
+        { value: "claude-lhc", label: "Long-horizon context (LHC)" },
+      ],
+    });
+    expect(trigger).toMatchObject({ label: "LHC compact trigger", control: "text" });
+    expect(target).toMatchObject({ label: "LHC compact target", control: "text" });
+
+    const lhc = nextProviderConfigWithFieldValue(
+      nextProviderConfigWithFieldValue(
+        nextProviderConfigWithFieldValue({ homePath: "~/.claude" }, contextEngine!, "claude-lhc"),
+        trigger!,
+        "40000",
+      ),
+      target!,
+      "20000",
+    );
+    expect(lhc).toEqual({
+      homePath: "~/.claude",
+      contextEngine: "claude-lhc",
+      lhcCompactTrigger: "40000",
+      lhcCompactTarget: "20000",
+    });
+    expect(nextProviderConfigWithFieldValue(lhc, trigger!, " ")).toEqual({
+      homePath: "~/.claude",
+      contextEngine: "claude-lhc",
+      lhcCompactTarget: "20000",
+    });
+    // The select stores its first option, Claude Code, as an empty value.
+    expect(nextProviderConfigWithFieldValue(lhc, contextEngine!, "")).toEqual({
+      homePath: "~/.claude",
+      lhcCompactTrigger: "40000",
+      lhcCompactTarget: "20000",
+    });
+  });
+
   it("preserves unknown config keys while omitting empty configurable fields", () => {
     const opencode = providerClients.get(ProviderDriverKind.make("opencode"));
     expect(opencode).toBeDefined();

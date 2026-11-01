@@ -34,6 +34,9 @@ const encodeRuntimePackageJson = Schema.encodeEffect(
   Schema.fromJsonString(Schema.Struct({ ...RuntimePackage.fields, private: Schema.Boolean })),
 );
 
+/** lim-v2's `t3-v2-lhc-guard` reads a release without this file as one built before LHC. */
+const ENGINE_MARKER = { contextEngine: "claude-lhc", bindingSchema: 1 } as const;
+
 export class ClaudeLhcStageError extends Schema.TaggedError<ClaudeLhcStageError>()(
   "ClaudeLhcStageError",
   { detail: Schema.String },
@@ -182,6 +185,10 @@ export const stageClaudeLhcRuntime = Effect.fn("stageClaudeLhcRuntime")(function
   const stagedNode = path.join(runtimeDir, "node");
   yield* fs.copyFile(node, stagedNode);
   yield* fs.chmod(stagedNode, 0o755);
+  yield* fs.writeFileString(
+    path.join(runtimeDir, "engine.json"),
+    `${JSON.stringify(ENGINE_MARKER)}\n`,
+  );
   yield* Effect.log(
     `lhc-runtime: staged claude-lhc ${pin.version} and Node ${input.nodeVersion} for ${input.target} in ${(((yield* Clock.currentTimeMillis) - started) / 1000).toFixed(1)}s.`,
   );
