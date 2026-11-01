@@ -39,6 +39,7 @@ import { resolveClaudeLhcRuntime } from "./runtime.ts";
 import { makeClaudeLhcSeam, type ClaudeLhcSeamClient } from "./seam.ts";
 import { SUBAGENT_DEVICE_HOOK_COMMAND, withSubagentDeviceHook } from "./subagentHook.ts";
 
+const unix = HostProcess.Platform.defaultValue() !== "win32";
 const SHELLS = ["/bin/sh", "/bin/bash", "/bin/zsh", "/bin/dash"].filter((shell) => {
   try {
     NodeChildProcess.execFileSync(shell, ["-c", "true"]);
@@ -140,7 +141,8 @@ const commandHooks = (settings: ClaudeLhcQueryOptions["settings"]) =>
       )
     : [];
 
-describe("withSubagentDeviceHook", () => {
+// Claude LHC runs only on Linux and macOS, so the hook runs only in a POSIX shell.
+describe.runIf(unix)("the subagent device hook command", () => {
   it.effect("prints exactly what the stock callback returns, through every shell here", () =>
     Effect.gen(function* () {
       assert.isNotEmpty(SHELLS);
@@ -153,7 +155,9 @@ describe("withSubagentDeviceHook", () => {
       }
     }),
   );
+});
 
+describe("withSubagentDeviceHook", () => {
   it("keeps T3's flag settings and the user's own hooks beside the device hook", () => {
     const userHook = { matcher: "*", hooks: [{ type: "command" as const, command: "notify" }] };
     const settings: Settings = {
@@ -276,196 +280,192 @@ const findFile = (root: string, name: string): string | undefined =>
     .filter((entry) => NodePath.basename(entry) === name)
     .map((entry) => NodePath.join(root, entry))[0];
 
-describe.runIf(LIVE && HostProcess.Platform.defaultValue() !== "win32")(
-  "a native subagent on a real model through the T10 runner",
-  () => {
-    it.live(
-      "carries the device-tool text as hook context on LHC before and after a compact, at stock's speed",
-      () =>
-        Effect.gen(function* () {
-          const root =
-            EVIDENCE_DIR ?? NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-lhc-t11-"));
-          const claudeHome = NodePath.join(root, "claude-home");
-          const stateDir = NodePath.join(root, "userdata");
-          const cwd = NodePath.join(root, "project");
-          for (const directory of [claudeHome, stateDir, cwd]) {
-            NodeFS.mkdirSync(directory, { recursive: true });
-          }
-          const mcpScript = NodePath.join(root, "probe-mcp.mjs");
-          NodeFS.writeFileSync(mcpScript, PROBE_MCP);
-          const { CLAUDE_LHC_NO_INFERENCE: _inherited, ...host } = process.env;
-          const environment: NodeJS.ProcessEnv = {
-            ...host,
-            ...startedEnvironment(),
-            CLAUDE_CONFIG_DIR: claudeHome,
-          };
-          const binaryPath = process.env.T3_CLAUDE_LHC_BIN ?? "claude";
-          const lhcSeam = yield* makeClaudeLhcSeam({
-            runtime: yield* Effect.result(resolveClaudeLhcRuntime(environment)),
-            stateDir,
-            environment,
-            binaryPath,
-          });
-          const makeRunner = (seam?: ClaudeAdapterV2.ClaudeQuerySeam) =>
-            ClaudeAdapterV2.makeClaudeAgentSdkQueryRunner(seam).pipe(
-              Effect.provideService(ProviderEventLoggers, {
-                native: undefined,
-                canonical: undefined,
-              }),
-              Effect.provideService(AgentScope, AgentScope.defaultValue()),
-              Effect.provide(PortScanner.layerTest),
-            );
-          const lhcBinding: OrchestrationV2EngineBinding = {
-            ...binding,
-            continuationKey: engineContinuationKey({ engine: "claude-lhc", claudeHome }),
-            claudeHome,
-          };
+describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 runner", () => {
+  it.live(
+    "carries the device-tool text as hook context on LHC before and after a compact, at stock's speed",
+    () =>
+      Effect.gen(function* () {
+        const root =
+          EVIDENCE_DIR ?? NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-lhc-t11-"));
+        const claudeHome = NodePath.join(root, "claude-home");
+        const stateDir = NodePath.join(root, "userdata");
+        const cwd = NodePath.join(root, "project");
+        for (const directory of [claudeHome, stateDir, cwd]) {
+          NodeFS.mkdirSync(directory, { recursive: true });
+        }
+        const mcpScript = NodePath.join(root, "probe-mcp.mjs");
+        NodeFS.writeFileSync(mcpScript, PROBE_MCP);
+        const { CLAUDE_LHC_NO_INFERENCE: _inherited, ...host } = process.env;
+        const environment: NodeJS.ProcessEnv = {
+          ...host,
+          ...startedEnvironment(),
+          CLAUDE_CONFIG_DIR: claudeHome,
+        };
+        const binaryPath = process.env.T3_CLAUDE_LHC_BIN ?? "claude";
+        const lhcSeam = yield* makeClaudeLhcSeam({
+          runtime: yield* Effect.result(resolveClaudeLhcRuntime(environment)),
+          stateDir,
+          environment,
+          binaryPath,
+        });
+        const makeRunner = (seam?: ClaudeAdapterV2.ClaudeQuerySeam) =>
+          ClaudeAdapterV2.makeClaudeAgentSdkQueryRunner(seam).pipe(
+            Effect.provideService(ProviderEventLoggers, {
+              native: undefined,
+              canonical: undefined,
+            }),
+            Effect.provideService(AgentScope, AgentScope.defaultValue()),
+            Effect.provide(PortScanner.layerTest),
+          );
+        const lhcBinding: OrchestrationV2EngineBinding = {
+          ...binding,
+          continuationKey: engineContinuationKey({ engine: "claude-lhc", claudeHome }),
+          claudeHome,
+        };
 
-          const openSide = Effect.fn("openSide")(function* (side: SubagentLaunch["side"]) {
-            const runner = yield* makeRunner(side === "lhc" ? lhcSeam : undefined);
-            const nativeThreadId = yield* runner.allocateSessionId;
-            const session = yield* runner.open({
-              providerSessionId: ProviderSessionId.make(`session:t11:${side}`),
-              thread: {
-                appThreadId: ThreadId.make(`thread:t11:${side}`),
-                engineBinding: side === "lhc" ? lhcBinding : null,
+        const openSide = Effect.fn("openSide")(function* (side: SubagentLaunch["side"]) {
+          const runner = yield* makeRunner(side === "lhc" ? lhcSeam : undefined);
+          const nativeThreadId = yield* runner.allocateSessionId;
+          const session = yield* runner.open({
+            providerSessionId: ProviderSessionId.make(`session:t11:${side}`),
+            thread: {
+              appThreadId: ThreadId.make(`thread:t11:${side}`),
+              engineBinding: side === "lhc" ? lhcBinding : null,
+            },
+            options: ClaudeAdapterV2.makeClaudeQueryOptions({
+              modelSelection: { instanceId: ProviderInstanceId.make("claude-lhc"), model: MODEL },
+              nativeThreadId,
+              resume: false,
+              cwd,
+              settings: { ...DEFAULT_SETTINGS, binaryPath },
+              environment,
+              mcpServers: {
+                probe: { type: "stdio", command: process.execPath, args: [mcpScript] },
               },
-              options: ClaudeAdapterV2.makeClaudeQueryOptions({
-                modelSelection: { instanceId: ProviderInstanceId.make("claude-lhc"), model: MODEL },
-                nativeThreadId,
-                resume: false,
-                cwd,
-                settings: { ...DEFAULT_SETTINGS, binaryPath },
-                environment,
-                mcpServers: {
-                  probe: { type: "stdio", command: process.execPath, args: [mcpScript] },
-                },
-                deviceToolsAvailable: true,
-                permissionMode: "bypassPermissions",
-                allowDangerouslySkipPermissions: true,
-              }),
-            });
-            const inbox = yield* Queue.unbounded<Timed>();
-            yield* session.messages.pipe(
-              Stream.runForEach((message) =>
-                Clock.currentTimeMillis.pipe(
-                  Effect.flatMap((at) => Queue.offer(inbox, { at, message })),
-                ),
+              deviceToolsAvailable: true,
+              permissionMode: "bypassPermissions",
+              allowDangerouslySkipPermissions: true,
+            }),
+          });
+          const inbox = yield* Queue.unbounded<Timed>();
+          yield* session.messages.pipe(
+            Stream.runForEach((message) =>
+              Clock.currentTimeMillis.pipe(
+                Effect.flatMap((at) => Queue.offer(inbox, { at, message })),
               ),
-              Effect.forkScoped,
-            );
-            const exchange = Effect.fn("exchange")(function* (text: string) {
-              yield* session.offer({
-                type: "user",
-                message: { role: "user", content: [{ type: "text", text }] },
-                parent_tool_use_id: null,
-              });
-              const received: Array<Timed> = [];
-              for (;;) {
-                const next = yield* Queue.take(inbox);
-                received.push(next);
-                if (next.message.type === "result") return received;
-              }
+            ),
+            Effect.forkScoped,
+          );
+          const exchange = Effect.fn("exchange")(function* (text: string) {
+            yield* session.offer({
+              type: "user",
+              message: { role: "user", content: [{ type: "text", text }] },
+              parent_tool_use_id: null,
             });
-            return { side, nativeThreadId, exchange };
-          });
-
-          const launch = Effect.fn("launch")(function* (
-            opened: Effect.Success<ReturnType<typeof openSide>>,
-            label: string,
-          ) {
-            const received = yield* opened.exchange(SUBAGENT_REQUEST);
-            const started = received.find(
-              (entry) =>
-                entry.message.type === "system" && entry.message.subtype === "task_started",
-            );
-            assert.isDefined(started, `${opened.side} ${label} launched a subagent`);
-            const task = started!.message as SDKTaskStartedMessage;
-            const first = received.find(
-              (entry) =>
-                entry.at >= started!.at &&
-                "parent_tool_use_id" in entry.message &&
-                entry.message.parent_tool_use_id === task.tool_use_id,
-            );
-            const result = received.at(-1)!.message as SDKResultMessage;
-            const file = findFile(claudeHome, `agent-${task.task_id}.jsonl`);
-            const lookedUp =
-              opened.side === "lhc"
-                ? yield* ClaudeLhcClient.getSubagentMessages(opened.nativeThreadId, task.task_id, {
-                    dir: cwd,
-                    env: environment,
-                    pathToClaudeCodeExecutable: binaryPath,
-                    lhc: { home: NodePath.join(stateDir, "lhc") },
-                  })
-                : null;
-            const launched: SubagentLaunch = {
-              side: opened.side,
-              label,
-              taskId: task.task_id,
-              startedToFirstMessageMs: first === undefined ? null : first.at - started!.at,
-              answer: result.subtype === "success" ? result.result : result.subtype,
-              transcript: file === undefined ? "" : NodeFS.readFileSync(file, "utf8"),
-            };
-            if (lookedUp !== null) {
-              NodeFS.writeFileSync(
-                NodePath.join(root, `subagent-${label}.json`),
-                JSON.stringify(lookedUp, null, 2),
-              );
+            const received: Array<Timed> = [];
+            for (;;) {
+              const next = yield* Queue.take(inbox);
+              received.push(next);
+              if (next.message.type === "result") return received;
             }
-            return { launched, lookedUp: lookedUp === null ? "" : JSON.stringify(lookedUp) };
           });
+          return { side, nativeThreadId, exchange };
+        });
 
-          const stock = yield* openSide("stock");
-          const lhc = yield* openSide("lhc");
-          const launches: Array<SubagentLaunch> = [];
-          const lookups = new Map<string, string>();
-          for (const round of [1, 2, 3]) {
-            launches.push((yield* launch(stock, `stock-${round}`)).launched);
-            const label = round === 1 ? "before" : round === 2 ? "after" : `lhc-${round}`;
-            const lhcLaunch = yield* launch(lhc, label);
-            launches.push(lhcLaunch.launched);
-            lookups.set(label, lhcLaunch.lookedUp);
-            if (round === 1) yield* lhc.exchange("/compact");
-          }
-
-          const medianOf = (side: SubagentLaunch["side"]) => {
-            const values = launches
-              .filter((entry) => entry.side === side)
-              .flatMap((entry) =>
-                entry.startedToFirstMessageMs === null ? [] : [entry.startedToFirstMessageMs],
-              )
-              .toSorted((left, right) => left - right);
-            return values[Math.floor(values.length / 2)];
+        const launch = Effect.fn("launch")(function* (
+          opened: Effect.Success<ReturnType<typeof openSide>>,
+          label: string,
+        ) {
+          const received = yield* opened.exchange(SUBAGENT_REQUEST);
+          const started = received.find(
+            (entry) => entry.message.type === "system" && entry.message.subtype === "task_started",
+          );
+          assert.isDefined(started, `${opened.side} ${label} launched a subagent`);
+          const task = started!.message as SDKTaskStartedMessage;
+          const first = received.find(
+            (entry) =>
+              entry.at >= started!.at &&
+              "parent_tool_use_id" in entry.message &&
+              entry.message.parent_tool_use_id === task.tool_use_id,
+          );
+          const result = received.at(-1)!.message as SDKResultMessage;
+          const file = findFile(claudeHome, `agent-${task.task_id}.jsonl`);
+          const lookedUp =
+            opened.side === "lhc"
+              ? yield* ClaudeLhcClient.getSubagentMessages(opened.nativeThreadId, task.task_id, {
+                  dir: cwd,
+                  env: environment,
+                  pathToClaudeCodeExecutable: binaryPath,
+                  lhc: { home: NodePath.join(stateDir, "lhc") },
+                })
+              : null;
+          const launched: SubagentLaunch = {
+            side: opened.side,
+            label,
+            taskId: task.task_id,
+            startedToFirstMessageMs: first === undefined ? null : first.at - started!.at,
+            answer: result.subtype === "success" ? result.result : result.subtype,
+            transcript: file === undefined ? "" : NodeFS.readFileSync(file, "utf8"),
           };
-          const summary = {
-            model: MODEL,
-            stockMedianMs: medianOf("stock"),
-            lhcMedianMs: medianOf("lhc"),
-            launches: launches.map(({ transcript, ...entry }) => ({
-              ...entry,
-              transcriptCarriesDeviceText: transcript.includes(DEVICE_HEADING),
-            })),
-          };
-          NodeFS.writeFileSync(NodePath.join(root, "perf.json"), JSON.stringify(summary, null, 2));
-
-          for (const entry of launches) {
-            assert.include(
-              entry.transcript,
-              DEVICE_HEADING,
-              `${entry.side} ${entry.label} subagent transcript carries the device-tool text`,
+          if (lookedUp !== null) {
+            NodeFS.writeFileSync(
+              NodePath.join(root, `subagent-${label}.json`),
+              JSON.stringify(lookedUp, null, 2),
             );
           }
-          for (const label of ["before", "after"]) {
-            assert.include(
-              lookups.get(label),
-              DEVICE_HEADING,
-              `getSubagentMessages returns the device-tool text ${label} the compact`,
-            );
-          }
-          assert.isDefined(summary.stockMedianMs, "stock subagents stream a first message");
-          assert.isDefined(summary.lhcMedianMs, "LHC subagents stream a first message");
-          assert.isAtMost(summary.lhcMedianMs! - summary.stockMedianMs!, 2_000);
-        }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-    );
-  },
-);
+          return { launched, lookedUp: lookedUp === null ? "" : JSON.stringify(lookedUp) };
+        });
+
+        const stock = yield* openSide("stock");
+        const lhc = yield* openSide("lhc");
+        const launches: Array<SubagentLaunch> = [];
+        const lookups = new Map<string, string>();
+        for (const round of [1, 2, 3]) {
+          launches.push((yield* launch(stock, `stock-${round}`)).launched);
+          const label = round === 1 ? "before" : round === 2 ? "after" : `lhc-${round}`;
+          const lhcLaunch = yield* launch(lhc, label);
+          launches.push(lhcLaunch.launched);
+          lookups.set(label, lhcLaunch.lookedUp);
+          if (round === 1) yield* lhc.exchange("/compact");
+        }
+
+        const medianOf = (side: SubagentLaunch["side"]) => {
+          const values = launches
+            .filter((entry) => entry.side === side)
+            .flatMap((entry) =>
+              entry.startedToFirstMessageMs === null ? [] : [entry.startedToFirstMessageMs],
+            )
+            .toSorted((left, right) => left - right);
+          return values[Math.floor(values.length / 2)];
+        };
+        const summary = {
+          model: MODEL,
+          stockMedianMs: medianOf("stock"),
+          lhcMedianMs: medianOf("lhc"),
+          launches: launches.map(({ transcript, ...entry }) => ({
+            ...entry,
+            transcriptCarriesDeviceText: transcript.includes(DEVICE_HEADING),
+          })),
+        };
+        NodeFS.writeFileSync(NodePath.join(root, "perf.json"), JSON.stringify(summary, null, 2));
+
+        for (const entry of launches) {
+          assert.include(
+            entry.transcript,
+            DEVICE_HEADING,
+            `${entry.side} ${entry.label} subagent transcript carries the device-tool text`,
+          );
+        }
+        for (const label of ["before", "after"]) {
+          assert.include(
+            lookups.get(label),
+            DEVICE_HEADING,
+            `getSubagentMessages returns the device-tool text ${label} the compact`,
+          );
+        }
+        assert.isDefined(summary.stockMedianMs, "stock subagents stream a first message");
+        assert.isDefined(summary.lhcMedianMs, "LHC subagents stream a first message");
+        assert.isAtMost(summary.lhcMedianMs! - summary.stockMedianMs!, 2_000);
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+});
