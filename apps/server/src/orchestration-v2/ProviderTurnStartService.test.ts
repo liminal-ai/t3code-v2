@@ -2162,6 +2162,7 @@ function makeRecoveryHarness(input: {
       activeProviderThreadId: providerThreadId,
       branch: null,
       worktreePath: null,
+      lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
       ...(input.seed ? { engineBinding: binding } : {}),
     },
     runs: [
