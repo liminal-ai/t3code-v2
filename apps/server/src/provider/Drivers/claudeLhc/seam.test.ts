@@ -33,6 +33,7 @@ const LHC_HOME = "/srv/t3/userdata/lhc";
 const CLI = "/usr/local/bin/claude";
 const INSTANCE_ENV = { CLAUDE_CONFIG_DIR: "/homes/lhc", CLAUDE_LHC_NO_INFERENCE: "1" };
 const QUERY_ENV = { ...INSTANCE_ENV, TMPDIR: "/repo/.pstack/tmp" };
+const LHC_QUERY_ENV = { ...QUERY_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" };
 const FORK_HEAD = "claude-lhc-cursor:th_0123456789abcdef:claude-lhc:assistant:msg_1";
 const SIGNAL = new AbortController().signal;
 
@@ -187,11 +188,47 @@ describe("makeClaudeLhcSeam", () => {
         LAUNCH,
       );
       const sidecar = recorded.queries[0]!.lhc;
-      assert.deepEqual(sidecar.spawn, { ...LAUNCH, env: QUERY_ENV });
+      assert.deepEqual(sidecar.spawn, { ...LAUNCH, env: LHC_QUERY_ENV });
 
-      const spawnOptions = { ...LAUNCH, env: QUERY_ENV, signal: SIGNAL };
+      const spawnOptions = { ...LAUNCH, env: LHC_QUERY_ENV, signal: SIGNAL };
       assert.strictEqual(sidecar.spawnProcess?.(spawnOptions), child);
       assert.deepEqual(spawner.spawned, [spawnOptions]);
+    }),
+  );
+
+  it.effect("gives the CLI a one-hour prompt cache unless the query env already names a TTL", () =>
+    Effect.gen(function* () {
+      const recorded = recordingClient();
+      const lhc = yield* seam(recorded.client);
+      const { spawnClaudeCodeProcess } = recordingSpawner();
+      const open = (env: NodeJS.ProcessEnv | undefined) => {
+        const { env: _env, ...rest } = queryOptions(spawnClaudeCodeProcess);
+        lhc.createQuery(
+          prompt,
+          env === undefined ? rest : { ...rest, env },
+          thread("thread-a", binding(40_000, 20_000)),
+          LAUNCH,
+        );
+      };
+      open(QUERY_ENV);
+      open({ ...QUERY_ENV, CLAUDE_CODE_PROMPT_CACHE_TTL: "5m" });
+      open(undefined);
+      assert.deepEqual(
+        recorded.queries.map((query) => [
+          query.env?.CLAUDE_CODE_PROMPT_CACHE_TTL,
+          query.lhc.spawn?.env?.CLAUDE_CODE_PROMPT_CACHE_TTL,
+        ]),
+        [
+          ["1h", "1h"],
+          ["5m", "5m"],
+          ["1h", "1h"],
+        ],
+      );
+      assert.deepEqual(recorded.queries[2]?.env, {
+        ...INSTANCE_ENV,
+        CLAUDE_CODE_PROMPT_CACHE_TTL: "1h",
+      });
+      assert.notProperty(QUERY_ENV, "CLAUDE_CODE_PROMPT_CACHE_TTL");
     }),
   );
 
