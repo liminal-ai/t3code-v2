@@ -48,8 +48,7 @@ describe("claudeAutoCompactWindow", () => {
     assert.equal(claudeAutoCompactWindow(null, "", 200_000), "");
   });
 
-  // Window, stored trigger and effective trigger from claude-lhc's "compact policy against the
-  // live window" tests, long-horizon-context packages/claude-lhc/test/compact-policy.test.ts at f64af8df.
+  // From long-horizon-context packages/claude-lhc/test/compact-policy.test.ts at f64af8df.
   it.each([
     { window: 200_000, trigger: 700_000, effective: "160000" },
     { window: 1_000_000, trigger: 700_000, effective: "700000" },
