@@ -8,7 +8,7 @@
   - `apps/web/src/groupChat/`, `apps/server/src/groupChat/`, `routes/group-chat*` or `mainAppLocation.ts`: `features/group-chat.md`.
   - `apps/server/src/fork/`: `features/agent-turn.md`, and `features/delegated-requests.md` for `DelegatedRequestTimeout.ts`.
   - `apps/server/src/provider/Drivers/claudeLhc/`, `ClaudeDriver.ts`, `ClaudeHome.ts`, or the `contextEngine` and `lhcCompact*` keys in `packages/contracts/src/settings.ts`: `features/claude-lhc.md`, and `features/agent-turn.md` with a stock Claude turn.
-  - `apps/desktop/` or `scripts/build-desktop-artifact.ts`: one LHC turn on a built AppImage, per the skill's "Release check", "Desktop". [#71](https://github.com/liminal-ai/t3code-v2/pull/71)'s asar bug showed only in the packaged app.
+  - `apps/desktop/` or `scripts/build-desktop-artifact.ts`: one LHC turn on a built AppImage's server, per the skill's "Release check", "Desktop". A change to desktop startup, IPC or UI also launches that app normally and drives the flow it touches, per step 5 there. [#71](https://github.com/liminal-ai/t3code-v2/pull/71)'s asar bug showed only in the packaged app.
   - `apps/server/src/peer/`, `apps/server/src/cli/environment.ts`, `070_PeerLinks.ts`, `071_PeerLinkFence.ts` or `072_WaitingLinkRequestIndex.ts`: `features/linked-environments.md`.
   - Any other `apps/web/` or `apps/server/` change: the feature file for each flow it touches, and `features/agent-turn.md` at least.
   - Docs only (`docs/`, `*.md`): no drive. Read the changed text against the code it describes.
