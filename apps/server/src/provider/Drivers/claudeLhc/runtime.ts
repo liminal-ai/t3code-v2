@@ -42,10 +42,12 @@ export const ElectronResourcesPath = Context.Reference<string | undefined>(
 
 const problem = (detail: string) => Effect.fail(new ClaudeLhcRuntimeProblem({ detail }));
 
+/** Electron's asar support answers `access` on `app.asar` with ENOENT, and `stat` finds it. */
 const exists = Effect.fn("claudeLhc.exists")(
   function* (file: string) {
     const fs = yield* FileSystem.FileSystem;
-    return yield* fs.exists(file);
+    yield* fs.stat(file);
+    return true;
   },
   Effect.orElseSucceed(() => false),
 );
