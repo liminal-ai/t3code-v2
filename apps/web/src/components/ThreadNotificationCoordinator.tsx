@@ -271,7 +271,6 @@ export function startThreadNotifications(
     };
     // A baseline recorded before the attention snapshot arrives would make every open question
     // look new once it does, so both snapshots have to be live before anything is remembered.
-    // While either is down the last baseline stays, so alerts missed meanwhile fire on reconnect.
     const observe = () => {
       if (entry.threads !== null && registry.get(threadWorkflowAttentionReadyAtom(environmentId))) {
         observeThreads(environmentId, entry, entry.threads);

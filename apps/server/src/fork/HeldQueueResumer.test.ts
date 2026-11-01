@@ -1019,13 +1019,13 @@ it.effect("leaves the hold when the continuation and its start retries fail", ()
       const threadId = ThreadId.make("thread:failed-continuation");
       const { active, queued } = yield* busyThread({ threadId, cwd });
       yield* restartOneSecondLater;
-      // Upstream retries a continuation that fails before its prompt after 1 and then 3 minutes.
-      control.failStarts = 3;
+      const startRetryDelays = ["1 minute", "3 minutes"] as const;
+      control.failStarts = 1 + startRetryDelays.length;
       yield* drain;
       const continuation = continuationOf(yield* runsOf(threadId), active.id);
       assert.equal(continuation?.status, "failed");
       const scanning = yield* scan.pipe(Effect.forkScoped);
-      for (const delay of ["1 minute", "3 minutes"] as const) {
+      for (const delay of startRetryDelays) {
         yield* TestClock.adjust(delay);
         yield* drain;
       }
@@ -1354,7 +1354,7 @@ it.effect.each(["a reorder", "a newer sibling"] as const)(
             modelSelection,
             dispatchMode: { type: "queue_after_active" },
             // A user's own send releases the queue upstream (Orchestrator.ts message.dispatch),
-            // so the sibling comes from an agent, whose send leaves the user's hold in place.
+            // so the sibling comes from an agent, whose send leaves the hold in place.
             createdBy: "agent",
             creationSource: "mcp",
           });
@@ -1363,8 +1363,6 @@ it.effect.each(["a reorder", "a newer sibling"] as const)(
         yield* finishContinuation(threadId, active.id, started);
         yield* Fiber.join(scanning);
         yield* drain;
-        // Upstream releases the agent's own message once the continuation completes
-        // (Orchestrator.ts releaseUnattendedHolds), so only the user's runs stay held.
         const userRuns = (yield* runsOf(threadId)).filter((run) =>
           queued.some((held) => held.id === run.id),
         );

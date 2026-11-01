@@ -10467,7 +10467,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (subagent) => subagent.task.status === "running",
               ),
             ),
-            // Claude Code keeps task output under the TMPDIR its turns get.
             taskOutputRoot: claudeTaskOutputRoot(
               withProjectTmpDir(adapterOptions.environment, turnInput.runtimePolicy),
               path,
