@@ -47,6 +47,19 @@ const RESTRICTED_IMPORT_PATHS = [
   },
 ];
 
+const RESTRICTED_CLAUDE_LHC_IMPORT = {
+  group: ["claude-lhc", "claude-lhc/*"],
+  allowTypeImports: true,
+  message: "Call claude-lhc through apps/server/src/provider/Drivers/claudeLhc/client.ts.",
+};
+
+const RESTRICTED_CLAUDE_LHC_COMPAT_IMPORT = {
+  group: ["**/claudeLhc/compat", "**/claudeLhc/compat.ts"],
+  allowTypeImports: true,
+  message:
+    "compat.ts maps claude-lhc's query for claudeLhc/client.ts. Import its types only, and call claude-lhc through client.ts.",
+};
+
 const RESTRICTED_UI_VARIANT_PATTERNS = [
   {
     group: ["**/components/ui/*", "**/ui/*", "./ui/*"],
@@ -449,7 +462,21 @@ export default defineConfig({
                   message:
                     "A forge's client entry is UI-only; the server reads its `shared/definition`.",
                 },
+                RESTRICTED_CLAUDE_LHC_IMPORT,
+                RESTRICTED_CLAUDE_LHC_COMPAT_IMPORT,
               ],
+            },
+          ],
+        },
+      },
+      {
+        files: ["apps/server/src/provider/Drivers/claudeLhc/client.ts"],
+        rules: {
+          "eslint/no-restricted-imports": [
+            "error",
+            {
+              paths: [...RESTRICTED_IMPORT_PATHS, RESTRICTED_PULL_REQUEST_GLYPH_IMPORTS],
+              patterns: [RESTRICTED_CLAUDE_LHC_COMPAT_IMPORT],
             },
           ],
         },

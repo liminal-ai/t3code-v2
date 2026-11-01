@@ -122,6 +122,7 @@ describe("stageClaudeLhcRuntime", () => {
     "stages the sidecar and the pinned Node on a %s host",
     (target) =>
       Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
         const { vendorDir, releaseDir } = yield* fixture({});
@@ -134,6 +135,7 @@ describe("stageClaudeLhcRuntime", () => {
         const runtimeDir = path.join(releaseDir, "lhc-runtime");
         expect(stagedNode).toEqual(Option.some(path.join(runtimeDir, "node")));
         expect(yield* listTree(runtimeDir)).toEqual([
+          "engine.json",
           "node",
           "node_modules/claude-lhc/bin/claude-lhc.js",
           "node_modules/claude-lhc/dist/sidecar.js",
@@ -144,6 +146,9 @@ describe("stageClaudeLhcRuntime", () => {
           ChildProcess.make(path.join(runtimeDir, "node"), ["-p", "process.versions.node"]),
         );
         expect(version.trim()).toBe(process.versions.node);
+        expect(yield* fs.readFileString(path.join(runtimeDir, "engine.json"))).toBe(
+          '{"contextEngine":"claude-lhc","bindingSchema":1}\n',
+        );
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
