@@ -1366,10 +1366,8 @@ it.effect.each(["a reorder", "a newer sibling"] as const)(
         const userRuns = (yield* runsOf(threadId)).filter((run) =>
           queued.some((held) => held.id === run.id),
         );
-        assert.deepEqual(
-          userRuns.map((run) => [run.status, run.queueHeld]),
-          queued.map(() => ["queued", true]),
-        );
+        assert.lengthOf(userRuns, queued.length);
+        assert.isTrue(userRuns.every((run) => run.status === "queued" && run.queueHeld === true));
         assert.deepEqual(yield* resumeCommandIds(threadId), []);
       }),
     ),
