@@ -709,8 +709,7 @@ const CLAUDE_CONTEXT_ENGINES = [
 const ClaudeContextEngine = Schema.Literals(CLAUDE_CONTEXT_ENGINES.map((engine) => engine.value));
 type ClaudeContextEngine = typeof ClaudeContextEngine.Type;
 
-// Stock is stored as an absent key, so a stock instance saves the config it saved before LHC.
-const StoredClaudeContextEngine = Schema.optionalKey(ClaudeContextEngine).pipe(
+const ClaudeContextEngineOmittedWhenStock = Schema.optionalKey(ClaudeContextEngine).pipe(
   Schema.decodeTo(
     Schema.toType(ClaudeContextEngine),
     SchemaTransformation.transformOptional<ClaudeContextEngine, ClaudeContextEngine>({
@@ -784,7 +783,7 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
-    contextEngine: StoredClaudeContextEngine.pipe(
+    contextEngine: ClaudeContextEngineOmittedWhenStock.pipe(
       Schema.annotateKey({
         title: "Context",
         description:

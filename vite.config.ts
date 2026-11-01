@@ -47,7 +47,6 @@ const RESTRICTED_IMPORT_PATHS = [
   },
 ];
 
-// Only claude-lhc's client entry may reach the server bundle, and only its sidecar loads the rest.
 const RESTRICTED_CLAUDE_LHC_IMPORT = {
   group: ["claude-lhc", "claude-lhc/*"],
   allowTypeImports: true,

@@ -90,8 +90,8 @@ describe("ProviderSettingsForm helpers", () => {
       contextEngine: "claude-lhc",
       lhcCompactTarget: "20000",
     });
-    // The select stores its first option, Claude Code, as an empty value.
-    expect(nextProviderConfigWithFieldValue(lhc, contextEngine!, "")).toEqual({
+    const claudeCodeSelection = "";
+    expect(nextProviderConfigWithFieldValue(lhc, contextEngine!, claudeCodeSelection)).toEqual({
       homePath: "~/.claude",
       lhcCompactTrigger: "40000",
       lhcCompactTarget: "20000",

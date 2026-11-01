@@ -149,8 +149,7 @@ describe("Claude context engine settings", () => {
     autoCompactWindow: "",
     idleCompaction: "default",
   };
-  // Configs as a release from before LHC writes them back after decoding what it read.
-  const storedStockConfigs = [
+  const preLhcSavedConfigs = [
     stockConfig,
     { ...stockConfig, enabled: false, binaryPath: "~/bin/claude" },
     {
@@ -163,7 +162,7 @@ describe("Claude context engine settings", () => {
     },
   ];
 
-  it.each(storedStockConfigs)(
+  it.each(preLhcSavedConfigs)(
     "reads a stored stock config as Claude Code and writes it back unchanged",
     (stored) => {
       const decoded = decodeClaudeSettings(stored);

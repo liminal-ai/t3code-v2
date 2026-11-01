@@ -83,8 +83,7 @@ export function parseClaudeEngine(config: ClaudeEngineSettings): ClaudeEngine {
 export interface ClaudeLhcEngineInput {
   readonly engine: ClaudeLhcEngine;
   readonly config: Pick<ClaudeSettings, "binaryPath" | "homePath">;
-  /** The instance's environment, which also carries the runtime overrides. */
-  readonly processEnv: NodeJS.ProcessEnv;
+  readonly instanceEnvironment: NodeJS.ProcessEnv;
   readonly continuationKey: string;
   readonly claudeHome: string;
   readonly stateDir: string;
@@ -94,16 +93,15 @@ export interface ClaudeLhcEngineParts {
   readonly capabilities: OrchestrationV2ProviderCapabilities;
   readonly engineBinding: ProviderEngineBindingTemplate;
   readonly queryRunner: ClaudeAgentSdkQueryRunnerShape;
-  /** Why the instance cannot run LHC threads. Its status shows it and its opens fail with it. */
-  readonly problem: string | undefined;
+  readonly unavailableReason: string | undefined;
 }
 
 export const makeClaudeLhcEngine = Effect.fn("makeClaudeLhcEngine")(function* (
   input: ClaudeLhcEngineInput,
 ) {
-  const environment = yield* makeClaudeEnvironment(input.config, input.processEnv);
+  const environment = yield* makeClaudeEnvironment(input.config, input.instanceEnvironment);
   const runtime = yield* Effect.result(resolveClaudeLhcRuntime(environment));
-  const problem =
+  const unavailableReason =
     "problem" in input.engine
       ? input.engine.problem
       : Result.isFailure(runtime)
@@ -116,9 +114,9 @@ export const makeClaudeLhcEngine = Effect.fn("makeClaudeLhcEngine")(function* (
   });
   const seam = yield* makeClaudeLhcSeam({
     runtime:
-      problem === undefined
+      unavailableReason === undefined
         ? runtime
-        : Result.fail(new ClaudeLhcRuntimeProblem({ detail: problem })),
+        : Result.fail(new ClaudeLhcRuntimeProblem({ detail: unavailableReason })),
     stateDir: input.stateDir,
     environment,
     binaryPath: yield* resolveClaudeSdkExecutablePath(input.config.binaryPath, environment),
@@ -127,15 +125,14 @@ export const makeClaudeLhcEngine = Effect.fn("makeClaudeLhcEngine")(function* (
     capabilities: instance.capabilities,
     engineBinding: instance.engineBinding,
     queryRunner: yield* makeClaudeAgentSdkQueryRunner(seam),
-    problem,
+    unavailableReason,
   } satisfies ClaudeLhcEngineParts;
 });
 
-/** A disabled instance keeps its disabled status. */
-export function reportClaudeLhcProblem<
+export function reportClaudeLhcUnavailable<
   Provider extends { readonly enabled: boolean; readonly status: ServerProviderState },
->(provider: Provider, problem: string | undefined): Provider {
-  return problem === undefined || !provider.enabled
+>(provider: Provider, unavailableReason: string | undefined): Provider {
+  return unavailableReason === undefined || !provider.enabled
     ? provider
-    : { ...provider, status: "error", message: problem };
+    : { ...provider, status: "error", message: unavailableReason };
 }

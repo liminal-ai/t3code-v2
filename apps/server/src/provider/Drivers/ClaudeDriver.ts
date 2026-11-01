@@ -65,7 +65,7 @@ import type * as PortScanner from "../../preview/PortScanner.ts";
 import {
   makeClaudeLhcEngine,
   parseClaudeEngine,
-  reportClaudeLhcProblem,
+  reportClaudeLhcUnavailable,
 } from "./claudeLhc/engine.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -164,14 +164,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig, processEnv);
     const configDir = yield* resolveClaudeHomePath(effectiveConfig, processEnv);
     const engine = parseClaudeEngine(config);
-    // An LHC config that cannot run stays LHC, so its threads never fall back to stock.
     const lhc =
       engine.engine === "claude"
         ? undefined
         : yield* makeClaudeLhcEngine({
             engine,
             config: effectiveConfig,
-            processEnv,
+            instanceEnvironment: processEnv,
             continuationKey: continuationGroupKey,
             claudeHome: configDir,
             stateDir,
@@ -309,7 +308,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               ? Cache.invalidateAll(capabilitiesProbeCache)
               : Effect.void,
           ),
-          Effect.map((provider) => reportClaudeLhcProblem(stampIdentity(provider), lhc?.problem)),
+          Effect.map((provider) =>
+            reportClaudeLhcUnavailable(stampIdentity(provider), lhc?.unavailableReason),
+          ),
         ),
       ),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
