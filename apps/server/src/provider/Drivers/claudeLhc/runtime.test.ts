@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 
-import { resolveClaudeLhcRuntime } from "./runtime.ts";
+import { ElectronResourcesPath, resolveClaudeLhcRuntime } from "./runtime.ts";
 
 const unix = HostProcess.Platform.defaultValue() !== "win32";
 
@@ -37,6 +37,51 @@ const release = Effect.fn(function* (options: { readonly staged: boolean }) {
     path.join(directory, "lhc-runtime", "node_modules", "claude-lhc", "dist", "sidecar.js"),
   );
   return { directory, executable, node, sidecar };
+});
+
+/** Like Electron, it aborts unless ELECTRON_RUN_AS_NODE=1, and then answers as its Node. */
+const fakeElectron = Effect.fn(function* (file: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.makeDirectory(path.dirname(file), { recursive: true });
+  yield* fs.writeFileString(
+    file,
+    `#!/bin/sh\n[ "$ELECTRON_RUN_AS_NODE" = 1 ] || exit 133\necho v24.22.1\n`,
+  );
+  yield* fs.chmod(file, 0o755);
+  return file;
+});
+
+const desktop = Effect.fn(function* (options: {
+  readonly packaged: boolean;
+  readonly staged: boolean;
+  readonly stagedNode?: boolean;
+}) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const directory = yield* fs.makeTempDirectoryScoped();
+  const electron = yield* fakeElectron(path.join(directory, "t3-code"));
+  const resources = path.join(directory, "resources");
+  yield* fs.makeDirectory(resources);
+  if (options.packaged) yield* touch(path.join(resources, "app.asar"));
+  const staged = path.join(resources, "lhc-runtime");
+  const sidecar = path.join(staged, "node_modules", "claude-lhc", "dist", "sidecar.js");
+  if (options.staged) {
+    yield* touch(sidecar);
+    yield* touch(path.join(staged, "engine.json"));
+  }
+  const node = options.stagedNode
+    ? yield* fakeNode(path.join(staged, "node"), "v26.12.1")
+    : undefined;
+  const onDesktop = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(
+      Effect.provideService(HostProcess.ExecutablePath, electron),
+      Effect.provideService(HostProcess.IsExecutable, false),
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provideService(HostProcess.Architecture, "x64"),
+      Effect.provideService(ElectronResourcesPath, resources),
+    );
+  return { electron, node, sidecar, onDesktop };
 });
 
 const failure = (environment: NodeJS.ProcessEnv) =>
@@ -147,6 +192,53 @@ describe.runIf(unix)("resolveClaudeLhcRuntime", () => {
       expect(runtime.sidecar).toMatch(/[/\\]claude-lhc[/\\]dist[/\\]sidecar\.js$/);
       expect(yield* fs.exists(runtime.sidecar)).toBe(true);
     }).pipe(Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("runs the desktop app's staged sidecar on its Electron in run-as-node mode", () =>
+    Effect.gen(function* () {
+      const app = yield* desktop({ packaged: true, staged: true });
+      const runtime = yield* resolveClaudeLhcRuntime({ ELECTRON_RUN_AS_NODE: "1" }).pipe(
+        app.onDesktop,
+      );
+      expect(runtime).toEqual({ node: app.electron, sidecar: app.sidecar });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("runs a Node the desktop build staged instead of Electron", () =>
+    Effect.gen(function* () {
+      const app = yield* desktop({ packaged: true, staged: true, stagedNode: true });
+      const runtime = yield* resolveClaudeLhcRuntime({}).pipe(app.onDesktop);
+      expect(runtime).toEqual({ node: app.node, sidecar: app.sidecar });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("refuses the desktop app's Electron without run-as-node mode", () =>
+    Effect.gen(function* () {
+      const app = yield* desktop({ packaged: true, staged: true });
+      expect(yield* failure({}).pipe(app.onDesktop)).toBe(
+        `${app.electron} is the desktop app's Electron, which runs claude-lhc only with ELECTRON_RUN_AS_NODE=1.`,
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("names the target when the desktop app has no lhc-runtime", () =>
+    Effect.gen(function* () {
+      const app = yield* desktop({ packaged: true, staged: false });
+      expect(yield* failure({ ELECTRON_RUN_AS_NODE: "1" }).pipe(app.onDesktop)).toBe(
+        "LHC runtime not staged for linux-x64",
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
+
+  it.effect("runs the installed package on an unpackaged Electron in development", () =>
+    Effect.gen(function* () {
+      const app = yield* desktop({ packaged: false, staged: false });
+      const runtime = yield* resolveClaudeLhcRuntime({ ELECTRON_RUN_AS_NODE: "1" }).pipe(
+        app.onDesktop,
+      );
+      expect(runtime.node).toBe(app.electron);
+      expect(runtime.sidecar).toMatch(/[/\\]claude-lhc[/\\]dist[/\\]sidecar\.js$/);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
   it.effect("refuses a Node older than 24.3 and names its version", () =>

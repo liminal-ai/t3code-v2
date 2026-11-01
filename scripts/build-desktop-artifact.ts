@@ -43,6 +43,7 @@ import {
 import { loadRepoEnv } from "./lib/public-config.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
+import { stageClaudeLhcRuntime } from "./lib/stage-claude-lhc.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -992,6 +993,8 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/desktop/prod-resources/windows-server/**/*",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
+  "!apps/desktop/prod-resources/lhc-runtime",
+  "!apps/desktop/prod-resources/lhc-runtime/**/*",
   "!apps/desktop/gnome-extension",
   "!apps/desktop/gnome-extension/**/*",
 ] as const;
@@ -1109,6 +1112,12 @@ export const LINUX_CAPTURE_EXTRA_RESOURCES = [
 export const LINUX_BROWSER_SECRET_EXTRA_RESOURCES = [
   { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
 ] as const;
+/** electron-builder drops a `node_modules` at the root of an extraResources source, so each top-level entry is its own source. */
+const claudeLhcRuntimeExtraResources = (entries: ReadonlyArray<string>) =>
+  entries.map((entry) => ({
+    from: `apps/desktop/prod-resources/lhc-runtime/${entry}`,
+    to: `lhc-runtime/${entry}`,
+  }));
 
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
@@ -2784,6 +2793,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
+  lhcRuntimeEntries: ReadonlyArray<string> = [],
 ) {
   const buildConfig: Record<string, unknown> = {
     appId: resolveDesktopAppId(version),
@@ -2811,6 +2821,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
       ...(platform === "win" && wslRuntimeBundled ? WSL_RUNTIME_EXTRA_RESOURCES : []),
+      ...claudeLhcRuntimeExtraResources(lhcRuntimeEntries),
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
@@ -3808,6 +3819,16 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
+  // The packaged server runs claude-lhc's sidecar on the app's Electron in run-as-node mode.
+  yield* stageClaudeLhcRuntime({
+    vendorDir: path.join(repoRoot, "vendor/claude-lhc"),
+    releaseDir: stageProdResourcesDir,
+    target: `${options.platform === "mac" ? "darwin" : options.platform === "win" ? "win32" : "linux"}-${options.arch}`,
+  });
+  const lhcRuntimeDir = path.join(stageProdResourcesDir, "lhc-runtime");
+  const lhcRuntimeEntries = (yield* fs.exists(lhcRuntimeDir))
+    ? yield* fs.readDirectory(lhcRuntimeDir)
+    : [];
 
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
@@ -3897,6 +3918,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
+      lhcRuntimeEntries,
     ),
     dependencies: stageDependencies,
     devDependencies: {
