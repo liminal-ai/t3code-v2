@@ -43,7 +43,8 @@ values and cannot run. Fix the instance, then start a new thread.
 - Each compaction and each restart starts a new Claude Code session from LHC's record. Background
   commands and subagents still running in the old session end as interrupted.
 - LHC writes compaction summaries with your Claude account, so they count against your usage.
-- The session import on the welcome screen does not list sessions that belong to LHC.
+- The session import on the welcome screen does not list LHC sessions from a Claude home that an
+  LHC instance uses.
 
 ## Change or move an LHC thread
 
@@ -53,6 +54,13 @@ and starts a new session there, as it does between any two instances.
 A thread stays with its instance's engine and Claude home. If you set an instance's **Context** to
 **Claude Code**, change its Claude home, disable it or delete it, its LHC threads show the instance
 as unavailable and do not run. Restore the instance to continue them.
+
+Keep at least one LHC instance on a Claude home while that home holds LHC sessions. A disabled LHC
+instance counts. If you delete the last LHC instance on a home, set its **Context** to **Claude
+Code**, or point it at another Claude home, T3 Code stops treating that home's LHC sessions as LHC.
+The session import on the welcome screen then lists them as ordinary Claude Code sessions. Importing
+one continues that session on stock Claude, outside LHC's record, so it can miss later turns of the
+thread. Do not import from that home until you add an LHC instance on it again.
 
 LHC keeps its store in `lhc/` in T3 Code's state folder, beside `settings.json`. Do not delete it.
 Threads whose LHC record is gone cannot continue.
