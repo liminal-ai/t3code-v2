@@ -58,7 +58,7 @@
     "@t3tools/source-control-github": "workspace:*",
     "@t3tools/source-control-gitlab": "workspace:*",
     "character-entities": "2.0.2",
-    "claude-lhc": "file:../../vendor/claude-lhc/claude-lhc-0.2.0.tgz",
+    "claude-lhc": "file:../../vendor/claude-lhc/claude-lhc-0.2.1.tgz",
     "diff": "8.0.3",
     "effect": "catalog:",
     "jose": "catalog:",

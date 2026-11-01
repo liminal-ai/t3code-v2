@@ -6,7 +6,7 @@
     "": {
       "name": "lhc-runtime",
       "dependencies": {
-        "claude-lhc": "file:claude-lhc-0.2.0.tgz"
+        "claude-lhc": "file:claude-lhc-0.2.1.tgz"
       }
     },
     "node_modules/@anthropic-ai/claude-agent-sdk": {
@@ -338,9 +338,9 @@
       }
     },
     "node_modules/claude-lhc": {
-      "version": "0.2.0",
-      "resolved": "file:claude-lhc-0.2.0.tgz",
-      "integrity": "sha512-KPKa9ZOs/U08wMY9lOLo2k1pzlUubNLGcGYHE9/8P3vnninBvHupzT27I0p8ZbMNl7thKPsyP/2zssDLDDzDEw==",
+      "version": "0.2.1",
+      "resolved": "file:claude-lhc-0.2.1.tgz",
+      "integrity": "sha512-2IdYIbgaMbXEad6YwkagOs9448BJ8qp6fJxta9JnpwcIVeWFxCOViDolRaJNW3kNQhhzAsYQPAmj1N3X/3imZw==",
       "bundleDependencies": ["lhc"],
       "license": "MIT",
       "dependencies": {
@@ -349,7 +349,7 @@
         "@modelcontextprotocol/sdk": "1.30.0",
         "effect": "^3.21.2",
         "js-tiktoken": "^1.0.21",
-        "lhc": "0.2.0",
+        "lhc": "0.2.1",
         "zod": "4.4.3"
       },
       "bin": {
@@ -360,7 +360,7 @@
       }
     },
     "node_modules/claude-lhc/node_modules/lhc": {
-      "version": "0.2.0",
+      "version": "0.2.1",
       "inBundle": true,
       "engines": {
         "node": ">=24.3.0"
