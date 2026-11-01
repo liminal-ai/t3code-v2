@@ -626,6 +626,16 @@ export class ClaudeSettingsLaunchArgError extends Schema.TaggedError<ClaudeSetti
   }
 }
 
+/** The turn offers its prompt only after the query opens, so an open failure never delivered it. */
+export class ClaudeQueryOpenError extends Schema.TaggedError<ClaudeQueryOpenError>()(
+  "ClaudeQueryOpenError",
+  { cause: ClaudeAgentSdkQueryRunnerError },
+) {
+  override get message(): string {
+    return this.cause.message;
+  }
+}
+
 export interface ClaudeAgentSdkQueryRunnerShape {
   readonly allocateSessionId: Effect.Effect<string, ClaudeAgentSdkQueryRunnerError>;
   readonly open: (
@@ -10103,6 +10113,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               },
             })
             .pipe(
+              Effect.mapError((cause) => new ClaudeQueryOpenError({ cause })),
               Effect.onError(() =>
                 closedExistingNativeThreadId === nativeThreadId
                   ? Effect.gen(function* () {

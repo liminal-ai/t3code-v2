@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   NodeId,
   ProviderDriverKind,
+  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
@@ -79,6 +80,73 @@ it("preserves actionable handoff errors wrapped by turn startup", () => {
       cause: error,
     });
     assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, error.message);
+  }
+});
+
+it("shows why Claude LHC could not open the query", () => {
+  for (const [tag, reason] of [
+    ["ClaudeLhcRuntimeProblem", "claude-lhc sidecar not found at /opt/t3/lhc-runtime/sidecar.js."],
+    [
+      "ClaudeLhcOpenRefusedError",
+      "Claude LHC cannot open thread thread:lhc, because its engine binding has no compact policy.",
+    ],
+  ] as const) {
+    const cause = new ProviderAdapter.ProviderAdapterTurnStartError({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread:lhc"),
+      providerThreadId: ProviderThreadId.make("provider-thread:lhc"),
+      runId: RunId.make("run:lhc"),
+      cause: {
+        _tag: "ClaudeQueryOpenError",
+        message: "Claude Agent SDK query failed.",
+        cause: {
+          _tag: "ClaudeAgentSdkQueryRunnerError",
+          method: "query",
+          message: "Claude Agent SDK query failed.",
+          cause: { _tag: tag, message: reason },
+        },
+      },
+    });
+    assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, reason);
+  }
+});
+
+it("explains each continuation mismatch without ids, keys or homes", () => {
+  const lhcKey = "claude-lhc:home:/home/lee/.claude%3Alhc";
+  for (const [rowContinuationKey, instanceContinuationKey, says] of [
+    [
+      lhcKey,
+      null,
+      'This thread uses long-horizon context, but its Claude instance "claude-a" now runs as Claude Code.',
+    ],
+    [
+      lhcKey,
+      "claude-lhc:home:/home/lee/other",
+      'its Claude instance "claude-a" now uses a different Claude home.',
+    ],
+    [
+      null,
+      lhcKey,
+      'This thread runs on Claude Code, but its Claude instance "claude-a" now runs long-horizon context.',
+    ],
+  ] as const) {
+    const cause = new ProviderAdapter.ProviderAdapterEnsureThreadError({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread:lhc"),
+      cause: new ProviderAdapter.ProviderAdapterContinuationMismatchError({
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerThreadId: ProviderThreadId.make("provider-thread:lhc%3Arun"),
+        providerInstanceId: ProviderInstanceId.make("claude-a"),
+        rowContinuationKey,
+        instanceContinuationKey,
+      }),
+    });
+    const { message } = makeProviderFailure({ cause: Cause.fail(cause) });
+    assert.include(message, says);
+    assert.include(message, "T3 Code won't continue it there, so its history is unchanged.");
+    for (const internal of ["provider-thread", "/", ":home:", "%3A"]) {
+      assert.notInclude(message, internal);
+    }
   }
 });
 

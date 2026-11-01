@@ -14,7 +14,10 @@ import * as DateTime from "effect/DateTime";
 import * as Cause from "effect/Cause";
 
 import * as IdAllocator from "./IdAllocator.ts";
-import type { ProviderAdapterFailureReason } from "./ProviderAdapter.ts";
+import type {
+  ProviderAdapterContinuationMismatchError,
+  ProviderAdapterFailureReason,
+} from "./ProviderAdapter.ts";
 import * as Schema from "effect/Schema";
 
 export class ContextHandoffBudgetError extends Schema.TaggedError<ContextHandoffBudgetError>()(
@@ -67,6 +70,28 @@ const PROVIDER_FAILURE_REASONS: Record<ProviderAdapterFailureReason, string> = {
 };
 
 /**
+ * Names the instance and what changed, never the provider thread id, continuation keys or homes,
+ * which the mismatch's own message carries for the server log.
+ */
+export function continuationMismatchMessage(
+  mismatch: Pick<
+    ProviderAdapterContinuationMismatchError,
+    "providerInstanceId" | "rowContinuationKey" | "instanceContinuationKey"
+  >,
+  instanceName: string = mismatch.providerInstanceId,
+): string {
+  const instance = `"${instanceName}"`;
+  const unchanged = "T3 Code won't continue it there, so its history is unchanged.";
+  if (mismatch.instanceContinuationKey === null) {
+    return `This thread uses long-horizon context, but its Claude instance ${instance} now runs as Claude Code. ${unchanged} Set the instance back to Long-horizon context, or switch this thread to an LHC instance.`;
+  }
+  if (mismatch.rowContinuationKey === null) {
+    return `This thread runs on Claude Code, but its Claude instance ${instance} now runs long-horizon context. ${unchanged} Set the instance back to Claude Code, or switch this thread to a Claude Code instance.`;
+  }
+  return `This thread uses long-horizon context, but its Claude instance ${instance} now uses a different Claude home. ${unchanged} Set the instance's CLAUDE_CONFIG_DIR path back, or switch this thread to an LHC instance on its original home.`;
+}
+
+/**
  * Walks a cause chain for curated text without reading arbitrary provider
  * defect text. `known` is the message of a domain error T3 raised itself;
  * `category` is the generic message of the innermost provider wrapper seen.
@@ -107,8 +132,15 @@ function curatedCauseMessages(cause: unknown): {
         case "ClaudeAppendSystemPromptMissingValueError":
         case "ClaudeSettingsLaunchArgError":
         case "ClaudeMcpRegistrationTimeoutError":
+        case "ClaudeLhcRuntimeProblem":
+        case "ClaudeLhcOpenRefusedError":
         case "CursorModelUnavailableError":
           return { known: stringField(cause, "message"), category: categoryMessage() };
+        case "ProviderAdapterContinuationMismatchError":
+          return {
+            known: continuationMismatchMessage(cause as ProviderAdapterContinuationMismatchError),
+            category: categoryMessage(),
+          };
         case "ContextHandoffDeliveryUncertainError":
           return {
             known:

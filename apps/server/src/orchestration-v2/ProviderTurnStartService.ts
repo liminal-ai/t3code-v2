@@ -50,6 +50,7 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
+  continuationMismatchMessage,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -111,9 +112,16 @@ class NativeContinuationRequiredError extends Schema.TaggedError<NativeContinuat
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 
-const continuationMismatch = (error: unknown): boolean =>
-  Predicate.isTagged(error, "ProviderAdapterContinuationMismatchError") ||
-  (Predicate.hasProperty(error, "cause") && continuationMismatch(error.cause));
+const isContinuationMismatch = Schema.is(ProviderAdapter.ProviderAdapterContinuationMismatchError);
+
+const continuationMismatch = (
+  error: unknown,
+): ProviderAdapter.ProviderAdapterContinuationMismatchError | undefined =>
+  isContinuationMismatch(error)
+    ? error
+    : Predicate.hasProperty(error, "cause")
+      ? continuationMismatch(error.cause)
+      : undefined;
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
@@ -126,6 +134,7 @@ const PROMPT_REFUSAL_TAGS = [
   "ClaudeAppendSystemPromptMissingValueError",
   "ClaudeSettingsLaunchArgError",
   "ClaudeMcpRegistrationTimeoutError",
+  "ClaudeQueryOpenError",
 ] as const;
 
 const refusedBeforePrompt = (error: unknown): boolean =>
@@ -178,6 +187,7 @@ export const layer: Layer.Layer<
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
     const threadHooks = yield* ThreadHooks;
+    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     const recreateMissingWorktree = Effect.fn("ProviderTurnStartService.recreateMissingWorktree")(
@@ -1207,33 +1217,49 @@ export const layer: Layer.Layer<
           reason,
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
         };
+        const mismatch =
+          resumed._tag === "Failure" ? continuationMismatch(resumed.failure) : undefined;
         if (
           providerThread.nativeMetadata?.engineBinding?.nativeContinuation === "required" ||
-          (resumed._tag === "Failure" && continuationMismatch(resumed.failure))
+          mismatch !== undefined
         ) {
           const failure = resumed._tag === "Failure" ? resumed.failure : undefined;
+          const instanceName =
+            mismatch === undefined
+              ? undefined
+              : yield* serverSettings.getSettings.pipe(
+                  Effect.map(
+                    (settings) =>
+                      settings.providerInstances[mismatch.providerInstanceId]?.displayName,
+                  ),
+                  Effect.orElseSucceed(() => undefined),
+                );
           const refusal = new NativeContinuationRequiredError({
             reason,
             detail: uncertainDelivery
               ? "T3 could not confirm whether earlier history reached it."
-              : failure === undefined
-                ? "The pending history does not fit its context."
-                : (knownProviderFailureMessage(failure) ??
-                  ("cause" in failure && failure.cause instanceof Error
-                    ? failure.cause.message
-                    : failure.message)),
+              : mismatch !== undefined
+                ? continuationMismatchMessage(mismatch, instanceName)
+                : failure === undefined
+                  ? "The pending history does not fit its context."
+                  : (knownProviderFailureMessage(failure) ??
+                    ("cause" in failure && failure.cause instanceof Error
+                      ? failure.cause.message
+                      : failure.message)),
             cause: failure,
           });
           yield* Effect.logWarning("Refused to replace a native session that must continue", {
             ...recovery,
             nativeThreadId: providerThread.nativeThreadRef.nativeId,
+            ...(mismatch === undefined ? {} : { mismatch: mismatch.message }),
           });
           if (input.willRetry === true) return yield* refusal;
           yield* settleStartFailure({
             signal: "native-continuation-refused",
             title: "Native session could not continue",
             error: refusal,
-            message: refusal.message,
+            // A mismatch's text already says T3 kept the session, so it drops the reason code.
+            message: mismatch === undefined ? refusal.message : refusal.detail,
           });
           return undefined;
         }
