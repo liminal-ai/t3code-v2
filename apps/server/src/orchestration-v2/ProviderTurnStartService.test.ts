@@ -299,6 +299,7 @@ function makeLocalCommandHarness(input: {
   readonly writeFailure?: unknown;
   readonly failReadsAfterRunning?: boolean;
   readonly turnNote?: string;
+  readonly engineBinding?: OrchestrationV2EngineBinding;
   /** A real `ThreadHooks` implementation, in place of the fixed `turnNote`. */
   readonly threadHooks?: Layer.Layer<never>;
   readonly compactionCount?: number;
@@ -390,6 +391,7 @@ function makeLocalCommandHarness(input: {
       branch: input.worktreePath === undefined ? null : "feature/restore",
       worktreePath: input.worktreePath ?? null,
       lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+      ...(input.engineBinding === undefined ? {} : { engineBinding: input.engineBinding }),
     } as OrchestrationV2ThreadProjection["thread"],
     runs: [
       ...(input.previousNativeSession
@@ -802,10 +804,13 @@ function makeLocalCommandHarness(input: {
     },
   };
   const forkThread = vi.fn(() => Effect.succeed(sideChatThread));
+  const ensureSideChatThread = vi.fn((_input: ProviderAdapter.ProviderAdapterV2EnsureThreadInput) =>
+    Effect.succeed(sideChatThread),
+  );
   const sideChatSession = {
     driver: providerThread.driver,
     providerSession,
-    ensureThread: () => Effect.succeed(sideChatThread),
+    ensureThread: ensureSideChatThread,
     resumeThread: () => Effect.succeed(sideChatThread),
     forkThread,
     startTurn,
@@ -1033,6 +1038,7 @@ function makeLocalCommandHarness(input: {
     startRootRun,
     startTurn,
     forkThread,
+    ensureSideChatThread,
     interruptTurn,
     tryHandlePromptCommand,
     events,
@@ -1340,6 +1346,32 @@ effectIt.effect.each([
         !forks,
       );
       expect(harness.projection().providerThreads[0]?.handoffIds).toEqual(handoffIds);
+    }),
+);
+
+effectIt.effect(
+  "seeds a bound thread's binding on the row a busy parent's side chat falls back to",
+  () =>
+    Effect.gen(function* () {
+      const binding: OrchestrationV2EngineBinding = {
+        providerInstanceId: ProviderInstanceId.make("codex-personal"),
+        engine: "claude-lhc",
+        continuationKey: "claude-lhc:home:/lhc/home",
+        claudeHome: "/lhc/home",
+        compact: { trigger: 700_000, target: 140_000 },
+        nativeContinuation: "required",
+        compaction: "provider",
+      };
+      const harness = makeLocalCommandHarness({
+        text: "What is the main thread doing?",
+        sideChat: { contextRun: "current", nativeForkFrom: "busy" },
+        engineBinding: binding,
+      });
+
+      yield* harness.start;
+
+      expect(harness.forkThread).not.toHaveBeenCalled();
+      expect(harness.ensureSideChatThread.mock.calls[0]?.[0].engineBinding).toEqual(binding);
     }),
 );
 
