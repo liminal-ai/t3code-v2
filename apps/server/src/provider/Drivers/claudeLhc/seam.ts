@@ -44,6 +44,12 @@ const sidecarProgram = (runtime: ClaudeLhcRuntime): ClaudeProgram => ({
   args: [runtime.sidecar],
 });
 
+// LHC threads reopen after idle release, which outlasts Claude Code's default five-minute cache.
+const withLhcPromptCacheTtl = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
+  env.CLAUDE_CODE_PROMPT_CACHE_TTL === undefined
+    ? { ...env, CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" }
+    : env;
+
 const sidecarCommand = (program: ClaudeProgram, env: NodeJS.ProcessEnv | undefined) => ({
   command: program.command,
   args: [...program.args],
@@ -78,8 +84,10 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
           reason: binding === null ? "unbound" : "no-compact-policy",
         });
       }
+      const queryEnv = withLhcPromptCacheTtl(options.env ?? input.environment);
       return client.query(prompt, {
         ...options,
+        env: queryEnv,
         // Callbacks cannot cross to the sidecar, and the adapter's only SubagentStart callback is
         // the one it adds for a thread with device instructions.
         ...(hooks?.SubagentStart === undefined
@@ -88,7 +96,7 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
         lhc: {
           home,
           compact: binding.compact,
-          spawn: sidecarCommand(launch ?? sidecarProgram(input.runtime.success), options.env),
+          spawn: sidecarCommand(launch ?? sidecarProgram(input.runtime.success), queryEnv),
           spawnProcess: ({ command, args, env, signal }) => {
             const child = spawnClaudeCodeProcess({ command, args, env, signal });
             if (!(child instanceof NodeChildProcess.ChildProcess)) {
