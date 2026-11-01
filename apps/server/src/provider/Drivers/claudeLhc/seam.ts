@@ -13,6 +13,7 @@ import {
 } from "../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as ClaudeLhcClient from "./client.ts";
 import type { ClaudeLhcRuntime, ClaudeLhcRuntimeProblem } from "./runtime.ts";
+import { withSubagentDeviceHook } from "./subagentHook.ts";
 
 export class ClaudeLhcOpenRefusedError extends Schema.TaggedError<ClaudeLhcOpenRefusedError>()(
   "ClaudeLhcOpenRefusedError",
@@ -68,7 +69,7 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
   const seam: ClaudeQuerySeam = {
     program: () =>
       Result.isSuccess(input.runtime) ? sidecarProgram(input.runtime.success) : undefined,
-    createQuery: (prompt, { spawnClaudeCodeProcess, ...options }, thread, launch) => {
+    createQuery: (prompt, { spawnClaudeCodeProcess, hooks, ...options }, thread, launch) => {
       if (Result.isFailure(input.runtime)) throw input.runtime.failure;
       const binding = thread.engineBinding;
       if (binding === null || binding.compact === null) {
@@ -79,6 +80,11 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
       }
       return client.query(prompt, {
         ...options,
+        // Callbacks cannot cross to the sidecar, and the adapter's only SubagentStart callback is
+        // the one it adds for a thread with device instructions.
+        ...(hooks?.SubagentStart === undefined
+          ? {}
+          : { settings: withSubagentDeviceHook(options.settings) }),
         lhc: {
           home,
           compact: binding.compact,
