@@ -57,8 +57,51 @@ const unix = HostProcess.Platform.defaultValue() !== "win32";
 const DRIVER = ProviderDriverKind.make("claudeAgent");
 const INSTANCE_ID = ProviderInstanceId.make("claude-lhc");
 const PROJECT_ID = ProjectId.make("project:claude-lhc-harness");
-const MODEL = process.env.T3_CLAUDE_LHC_MODEL ?? "claude-sonnet-4-6";
+const MODEL = process.env.T3_CLAUDE_LHC_MODEL ?? "claude-haiku-5-5";
 const DEFAULT_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
+
+const LIVE_CREDENTIALS = [
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_BASE_URL",
+  "ANTHROPIC_API_KEY",
+  "CLAUDE_CODE_OAUTH_TOKEN",
+] as const;
+
+// The shared test setup deletes provider variables from process.env, so a live run reads its
+// credentials from the environment this worker process started with.
+const liveCredentials = (): NodeJS.ProcessEnv => {
+  const started = NodeFS.existsSync("/proc/self/environ")
+    ? new Map(
+        NodeFS.readFileSync("/proc/self/environ", "utf8")
+          .split("\0")
+          .map((entry) => [
+            entry.slice(0, entry.indexOf("=")),
+            entry.slice(entry.indexOf("=") + 1),
+          ]),
+      )
+    : new Map<string, string>();
+  const credentials = Object.fromEntries(
+    LIVE_CREDENTIALS.flatMap((name) => {
+      const value = process.env[name] ?? started.get(name);
+      return value === undefined ? [] : [[name, value]];
+    }),
+  );
+  const usable =
+    credentials.CLAUDE_CODE_OAUTH_TOKEN !== undefined ||
+    credentials.ANTHROPIC_API_KEY !== undefined ||
+    (credentials.ANTHROPIC_AUTH_TOKEN !== undefined &&
+      credentials.ANTHROPIC_BASE_URL !== undefined);
+  if (!usable) {
+    throw new Error(
+      "Live mode needs CLAUDE_CODE_OAUTH_TOKEN, ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN with ANTHROPIC_BASE_URL.",
+    );
+  }
+  return credentials;
+};
+
+class ProbeOpenFailed extends Schema.TaggedError<ProbeOpenFailed>()("ProbeOpenFailed", {
+  detail: Schema.String,
+}) {}
 const settled = new Set(["completed", "failed", "interrupted", "cancelled", "rolled_back"]);
 
 const FAKE_SDK = `
@@ -244,11 +287,11 @@ const makeHarness = Effect.fn("makeHarness")(function* (name: string, compact: H
   for (const directory of [stateDir, claudeHome]) {
     yield* fs.makeDirectory(directory, { recursive: true });
   }
-  const host = yield* HostProcess.Environment;
+  const { CLAUDE_LHC_NO_INFERENCE: _inherited, ...host } = yield* HostProcess.Environment;
   const environment: NodeJS.ProcessEnv = {
     ...host,
+    ...(LIVE ? liveCredentials() : { CLAUDE_LHC_NO_INFERENCE: "1" }),
     CLAUDE_CONFIG_DIR: claudeHome,
-    CLAUDE_LHC_NO_INFERENCE: "1",
   };
   if (!LIVE) {
     const sidecar = (yield* resolveClaudeLhcRuntime(environment)).sidecar;
@@ -271,7 +314,7 @@ const makeHarness = Effect.fn("makeHarness")(function* (name: string, compact: H
     pidFile: path.join(root, "sidecar-pids.txt"),
     sidecarLog: path.join(root, "sidecar.log"),
     environment,
-    binaryPath: process.env.CLAUDE_BIN ?? "claude",
+    binaryPath: process.env.T3_CLAUDE_LHC_BIN ?? "claude",
     native: recordingLogger(path.join(root, "native.log")),
   } satisfies Harness;
 });
@@ -683,20 +726,29 @@ const probeOpen = Effect.fn("probeOpen")(function* (
   });
   const opened = yield* Clock.currentTimeMillis;
   const init = yield* Deferred.make<number>();
-  const result = yield* Deferred.make<string>();
+  const result = yield* Deferred.make<string, ProbeOpenFailed>();
   yield* session.messages.pipe(
-    Stream.runForEach((message) =>
-      message.type === "system" && message.subtype === "init"
-        ? Clock.currentTimeMillis.pipe(Effect.flatMap((at) => Deferred.succeed(init, at)))
-        : message.type === "result"
-          ? Deferred.succeed(result, message.session_id)
-          : Effect.void,
-    ),
+    Stream.runForEach((message) => {
+      if (message.type === "system" && message.subtype === "init") {
+        return Clock.currentTimeMillis.pipe(Effect.flatMap((at) => Deferred.succeed(init, at)));
+      }
+      if (message.type !== "result") return Effect.void;
+      return message.subtype === "success" && !message.is_error
+        ? Deferred.succeed(result, message.session_id)
+        : Deferred.fail(
+            result,
+            new ProbeOpenFailed({
+              detail: `${input.kind} open ${input.round} ended with ${message.subtype}: ${
+                message.subtype === "success" ? message.result : message.errors.join("; ")
+              }`,
+            }),
+          );
+    }),
     Effect.forkScoped,
   );
   yield* session.offer(userMessage("Reply with only the word OK."));
-  const initAt = yield* Deferred.await(init);
   const sessionId = yield* Deferred.await(result);
+  const initAt = yield* Deferred.await(init);
   yield* session.close;
   return {
     kind: input.kind,
