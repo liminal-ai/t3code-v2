@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import {
   NodeId,
   ProviderDriverKind,
+  ProviderInstanceId,
   ProviderThreadId,
   ProviderTurnId,
   RunId,
@@ -107,6 +108,45 @@ it("shows why Claude LHC could not open the query", () => {
       },
     });
     assert.equal(makeProviderFailure({ cause: Cause.fail(cause) }).message, reason);
+  }
+});
+
+it("explains each continuation mismatch without ids, keys or homes", () => {
+  const lhcKey = "claude-lhc:home:/home/lee/.claude%3Alhc";
+  for (const [rowContinuationKey, instanceContinuationKey, says] of [
+    [
+      lhcKey,
+      null,
+      'This thread uses long-horizon context, but its Claude instance "claude-a" now runs as Claude Code.',
+    ],
+    [
+      lhcKey,
+      "claude-lhc:home:/home/lee/other",
+      'its Claude instance "claude-a" now uses a different Claude home.',
+    ],
+    [
+      null,
+      lhcKey,
+      'This thread runs on Claude Code, but its Claude instance "claude-a" now runs long-horizon context.',
+    ],
+  ] as const) {
+    const cause = new ProviderAdapter.ProviderAdapterEnsureThreadError({
+      driver: ProviderDriverKind.make("claudeAgent"),
+      threadId: ThreadId.make("thread:lhc"),
+      cause: new ProviderAdapter.ProviderAdapterContinuationMismatchError({
+        driver: ProviderDriverKind.make("claudeAgent"),
+        providerThreadId: ProviderThreadId.make("provider-thread:lhc%3Arun"),
+        providerInstanceId: ProviderInstanceId.make("claude-a"),
+        rowContinuationKey,
+        instanceContinuationKey,
+      }),
+    });
+    const { message } = makeProviderFailure({ cause: Cause.fail(cause) });
+    assert.include(message, says);
+    assert.include(message, "T3 Code won't continue it there, so its history is unchanged.");
+    for (const internal of ["provider-thread", "/", ":home:", "%3A"]) {
+      assert.notInclude(message, internal);
+    }
   }
 });
 

@@ -75,11 +75,14 @@ const normalize = (target: string) => {
   }
   return `/${parts.join("/")}`;
 };
-const layerWorktreeLocation = (worktreesDir = managedWorktreesDir) =>
+const layerWorktreeLocation = (
+  worktreesDir = managedWorktreesDir,
+  settings?: Parameters<typeof ServerSettings.layerTest>[0],
+) =>
   Layer.mergeAll(
     Path.layer,
     Layer.mock(ServerConfig.ServerConfig)({ worktreesDir } as ServerConfig.ServerConfig["Service"]),
-    ServerSettings.layerTest(),
+    ServerSettings.layerTest(settings),
   );
 
 function startWithMissingWorktree(
@@ -1719,7 +1722,11 @@ function makeRecoveryHarness(input: {
   readonly route: RecoveryRoute | "first_open";
   readonly bound?: boolean;
   readonly seed?: boolean;
-  readonly resumeFailure?: "mismatch";
+  readonly resumeFailure?: Pick<
+    ProviderAdapter.ProviderAdapterContinuationMismatchError,
+    "rowContinuationKey" | "instanceContinuationKey"
+  >;
+  readonly instanceDisplayName?: string;
 }) {
   const now = DateTime.makeUnsafe("2026-10-31T12:00:00Z");
   const driver = ProviderDriverKind.make("claudeAgent");
@@ -1917,13 +1924,12 @@ function makeRecoveryHarness(input: {
             providerSessionId,
             providerThreadId,
             cause:
-              input.resumeFailure === "mismatch"
+              input.resumeFailure !== undefined
                 ? new ProviderAdapter.ProviderAdapterContinuationMismatchError({
                     driver,
                     providerThreadId,
                     providerInstanceId: instanceId,
-                    rowContinuationKey: null,
-                    instanceContinuationKey: binding.continuationKey,
+                    ...input.resumeFailure,
                   })
                 : new ProviderAdapter.ProviderAdapterProtocolError({
                     driver,
@@ -1981,7 +1987,16 @@ function makeRecoveryHarness(input: {
             }),
         }),
         IdAllocator.layer,
-        layerWorktreeLocation(),
+        layerWorktreeLocation(
+          managedWorktreesDir,
+          input.instanceDisplayName === undefined
+            ? {}
+            : {
+                providerInstances: {
+                  [instanceId]: { driver, displayName: input.instanceDisplayName },
+                },
+              },
+        ),
         FileSystem.layerNoop({ exists: () => Effect.succeed(true) }),
         Layer.mock(GitWorkflow.GitWorkflowService)({}),
         Layer.mock(ProjectService.ProjectService)({}),
@@ -2067,22 +2082,72 @@ for (const route of recoveryRoutes) {
   );
 }
 
-effectIt.effect("refuses a fresh session when an unbound row's resume reports a mismatch", () =>
-  Effect.gen(function* () {
-    const harness = makeRecoveryHarness({ route: "resume_failed", resumeFailure: "mismatch" });
+const lhcContinuationKey = "claude-lhc:home:/home/lee/.pstack/lane9%3Ahome";
+const continuationMismatchKinds = [
+  {
+    kind: "an LHC row's instance now runs Claude Code",
+    keys: { rowContinuationKey: lhcContinuationKey, instanceContinuationKey: null },
+    text: (instance: string) =>
+      `This thread uses long-horizon context, but its Claude instance "${instance}" now runs as Claude Code. T3 Code won't continue it there, so its history is unchanged. Set the instance back to Long-horizon context, or switch this thread to an LHC instance.`,
+  },
+  {
+    kind: "an LHC row's instance now uses another Claude home",
+    keys: {
+      rowContinuationKey: lhcContinuationKey,
+      instanceContinuationKey: "claude-lhc:home:/home/lee/other%3Ahome",
+    },
+    text: (instance: string) =>
+      `This thread uses long-horizon context, but its Claude instance "${instance}" now uses a different Claude home. T3 Code won't continue it there, so its history is unchanged. Set the instance's CLAUDE_CONFIG_DIR path back, or switch this thread to an LHC instance on its original home.`,
+  },
+  {
+    kind: "a stock row's instance now runs LHC",
+    keys: { rowContinuationKey: null, instanceContinuationKey: lhcContinuationKey },
+    text: (instance: string) =>
+      `This thread runs on Claude Code, but its Claude instance "${instance}" now runs long-horizon context. T3 Code won't continue it there, so its history is unchanged. Set the instance back to Claude Code, or switch this thread to a Claude Code instance.`,
+  },
+] as const;
 
-    yield* harness.start;
+for (const { kind, keys, text } of continuationMismatchKinds) {
+  for (const instanceDisplayName of ["Lane 9 LHC", undefined]) {
+    const named = instanceDisplayName === undefined ? "its id" : "its display name";
+    effectIt.effect(`refuses a resume where ${kind} in plain text naming ${named}`, () => {
+      const warnings: Array<unknown> = [];
+      const logger = Logger.make(({ logLevel, message }) => {
+        if (logLevel === "Warn") warnings.push(message);
+      });
+      return Effect.gen(function* () {
+        const harness = makeRecoveryHarness({
+          route: "resume_failed",
+          resumeFailure: keys,
+          ...(instanceDisplayName === undefined ? {} : { instanceDisplayName }),
+        });
 
-    expect(harness.freshAllocations()).toBe(0);
-    expect(harness.startRootRun).not.toHaveBeenCalled();
-    const text = failureText(harness.projection());
-    expect(text).toContain("(resume_failed)");
-    expect(text).toContain("continues as stock, but instance claude-lhc continues as");
-    expect(harness.projection().providerThreads[0]?.nativeThreadRef?.nativeId).toBe(
-      "native-original",
-    );
-  }),
-);
+        yield* harness.start;
+
+        expect(harness.freshAllocations()).toBe(0);
+        expect(harness.startRootRun).not.toHaveBeenCalled();
+        const failure = failureText(harness.projection()) ?? "";
+        expect(failure).toBe(text(instanceDisplayName ?? "claude-lhc"));
+        for (const internal of [
+          "provider-thread-continuation",
+          "native-original",
+          "/",
+          ":home:",
+          "%3A",
+          "resume_failed",
+        ]) {
+          expect(failure).not.toContain(internal);
+        }
+        expect(JSON.stringify(warnings)).toContain(
+          `provider thread provider-thread-continuation continues as ${keys.rowContinuationKey ?? "stock"}`,
+        );
+        expect(harness.projection().providerThreads[0]?.nativeThreadRef?.nativeId).toBe(
+          "native-original",
+        );
+      }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
+    });
+  }
+}
 
 effectIt.effect("leaves a refused bound run starting when the start will be retried", () =>
   Effect.gen(function* () {
