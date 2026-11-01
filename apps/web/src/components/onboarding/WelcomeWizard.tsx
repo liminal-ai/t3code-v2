@@ -1,6 +1,7 @@
 import { useAuth } from "@clerk/react";
 import { useAtomValue } from "@effect/atom-react";
 import type {
+  AgentSessionHomeDiagnostic,
   AgentSessionProjectCandidate,
   EnvironmentId,
   ProjectId,
@@ -106,6 +107,27 @@ const NO_ENVIRONMENTS: readonly EnvironmentId[] = [];
 const AGENT_ONBOARDING_THREAD_ID = ThreadId.make("onboarding-agent-setup");
 const ONBOARDING_STAGES = ["Connect", "Agents", "Projects"] as const;
 const SCAN_LIMIT_MESSAGE = "Scan limit reached. Some projects or conversations may be missing.";
+
+function formatList(items: ReadonlyArray<string>): string {
+  if (items.length <= 2) return items.join(" and ");
+  return `${items.slice(0, -1).join(", ")}, and ${items.at(-1)}`;
+}
+
+function describeLhcHome(
+  diagnostic: AgentSessionHomeDiagnostic,
+  outcome: "hidden" | "not imported",
+): string {
+  const one = diagnostic.sessionCount === 1;
+  const sessions = `${diagnostic.sessionCount} ${one ? "session" : "sessions"} in ${diagnostic.claudeHome}`;
+  const verb = outcome === "hidden" ? (one ? "is" : "are") : one ? "was" : "were";
+  const single = diagnostic.lhcInstanceIds.length === 1;
+  const instances = `LHC ${single ? "instance" : "instances"} ${formatList(diagnostic.lhcInstanceIds)} ${single ? "uses" : "use"} this home`;
+  const reason =
+    diagnostic.reason === "lhc-managed"
+      ? `${one ? "that session belongs" : "those sessions belong"} to LHC`
+      : `${single ? "its" : "their"} LHC store ${diagnostic.reason === "lhc-store-missing" ? "is missing" : "could not be read"}`;
+  return `${sessions} ${verb} ${outcome}. ${instances}, and ${reason}.`;
+}
 
 export function WelcomeWizard({
   localAvailable,
@@ -1293,6 +1315,7 @@ function ImportStep({
         : 0;
     let importedThreadCount = 0;
     let skippedThreadCount = 0;
+    const refusals = new Map<string, AgentSessionHomeDiagnostic>();
     const refreshEnvironments = new Set<EnvironmentId>();
     for (const candidate of selection) {
       const { environmentId } = candidate;
@@ -1362,6 +1385,11 @@ function ImportStep({
       if (threadImportResult._tag === "Success") {
         importedThreadCount += threadImportResult.value.importedCount;
         skippedThreadCount += threadImportResult.value.skippedCount;
+        for (const refusal of threadImportResult.value.refused ?? []) {
+          const key = `${environmentId}\0${refusal.claudeHome}\0${refusal.reason}`;
+          const sessionCount = (refusals.get(key)?.sessionCount ?? 0) + refusal.sessionCount;
+          refusals.set(key, { ...refusal, sessionCount });
+        }
         if (threadImportResult.value.importedCount > 0) {
           projectsWithImportedHistoryRef.current.set(
             candidate.key,
@@ -1391,6 +1419,9 @@ function ImportStep({
         importWarningRef.current = `Imported ${importedThreadCount} ${importedThreadCount === 1 ? "thread" : "threads"}. Some thread history could not be imported.`;
       } else {
         importWarningRef.current = "Could not import thread history.";
+      }
+      for (const refusal of refusals.values()) {
+        importWarningRef.current += ` ${describeLhcHome(refusal, "not imported")}`;
       }
     }
     finishAfterImport();
@@ -1478,7 +1509,7 @@ function ImportStep({
                       Retry
                     </Button>
                   </div>
-                ) : scanCandidates.length === 0 ? (
+                ) : scanCandidates.length === 0 && !scan.data?.diagnostics?.length ? (
                   <p className="py-2 text-sm text-muted-foreground">
                     No existing Claude Code or Codex projects found.
                   </p>
@@ -1488,6 +1519,15 @@ function ImportStep({
                     {SCAN_LIMIT_MESSAGE}
                   </p>
                 ) : null}
+                {scan.data?.diagnostics?.map((diagnostic) => (
+                  <p
+                    key={`${diagnostic.claudeHome}\0${diagnostic.reason}`}
+                    className="text-xs text-muted-foreground"
+                    role="status"
+                  >
+                    {describeLhcHome(diagnostic, "hidden")}
+                  </p>
+                ))}
                 <ImportCandidateList
                   candidates={scanCandidates}
                   selectedKeys={selectedKeys}

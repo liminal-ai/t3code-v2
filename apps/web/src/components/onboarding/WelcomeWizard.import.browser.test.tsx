@@ -4,6 +4,8 @@ import {
   AuthOrchestrationReadScope,
   EnvironmentId,
   ProjectId,
+  ProviderInstanceId,
+  type AgentSessionHomeDiagnostic,
   type AgentSessionProjectCandidate,
   type AuthEnvironmentScope,
   type AuthSessionState,
@@ -27,6 +29,7 @@ const state = vi.hoisted(() => ({
   providers: null as unknown,
   config: null as unknown,
   candidates: [] as AgentSessionProjectCandidate[],
+  diagnostics: undefined as AgentSessionHomeDiagnostic[] | undefined,
   createProject: vi.fn(),
   importThreads: vi.fn(),
   refreshProviders: vi.fn(),
@@ -106,7 +109,11 @@ vi.mock(import("../../onboarding/useProjectScans"), async (original) => ({
       state.scan({ environmentId });
       return {
         environmentId,
-        data: { candidates: state.candidates, truncated: false } as never,
+        data: {
+          candidates: state.candidates,
+          truncated: false,
+          ...(state.diagnostics === undefined ? {} : { diagnostics: state.diagnostics }),
+        } as never,
         isPending: false,
         error: null,
         refresh: state.refreshScan,
@@ -129,6 +136,7 @@ vi.mock(import("../settings/ChatGptWelcomeCoordinator"), async (original) => ({
 }));
 
 import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { toastManager } from "../ui/toast";
 import { WelcomeWizard } from "./WelcomeWizard";
 
 const primaryId = EnvironmentId.make("primary");
@@ -266,6 +274,7 @@ function setup() {
   state.providers = Atom.make<ReadonlyArray<never>>([]).pipe(Atom.keepAlive);
   state.config = Atom.make(null).pipe(Atom.keepAlive);
   state.candidates = [candidate("/projects/first"), candidate("/projects/second")];
+  state.diagnostics = undefined;
   state.createProject
     .mockReset()
     .mockImplementation(async (input: CreateProjectInput) => recordProject(input));
@@ -347,4 +356,81 @@ it("finishes setup without landing when the imported project never reaches the c
   await click("Import 1 project");
   await vi.waitFor(() => expect(state.onDone).toHaveBeenCalledOnce());
   expect(state.onDone).toHaveBeenCalledWith(undefined);
+});
+
+const EMPTY_SCAN_MESSAGE = "No existing Claude Code or Codex projects found.";
+const sharedHome = {
+  claudeHome: "/home/lee/.claude-work",
+  lhcInstanceIds: [ProviderInstanceId.make("lhc-work")],
+} as const;
+
+function statusLines() {
+  return [...document.querySelectorAll('[role="status"]')].map((element) => element.textContent);
+}
+
+it("shows a withheld home beside the candidates from other homes", async () => {
+  using _now = setup();
+  state.candidates = state.candidates.slice(0, 1);
+  state.diagnostics = [{ ...sharedHome, reason: "lhc-store-missing", sessionCount: 12 }];
+  await using _screen = await mountImport();
+
+  expect(statusLines()).toContain(
+    "12 sessions in /home/lee/.claude-work are hidden. LHC instance lhc-work uses this home, and its LHC store is missing.",
+  );
+  expect(pageText()).toContain("first");
+  expect(pageText()).not.toContain(EMPTY_SCAN_MESSAGE);
+});
+
+it("shows only the diagnostic when every home was withheld", async () => {
+  using _now = setup();
+  state.candidates = [];
+  state.diagnostics = [
+    {
+      ...sharedHome,
+      lhcInstanceIds: [ProviderInstanceId.make("lhc-work"), ProviderInstanceId.make("lhc-night")],
+      reason: "lhc-store-unreadable",
+      detail: "LHC registry read failed",
+      sessionCount: 1,
+    },
+  ];
+  await using _screen = await mountImport();
+
+  expect(statusLines()).toContain(
+    "1 session in /home/lee/.claude-work is hidden. LHC instances lhc-work and lhc-night use this home, and their LHC store could not be read.",
+  );
+  expect(pageText()).not.toContain(EMPTY_SCAN_MESSAGE);
+});
+
+it("renders a scan without diagnostics as before", async () => {
+  using _now = setup();
+  state.candidates = [];
+  await using _screen = await mountImport();
+
+  expect(pageText()).toContain(EMPTY_SCAN_MESSAGE);
+  expect(pageText()).not.toContain("LHC");
+});
+
+it("says how many sessions an import refused and why", async () => {
+  using _now = setup();
+  using toast = vi.spyOn(toastManager, "add");
+  state.candidates = state.candidates.slice(0, 1);
+  state.importThreads.mockResolvedValue(
+    AsyncResult.success({
+      importedCount: 1,
+      skippedCount: 2,
+      refused: [{ ...sharedHome, reason: "lhc-managed", sessionCount: 2 }],
+    }),
+  );
+  await using _screen = await mountImport();
+  await click("Import 1 project");
+
+  await vi.waitFor(() =>
+    expect(toast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "warning",
+        description:
+          "Imported 1 thread. 2 threads could not be imported. 2 sessions in /home/lee/.claude-work were not imported. LHC instance lhc-work uses this home, and those sessions belong to LHC.",
+      }),
+    ),
+  );
 });
