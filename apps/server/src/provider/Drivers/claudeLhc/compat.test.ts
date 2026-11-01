@@ -1,5 +1,19 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
+import { ProviderSessionId, ThreadId } from "@t3tools/contracts";
+import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEventLoggers";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import * as TestClock from "effect/testing/TestClock";
 
+import {
+  makeClaudeAgentSdkQueryRunner,
+  type ClaudeQuerySeam,
+} from "../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as PortScanner from "../../../preview/PortScanner.ts";
+import { query, type ClaudeRunnerQuery } from "./client.ts";
 import { stockMessage } from "./compat.ts";
 
 // The sidecar sends each SDK message as one JSON line, as these are.
@@ -59,4 +73,83 @@ describe("stockMessage", () => {
     expect(wire(status)).toEqual(status);
     expect(wire(USER)).toEqual(USER);
   });
+});
+
+// A sidecar that never answers on its first start and answers every control on its second.
+const STUB_SIDECAR = `
+import { createInterface } from "node:readline";
+const answers = process.argv[2] === "answer";
+createInterface({ input: process.stdin }).on("line", (line) => {
+  const frame = JSON.parse(line);
+  if (answers && frame.type === "req") {
+    const value = { added: [], removed: [], errors: {} };
+    process.stdout.write(JSON.stringify({ type: "res", id: frame.id, ok: true, value }) + "\\n");
+  }
+});
+process.stdin.on("end", () => process.exit(0));
+`;
+
+describe("claudeRunnerQuery", () => {
+  it.effect("closes a failed open's claude-lhc query on dispose, so the runner retries it", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const home = yield* fs.makeTempDirectoryScoped();
+      const sidecar = path.join(home, "sidecar.mjs");
+      yield* fs.writeFileString(sidecar, STUB_SIDECAR);
+      const queries: Array<ClaudeRunnerQuery> = [];
+      const registering = Promise.withResolvers<void>();
+      const seam: ClaudeQuerySeam = {
+        program: () => undefined,
+        createQuery: (prompt, { spawnClaudeCodeProcess: _spawn, ...options }) => {
+          const mode = queries.length === 0 ? "stall" : "answer";
+          const opened = query(prompt, {
+            ...options,
+            lhc: { home, spawn: { command: process.execPath, args: [sidecar, mode] } },
+          });
+          queries.push(opened);
+          return {
+            ...opened,
+            setMcpServers: (servers) => {
+              registering.resolve();
+              return opened.setMcpServers(servers);
+            },
+          };
+        },
+        forkSession: () => Effect.die("unused"),
+        subagentLaunchToolUseId: () => Effect.die("unused"),
+      };
+      const runner = yield* makeClaudeAgentSdkQueryRunner(seam).pipe(
+        Effect.provideService(ProviderEventLoggers, { native: undefined, canonical: undefined }),
+        Effect.provide(PortScanner.layerTest),
+      );
+
+      const opening = yield* runner
+        .open({
+          providerSessionId: ProviderSessionId.make("session-lhc-registration"),
+          thread: { appThreadId: ThreadId.make("thread-lhc-registration"), engineBinding: null },
+          options: {
+            resume: "native-session",
+            model: "claude-sonnet-4-6",
+            tools: [],
+            permissionMode: "default",
+            mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1:9/mcp" } },
+          },
+        })
+        .pipe(Effect.forkChild);
+      yield* Effect.promise(() => registering.promise);
+      yield* TestClock.adjust("90 seconds");
+      const session = yield* Fiber.join(opening);
+      yield* Effect.addFinalizer(() => session.close.pipe(Effect.orDie));
+
+      expect(queries).toHaveLength(2);
+      const stalled = yield* Effect.promise(() =>
+        queries[0]!.setModel("claude-sonnet-5").then(
+          () => "open",
+          (cause: Error) => cause.message,
+        ),
+      );
+      expect(stalled).toBe("claude-lhc sidecar is closed");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  );
 });

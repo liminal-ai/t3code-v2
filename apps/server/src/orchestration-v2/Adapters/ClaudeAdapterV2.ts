@@ -143,6 +143,7 @@ import {
   rowEngineBinding,
   stampEngineBinding,
 } from "../../provider/Drivers/claudeLhc/binding.ts";
+import type { ClaudeRunnerQuery } from "../../provider/Drivers/claudeLhc/compat.ts";
 import {
   adoptClaudeGeneration,
   CLAUDE_CONTEXT_REBUILT_NOTE,
@@ -688,7 +689,7 @@ export interface ClaudeQuerySeam {
     options: ClaudeSeamQueryOptions,
     thread: ClaudeThreadContext,
     launch: ClaudeProgram | undefined,
-  ) => ClaudeQuery;
+  ) => ClaudeRunnerQuery;
   readonly forkSession: (
     input: ClaudeAgentSdkSessionForkInput,
   ) => Effect.Effect<ClaudeSeamFork, ClaudeAgentSdkQueryRunnerError>;
@@ -712,7 +713,7 @@ function queryRunnerError(cause: unknown, method: string): ClaudeAgentSdkQueryRu
     : new ClaudeAgentSdkQueryRunnerError({ cause, method });
 }
 
-function closeClaudeQuery(queryRuntime: ClaudeQuery) {
+function closeClaudeQuery(queryRuntime: ClaudeRunnerQuery) {
   return Effect.try({
     try: () => queryRuntime.close(),
     catch: (cause) => queryRunnerError(cause, "close"),
@@ -720,7 +721,9 @@ function closeClaudeQuery(queryRuntime: ClaudeQuery) {
 }
 
 // Iterate Query itself: the raw generator's return() queues behind a pending CLI read and deadlocks interruption.
-export function claudeQueryMessages(queryRuntime: ClaudeQuery): AsyncIterable<SDKMessage, void> {
+export function claudeQueryMessages(
+  queryRuntime: ClaudeRunnerQuery,
+): AsyncIterable<SDKMessage, void> {
   return { [Symbol.asyncIterator]: () => queryRuntime };
 }
 

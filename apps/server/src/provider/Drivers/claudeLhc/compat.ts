@@ -99,7 +99,8 @@ export function claudeRunnerQuery(query: LhcQuery): ClaudeRunnerQuery {
   return {
     next: () => query.next().then(stockResult),
     return: () => query.return().then(stockResult),
-    [Symbol.asyncDispose]: () => query[Symbol.asyncDispose](),
+    // claude-lhc 0.2.0's handle lacks the `Symbol.asyncDispose` its `Query` type promises.
+    [Symbol.asyncDispose]: async () => query.close(),
     setMcpServers: (servers) => query.setMcpServers(withoutInProcessMcpServers(servers)),
     setModel: (model) => query.setModel(model),
     applyFlagSettings: (settings) => query.applyFlagSettings(settings),
