@@ -24,6 +24,11 @@ not run until you fix it, and they never run as stock Claude.
 LHC runs from the CLI releases for Linux x64, Linux arm64 and macOS on Apple silicon. On any other
 platform an LHC instance shows `LHC runtime not staged for <platform>`.
 
+When an LHC instance cannot run, its card shows why, for example `claude-lhc sidecar not found at
+<path>.` A message you send to one of its threads fails with the same text. After you fix the cause,
+restart T3 Code if the card still shows the problem. The next message continues the thread in its
+own session.
+
 ## When a thread's values are set
 
 Each thread keeps the trigger and target it was created with. T3 Code creates a new thread when you
@@ -32,7 +37,8 @@ A fork takes its source thread's values at once. Changing an instance's trigger 
 changes only threads created after the change.
 
 A thread whose first message was sent while the instance's values were empty or invalid has no LHC
-values and cannot run. Fix the instance, then start a new thread.
+values and cannot run, even after you fix the instance. Its messages then fail with `... because its
+engine binding has no compact policy.` Fix the instance, then start a new thread.
 
 ## How LHC threads differ from stock Claude
 
@@ -53,7 +59,19 @@ and starts a new session there, as it does between any two instances.
 
 A thread stays with its instance's engine and Claude home. If you set an instance's **Context** to
 **Claude Code**, change its Claude home, disable it or delete it, its LHC threads show the instance
-as unavailable and do not run. Restore the instance to continue them.
+as unavailable and do not run. A message that reaches such a thread anyway, for example one sent with
+the `t3` CLI, fails with a message that names the instance and what changed:
+
+> This thread uses long-horizon context, but its Claude instance "Claude LHC" now uses a different
+> Claude home. T3 Code won't continue it there, so its history is unchanged. Set the instance's
+> CLAUDE_CONFIG_DIR path back, or switch this thread to an LHC instance on its original home.
+
+The same applies the other way. If you set a Claude Code instance's **Context** to LHC, a message to
+one of its existing threads fails with `This thread runs on Claude Code, but its Claude instance
+"<name>" now runs long-horizon context.`
+
+Restore the instance to continue a thread in its own session. If the thread still refuses after the
+instance is restored, restart T3 Code.
 
 Keep at least one LHC instance on a Claude home while that home holds LHC sessions. A disabled LHC
 instance counts. If you delete the last LHC instance on a home, set its **Context** to **Claude
