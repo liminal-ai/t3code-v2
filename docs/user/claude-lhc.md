@@ -21,8 +21,8 @@ above 80% of the model's context window, LHC compacts at 80% instead, down to at
 An instance with an empty or invalid LHC field shows an error that names the field. Its threads do
 not run until you fix it, and they never run as stock Claude.
 
-LHC runs from the CLI releases for Linux x64, Linux arm64 and macOS on Apple silicon. On any other
-platform an LHC instance shows `LHC runtime not staged for <platform>`.
+LHC runs from the CLI releases and the desktop app for Linux x64, Linux arm64 and macOS on Apple
+silicon. On any other platform an LHC instance shows `LHC runtime not staged for <platform>`.
 
 When an LHC instance cannot run, its card shows why, for example `claude-lhc sidecar not found at
 <path>.` A message you send to one of its threads fails with the same text. After you fix the cause,
