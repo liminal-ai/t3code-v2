@@ -2,7 +2,7 @@
 
 This repository is Lee's fork of `pingdotgg/t3code`. It builds the T3 Code server that runs as v2 prod on this machine. Read this file before you merge from upstream, before you push, when you set up a PR, and before you merge one.
 
-Last synced: upstream nightly `v0.1.8-nightly.20261106.4275` (`6577c6b618`), merged as `41c1f83b54` on the branch of PR #SYNCPR. Lee asked for the latest nightly in retro round 2026-11-06. The syncs before this one were nightly `v0.1.7-nightly.20261101.4016` (`7195b69954`, merged as `d2ed236ff2` in PR #72), stable `v0.1.5` (`6d450a4284`, the same commit as `v0.1.5-nightly.20261029.3877`, merged as `e36c7f23a5` in PR #50), nightly `v0.1.4-nightly.20261028.3824` (`eb751fa073`, merged as `fb48715408` in PR #45), nightly `v0.1.4-nightly.20261027.3770` (`7c3b3b3605`, merged as `7916969d50` in PR #40) and stable `v0.1.2` (PR #27). Update this line in the PR that lands the next sync.
+Last synced: upstream nightly `v0.1.8-nightly.20261106.4275` (`6577c6b618`), merged as `41c1f83b54` on the branch of PR #76. Lee asked for the latest nightly in retro round 2026-11-06. The syncs before this one were nightly `v0.1.7-nightly.20261101.4016` (`7195b69954`, merged as `d2ed236ff2` in PR #72), stable `v0.1.5` (`6d450a4284`, the same commit as `v0.1.5-nightly.20261029.3877`, merged as `e36c7f23a5` in PR #50), nightly `v0.1.4-nightly.20261028.3824` (`eb751fa073`, merged as `fb48715408` in PR #45), nightly `v0.1.4-nightly.20261027.3770` (`7c3b3b3605`, merged as `7916969d50` in PR #40) and stable `v0.1.2` (PR #27). Update this line in the PR that lands the next sync.
 
 ## What the fork adds
 
