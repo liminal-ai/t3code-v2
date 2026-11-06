@@ -53,10 +53,13 @@ export function idleCompactionWindow(
   if (!isListedThreadLineage(thread.lineage)) return null;
   // A provider that owns compaction compacts at its own trigger, not Claude's.
   if (thread.engineBinding?.compaction === "provider") return null;
-  const latestRun = runs.reduce<(typeof runs)[number] | null>(
-    (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
-    null,
-  );
+  // A removed or steered queued message leaves a cancelled run that never started.
+  const latestRun = runs
+    .filter((run) => run.status !== "cancelled" || run.startedAt !== null)
+    .reduce<(typeof runs)[number] | null>(
+      (latest, run) => (latest === null || run.ordinal > latest.ordinal ? run : latest),
+      null,
+    );
   if (latestRun?.status !== "completed" || latestRun.completedAt === null) return null;
   const message = messages.find((candidate) => candidate.id === latestRun.userMessageId);
   // Never compact a compaction, so one idle spell compacts at most once.

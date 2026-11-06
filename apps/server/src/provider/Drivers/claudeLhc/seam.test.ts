@@ -9,6 +9,7 @@ import {
   ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 
@@ -63,6 +64,8 @@ const idleQuery: ClaudeRunnerQuery = {
   backgroundTasks: () => Promise.resolve(false),
   interrupt: () => Promise.resolve(undefined),
   close: () => {},
+  mcpServerStatus: () => Promise.resolve([]),
+  readMcpResource: () => Promise.resolve({ contents: [] }),
 };
 
 const prompt: AsyncIterable<SDKUserMessage> = (async function* () {})();
@@ -194,6 +197,36 @@ describe("makeClaudeLhcSeam", () => {
       assert.strictEqual(sidecar.spawnProcess?.(spawnOptions), child);
       assert.deepEqual(spawner.spawned, [spawnOptions]);
     }),
+  );
+
+  it.effect(
+    "starts the sidecar on the server's ELECTRON_RUN_AS_NODE and keeps it from the CLI",
+    () =>
+      Effect.gen(function* () {
+        const recorded = recordingClient();
+        const lhc = yield* seam(recorded.client).pipe(
+          Effect.provideService(HostProcess.Environment, { ELECTRON_RUN_AS_NODE: "1" }),
+        );
+        lhc.createQuery(
+          prompt,
+          queryOptions(recordingSpawner().spawnClaudeCodeProcess),
+          thread("thread-a", binding(40_000, 20_000)),
+          LAUNCH,
+        );
+        yield* lhc.forkSession({
+          sessionId: "native-session",
+          options: {},
+          environment: QUERY_ENV,
+          providerSessionId: ProviderSessionId.make("session"),
+          thread: thread("thread-fork", binding(40_000, 20_000)),
+        });
+        const [query] = recorded.queries;
+        const [[, fork] = []] = recorded.forks;
+        assert.deepEqual(query?.lhc.spawn?.env, { ...LHC_QUERY_ENV, ELECTRON_RUN_AS_NODE: "1" });
+        assert.deepEqual(query?.env, LHC_QUERY_ENV);
+        assert.deepEqual(fork?.lhc?.spawn?.env, { ...QUERY_ENV, ELECTRON_RUN_AS_NODE: "1" });
+        assert.deepEqual(fork?.env, QUERY_ENV);
+      }),
   );
 
   it.effect("gives the CLI a one-hour prompt cache unless the query env already names a TTL", () =>

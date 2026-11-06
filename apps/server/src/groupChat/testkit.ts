@@ -480,7 +480,6 @@ export const makeFakeThreads = Effect.sync(() => {
       const t = yield* thread(threadId);
       const cut = runOf(t, runId);
       cut.status = "cancelled";
-      yield* Deferred.succeed(cut.ended, undefined);
       const continuation = yield* newRun({
         messageId: cut.messageId,
         text: cut.text,
@@ -490,6 +489,8 @@ export const makeFakeThreads = Effect.sync(() => {
         own: cut.own,
       });
       t.runs.push(continuation);
+      // The real port's wait sees the pending continuation effect, so a waiter never observes the cut run alone.
+      yield* Deferred.succeed(cut.ended, undefined);
       yield* signal(t);
       return continuation;
     }),

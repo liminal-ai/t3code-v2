@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -62,8 +63,9 @@ const modelSelection = {
   model: "gpt-5.4",
 } satisfies ModelSelection;
 
-const layerPlatformTest = Layer.merge(
+const layerPlatformTest = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -718,7 +720,7 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
 
         const config = yield* ServerConfig.ServerConfig;
         const port = yield* GroupChatThreadPort;
-        const rebooted = yield* Effect.flatMap(
+        const rebooted = yield* Effect.map(
           Layer.build(
             Layer.fresh(GroupChat.layer).pipe(
               Layer.provide(Layer.succeed(GroupChatThreadPort, port)),
@@ -729,7 +731,7 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
               Layer.provide(NodeServices.layer),
             ),
           ),
-          (context) => Effect.succeed(Context.get(context, GroupChat.GroupChat)),
+          (context) => Context.get(context, GroupChat.GroupChat),
         ).pipe(Effect.orDie);
         const engine = yield* rebooted.engine.pipe(Effect.orDie);
         const store = yield* rebooted.store.pipe(Effect.orDie);

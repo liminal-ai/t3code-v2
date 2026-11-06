@@ -4,6 +4,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -28,7 +29,6 @@ import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -38,6 +38,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 
 import * as ClaudeAdapterV2 from "../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
@@ -52,6 +53,7 @@ import { makeClaudeLhcSeam } from "./seam.ts";
 
 const LIVE = process.env.T3_CLAUDE_LHC_LIVE === "1";
 const EVIDENCE_DIR = process.env.T3_CLAUDE_LHC_EVIDENCE;
+const LHC_BIN = process.env.T3_CLAUDE_LHC_BIN ?? "claude";
 const unix = HostProcess.Platform.defaultValue() !== "win32";
 
 const DRIVER = ProviderDriverKind.make("claudeAgent");
@@ -314,7 +316,7 @@ const makeHarness = Effect.fn("makeHarness")(function* (name: string, compact: H
     pidFile: path.join(root, "sidecar-pids.txt"),
     sidecarLog: path.join(root, "sidecar.log"),
     environment,
-    binaryPath: process.env.T3_CLAUDE_LHC_BIN ?? "claude",
+    binaryPath: LHC_BIN,
     native: recordingLogger(path.join(root, "native.log")),
   } satisfies Harness;
 });
@@ -371,7 +373,7 @@ const makeAdapter = Effect.fn("makeAdapter")(function* (harness: Harness) {
     attachmentsDir: harness.cwd,
     fileSystem: yield* FileSystem.FileSystem,
     path: yield* Path.Path,
-    crypto: yield* Crypto.Crypto,
+    random: yield* SecureRandom.SecureRandom,
     idAllocator: yield* IdAllocator.IdAllocatorV2,
     queryRunner,
     capabilities: instance.capabilities,
@@ -413,7 +415,14 @@ const serverLifetime = (harness: Harness) => {
         ),
       ),
     ),
-    Layer.provide(Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer)),
+    Layer.provide(
+      Layer.mergeAll(
+        IdAllocator.layer,
+        McpProviderSessions.layer,
+        NodeServices.layer,
+        NodeCrypto.layer,
+      ),
+    ),
   );
   return ProviderReplayHarness.layerWithRegistry(
     { name: "claude-lhc-harness", runtimePolicyOverride: { cwd: harness.cwd } },
@@ -529,6 +538,7 @@ const harnessLayer = Layer.mergeAll(
   IdAllocator.layer,
   McpProviderSessions.layer,
   NodeServices.layer,
+  NodeCrypto.layer,
 );
 
 describe.runIf(unix)("Claude LHC through the real adapter, runner and sidecar", () => {

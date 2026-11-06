@@ -12,7 +12,11 @@ import {
   type ClaudeQuerySeam,
 } from "../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as ClaudeLhcClient from "./client.ts";
-import type { ClaudeLhcRuntime, ClaudeLhcRuntimeProblem } from "./runtime.ts";
+import {
+  claudeLhcSidecarEnvironment,
+  type ClaudeLhcRuntime,
+  type ClaudeLhcRuntimeProblem,
+} from "./runtime.ts";
 import { withSubagentDeviceHook } from "./subagentHook.ts";
 
 export class ClaudeLhcOpenRefusedError extends Schema.TaggedError<ClaudeLhcOpenRefusedError>()(
@@ -50,10 +54,14 @@ const withLhcPromptCacheTtl = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv =>
     ? { ...env, CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" }
     : env;
 
-const sidecarCommand = (program: ClaudeProgram, env: NodeJS.ProcessEnv | undefined) => ({
+const sidecarCommand = (
+  program: ClaudeProgram,
+  env: NodeJS.ProcessEnv | undefined,
+  sidecarEnvironment: NodeJS.ProcessEnv,
+) => ({
   command: program.command,
   args: [...program.args],
-  ...(env === undefined ? {} : { env }),
+  ...(env === undefined ? {} : { env: { ...env, ...sidecarEnvironment } }),
 });
 
 export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
@@ -62,6 +70,7 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
   const path = yield* Path.Path;
   const home = path.join(input.stateDir, "lhc");
   const client = input.client ?? ClaudeLhcClient;
+  const sidecarEnvironment = yield* claudeLhcSidecarEnvironment;
   const resolvedRuntime = (method: string) =>
     Effect.fromResult(input.runtime).pipe(
       Effect.mapError((cause) => new ClaudeAgentSdkQueryRunnerError({ method, cause })),
@@ -69,7 +78,7 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
   const operationStore = (runtime: ClaudeLhcRuntime, env: NodeJS.ProcessEnv) => ({
     env,
     pathToClaudeCodeExecutable: input.binaryPath,
-    lhc: { home, spawn: sidecarCommand(sidecarProgram(runtime), env) },
+    lhc: { home, spawn: sidecarCommand(sidecarProgram(runtime), env, sidecarEnvironment) },
   });
 
   const seam: ClaudeQuerySeam = {
@@ -96,7 +105,11 @@ export const makeClaudeLhcSeam = Effect.fn("makeClaudeLhcSeam")(function* (
         lhc: {
           home,
           compact: binding.compact,
-          spawn: sidecarCommand(launch ?? sidecarProgram(input.runtime.success), queryEnv),
+          spawn: sidecarCommand(
+            launch ?? sidecarProgram(input.runtime.success),
+            queryEnv,
+            sidecarEnvironment,
+          ),
           spawnProcess: ({ command, args, env, signal }) => {
             const child = spawnClaudeCodeProcess({ command, args, env, signal });
             if (!(child instanceof NodeChildProcess.ChildProcess)) {

@@ -1,7 +1,8 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
 import * as Base64 from "effect/encoding/Base64";
 import * as Hex from "effect/encoding/Hex";
@@ -49,7 +50,9 @@ const fixture = Effect.fn("test.fixture")(function* (options: { readonly pinnedS
     ChildProcess.make("tar", ["-czf", tarball, "-C", path.join(root, "src"), "package"]),
   );
   const bytes = yield* fs.readFile(tarball);
-  const sha512 = yield* (yield* Crypto.Crypto).digest("SHA-512", bytes);
+  const sha512 = yield* Effect.flatMap(Digest.Digest, (digest) =>
+    digest.digest(Digest.sha512, bytes),
+  ).pipe(Effect.provide(NodeCrypto.layerDigest));
   yield* fs.writeFileString(
     path.join(vendorDir, "pin.json"),
     JSON.stringify({

@@ -40,6 +40,16 @@ export const ElectronResourcesPath = Context.Reference<string | undefined>(
   },
 );
 
+/**
+ * The env the sidecar's own process gets beyond the query env. The desktop server runs on Electron
+ * with ELECTRON_RUN_AS_NODE=1, which Claude's env drops and a sidecar on that Electron needs.
+ * claude-lhc starts Claude with the query env alone, so Claude's commands still never see it.
+ */
+export const claudeLhcSidecarEnvironment = Effect.gen(function* () {
+  const runAsNode = (yield* HostProcess.Environment).ELECTRON_RUN_AS_NODE;
+  return runAsNode === undefined ? {} : { ELECTRON_RUN_AS_NODE: runAsNode };
+});
+
 const problem = (detail: string) => Effect.fail(new ClaudeLhcRuntimeProblem({ detail }));
 
 /** Electron's asar support answers `access` on `app.asar` with ENOENT, and `stat` finds it. */
@@ -112,11 +122,14 @@ const locateRuntime = Effect.fn("claudeLhc.locateRuntime")(function* (
     return yield* stagedRuntime(path.join(resources, "lhc-runtime"), electron);
   }
 
-  const packageJson = yield* Effect.try(() => import.meta.resolve("claude-lhc/package.json")).pipe(
+  const notInstalled = () =>
+    new ClaudeLhcRuntimeProblem({ detail: "The claude-lhc package is not installed." });
+  const packageJson = yield* Effect.try({
+    try: () => import.meta.resolve("claude-lhc/package.json"),
+    catch: notInstalled,
+  }).pipe(
     Effect.flatMap((url) => path.fromFileUrl(new URL(url))),
-    Effect.mapError(
-      () => new ClaudeLhcRuntimeProblem({ detail: "The claude-lhc package is not installed." }),
-    ),
+    Effect.mapError(notInstalled),
   );
   return {
     node: yield* resolveNodeExecutable("claude-lhc", environment).pipe(

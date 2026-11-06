@@ -14,6 +14,17 @@ TypeScript package. It does not use Cursor's ACP transport for V2 execution.
 By default Cursor runs on this machine in the thread's workspace. A Cursor instance can instead run
 its threads on Cursor Cloud. See [Cursor Cloud](#cursor-cloud).
 
+Custom Cursor MCP servers and plugins are not configured in T3 Code. They load from the environment
+machine's Cursor config when the agent opens: project `.cursor/mcp.json`, user `~/.cursor/mcp.json`,
+and installed plugins under `~/.cursor/plugins`. Plugin tools
+can appear without a login; OAuth MCP servers still need credentials. Run `agent mcp login <server>`
+with the cwd set to the T3 project root (tokens land in
+`~/.cursor/projects/<folder-slug>/mcp-auth.json`). Cursor desktop Connections auth does not write
+that file, and the local SDK cannot complete interactive MCP OAuth itself—auth attempts fail with
+messages such as "MCP authentication is not supported in local SDK runs" or that the auth server
+does not support dynamic client registration. After you add or change skills, plugins, or MCP
+servers, or after a successful CLI login, use **Restart agent session**.
+
 ## Sign in
 
 Choose **Sign in**, then open the sign-in page and complete it in your browser. T3 Code
@@ -69,7 +80,7 @@ The adapter supports:
 - creating and resuming local and Cursor Cloud agent threads;
 - changing the model and model parameters between turns;
 - assistant text, reasoning, tool activity, plans, and todo streaming;
-- thread-scoped T3 Code MCP tools, for local threads;
+- thread-scoped T3 Code MCP tools for local threads, alongside ambient Cursor MCP/plugins from disk;
 - image attachments;
 - interruption, queued app messages, and orchestrator-owned interrupt/restart steering;
 - provider conversation snapshots through `Agent.messages.list()`;

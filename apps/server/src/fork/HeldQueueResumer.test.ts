@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderSessions";
@@ -44,6 +45,7 @@ import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EffectWorker from "../orchestration-v2/EffectWorker.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
+import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenance.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderRuntimeRecoveryService from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
@@ -166,8 +168,9 @@ const makeAdapter = (cwd: string) => {
   return { adapter, started, control };
 };
 
-const layerPlatformTest = Layer.merge(
+const layerPlatformTest = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   Layer.mock(SourceControlProviderRegistry.SourceControlProviderRegistry)({
     resolveLink: () => Effect.die("unused title link"),
   }),
@@ -1169,11 +1172,18 @@ it.effect("resumes again after a second restart under a new id", () =>
       const { active, queued } = yield* busyThread({ threadId, cwd, queued: 2 });
       const [first, second] = queued;
       yield* restartOneSecondLater;
+      const firstTurn = yield* watch(
+        (event) =>
+          event.type === "provider-turn.updated" &&
+          event.payload.status === "running" &&
+          event.payload.runAttemptId === first!.activeAttemptId,
+      );
       const firstScan = yield* scan.pipe(Effect.forkScoped);
       yield* drain;
       yield* finishContinuation(threadId, active.id, started);
       yield* Fiber.join(firstScan);
       yield* drain;
+      yield* Fiber.join(firstTurn);
       assert.equal(
         (yield* runsOf(threadId)).find((run) => run.id === first!.id)?.status,
         "running",
@@ -1423,6 +1433,44 @@ it.effect(
         for (const runId of order)
           assert.equal(runs.find((run) => run.id === runId)?.status, "completed");
         assert.equal(started.filter((entry) => order.includes(entry.turn.runId)).length, 2);
+      }),
+    ),
+);
+
+it.effect.each([false, true])(
+  "resumes after event pruning and another restart (pruned: %s)",
+  (prune) =>
+    withHarness(`prune-restart-${prune}`, ({ cwd, started }) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make(`thread:prune-restart-${prune}`);
+        const { active, queued } = yield* busyThread({ threadId, cwd });
+        yield* restartOneSecondLater;
+        const continuationTurn = yield* nextTurnRunning(active);
+        const firstScan = yield* scan.pipe(Effect.forkScoped);
+        yield* drain;
+        yield* Fiber.join(continuationTurn);
+        const first = continuationOf(yield* runsOf(threadId), active.id)!;
+        assert.equal(first.status, "running");
+        const maintenance = yield* ProjectionMaintenance.ProjectionMaintenanceV2.pipe(
+          Effect.provide(ProjectionMaintenance.layer),
+        );
+        yield* maintenance.pruneEventStore();
+        yield* TestClock.adjust("2 days");
+        if (prune) {
+          const result = yield* maintenance.pruneEventStore();
+          assert.isAbove(result.deletedEventCount, 0);
+        }
+        yield* Fiber.interrupt(firstScan);
+        yield* restartOneSecondLater;
+        const scanning = yield* scan.pipe(Effect.forkScoped);
+        yield* drain;
+        yield* finishContinuation(threadId, first.id, started);
+        yield* Fiber.join(scanning);
+        yield* drain;
+        const runs = yield* runsOf(threadId);
+        assert.equal(continuationOf(runs, first.id)?.status, "completed");
+        const held = runs.find((run) => run.id === queued[0]!.id);
+        assert.deepEqual([held?.status, held?.queueHeld], ["running", false]);
       }),
     ),
 );

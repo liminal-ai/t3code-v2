@@ -15,7 +15,11 @@ import {
 import { resolveClaudeSdkExecutablePath } from "../ClaudeExecutable.ts";
 import { makeClaudeEnvironment } from "../ClaudeHome.ts";
 import { makeClaudeLhcInstance } from "./instance.ts";
-import { ClaudeLhcRuntimeProblem, resolveClaudeLhcRuntime } from "./runtime.ts";
+import {
+  ClaudeLhcRuntimeProblem,
+  claudeLhcSidecarEnvironment,
+  resolveClaudeLhcRuntime,
+} from "./runtime.ts";
 import { makeClaudeLhcSeam } from "./seam.ts";
 
 export type ClaudeEngine =
@@ -100,7 +104,9 @@ export const makeClaudeLhcEngine = Effect.fn("makeClaudeLhcEngine")(function* (
   input: ClaudeLhcEngineInput,
 ) {
   const environment = yield* makeClaudeEnvironment(input.config, input.instanceEnvironment);
-  const runtime = yield* Effect.result(resolveClaudeLhcRuntime(environment));
+  const runtime = yield* Effect.result(
+    resolveClaudeLhcRuntime({ ...environment, ...(yield* claudeLhcSidecarEnvironment) }),
+  );
   const unavailableReason =
     "problem" in input.engine
       ? input.engine.problem

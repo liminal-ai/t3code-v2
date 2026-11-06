@@ -2,10 +2,12 @@ import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3
 import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
 import {
-  hasAvailableCompactionProvider,
   hasDismissedResumeCompaction,
-  resolveContextWindowModelDisplayName,
   shouldOfferResumeCompaction,
+} from "@t3tools/client-runtime/state/context-window";
+import {
+  hasAvailableCompactionProvider,
+  resolveContextWindowModelDisplayName,
   shouldReserveContextWindowMeter,
 } from "./ContextWindowMeter.logic";
 

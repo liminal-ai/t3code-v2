@@ -119,24 +119,23 @@ type GroupChatClient = Effect.Success<
 >;
 type BearerHeaders = { readonly authorization?: string };
 
-export class GroupChatRequestError extends Error {
-  override readonly name = "GroupChatRequestError";
-  readonly notFound: boolean;
-  constructor(message: string, notFound = false) {
-    super(message);
-    this.notFound = notFound;
-  }
-}
+export class GroupChatRequestError extends Schema.TaggedError<GroupChatRequestError>()(
+  "GroupChatRequestError",
+  { message: Schema.String, notFound: Schema.Boolean },
+) {}
+
+export const isGroupChatRequestError = Schema.is(GroupChatRequestError);
+const isRemoteEnvironmentAuthFetchError = Schema.is(RemoteEnvironmentAuthFetchError);
 
 const isGroupChatNotFound = Schema.is(GroupChatNotFound);
 
 const isNotFound = (cause: unknown) =>
-  cause instanceof RemoteEnvironmentAuthFetchError && isGroupChatNotFound(cause.cause);
+  isRemoteEnvironmentAuthFetchError(cause) && isGroupChatNotFound(cause.cause);
 
 const REQUEST_TIMEOUT_MS = 30_000;
 
 const describeFailure = (cause: unknown): string => {
-  if (cause instanceof RemoteEnvironmentAuthFetchError && cause.cause !== undefined) {
+  if (isRemoteEnvironmentAuthFetchError(cause) && cause.cause !== undefined) {
     return describeFailure(cause.cause);
   }
   if (typeof cause === "object" && cause !== null && "_tag" in cause) {
@@ -173,7 +172,9 @@ const groupChatRequest = <A, E>(
           appAtomRegistry.get(environmentSession.preparedConnectionValueAtom(environmentId)),
         );
   if (prepared === null || prepared.httpAuthorization?._tag === "Dpop") {
-    return Promise.reject(new GroupChatRequestError(notServedByT3.message));
+    return Promise.reject(
+      new GroupChatRequestError({ message: notServedByT3.message, notFound: false }),
+    );
   }
   const authorization = prepared.httpAuthorization;
   const request = Effect.flatMap(
@@ -197,7 +198,10 @@ const groupChatRequest = <A, E>(
       ),
     )
     .catch((cause: unknown) => {
-      throw new GroupChatRequestError(describeFailure(cause), isNotFound(cause));
+      throw new GroupChatRequestError({
+        message: describeFailure(cause),
+        notFound: isNotFound(cause),
+      });
     });
 };
 

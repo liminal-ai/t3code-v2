@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -58,7 +59,7 @@ const layerTest = ProviderOrchestrationAdapterInfrastructure.layer.pipe(
       PortScanner.layerTest,
     ),
   ),
-  Layer.provideMerge(NodeServices.layer),
+  Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
 );
 
 const CLAUDE_HOME = "/home/test/.claude-work";

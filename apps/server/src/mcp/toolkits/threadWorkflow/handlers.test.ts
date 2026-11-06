@@ -77,7 +77,7 @@ const layerFor = (enabled: boolean, options: { readonly unreadableStore?: boolea
         yield* fileSystem.writeFileString(path.join(rootDir, "threads"), "a file, not a directory");
       }
       return McpHttpServer.layerThreadWorkflowToolkit.pipe(
-        Layer.provideMerge(McpServer.McpServer.layer),
+        Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
         Layer.provideMerge(
           ThreadWorkflow.layer.pipe(
             Layer.provide(

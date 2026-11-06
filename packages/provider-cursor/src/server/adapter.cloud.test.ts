@@ -516,8 +516,11 @@ describe("CursorAdapterV2 on Cursor Cloud", () => {
       assert.isFalse(sent.message.startsWith("<cursor_cloud_environment>"));
       assert.include(sent.message, "through the Cursor harness");
       assert.include(sent.message, "<t3_code_orchestration_instructions>");
-      // A send-level mcpServers would replace the ambient servers the agent opened with.
-      assert.isFalse(Object.hasOwn(sent.options as object, "mcpServers"));
+      // Send-level mcpServers merge with the ones the agent opened with (SDK >= 1.0.39).
+      assert.deepStrictEqual(
+        (sent.options as { mcpServers?: unknown }).mcpServers,
+        opened.mcpServers,
+      );
       assert.deepStrictEqual(
         mcp.requests.filter((request) => request.body.method === "tools/call"),
         [],
