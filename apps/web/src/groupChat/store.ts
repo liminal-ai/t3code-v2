@@ -18,7 +18,7 @@ import type {
 import { Atom } from "effect/reactivity";
 
 import { appAtomRegistry } from "../rpc/atomRegistry";
-import { fetchGroupPage, GroupChatRequestError, refreshGroupChatSnapshot } from "./api";
+import { fetchGroupPage, isGroupChatRequestError, refreshGroupChatSnapshot } from "./api";
 
 export interface GroupView {
   readonly group: GroupChatGroup;
@@ -511,7 +511,7 @@ const retryLater = (
 
 const ignore = () => undefined;
 
-const isNotFound = (error: unknown) => error instanceof GroupChatRequestError && error.notFound;
+const isNotFound = (error: unknown) => isGroupChatRequestError(error) && error.notFound;
 
 function readOwed(groupId: GroupChatGroupId): void {
   const reader = readers.get(groupId);

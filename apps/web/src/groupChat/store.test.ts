@@ -843,7 +843,9 @@ describe("group chat store, read retries", () => {
     const id = groupNamed("grp_gone");
     api.fetchGroupPage.mockResolvedValueOnce(pageFor(id, [1]));
     await showGroup(id);
-    api.fetchGroupPage.mockRejectedValue(new GroupChatRequestError("No group chat group.", true));
+    api.fetchGroupPage.mockRejectedValue(
+      new GroupChatRequestError({ message: "No group chat group.", notFound: true }),
+    );
     applyStreamEvent(event(1, { _tag: "message", message: messageHead(2, { groupId: id }) }));
     await vi.advanceTimersByTimeAsync(60_000);
     expect(readGroupView(id)).toBeNull();
