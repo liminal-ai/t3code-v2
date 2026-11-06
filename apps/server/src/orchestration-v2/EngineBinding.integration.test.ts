@@ -40,10 +40,10 @@ import { ClaudeProviderCapabilitiesV2 } from "./Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "./Adapters/CodexAdapterV2.ts";
 import * as EventStore from "./EventStore.ts";
 import * as Orchestrator from "./Orchestrator.ts";
-import * as ProjectionMaintenance from "./ProjectionMaintenance.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderAdapterRegistry from "./ProviderAdapterRegistry.ts";
 import { runOrchestratorV2Scenario } from "./testkit/OrchestratorScenario.ts";
+import * as ProjectionReplay from "./testkit/ProjectionReplay.ts";
 import * as ProviderReplayHarness from "./testkit/ProviderReplayHarness.ts";
 
 const DRIVER = ProviderDriverKind.make("claudeAgent");
@@ -379,7 +379,7 @@ const layerRuntime = (runtime: Runtime) => {
     ProjectionStore.layer.pipe(Layer.provideMerge(layerDatabase)),
   );
   return Layer.mergeAll(
-    ProjectionMaintenance.layer.pipe(Layer.provide(layerStores)),
+    ProjectionReplay.layer.pipe(Layer.provide(layerStores)),
     ProviderReplayHarness.layerWithRegistry(
       { name: "engine-binding", runtimePolicyOverride: { cwd: runtime.cwd } },
       layerRegistry(runtime.instances, runtime.failMetadata),
@@ -403,7 +403,7 @@ const run = (runtime: Runtime, commands: ReadonlyArray<OrchestrationV2Command>) 
 
 const reload = (runtime: Runtime, threadIds: ReadonlyArray<ThreadId>) =>
   Effect.gen(function* () {
-    yield* (yield* ProjectionMaintenance.ProjectionMaintenanceV2).rebuild;
+    yield* (yield* ProjectionReplay.ProjectionReplay).rebuild;
     const orchestrator = yield* Orchestrator.OrchestratorV2;
     const shells = (yield* orchestrator.getShellSnapshot()).threads;
     return yield* Effect.forEach(threadIds, (threadId) =>

@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
@@ -25,7 +26,7 @@ const exposedWith = (overrides: Partial<ServerConfig.ServerConfig["Service"]>) =
     return yield* reach.exposed;
   }).pipe(Effect.scoped);
 
-it.layer(NodeServices.layer)("group chat reach", (it) => {
+it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("group chat reach", (it) => {
   it.effect("a loopback server with no link and no Tailscale Serve is not exposed", () =>
     Effect.gen(function* () {
       assert.isFalse(yield* exposedWith({}));

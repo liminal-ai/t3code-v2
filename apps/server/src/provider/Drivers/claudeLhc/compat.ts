@@ -20,6 +20,8 @@ export type ClaudeRunnerQuery = AsyncIterator<SDKMessage, void> &
     | "backgroundTasks"
     | "interrupt"
     | "close"
+    | "mcpServerStatus"
+    | "readMcpResource"
   >;
 
 export type ClaudeLhcQueryOptions = Omit<ClaudeQueryOptions, "mcpServers"> & {
@@ -109,5 +111,7 @@ export function claudeRunnerQuery(query: LhcQuery): ClaudeRunnerQuery {
     backgroundTasks: (toolUseId) => query.backgroundTasks(toolUseId),
     interrupt: () => query.interrupt(),
     close: () => query.close(),
+    mcpServerStatus: () => query.mcpServerStatus(),
+    readMcpResource: (server, uri) => query.readMcpResource(server, uri),
   };
 }

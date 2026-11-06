@@ -179,6 +179,7 @@ export function cursorCloudPullRequestUrls(result: RunResult): ReadonlyArray<str
 }
 
 const MCP_PROTOCOL_VERSION = "2025-06-18";
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
 export class CursorCloudPullRequestLinkError extends Schema.TaggedError<CursorCloudPullRequestLinkError>()(
   "CursorCloudPullRequestLinkError",
@@ -233,7 +234,7 @@ export const linkCursorCloudPullRequests = Effect.fn("linkCursorCloudPullRequest
             ...(sessionId === null ? {} : { "mcp-session-id": sessionId }),
             ...(protocolVersion === null ? {} : { "mcp-protocol-version": protocolVersion }),
           },
-          body: JSON.stringify(message),
+          body: encodeJson(message),
         }),
       catch: (cause) =>
         new CursorCloudPullRequestLinkError({ detail: "T3 MCP request failed.", cause }),
@@ -267,7 +268,7 @@ export const linkCursorCloudPullRequests = Effect.fn("linkCursorCloudPullRequest
   const initializeError = jsonRpcError(initialized, "initialize");
   if (initializeError !== undefined) {
     return yield* new CursorCloudPullRequestLinkError({
-      detail: `T3 MCP initialize failed: ${JSON.stringify(initializeError)}`,
+      detail: `T3 MCP initialize failed: ${encodeJson(initializeError)}`,
     });
   }
   const negotiated = initialized
@@ -291,7 +292,7 @@ export const linkCursorCloudPullRequests = Effect.fn("linkCursorCloudPullRequest
     const error = jsonRpcError(responses, id);
     if (error !== undefined) {
       return yield* new CursorCloudPullRequestLinkError({
-        detail: `link_pull_request failed for ${url}: ${JSON.stringify(error)}`,
+        detail: `link_pull_request failed for ${url}: ${encodeJson(error)}`,
       });
     }
   }

@@ -71,7 +71,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import * as CursorCloud from "./cloud.ts";
-import { ConfigurationError } from "./sdk.ts";
+import { isCursorSdkError } from "./sdk.ts";
 export { cursorSdkModelSelection } from "./sdkModel.ts";
 
 const CURSOR_DRIVER_KIND = CursorAgentSdk.CURSOR_PROVIDER;
@@ -400,7 +400,7 @@ class CursorModelUnavailableError extends Schema.TaggedError<CursorModelUnavaila
 // Uncoded SDK model rejections are identifiable only by message prefix.
 const classifyCursorModelRejection =
   (modelSelection: ModelSelection) => (error: CursorAgentSdk.CursorAgentSdkRunnerError) =>
-    error.cause instanceof ConfigurationError &&
+    isCursorSdkError(error.cause, "ConfigurationError") &&
     error.cause.message.startsWith("Cannot use this model:")
       ? new CursorModelUnavailableError({ model: modelSelection.model, cause: error.cause })
       : error;
@@ -440,6 +440,17 @@ function cursorToolOutput(toolCall: ToolCall): unknown {
   const result = toolCall.result;
   if (result === undefined) {
     return undefined;
+  }
+  if (toolCall.type === "mcp" && toolCall.result?.status === "success") {
+    return {
+      ...toolCall.result.value,
+      content: toolCall.result.value.content.flatMap((part) => [
+        ...(part.text === undefined ? [] : [{ type: "text", text: part.text.text }]),
+        ...(part.image === undefined
+          ? []
+          : [{ type: "image", mimeType: part.image.mimeType, data: part.image.data }]),
+      ]),
+    };
   }
   return result.status === "success" ? result.value : result.error;
 }
@@ -2537,9 +2548,9 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
               headRef.nativeId !== null
                 ? headRef.nativeId
                 : undefined;
-            const sdkRun =
+            const { run: sdkRun, compacted } =
               adoptedRunId !== undefined
-                ? yield* agent.session.attach(adoptedRunId)
+                ? { run: yield* agent.session.attach(adoptedRunId), compacted: false }
                 : yield* Effect.gen(function* () {
                     const message = yield* resolveUserMessage(
                       turnInput,
@@ -2547,14 +2558,17 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                       hasDeviceTools,
                       delivered,
                     );
-                    // MCP send overrides replace the ambient servers loaded when the agent opens.
+                    const compacted = message === "/compress";
+                    // Create-time and send-time mcpServers merge with settingSources (SDK >= 1.0.39).
                     const run = yield* agent.session
                       .send({
                         message,
+                        summarize: compacted,
                         options: {
                           model: cursorSdkModelSelection(turnInput.modelSelection),
                           mode:
                             turnInput.runtimePolicy.interactionMode === "plan" ? "plan" : "agent",
+                          ...(mcpServers === undefined ? {} : { mcpServers }),
                         },
                         onDelta: (update) => {
                           if (context === null) {
@@ -2568,14 +2582,13 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                       .pipe(
                         Effect.mapError(classifyCursorModelRejection(turnInput.modelSelection)),
                       );
-                    const compacted = message === "/compress";
                     yield* Ref.set(told, {
                       agent: agent.nativeThreadId,
                       orchestration:
                         !compacted && (delivered.orchestration || mcpServers !== undefined),
                       device: !compacted && hasDeviceTools,
                     });
-                    return run;
+                    return { run, compacted };
                   });
             // The thread's head records which cloud run belongs to which T3 run,
             // so a restart continuation can find the run to follow.
@@ -2651,6 +2664,8 @@ export const makeCursorAdapterV2 = Effect.fn("makeCursorAdapterV2")(function* (
                   if (
                     context !== null &&
                     context.assistant.nextSegment === 0 &&
+                    // A summarize run's result is the summary, not an answer.
+                    !compacted &&
                     // Text from a resume that made no progress is not the turn's answer.
                     !isResumeFailureAfterTurnEnded(context, result) &&
                     result.result !== undefined &&

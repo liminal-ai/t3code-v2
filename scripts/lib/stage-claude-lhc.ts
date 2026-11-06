@@ -1,7 +1,7 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as Clock from "effect/Clock";
-import * as Crypto from "effect/Crypto";
+import * as Digest from "effect/crypto/Digest";
 import * as Effect from "effect/Effect";
-import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
@@ -138,7 +138,9 @@ export const stageClaudeLhcRuntime = Effect.fn("stageClaudeLhcRuntime")(function
   );
   const tarballName = `claude-lhc-${pin.version}.tgz`;
   const tarball = yield* fs.readFile(path.join(input.vendorDir, tarballName));
-  const sha512 = Hex.encode(yield* (yield* Crypto.Crypto).digest("SHA-512", tarball));
+  const sha512 = yield* Effect.flatMap(Digest.Digest, (digest) =>
+    digest.digestHex(Digest.sha512, tarball),
+  ).pipe(Effect.provide(NodeCrypto.layerDigest));
   if (sha512 !== pin.sha512) {
     return yield* new ClaudeLhcStageError({
       detail: `${tarballName} has sha512 ${sha512}, and pin.json pins ${pin.sha512}.`,

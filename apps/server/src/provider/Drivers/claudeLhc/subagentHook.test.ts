@@ -11,6 +11,7 @@ import type {
   SDKUserMessage,
   Settings,
 } from "@anthropic-ai/claude-agent-sdk";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -69,6 +70,8 @@ const idleQuery: ClaudeRunnerQuery = {
   backgroundTasks: () => Promise.resolve(false),
   interrupt: () => Promise.resolve(undefined),
   close: () => {},
+  mcpServerStatus: () => Promise.resolve([]),
+  readMcpResource: () => Promise.resolve({ contents: [] }),
 };
 
 const prompt: AsyncIterable<SDKUserMessage> = (async function* () {})();
@@ -233,6 +236,7 @@ describe("the Claude LHC seam's subagent device hook", () => {
 
 const LIVE = process.env.T3_CLAUDE_LHC_LIVE === "1";
 const EVIDENCE_DIR = process.env.T3_CLAUDE_LHC_EVIDENCE;
+const LHC_BIN = process.env.T3_CLAUDE_LHC_BIN ?? "claude";
 const MODEL = process.env.T3_CLAUDE_LHC_MODEL ?? "claude-haiku-5-5";
 const DEVICE_HEADING = "## T3 Code devices";
 const LIVE_CREDENTIALS = [
@@ -322,7 +326,7 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
           ...startedEnvironment(),
           CLAUDE_CONFIG_DIR: claudeHome,
         };
-        const binaryPath = process.env.T3_CLAUDE_LHC_BIN ?? "claude";
+        const binaryPath = LHC_BIN;
         const lhcSeam = yield* makeClaudeLhcSeam({
           runtime: yield* Effect.result(resolveClaudeLhcRuntime(environment)),
           stateDir,
@@ -337,6 +341,7 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
             }),
             Effect.provideService(AgentScope, AgentScope.defaultValue()),
             Effect.provide(PortScanner.layerTest),
+            Effect.provide(NodeCrypto.layer),
           );
         const lhcBinding: OrchestrationV2EngineBinding = {
           ...binding,

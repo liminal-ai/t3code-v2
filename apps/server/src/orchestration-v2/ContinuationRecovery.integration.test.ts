@@ -1,4 +1,5 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -20,7 +21,6 @@ import * as McpProviderSessions from "@t3tools/provider-core/server/McpProviderS
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
 import type * as Cause from "effect/Cause";
-import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -31,6 +31,7 @@ import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as TestClock from "effect/testing/TestClock";
 
 import {
@@ -88,6 +89,10 @@ function makeQueryRunner(inputTokens: () => number) {
         const messages = yield* Queue.unbounded<SDKMessage, Cause.Done>();
         return {
           messages: Stream.fromQueue(messages),
+          mcpServerStatus: Effect.succeed([]),
+          readMcpResource: () => Effect.die("unexpected MCP resource read"),
+          callMcpTool: () => Effect.die("unexpected MCP tool call"),
+          listPermissionRules: Effect.die("unexpected permission rules read"),
           offer: (_message, onQueued) =>
             Effect.suspend(() => {
               onQueued?.();
@@ -218,7 +223,7 @@ it.effect.each(cases)("$name", ({ route, bound }) => {
         attachmentsDir: cwd,
         fileSystem,
         path,
-        crypto: yield* Crypto.Crypto,
+        random: yield* SecureRandom.SecureRandom,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         queryRunner: runner.queryRunner,
         ...(bound
@@ -419,6 +424,7 @@ it.effect.each(cases)("$name", ({ route, bound }) => {
           IdAllocator.layer,
           McpProviderSessions.layer,
           NodeServices.layer,
+          NodeCrypto.layer,
           Logger.layer([logger], { mergeWithExisting: false }),
         ),
       ),
@@ -445,7 +451,7 @@ it.effect.each([
         attachmentsDir: cwd,
         fileSystem,
         path: yield* Path.Path,
-        crypto: yield* Crypto.Crypto,
+        random: yield* SecureRandom.SecureRandom,
         idAllocator: yield* IdAllocator.IdAllocatorV2,
         queryRunner: runner.queryRunner,
         ...(bound
@@ -563,7 +569,12 @@ it.effect.each([
       );
     }).pipe(
       Effect.provide(
-        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
       ),
     ),
   ),
