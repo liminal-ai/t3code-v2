@@ -15,8 +15,8 @@ export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
     "A green stack verified PR by PR, then the contiguous verified run landed bottom-up through the merge gate.",
   source: {
     playbook: "poteto-mode/playbooks/shipping.md",
-    commit: "cc33ab5cbc39ab9c380ad0f2c2ade1ff0630b05c",
-    sha256: "4e1d8b40a9f75633661473d9b35b2a9f46ca23ffd37e052fc787a8300ac5e115",
+    commit: "2038f3cfb5ca04fe2a11484760afd04602b2796d",
+    sha256: "219fcb24aaebaa799e45ec4e747f7a4e1121ec47e73e28f6edc6b28e81271ac1",
   },
   steps: [
     findVerifySkill,
