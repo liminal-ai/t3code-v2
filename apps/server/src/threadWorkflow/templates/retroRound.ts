@@ -1,22 +1,22 @@
 import { ThreadWorkflowTemplate } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { cleanup, reflectAndUpkeep, RUN_FOLDER } from "./shared.ts";
+import { cleanup, RUN_FOLDER } from "./shared.ts";
 
 /**
- * Version 2 re-pins `reflect/SKILL.md` after its Save section changed how the retro folder syncs;
- * the steps are unchanged. A running instance keeps its copied steps.
+ * Version 3 drops the reflect step, because no thread of a retro round reflects, and has each lead
+ * accept its own PRs. A running instance keeps its copied steps.
  */
 export const retroRound = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "retro-round",
-  version: 2,
+  version: 3,
   title: "Retro round",
   description:
     "Several threads' reflects reviewed together, the user's decisions recorded, and the approved changes landed.",
   source: {
     playbook: "reflect/SKILL.md",
-    commit: "0fe755e25db51a1aefef0a945ad762ac070c984f",
-    sha256: "ef0f5b960ca35c3221d6dc74121ab3cebdcf99809c8c2b85d044937ae1421ecd",
+    commit: "cc33ab5cbc39ab9c380ad0f2c2ade1ff0630b05c",
+    sha256: "80b04aff1d9de4a86269830dc3496058a4f1ec2ba4c155642e57579cc4ff3f02",
   },
   steps: [
     {
@@ -58,7 +58,7 @@ export const retroRound = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Each group landed through its PRs and gates",
       slug: "land-groups",
       instructions:
-        "Each lead runs its group through its PRs, a counterpart verdict and the merge gate. Reinstall pstack per pstack-lim's FORK.md once its PRs merge, and record each PR in `decisions.md`.",
+        "Each lead runs its group through its PRs, a counterpart review, its own acceptance and the merge gate. Reinstall pstack per pstack-lim's FORK.md once its PRs merge, and record each PR in `decisions.md`.",
       proofLevel: "required",
       proofHint: "each group's PR URLs and merge SHAs",
       waitsForUser: false,
@@ -72,7 +72,6 @@ export const retroRound = Schema.decodeSync(ThreadWorkflowTemplate)({
       proofHint: "the ticket ids and the close output",
       waitsForUser: false,
     },
-    reflectAndUpkeep,
     cleanup,
   ],
 });

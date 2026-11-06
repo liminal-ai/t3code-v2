@@ -120,6 +120,8 @@ const OPENS_WITHOUT_VERIFY_SKILL = new Set([
   "session-pickup",
 ]);
 const VERIFY_SKILL = "project's verify skill";
+// No thread of a retro round reflects.
+const CLOSES_WITHOUT_REFLECT = new Set(["retro-round"]);
 
 const playbookTemplates = [...builtInTemplates.values()].filter(
   (template) => template.id !== "open-ended",
@@ -149,7 +151,10 @@ describe.each(playbookTemplates.map((template) => [template.id, template] as con
       assert.strictEqual(slugs.at(-1), "cleanup");
       assert.include(steps.at(-1)?.instructions, "references/cleanup-protocol.md");
       assert.isTrue(steps.some((step) => step.instructions.includes("Linear project")));
-      assert.isTrue(steps.some((step) => step.instructions.includes("`/reflect`")));
+      assert.strictEqual(
+        steps.some((step) => step.instructions.includes("`/reflect`")),
+        !CLOSES_WITHOUT_REFLECT.has(template.id),
+      );
     });
 
     it.skipIf(OPENS_WITHOUT_VERIFY_SKILL.has(template.id))(
