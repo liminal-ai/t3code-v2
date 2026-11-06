@@ -1171,11 +1171,18 @@ it.effect("resumes again after a second restart under a new id", () =>
       const { active, queued } = yield* busyThread({ threadId, cwd, queued: 2 });
       const [first, second] = queued;
       yield* restartOneSecondLater;
+      const firstTurn = yield* watch(
+        (event) =>
+          event.type === "provider-turn.updated" &&
+          event.payload.status === "running" &&
+          event.payload.runAttemptId === first!.activeAttemptId,
+      );
       const firstScan = yield* scan.pipe(Effect.forkScoped);
       yield* drain;
       yield* finishContinuation(threadId, active.id, started);
       yield* Fiber.join(firstScan);
       yield* drain;
+      yield* Fiber.join(firstTurn);
       assert.equal(
         (yield* runsOf(threadId)).find((run) => run.id === first!.id)?.status,
         "running",
