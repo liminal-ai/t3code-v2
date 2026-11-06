@@ -21,14 +21,14 @@ export const mergeThroughGate = (extra?: string): Step => ({
   slug: "merge-through-gate",
   instructions: [
     "Run Opening a PR and link it with link_pull_request.",
-    "A verifier on the counterpart of the author's model family, never the author, drives the change through the project's verify skill, covers `.agents/merge-brief.md`, and posts `pstack-verdict:` on the PR.",
+    "A verifier on the counterpart of the author's model family, never the author, drives the change through the project's verify skill, covers `.agents/merge-brief.md`, and posts `pstack-review:` on the PR. You decide and post `pstack-accept:`. A recheck goes to the same verifier's session.",
     `Merge only with \`${MERGE_GATE} --repo <owner/name> --pr <n>\`, adding \`--method merge\` where the repo requires merge commits and \`--plan\` with \`--plan-pr\` when a plan covers the PR.`,
     extra,
   ]
     .filter((sentence) => sentence !== undefined)
     .join(" "),
   proofLevel: "required",
-  proofHint: "the PR URL, the verdict line and the merge SHA",
+  proofHint: "the PR URL, the review and acceptance, and the merge SHA",
   waitsForUser: false,
 });
 
@@ -42,7 +42,7 @@ const closeOut: Step = {
   waitsForUser: false,
 };
 
-export const reflectAndUpkeep: Step = {
+const reflectAndUpkeep: Step = {
   title: "Thread reflected and verify skill kept current",
   slug: "reflect-and-upkeep",
   instructions:

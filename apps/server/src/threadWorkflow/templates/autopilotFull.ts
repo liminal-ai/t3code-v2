@@ -4,15 +4,15 @@ import * as Schema from "effect/Schema";
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
 /**
- * Version 3 gives a wording-only change one counterpart verifier too. A running instance keeps its
- * copied steps.
+ * Version 4 has you accept each PR at its head after the swarm's review, and sends a recheck to
+ * the same verifier. A running instance keeps its copied steps.
  */
 export const autopilotFull = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "autopilot-full",
-  version: 3,
+  version: 4,
   title: "Autopilot-full",
   description:
-    "A queue of independent PRs run to merged with full autonomy, one owner per PR and a swarm verdict before each merge.",
+    "A queue of independent PRs run to merged with full autonomy, one owner per PR, and a swarm review and your acceptance before each merge.",
   source: {
     playbook: "poteto-mode/playbooks/autopilot-full.md",
     commit: "f963d259b94b05b30c986329bf60bb2f7d75180d",
@@ -33,16 +33,16 @@ export const autopilotFull = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Each PR swarm-verified at code-ready",
       slug: "swarm-verify",
       instructions:
-        "Swarm-verify once at each code-ready head, every lane driving the change through the project's verify skill. A rebase, minor fix or wording-only change gets one counterpart verifier at the new head. Block a PR only for a problem you can show at its head, and send that to the owner; park the rest as follow-ups. Countersign anything that loosens a gate.",
+        "Swarm-verify once at each code-ready head, every lane driving the change through the project's verify skill. A rebase, minor fix or wording-only change gets one counterpart verifier at the new head. Block a PR only for a problem you can show at its head, and send that to the owner; park the rest as follow-ups. Countersign anything that loosens a gate. Accept each PR at its head per Shipping step 1, and send a recheck after a code change to the same verifier's session.",
       proofLevel: "required",
-      proofHint: "each PR's verdict at its head",
+      proofHint: "each PR's review and your acceptance at its head",
       waitsForUser: false,
     },
     {
       title: "Verified PRs merged by their owners",
       slug: "owners-merge",
       instructions:
-        "An owner merges only what you verified, rebased and green on the trunk it lands on, through the merge gate. Keep the hourly audit wake until no delegated work is left. On the operator's stop, every owner gets a zero-writes order and keeps its brief.",
+        "An owner merges only what you accepted, rebased and green on the trunk it lands on, through the merge gate. Keep the hourly audit wake until no delegated work is left. On the operator's stop, every owner gets a zero-writes order and keeps its brief.",
       proofLevel: "required",
       proofHint: "each merge SHA",
       waitsForUser: false,

@@ -3,10 +3,13 @@ import * as Schema from "effect/Schema";
 
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
-/** Source: FORK.md "Sync from upstream". Freshness reads only `~/.agents/skills`, so `source` is null. */
+/**
+ * Source: FORK.md "Sync from upstream". Freshness reads only `~/.agents/skills`, so `source` is null.
+ * Version 2 takes the verifier's review and the lead's acceptance in place of the verdict.
+ */
 export const forkSync = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "fork-sync",
-  version: 1,
+  version: 2,
   title: "Fork sync",
   description:
     "The T3 fork synced to an upstream tag on a branch, verified, and merged, stopping before cutover.",
@@ -44,9 +47,9 @@ export const forkSync = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Sync merged, cutover not started",
       slug: "merge-sync",
       instructions:
-        'Open the PR against main with "Last synced" in FORK.md set to the new tag. Bot reviews do not cover a sync, so a verifier from the other model family drives it through the project\'s verify skill and posts `pstack-verdict:`. Merge with `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo liminal-ai/t3code-v2 --pr <n> --method merge`. Then stop: the cutover is a separate step Lee runs or approves.',
+        "Open the PR against main with \"Last synced\" in FORK.md set to the new tag. Bugbot does not cover a sync, so comment `@codex review` after each push, and a verifier from the other model family drives it through the project's verify skill and posts its `pstack-review:`. You decide, and post `pstack-accept:` with a written reason for each high or medium issue you leave unfixed. A recheck after a code change goes to the same verifier's session. Merge with `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo liminal-ai/t3code-v2 --pr <n> --method merge`. Then stop: the cutover is a separate step Lee runs or approves.",
       proofLevel: "required",
-      proofHint: "the PR URL, the verdict line and the merge SHA",
+      proofHint: "the PR URL, the review and acceptance, and the merge SHA",
       waitsForUser: false,
     },
     ...closingSteps,
