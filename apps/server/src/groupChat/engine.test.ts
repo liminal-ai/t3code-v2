@@ -484,7 +484,7 @@ it.layer(NodeServices.layer)("group chat engine, external members", (it) => {
       assert.strictEqual(derived._tag === "member" ? derived.member.handle : "", "rest");
       assert.match(
         yield* add("ok").pipe(
-          Effect.map(() => ""),
+          Effect.as(""),
           Effect.catch((e) => Effect.succeed(e.message)),
         ),
         /^$/,

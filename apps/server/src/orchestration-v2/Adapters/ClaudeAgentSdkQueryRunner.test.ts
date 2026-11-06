@@ -1013,16 +1013,18 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
         subagentLaunchToolUseId: () => Effect.die("unused"),
       }).pipe(
         Effect.provideService(ProviderEventLoggers, { native: undefined, canonical: undefined }),
-        Effect.provide(NodeCrypto.layer),
         Effect.provide(
-          Layer.mock(PortScanner.PortDiscovery)({
-            trackAgent: () => {
-              runningAgents += 1;
-              return () => {
-                runningAgents -= 1;
-              };
-            },
-          }),
+          Layer.mergeAll(
+            NodeCrypto.layer,
+            Layer.mock(PortScanner.PortDiscovery)({
+              trackAgent: () => {
+                runningAgents += 1;
+                return () => {
+                  runningAgents -= 1;
+                };
+              },
+            }),
+          ),
         ),
         Effect.provideService(AgentScope, {
           ...AgentScope.defaultValue(),

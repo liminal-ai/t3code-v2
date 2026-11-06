@@ -26,6 +26,7 @@ import { ProviderEventLoggers } from "@t3tools/provider-core/server/ProviderEven
 import { AgentScope } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -340,8 +341,7 @@ describe.runIf(LIVE && unix)("a native subagent on a real model through the T10 
               canonical: undefined,
             }),
             Effect.provideService(AgentScope, AgentScope.defaultValue()),
-            Effect.provide(PortScanner.layerTest),
-            Effect.provide(NodeCrypto.layer),
+            Effect.provide(Layer.mergeAll(PortScanner.layerTest, NodeCrypto.layer)),
           );
         const lhcBinding: OrchestrationV2EngineBinding = {
           ...binding,

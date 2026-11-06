@@ -720,7 +720,7 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
 
         const config = yield* ServerConfig.ServerConfig;
         const port = yield* GroupChatThreadPort;
-        const rebooted = yield* Effect.flatMap(
+        const rebooted = yield* Effect.map(
           Layer.build(
             Layer.fresh(GroupChat.layer).pipe(
               Layer.provide(Layer.succeed(GroupChatThreadPort, port)),
@@ -731,7 +731,7 @@ it.layer(makeLayerTest())("group chat on the orchestration graph", (it) => {
               Layer.provide(NodeServices.layer),
             ),
           ),
-          (context) => Effect.succeed(Context.get(context, GroupChat.GroupChat)),
+          (context) => Context.get(context, GroupChat.GroupChat),
         ).pipe(Effect.orDie);
         const engine = yield* rebooted.engine.pipe(Effect.orDie);
         const store = yield* rebooted.store.pipe(Effect.orDie);
