@@ -128,6 +128,9 @@ export const layer: Layer.Layer<ProjectionMaintenanceV2, never, SqlClient.SqlCli
               -- Codex usage history reads the selection a run attempt started with.
               WHEN event.event_type = 'run.updated'
                 AND json_extract(event.payload_json, '$.status') = 'running' THEN 0
+              -- The fork's HeldQueueResumer reads where each queue hold began and ended.
+              WHEN event.event_type IN ('run.created', 'run.updated')
+                AND json_type(event.payload_json, '$.queueHeld') IS NOT NULL THEN 0
               -- The newest row keeps each stream's high water, stream_version, and snapshot sequence.
               WHEN event.sequence = (
                 SELECT MAX(newer.sequence) FROM orchestration_events AS newer
