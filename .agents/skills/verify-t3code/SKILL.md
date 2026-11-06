@@ -1,13 +1,13 @@
 ---
 name: verify-t3code
-description: Launch this worktree's T3 Code dev server on its own state, drive the web UI the way a user does (T3's Browser panel from inside a T3 thread, or the bundled Playwright helper from anywhere), and capture proof. Use to verify any user-visible change to the web or desktop UI, the server's HTTP and WebSocket API, or the MCP tools agents get in a thread, and before a verdict or merge. Use test-t3-mobile for native mobile.
+description: Launch this worktree's T3 Code dev server on its own state, drive the web UI the way a user does (T3's Browser panel from inside a T3 thread, or the bundled Playwright helper from anywhere), and capture proof. Use to verify any user-visible change to the web or desktop UI, the server's HTTP and WebSocket API, or the MCP tools agents get in a thread, and before a review or merge. Use test-t3-mobile for native mobile.
 ---
 
 # Verify T3 Code
 
 T3 Code is a web app for running coding agents in threads. The web UI is the primary surface, and the desktop app wraps it. The server's HTTP and WebSocket API and the MCP tools an agent gets inside a thread sit behind it. Native mobile is out of scope here. Use [test-t3-mobile](../test-t3-mobile/SKILL.md) for it.
 
-Read [features/README.md](features/README.md) before you drive. It indexes one recipe per feature, and the feature you changed is the one a verdict drives.
+Read [features/README.md](features/README.md) before you drive. It indexes one recipe per feature, and the feature you changed is the one a review drives.
 
 ## Two rules that protect the live install
 
@@ -125,7 +125,7 @@ A dev server runs the worktree's source, so it cannot show a fault that only the
 5. **LHC across a restart.** On a fresh disposable base, teach an LHC thread a codeword, have it Read two files of about 70,000 characters each, send `/compact`, and ask for the codeword. Stop the server, start it on the same base, and ask again. Both replies name the codeword, and `select count(*) from orchestration_v2_projection_turn_items where thread_id='<id>' and type='compaction' and status='completed'` is above 0. A compaction that failed or was stopped keeps its row with `failed` or `interrupted`. The release that cut over at c7d897cee3 passed this with nine compactions.
 6. **UI on the release.** t3v cannot attach to `t3 serve`. Open the pairing URL from the log in T3's Browser panel with `preview_open` (`profileId: "incognito"`), as above.
 
-**A Cursor turn for a verdict runs here.** A fresh dev server starts with Cursor signed out, and `features/agent-turn.md` forbids copying prod's credential into its `.t3`. Someone can sign it in with Cursor, but an unattended verifier can't, so the merge brief sends a `packages/provider-cursor/` change to this check. Steps 1 to 4 with only the `cursor` instance are enough. A release built from an earlier commit than the PR's head stands in for the head only when `git diff --stat <release sha> <head>` changes no runtime code. On #45 the release `fb48715408` differed from head `661cacaf88` only in `FORK.md` and `driver.test.ts`. Otherwise build the head with `t3-v2-deploy <head>`.
+**A Cursor turn for a review runs here.** A fresh dev server starts with Cursor signed out, and `features/agent-turn.md` forbids copying prod's credential into its `.t3`. Someone can sign it in with Cursor, but an unattended verifier can't, so the merge brief sends a `packages/provider-cursor/` change to this check. Steps 1 to 4 with only the `cursor` instance are enough. A release built from an earlier commit than the PR's head stands in for the head only when `git diff --stat <release sha> <head>` changes no runtime code. On #45 the release `fb48715408` differed from head `661cacaf88` only in `FORK.md` and `driver.test.ts`. Otherwise build the head with `t3-v2-deploy <head>`.
 
 **Desktop.** The packaged app runs its server on Electron's own Node from inside `app.asar`, which neither a dev server nor the CLI release does. There `fs.accessSync` on `resources/app.asar` fails with ENOENT while `fs.statSync` succeeds, a bug T15 (#71) found only on a real AppImage. Prove a desktop or packaging change on a real AppImage:
 
@@ -144,7 +144,7 @@ A dev server runs the worktree's source, so it cannot show a fault that only the
 
 ## Re-verification
 
-After a rebase or a small change, a verdict may carry an earlier passing lane to the new head instead of rerunning it, when nothing that changed reaches what the lane runs (poteto-mode's Shipping playbook, step 3). Compare `git range-diff` of the PR's own patch, and the diff of `main` under it, against what each lane runs:
+After a rebase or a small change, a review may carry an earlier passing lane to the new head instead of rerunning it, when nothing that changed reaches what the lane runs (poteto-mode's Shipping playbook, step 3). Compare `git range-diff` of the PR's own patch, and the diff of `main` under it, against what each lane runs:
 
 | Lane                                                  | Runs                                                                                                 | Rerun when the change touches                                          |
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -156,7 +156,7 @@ After a rebase or a small change, a verdict may carry an earlier passing lane to
 | An outcome check                                      | the store or log it reads (`threadWorkflow/store.ts`, the provider event log, the projection tables) | that store's writer or format                                          |
 | The Release check's turns                             | the release archive, its CLI, server and provider packages                                           | runtime code, a dependency or packaging, or the Release check's steps  |
 
-Any change to this skill's steps for a lane (its feature file, this file's section, or `scripts/t3v.mjs` for what the lane calls) reruns that lane. Docs outside `docs/user/`, FORK.md and test-only changes carry every live lane, and the changed tests and text get a fresh run and read. The verdict lists each carry as `shortcut <id>: <what was not rerun, and the verdict it carries>. <why nothing that changed reaches it>`, and the lead accepts each on the gate run. Accepted precedents: #49's last verdict carried Claude turns, the TMPDIR filesystem cases and the provider typechecks across a Codex-only sandbox-policy fix. #50's re-verification after #48 landed under it carried the release turns and the provider settings, and reran the workflow-question screens #48 changed. #51 carried its base-v2 upgrade lane because the workflow domain and replay were unchanged since it ran.
+Any change to this skill's steps for a lane (its feature file, this file's section, or `scripts/t3v.mjs` for what the lane calls) reruns that lane. Docs outside `docs/user/`, FORK.md and test-only changes carry every live lane, and the changed tests and text get a fresh run and read. The review lists each carry as `shortcut <id>: <what was not rerun, and the review it carries>. <why nothing that changed reaches it>`, and the lead accepts each on the gate run. Accepted precedents: #49's last verdict carried Claude turns, the TMPDIR filesystem cases and the provider typechecks across a Codex-only sandbox-policy fix. #50's re-verification after #48 landed under it carried the release turns and the provider settings, and reran the workflow-question screens #48 changed. #51 carried its base-v2 upgrade lane because the workflow domain and replay were unchanged since it ran.
 
 ## Cleanup
 

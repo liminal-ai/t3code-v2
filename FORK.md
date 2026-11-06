@@ -44,7 +44,7 @@ Everything else is upstream. `git diff --stat v0.1.8-nightly.20261106.4275 main`
 
 - `main` is the upstream tag we last synced plus the fork's commits. Every change reaches `main` through a PR.
 - Work goes on a short-lived branch: `fix/...`, `feature/...`, `sync/upstream-<tag>`. T3 creates `t3/...` branches for its own worktrees. Leave branches that another thread owns alone.
-- Merge every PR through the merge gate, with a merge commit: `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo liminal-ai/t3code-v2 --pr <n> --method merge`. The gate checks the PR's checks, review threads, the independent verdict and Lee's approval of any instruction-file text, then merges. Never merge a PR with `gh` yourself, never squash and never rebase `main`. A squash flattens upstream's history, so the next sync conflicts on every file upstream touched since. GitHub still allows squash and rebase on this repository, so nothing stops a wrong merge button but this rule.
+- Merge every PR through the merge gate, with a merge commit: `~/.agents/skills/poteto-mode/scripts/merge-gate/merge-gate --repo liminal-ai/t3code-v2 --pr <n> --method merge`. The gate checks the PR's checks, review threads, the independent review, the lead's acceptance and Lee's approval of any instruction-file text, then merges. Never merge a PR with `gh` yourself, never squash and never rebase `main`. A squash flattens upstream's history, so the next sync conflicts on every file upstream touched since. GitHub still allows squash and rebase on this repository, so nothing stops a wrong merge button but this rule.
 - The fork's `origin` carries one old nightly tag, `v0.0.46-nightly.20261011.2980`. Upstream's tags come from `git fetch upstream --tags`. Without them, `git describe` names a build of today's `main` after that old tag.
 - `gh` resolves this repository to `liminal-ai/t3code-v2` through `remote.origin.gh-resolved` in the shared git config. Without that line, `gh` picks the `upstream` remote and a bare `gh pr create` opens the PR on `pingdotgg/t3code`. If `gh repo view --json nameWithOwner` ever prints `pingdotgg/t3code`, run `gh repo set-default liminal-ai/t3code-v2`.
 
@@ -54,8 +54,8 @@ Everything else is upstream. `git diff --stat v0.1.8-nightly.20261106.4275 main`
 2. Run `gh repo view --json nameWithOwner` and check that it prints `liminal-ai/t3code-v2`.
 3. If the change touches a file in [Seams to re-check](#seams-to-re-check), run the tests listed there.
 4. `AGENTS.md` is owned by the fork and points here. Upstream's agent rules do not apply to this repository. Keep conventional commit titles and focused tests, and run no repo-wide checks.
-5. Get an independent verdict from a model family other than the author's before you merge. The pstack Shipping playbook covers how.
-6. The verdict drives the change through the verify skill, `.agents/skills/verify-t3code/`.
+5. Get an independent review from a model family other than the author's, and accept it yourself, before you merge. The pstack Shipping playbook covers how.
+6. The review drives the change through the verify skill, `.agents/skills/verify-t3code/`.
 7. Merge through the merge gate with `--method merge`. `.agents/merge-brief.md` lists this repository's gates, and the gate prints it on every run. A merge changes nothing in prod until a cutover, and only Lee runs or approves a cutover.
 
 ## Sync from upstream
