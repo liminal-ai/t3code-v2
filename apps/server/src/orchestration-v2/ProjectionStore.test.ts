@@ -4527,8 +4527,11 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         const context = yield* projectionStore
           .getTurnStartContext(readThreadId, readRunId)
           .pipe(Effect.withTracer(tracer));
-        const lookups = statements.filter((statement) =>
-          statement.includes("FROM orchestration_v2_projection_turn_items"),
+        // The fork's compaction count for the turn note (PR #35) is its own statement.
+        const lookups = statements.filter(
+          (statement) =>
+            statement.includes("FROM orchestration_v2_projection_turn_items") &&
+            !statement.includes("type = 'compaction'"),
         );
         assert.lengthOf(lookups, 1);
         const plan = (yield* sql.unsafe<{ readonly detail: string }>(
