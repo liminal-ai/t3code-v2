@@ -4,8 +4,8 @@ import * as Schema from "effect/Schema";
 import { closingSteps, findVerifySkill } from "./shared.ts";
 
 /**
- * Version 4 has you accept each PR at its head after the swarm's review, and sends a recheck to
- * the same verifier. A running instance keeps its copied steps.
+ * Version 4 has you accept each PR at its head after the swarm's review, sends a recheck to the
+ * same verifier, and steers a new order to a running owner. A running instance keeps its copied steps.
  */
 export const autopilotFull = Schema.decodeSync(ThreadWorkflowTemplate)({
   id: "autopilot-full",
@@ -15,8 +15,8 @@ export const autopilotFull = Schema.decodeSync(ThreadWorkflowTemplate)({
     "A queue of independent PRs run to merged with full autonomy, one owner per PR, and a swarm review and your acceptance before each merge.",
   source: {
     playbook: "poteto-mode/playbooks/autopilot-full.md",
-    commit: "f963d259b94b05b30c986329bf60bb2f7d75180d",
-    sha256: "53c8f4cd8c1fb916e4c7e16be7b24314b6cae259c47fe88142ab2f25bbf06aa8",
+    commit: "cc33ab5cbc39ab9c380ad0f2c2ade1ff0630b05c",
+    sha256: "f895b656450d5fee953e51eef5ef7ded6544abf27794136444dfb95b580cae89",
   },
   steps: [
     findVerifySkill,
@@ -24,7 +24,7 @@ export const autopilotFull = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "One owner per PR, off trunk",
       slug: "spawn-owners",
       instructions:
-        "The grant covers only the queue's items; items the operator names as theirs stop at merge-ready. Name the run, resolve the forge, and spawn one owner per PR in parallel off trunk, never stacked, on the cloud workers line or locally in its own worktree. Each keeps a decisions.tsv trail in the pstack store and reports every head as a `CODE-READY <sha>` PR comment.",
+        "The grant covers only the queue's items; items the operator names as theirs stop at merge-ready. Name the run, resolve the forge, and spawn one owner per PR in parallel off trunk, never stacked, on the cloud workers line or locally in its own worktree. Each keeps a decisions.tsv trail in the pstack store and reports every head as a `CODE-READY <sha>` PR comment. Send a new order to a running owner with `steer`, because `queue` waits for its current turn to finish.",
       proofLevel: "required",
       proofHint: "each owner's taskId and branch",
       waitsForUser: false,

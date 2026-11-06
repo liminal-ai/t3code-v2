@@ -15,8 +15,8 @@ export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
     "A green stack verified PR by PR, then the contiguous verified run landed bottom-up through the merge gate.",
   source: {
     playbook: "poteto-mode/playbooks/shipping.md",
-    commit: "f963d259b94b05b30c986329bf60bb2f7d75180d",
-    sha256: "78365d3d706e583eb0ac1ac777d59bdd352448d29e6dd36ac2420989c45ed656",
+    commit: "cc33ab5cbc39ab9c380ad0f2c2ade1ff0630b05c",
+    sha256: "4e1d8b40a9f75633661473d9b35b2a9f46ca23ffd37e052fc787a8300ac5e115",
   },
   steps: [
     findVerifySkill,
@@ -24,7 +24,7 @@ export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Each PR reviewed independently and accepted by you",
       slug: "review-and-accept-each-pr",
       instructions:
-        "Resolve the forge. One verifier per PR, a delegate_task child on the counterpart of the author's family and never the author, in its own worktree, runs the change parent against head through the project's verify skill (its brief names it and `.agents/merge-brief.md`) and posts `pstack-review: head=<sha> base=<merge-base> by=<model>` with box and issue lines, no pass or fail. You decide: post `pstack-accept:` with `checked:` and a reason for each high or medium issue or failed box you leave unfixed. A recheck after a code change goes to the same verifier's session with t3_thread_send.",
+        "Resolve the forge. One verifier per PR, a delegate_task child on the counterpart of the author's family and never the author, in its own worktree, runs the change parent against head through the project's verify skill (its brief names it and `.agents/merge-brief.md`), posts `pstack-review: head=<sha> base=<merge-base> by=<model>` with box and issue lines and no pass or fail, and adds before-and-after media for a change a user can see. You decide: open the media, then post `pstack-accept:` with a reason for each high or medium issue or failed box left unfixed. A recheck after a code change goes to the same verifier's session.",
       proofLevel: "required",
       proofHint: "each PR's review and your acceptance",
       waitsForUser: false,
@@ -33,7 +33,7 @@ export const shipping = Schema.decodeSync(ThreadWorkflowTemplate)({
       title: "Accepted run and ceiling found",
       slug: "find-verified-run",
       instructions:
-        "Walk up from the lowest unmerged PR and stop at the first without your acceptance at its head; the PRs below are the run. Before trusting an older review, run `verdict-hash.sh` on the saved merge base and review head and on the current pair. It carries only when both succeed and print the same hash.",
+        "Walk up from the lowest unmerged PR and stop at the first without your acceptance of a review that covers its head; the PRs below are the run. Before trusting an older review, run `verdict-hash.sh` on the saved merge base and review head and on the current pair. It carries only when both succeed and print the same hash.",
       proofLevel: "required",
       proofHint: "the run, its ceiling and the hash checks",
       waitsForUser: false,

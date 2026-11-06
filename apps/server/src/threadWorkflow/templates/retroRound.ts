@@ -15,8 +15,8 @@ export const retroRound = Schema.decodeSync(ThreadWorkflowTemplate)({
     "Several threads' reflects reviewed together, the user's decisions recorded, and the approved changes landed.",
   source: {
     playbook: "reflect/SKILL.md",
-    commit: "0fe755e25db51a1aefef0a945ad762ac070c984f",
-    sha256: "ef0f5b960ca35c3221d6dc74121ab3cebdcf99809c8c2b85d044937ae1421ecd",
+    commit: "cc33ab5cbc39ab9c380ad0f2c2ade1ff0630b05c",
+    sha256: "80b04aff1d9de4a86269830dc3496058a4f1ec2ba4c155642e57579cc4ff3f02",
   },
   steps: [
     {

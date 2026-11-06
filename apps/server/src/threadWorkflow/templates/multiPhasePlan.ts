@@ -15,8 +15,8 @@ export const multiPhasePlan = Schema.decodeSync(ThreadWorkflowTemplate)({
     "A plan for work that spans phases or stacked PRs, written as a checklist an owner runs box by box. No implementation.",
   source: {
     playbook: "poteto-mode/playbooks/multi-phase-plan.md",
-    commit: "80a789a1def45bd650fd70ab82ce027870f89f6c",
-    sha256: "b3ffd2c5c2fd4c228bc04939e00bc19ceedd5dadadaa3f68c1cc8ac3e8eb6972",
+    commit: "1d51f196d44be4f806b5d27700ad04c98e769aa1",
+    sha256: "5694e0b0f7651c740887c25e82e717f503661a7b88ec9a9dc5f162c7519e7d00",
   },
   steps: [
     findVerifySkill,

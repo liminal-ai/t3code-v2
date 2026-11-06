@@ -15,8 +15,8 @@ export const orchestrate = Schema.decodeSync(ThreadWorkflowTemplate)({
     "A standing program run by one coordinator: many units, many stacked PRs, a fleet of workers.",
   source: {
     playbook: "poteto-mode/playbooks/orchestrate.md",
-    commit: "fcdfb47c257bf938330063ced672bc4ad969e713",
-    sha256: "4a676566bb483933cf24437303f15eab59f432d01a3285de6b9a7e22bb3ac538",
+    commit: "1d51f196d44be4f806b5d27700ad04c98e769aa1",
+    sha256: "b3c4cf254a192dc2a6528ac823674f665e315d9ed993d4683f90b01feca11108",
   },
   steps: [
     findVerifySkill,
