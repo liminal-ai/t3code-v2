@@ -12,6 +12,8 @@ thread that the view folded.
 1. Run a Limbase service on this machine. Its home folder holds `config/membase.json`, which names
    the service's socket. The Limbase repository's `docs/runbooks/local-install.md` shows how to install
    and start it.
+   Upgrade the Limbase service and T3 Code's bundled Limbase host together: the commit in
+   `vendor/limbase/pin.json` is the service version the host expects.
 2. Install the Claude Code version that the bundled Limbase host is tested on, in a folder of its
    own, so that it never updates itself:
 
