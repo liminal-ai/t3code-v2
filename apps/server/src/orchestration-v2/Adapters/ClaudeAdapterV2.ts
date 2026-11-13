@@ -13484,7 +13484,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
               }
 
-              yield* Limbase.refuse(rollbackInput.providerThread, "rollback");
               const nativeThreadId = yield* getNativeThreadId(rollbackInput.providerThread);
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const now = yield* DateTime.now;
@@ -13503,6 +13502,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                         : { ownerNodeId: rollbackInput.providerThread.ownerNodeId }),
                       providerSessionId: input.providerSessionId,
                       nativeThreadId: resetNativeThreadId,
+                      ...(yield* Limbase.threadAfterReset({
+                        settings: adapterOptions.settings,
+                        reset: rollbackInput.providerThread,
+                        cwd: rollbackInput.runtimePolicy?.cwd ?? null,
+                      })),
                       ...(rollbackInput.providerThread.forkedFrom === null
                         ? {}
                         : { forkedFrom: rollbackInput.providerThread.forkedFrom }),

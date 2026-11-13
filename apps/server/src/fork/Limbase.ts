@@ -113,13 +113,32 @@ export const ensureThread = Effect.fn("Limbase.ensureThread")(function* (input: 
 });
 
 /**
+ * What to do after Limbase failed a step of a query an edit opened at a place, before the place took
+ * hold. Resending in that query fails again, and only an edit opens a new one: at an earlier place
+ * when Limbase cannot keep this one, or at the same place otherwise.
+ */
+const wayOutOfPlace = (what: string) =>
+  what.startsWith("rollback refused: anchor") || what.startsWith("rollback refused: overBound")
+    ? "Edit an earlier message to go on."
+    : "Edit the message again to retry.";
+
+/** A step Limbase failed: where, and the host's words for why. */
+type FailedStep = { readonly where: string; readonly what: string };
+
+/**
  * The CLI ends a step that Limbase failed with a successful `result`: at a prompt its text is the
  * hook's reason, and at a tool boundary it is empty with `terminal_reason: "hook_stopped"`. As an
- * error result carrying the host's reason, the run fails instead of ending as done.
+ * error result carrying the host's reason, the run fails instead of ending as done. In a query an
+ * edit opened at a place that no step has run from yet, the error also says which edit gets past it.
  */
-const asFailedStep = (message: SDKMessage, reason: string | undefined): SDKMessage => {
+const asFailedStep = (
+  message: SDKMessage,
+  failed: FailedStep | undefined,
+  placed: boolean,
+): SDKMessage => {
+  const reason = failed === undefined ? "" : `limbase: stopped at ${failed.where}: ${failed.what}`;
   if (
-    reason === undefined ||
+    failed === undefined ||
     message.type !== "result" ||
     message.subtype !== "success" ||
     !(message.terminal_reason === "hook_stopped" || message.result.endsWith(reason))
@@ -130,9 +149,27 @@ const asFailedStep = (message: SDKMessage, reason: string | undefined): SDKMessa
     ...rest,
     subtype: "error_during_execution" as const,
     is_error: true,
-    errors: [reason],
+    errors: [placed ? `${reason}. ${wayOutOfPlace(failed.what)}` : reason],
   };
 };
+
+/**
+ * The native metadata of the row an edit from the first message starts: a new Limbase thread when
+ * the old row had one, so the history the edit removed is not served again.
+ */
+export const threadAfterReset = Effect.fn("Limbase.threadAfterReset")(function* (input: {
+  readonly settings: ClaudeSettings | undefined;
+  readonly reset: OrchestrationV2ProviderThread;
+  readonly cwd: string | null;
+}) {
+  if (input.reset.nativeMetadata?.limbaseThreadId === undefined) return {};
+  return yield* ensureThread({
+    settings: input.settings,
+    existing: undefined,
+    title: undefined,
+    cwd: input.cwd,
+  });
+});
 
 /**
  * The SDK `query` for a thread on a Limbase instance, or undefined for a plain one. A thread that
@@ -154,15 +191,16 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
       throw new Error("Limbase needs prompts as a stream and settings as an object.");
     }
     /** The reason of the step Limbase last failed, which the next `result` ends on. */
-    let failedStep: string | undefined;
+    let failedStep: FailedStep | undefined;
+    /** Whether this query was opened at a place that no step has yet run from. */
+    let placed = rest.resumeSessionAt !== undefined;
     const session = createAgentSdkHost({
       ...sdk,
       limbase: threadCalls(connection, limbaseThreadId),
       alias: providerThread.id,
       zod: zod.z,
       onEvent: (event) => {
-        if (event.kind === "failOut")
-          failedStep = `limbase: stopped at ${event.where}: ${event.what}`;
+        if (event.kind === "failOut") failedStep = { where: event.where, what: event.what };
       },
     }).query({ prompt, options: { ...rest, ...(settings === undefined ? {} : { settings }) } });
     const next = session.next.bind(session);
@@ -172,8 +210,9 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
           ? async (...args: []) => {
               const result = await next(...args);
               if (result.done === true) return result;
-              const message = asFailedStep(result.value, failedStep);
+              const message = asFailedStep(result.value, failedStep, placed);
               if (message.type === "result") failedStep = undefined;
+              if (message.type === "result" && message.subtype === "success") placed = false;
               if (
                 message.type === "system" &&
                 message.subtype === "init" &&
@@ -199,12 +238,11 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
 
 const REFUSALS = {
   fork: "Limbase does not fork threads yet",
-  rollback: "Edit from here does not work on a Limbase thread yet.",
 } as const;
 
 /** An action a Limbase thread cannot take yet. Its message is written for the user. */
 export class LimbaseRefusal extends Schema.TaggedError<LimbaseRefusal>()("LimbaseRefusal", {
-  action: Schema.Literals(["fork", "rollback"]),
+  action: Schema.Literals(["fork"]),
 }) {
   override get message(): string {
     return REFUSALS[this.action];
@@ -219,17 +257,6 @@ export const refuse = (
   providerThread.nativeMetadata?.limbaseThreadId === undefined
     ? Effect.void
     : Effect.fail(new LimbaseRefusal({ action }));
-
-const isRefusal = Schema.is(LimbaseRefusal);
-
-/** The refusal's message when `error` was caused by one, for a client that shows only known causes. */
-export const refusalIn = (error: unknown): string | undefined => {
-  for (let cause = error; typeof cause === "object" && cause !== null;) {
-    if (isRefusal(cause)) return cause.message;
-    cause = (cause as { readonly cause?: unknown }).cause;
-  }
-  return undefined;
-};
 
 type LiveQuery = { readonly nativeThreadId: string; readonly stopping: boolean } | null;
 

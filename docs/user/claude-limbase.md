@@ -13,7 +13,8 @@ thread that the view folded.
    the service's socket. The Limbase repository's `docs/runbooks/local-install.md` shows how to install
    and start it.
    Upgrade the Limbase service and T3 Code's bundled Limbase host together: the commit in
-   `vendor/limbase/pin.json` is the service version the host expects.
+   `vendor/limbase/pin.json` is the service version the host expects. A host and a service on
+   different contract versions fail every step on a Limbase thread, and the error names both.
 2. Install the Claude Code version that the bundled Limbase host is tested on, in a folder of its
    own, so that it never updates itself:
 
@@ -63,8 +64,14 @@ version, and change **Binary path** to it.
 - **Fork.** A Limbase thread does not fork natively yet. A fork shows `Could not fork the source
   conversation natively (Limbase does not fork threads yet). Started a fresh session with its
   history.` The fork is then a new Limbase thread that starts from a summary of the source.
-- **Edit from here.** Refused with `Edit from here does not work on a Limbase thread yet.` Nothing
-  changes.
+- **Edit from here.** Works as on any Claude thread. When you send the edited message, Limbase cuts
+  the thread back to the turn before it, and the answer knows nothing after that turn. Editing the
+  first message starts a new Limbase thread.
+- **An edit that Limbase cannot make.** The run fails with `limbase: stopped at`, the reason, and
+  a sentence that says what to do. Every message you send fails the same way until you edit again.
+  `rollback refused: anchor` and `overBound` (more than 1,001 turns after the edited message) say
+  `Edit an earlier message to go on.` Any other failure of the edited message, such as a Limbase
+  that is down, says `Edit the message again to retry.`
 - **Restarts.** After a restart of T3 Code, or after the 30-minute idle release, the thread resumes
   the session that Limbase last installed.
 
