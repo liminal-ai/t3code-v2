@@ -126,7 +126,6 @@ import * as DocumentText from "./provider/DocumentText.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ScheduledTasks from "./scheduledTasks/ScheduledTaskService.ts";
 import * as SecretRequests from "./secrets/SecretRequests.ts";
-import * as ThreadWorkflowWs from "./threadWorkflow/ws.ts";
 import * as GuestShareService from "./guest/GuestShareService.ts";
 import {
   bufferShellLiveStream,
@@ -2041,7 +2040,6 @@ export const layerWsRpc = (
       });
 
       const handlers = ServerWsRpcGroup.of({
-        ...(yield* ThreadWorkflowWs.handlers(currentSessionId)),
         [ORCHESTRATION_V2_WS_METHODS.dispatchCommand]: (command) =>
           Effect.annotateCurrentSpan({
             "orchestration_v2.command_id": command.commandId,
@@ -3005,8 +3003,7 @@ export const layerWsRpc = (
                 new ProjectMutationError({
                   commandId: mutation.commandId,
                   message:
-                    cause._tag === "ProjectNotEmptyError" ||
-                    cause._tag === "ProjectThreadsBlockedError"
+                    cause._tag === "ProjectNotEmptyError"
                       ? cause.message
                       : "Failed to mutate project.",
                   cause,

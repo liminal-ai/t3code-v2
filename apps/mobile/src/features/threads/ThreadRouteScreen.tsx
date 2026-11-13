@@ -51,7 +51,6 @@ import { EmptyState } from "../../components/ui/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { scopedThreadKey } from "../../lib/scopedEntities";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import { useThreadHasWorkflow } from "../../state/thread-workflow";
 import { useThreadShell } from "../../state/entities";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 import { connectionTone } from "../connection/connectionTone";
@@ -375,11 +374,6 @@ function ThreadRouteContent(
   const gitState = useSelectedThreadGitState();
   const gitActions = useSelectedThreadGitActions();
   const requests = useSelectedThreadRequests();
-  const hasWorkflow = useThreadHasWorkflow(
-    selectedThread === null
-      ? null
-      : scopeThreadRef(selectedThread.environmentId, selectedThread.id),
-  );
   const interruptThreadTurn = useAtomCommand(threadEnvironment.interruptTurn, "thread interrupt");
   const resumeThreadQueue = useAtomCommand(threadEnvironment.resumeThreadQueue, {
     label: "resume queue",
@@ -563,15 +557,6 @@ function ThreadRouteContent(
     navigation.setParams({ inspector: undefined });
     setChosenInspectorMode(props.renderInspector === undefined ? "files" : "route");
     showInspector();
-  };
-  const handleOpenWorkflow = () => {
-    if (selectedThread === null) {
-      return;
-    }
-    navigation.navigate("ThreadWorkflow", {
-      environmentId: selectedThread.environmentId,
-      threadId: selectedThread.id,
-    });
   };
   const handleToggleInspector = () => {
     if (inspectorMode === null) {
@@ -984,7 +969,6 @@ function ThreadRouteContent(
                 onToggleInspector={handleToggleInspector}
                 onOpenFilesInspector={handleOpenFilesInspector}
                 onReturnToThread={props.onReturnToThread}
-                onOpenWorkflow={hasWorkflow ? handleOpenWorkflow : undefined}
               />
             )
           }

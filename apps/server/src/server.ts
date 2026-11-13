@@ -10,7 +10,6 @@ import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchRea
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
 import * as HeldQueueResumer from "./fork/HeldQueueResumer.ts";
 import * as DelegatedRequestTimeout from "./fork/DelegatedRequestTimeout.ts";
-import * as ThreadWorkflow from "./threadWorkflow/layer.ts";
 // Effect wraps this raw Node HTTP server after its startup and write-error guards attach.
 // @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
@@ -666,8 +665,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
       yield* service.start();
     }),
   ).pipe(Layer.provide(DelegatedTaskQuestionReactor.layer), Layer.provide(ProjectionStoreV2.layer)),
-  ThreadWorkflow.layerIdleReactorStart,
-  ThreadWorkflow.layerAnswerReactorStart,
   HeldQueueResumer.layerStart,
   DelegatedRequestTimeout.layerStart,
   ProviderUsageLimitsIngestion.layer,
@@ -685,7 +682,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   Layer.provideMerge(layerVcs),
   Layer.provideMerge(Layer.mergeAll(layerTerminal, layerPreview, layerDevice)),
   Layer.provideMerge(layerPersistence),
-  Layer.provideMerge(ThreadWorkflow.layerForServer(layerServerSettings)),
   Layer.provideMerge(
     Layer.mergeAll(Keybindings.layer, EnvironmentTheme.layer, UsageLimitSources.layer),
   ),

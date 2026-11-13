@@ -63,7 +63,6 @@ import {
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
 } from "./RestartBackgroundNote.ts";
-import { failOpen, HOOK_DEADLINE, ThreadHooks } from "./ThreadHooks.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -192,7 +191,6 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const threadHooks = yield* ThreadHooks;
     const serverSettings = yield* ServerSettings.ServerSettingsService;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
@@ -884,11 +882,6 @@ export const layer: Layer.Layer<
         projection.providerTurns,
         projection.attempts,
       );
-      const compactionMessageIds = new Set(
-        projection.messages
-          .filter((candidate) => isCompactionCommandMessage(candidate))
-          .map((candidate) => candidate.id),
-      );
       const restartCancelledWork = pendingRestartCancelledBackgroundWork({
         runs: projection.runs,
         providerTurns: projection.providerTurns,
@@ -896,7 +889,7 @@ export const layer: Layer.Layer<
           projection.messages
             .filter(
               (candidate) =>
-                compactionMessageIds.has(candidate.id) ||
+                isCompactionCommandMessage(candidate) ||
                 (goalDriver && parseGoalCommand(candidate) !== null),
             )
             .map((candidate) => candidate.id),
@@ -1644,41 +1637,6 @@ export const layer: Layer.Layer<
       if (!runningWrite.committed) {
         return;
       }
-      const completedAttemptIds = new Set(
-        projection.providerTurns
-          .filter((turn) => turn.status === "completed")
-          .map((turn) => turn.runAttemptId),
-      );
-      // The run is already committed as running and the outbox retry skips a running run, so a
-      // defect or stall escaping the hook here would strand it. Core bounds the hook itself, over
-      // whatever containment the module brings, including a throw before it returns its effect.
-      const workflowNote = yield* failOpen(
-        Effect.suspend(() =>
-          threadHooks.turnNote({
-            threadId: projection.thread.id,
-            runId: run.id,
-            compacting: compactionMessageIds.has(message.id),
-            context: {
-              providerThreadId: providerThread.id,
-              nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
-              model: `${run.modelSelection.instanceId}/${run.modelSelection.model}`,
-              compactions: projection.compactionCount + compactionMessageIds.size,
-            },
-            completedRunIds: new Set(
-              projection.attempts
-                .filter((attempt) => completedAttemptIds.has(attempt.id))
-                .map((attempt) => attempt.runId),
-            ),
-            message,
-          }),
-        ),
-        {
-          deadline: HOOK_DEADLINE,
-          fallback: "",
-          message: "thread turn note hook failed; the turn goes without it",
-          annotations: { threadId: projection.thread.id, runId: run.id },
-        },
-      );
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
@@ -1728,9 +1686,7 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          // The handoff budget was fixed before the native thread was known, so it leaves out the
-          // workflow note, which fits within the budget's reserve.
-          const context = [delivery.context, sideChatContext, restartNote, workflowNote]
+          const context = [delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -1798,7 +1754,6 @@ export const layer: Layer.Layer<
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
         restartNote === "" &&
-        workflowNote === "" &&
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);

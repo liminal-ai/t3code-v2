@@ -160,8 +160,6 @@ export interface EnvironmentThreadShell {
   readonly hasPendingUserInput: boolean;
   readonly pendingUserInputAt?: string | null;
   readonly pendingSubagentRequest?: PendingSubagentRequest | null;
-  readonly openWorkflowQuestions?: number;
-  readonly latestWorkflowQuestionId?: string | null;
   /** Guest messages waiting for the owner to send or dismiss. */
   readonly pendingGuestMessageCount?: number;
   readonly hasActionableProposedPlan: boolean;
@@ -257,16 +255,10 @@ export function scopeProject(
 
 export type PendingSubagentRequest = "approval" | "user_input";
 
-export interface WorkflowAttention {
-  readonly openQuestions: number;
-  readonly latestQuestionId: string;
-}
-
 export function presentThreadShell(
   environmentId: EnvironmentId,
   thread: OrchestrationV2ThreadShell,
   pendingSubagentRequest: PendingSubagentRequest | null = null,
-  workflowAttention: WorkflowAttention | null = null,
 ): EnvironmentThreadShell {
   const updatedAt = iso(thread.updatedAt);
   const latestRun =
@@ -326,8 +318,6 @@ export function presentThreadShell(
         ? iso(thread.pendingRuntimeRequest.createdAt)
         : null,
     pendingSubagentRequest,
-    openWorkflowQuestions: workflowAttention?.openQuestions ?? 0,
-    latestWorkflowQuestionId: workflowAttention?.latestQuestionId ?? null,
     pendingGuestMessageCount: thread.pendingGuestMessageCount ?? 0,
     hasActionableProposedPlan: thread.hasActionableProposedPlan,
     pendingBackgroundTasks: thread.pendingBackgroundTasks ?? [],

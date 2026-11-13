@@ -191,7 +191,6 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
-import { lifecycleActionOf, ThreadHooks } from "./ThreadHooks.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import * as ServerSettings from "../serverSettings.ts";
@@ -1108,7 +1107,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
-  const threadHooks = yield* ThreadHooks;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
@@ -1187,18 +1185,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               cause,
             }),
         ),
-      );
-
-  const refuseIfThreadBlocked = (
-    command: Extract<OrchestrationV2ServerCommand, { type: keyof typeof lifecycleActionOf }>,
-  ) =>
-    threadHooks
-      .lifecycleBlocker({ threadId: command.threadId, action: lifecycleActionOf[command.type] })
-      .pipe(
-        Effect.flatMap((blocker) =>
-          blocker === null ? Effect.void : Effect.fail(`Thread ${command.threadId} ${blocker}`),
-        ),
-        mapDispatchError(command),
       );
 
   const mapDelegatedCompletionError = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -3467,9 +3453,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Thread ${command.threadId} is already archived.`,
       });
-    }
-    if (command.type === "thread.settle" || command.type === "thread.archive") {
-      yield* refuseIfThreadBlocked(command);
     }
     if (command.type === "thread.unarchive" && thread.archivedAt === null) {
       return yield* new OrchestratorDispatchError({
@@ -13533,7 +13516,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       }
       case "thread.delete": {
-        yield* refuseIfThreadBlocked(command);
         const now = yield* DateTime.now;
         const planDeletion = Effect.fn("Orchestrator.planDeletion")(function* (
           deletion: typeof command,
@@ -13580,14 +13562,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // The dispatch wrapper holds each side chat's lock, so none can commit after this plan.
         const plans = [
           yield* planDeletion(command),
-          ...(yield* Effect.forEach(sideChatIds, (threadId) => {
-            const deletion = {
+          ...(yield* Effect.forEach(sideChatIds, (threadId) =>
+            planDeletion({
               ...command,
               commandId: CommandId.make(`${command.commandId}:side-chat:${threadId}`),
               threadId,
-            };
-            return refuseIfThreadBlocked(deletion).pipe(Effect.andThen(planDeletion(deletion)));
-          })),
+            }),
+          )),
         ];
         return {
           events: plans.flatMap((plan) => plan.events),

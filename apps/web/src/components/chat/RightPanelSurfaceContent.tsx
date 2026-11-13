@@ -9,7 +9,6 @@ import type {
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
 import { scopedThreadKey } from "@t3tools/client-runtime/environment";
-import type { ThreadPendingUserInput } from "@t3tools/client-runtime/state/thread-requests";
 import { lazy, Suspense } from "react";
 import SideChatPane from "./SideChatPane";
 import type { ComposerImageAttachment, DraftId } from "../../composerDraftStore";
@@ -34,11 +33,6 @@ const DevicePanel = lazy(() =>
   import("../device/DevicePanel").then((module) => ({ default: module.DevicePanel })),
 );
 const FilePreviewPanel = lazy(() => import("../files/FilePreviewPanel"));
-const ThreadWorkflowPanel = lazy(() =>
-  import("../../threadWorkflow/ThreadWorkflowPanel").then((module) => ({
-    default: module.ThreadWorkflowPanel,
-  })),
-);
 
 type RightPanelTerminalProps = Omit<
   PersistentThreadTerminalPanelProps,
@@ -53,12 +47,6 @@ interface RightPanelPullRequestProps {
   readonly linkedPullRequest: ThreadLinkedPullRequest | null;
   readonly branchPullRequest: ThreadLinkedPullRequest | null | undefined;
   readonly onBack: (() => void) | undefined;
-}
-
-interface RightPanelWorkflowProps {
-  /** The thread's pending question-tool requests, the same list the composer answers. */
-  readonly pendingUserInputs: ReadonlyArray<ThreadPendingUserInput>;
-  readonly onAnswerInComposer: () => void;
 }
 
 interface RightPanelFileProps {
@@ -90,7 +78,6 @@ export function RightPanelSurfaceContent(props: {
   readonly terminal: RightPanelTerminalProps;
   readonly pullRequest: RightPanelPullRequestProps;
   readonly files: RightPanelFileProps;
-  readonly workflow: RightPanelWorkflowProps;
   readonly sideChatParentPanel: SideChatParentPanel;
 }) {
   const { surface, threadRef, visible, onCloseSurface } = props;
@@ -182,17 +169,6 @@ export function RightPanelSurfaceContent(props: {
     }
     case "pull-requests":
       return <ThreadPullRequestsPanel threadRef={threadRef} />;
-    case "workflow":
-      return (
-        <Suspense fallback={null}>
-          <ThreadWorkflowPanel
-            key={scopedThreadKey(threadRef)}
-            threadRef={threadRef}
-            pendingUserInputs={props.workflow.pendingUserInputs}
-            onAnswerInComposer={props.workflow.onAnswerInComposer}
-          />
-        </Suspense>
-      );
     case "side-chat":
       // Not lazy: revealing a suspended tiptap editor tears down its view and crashes the composer.
       return (
