@@ -273,7 +273,6 @@ const make = Effect.gen(function* () {
       ].join("\n"),
       notification: {
         source: { kind: "delegated_task", taskIds: [task.id], childThreadId: task.childThreadId },
-        // Upstream drops a delegated_task "updated" wake that matches no pending child question.
         outcome: "unknown",
         summary: `Delegated task${label === undefined ? "" : ` "${label}"`} needs approval`,
       },
