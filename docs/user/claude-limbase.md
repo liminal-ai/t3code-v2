@@ -77,4 +77,3 @@ version, and change **Binary path** to it.
 - A turn whose previous session T3 Code could not resume continues the same Limbase thread in a
   fresh session. T3 Code's recovery text, the thread's history as a summary, is recorded in Limbase
   as a prompt, and the model works from that text until the next install.
-- MCP App widgets cannot call their server's tools on a Limbase thread yet.
