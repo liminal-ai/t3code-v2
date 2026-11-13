@@ -8,14 +8,8 @@ export function isAppModalPage(pathname: string) {
   return pathname === "/settings" || pathname.startsWith("/settings/") || pathname === "/usage";
 }
 
-export function isGroupChatPath(pathname: string) {
-  return pathname === "/group-chat" || pathname.startsWith("/group-chat/");
-}
-
 export function isSidebarUtilityPage(pathname: string) {
-  return (
-    pathname.startsWith("/projects/") || isGroupChatPath(pathname) || pathname === "/pull-requests"
-  );
+  return pathname.startsWith("/projects/") || pathname === "/pull-requests";
 }
 
 // Pages the root route always renders without the app shell, so they are never
@@ -23,42 +17,8 @@ export function isSidebarUtilityPage(pathname: string) {
 // are still recorded; they are real app URLs, so returning to one is harmless.
 const SHELL_LESS_PATHS = new Set(["/pair", "/connect", "/connect-agent", GUEST_PAGE_PATH]);
 
-// A full-document load of a utility page drops module memory, so the href is
-// also kept in the tab's sessionStorage for Back to return to after a reload.
-const MAIN_APP_HREF_KEY = "t3code:main-app-href";
-
 let mainAppHref: string | null = null;
 let appModalReturnHref: string | null = null;
-
-export function rememberMainAppHref(
-  href: string,
-  getStorage: () => Storage = () => window.sessionStorage,
-) {
-  mainAppHref = href;
-  try {
-    getStorage().setItem(MAIN_APP_HREF_KEY, href);
-  } catch {}
-}
-
-function isSameOriginMainAppHref(href: string) {
-  const base = "http://main-app.invalid";
-  const url = new URL(href, base);
-  return (
-    url.origin === base &&
-    !isSidebarUtilityPage(url.pathname) &&
-    !isAppModalPage(url.pathname) &&
-    !SHELL_LESS_PATHS.has(url.pathname)
-  );
-}
-
-export function mainAppReturnHref(getStorage: () => Storage = () => window.sessionStorage) {
-  if (mainAppHref !== null) return mainAppHref;
-  try {
-    const saved = getStorage().getItem(MAIN_APP_HREF_KEY);
-    if (saved !== null && isSameOriginMainAppHref(saved)) return saved;
-  } catch {}
-  return "/";
-}
 
 /** Remembers where Settings, Usage, and the utility pages lead back to. */
 export function startMainAppLocationTracking(router: AnyRouter): () => void {
@@ -67,7 +27,7 @@ export function startMainAppLocationTracking(router: AnyRouter): () => void {
     if (isAppModalPage(pathname) || SHELL_LESS_PATHS.has(pathname)) return;
     const href = withoutAssistantCitationHash(router.state.location.href);
     appModalReturnHref = href;
-    if (!isSidebarUtilityPage(pathname)) rememberMainAppHref(href);
+    if (!isSidebarUtilityPage(pathname)) mainAppHref = href;
   };
   record();
   return router.subscribe("onResolved", record);
@@ -75,11 +35,11 @@ export function startMainAppLocationTracking(router: AnyRouter): () => void {
 
 export function useNavigateToMainApp() {
   const navigate = useNavigate();
-  return () => navigate({ href: mainAppReturnHref() });
+  return () => navigate({ href: mainAppHref ?? "/" });
 }
 
 /** Leaves Settings or Usage for the page that opened it. */
 export function useCloseAppModal() {
   const navigate = useNavigate();
-  return () => navigate({ href: appModalReturnHref ?? mainAppReturnHref() });
+  return () => navigate({ href: appModalReturnHref ?? mainAppHref ?? "/" });
 }
