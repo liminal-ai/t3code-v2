@@ -21,7 +21,6 @@ import { ProviderAdapterDriverCreateError } from "@t3tools/provider-core/server/
 import * as ProviderAdapterRegistry from "../ProviderAdapterRegistry.ts";
 import type { OrchestratorV2ProviderReplayHarness } from "../testkit/ProviderReplayHarness.ts";
 import * as CursorAgentSdk from "@t3tools/provider-cursor/server/CursorAgentSdk";
-import { CursorSettings } from "@t3tools/provider-cursor/settings";
 import {
   CURSOR_DEFAULT_INSTANCE_ID,
   cursorSdkModelSelection,
@@ -30,8 +29,6 @@ import {
 } from "@t3tools/provider-cursor/testing";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import type { RuntimePolicyV2Override } from "../RuntimePolicy.ts";
-
-const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 const CursorAgentSdkReplayTranscript = Schema.Struct({
   provider: Schema.Literal(CursorAgentSdk.CURSOR_PROVIDER),
@@ -449,7 +446,6 @@ export function makeCursorAgentSdkReplayRunner(
                 },
                 catch: (cause) => replayRunnerError(transcript, cause, "replay.session.send"),
               }),
-            attach: () => Effect.die("Replay transcripts do not attach to cloud runs"),
             listMessages: Effect.try({
               try: () => {
                 assertOutbound({
@@ -532,7 +528,6 @@ export function layer(
     Effect.gen(function* () {
       const adapter = yield* makeCursorAdapterV2({
         instanceId: CURSOR_DEFAULT_INSTANCE_ID,
-        settings: yield* decodeCursorSettings({}).pipe(Effect.orDie),
         environment: yield* HostProcess.Environment,
       });
       return [adapter];

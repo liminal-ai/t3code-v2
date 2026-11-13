@@ -34,26 +34,6 @@ describe("ProviderSettingsForm helpers", () => {
     ]);
   });
 
-  it("uses a dedicated environment field instead of legacy Cursor CLI settings", () => {
-    const cursor = providerClients.get(ProviderDriverKind.make("cursor"));
-
-    expect(cursor).toBeDefined();
-    expect(deriveProviderSettingsFields(cursor!).map((field) => field.key)).toEqual([
-      "runtime",
-      "cloudAutoCreatePR",
-      "cloudOpenAsCursorGithubApp",
-    ]);
-    expect(cursor?.environmentFields).toEqual([
-      {
-        name: "CURSOR_API_KEY",
-        label: "Cursor API key",
-        description: "Optional. Overrides browser sign-in for this provider.",
-        placeholder: "Paste API key",
-        sensitive: true,
-      },
-    ]);
-  });
-
   it("offers Claude's context engine and the two LHC fields", () => {
     const claude = providerClients.get(ProviderDriverKind.make("claudeAgent"));
     expect(claude).toBeDefined();

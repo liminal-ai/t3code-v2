@@ -13,14 +13,12 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import { CursorSettings } from "../settings.ts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
-import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as TestProviderHost from "@t3tools/provider-testing/TestProviderHost";
@@ -39,8 +37,6 @@ import * as CursorAgentSdk from "./CursorAgentSdk.ts";
 import { loadCursorSdk } from "./sdk.ts";
 
 const { ConfigurationError } = loadCursorSdk();
-
-const decodeCursorSettings = Schema.decodeEffect(CursorSettings);
 
 describe("CursorAdapterV2", () => {
   it.effect.each([
@@ -78,7 +74,6 @@ describe("CursorAdapterV2", () => {
         });
         const adapter = yield* makeCursorAdapterV2({
           instanceId,
-          settings: yield* decodeCursorSettings({}),
           environment: { HOME: workspace },
         }).pipe(
           Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
@@ -87,7 +82,6 @@ describe("CursorAdapterV2", () => {
               Effect.succeed({
                 agentId: "native-cursor-lifecycle",
                 listMessages: Effect.succeed([]),
-                attach: () => Effect.die("unused"),
                 close: Effect.void,
                 send: (input) =>
                   Effect.gen(function* () {
@@ -413,7 +407,6 @@ describe("CursorAdapterV2", () => {
       });
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
-        settings: yield* decodeCursorSettings({}),
         environment: { HOME: workspace },
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
@@ -422,7 +415,6 @@ describe("CursorAdapterV2", () => {
             Effect.succeed({
               agentId: "native-cursor-failure",
               listMessages: Effect.succeed([]),
-              attach: () => Effect.die("unused"),
               close: Effect.void,
               send: (input) =>
                 Effect.gen(function* () {
@@ -535,7 +527,6 @@ describe("CursorAdapterV2", () => {
       });
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
-        settings: yield* decodeCursorSettings({}),
         environment: { HOME: workspace },
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
@@ -544,7 +535,6 @@ describe("CursorAdapterV2", () => {
             Effect.succeed({
               agentId: "native-cursor-error",
               listMessages: Effect.succeed([]),
-              attach: () => Effect.die("unused"),
               close: Effect.void,
               send: (input) =>
                 Effect.sync(() => {
@@ -698,7 +688,6 @@ describe("CursorAdapterV2", () => {
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
         environment: { HOME: workspace },
-        settings: yield* decodeCursorSettings({}),
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
           assertComplete: Effect.void,
@@ -707,7 +696,6 @@ describe("CursorAdapterV2", () => {
               agentId: "native-cursor-device",
               listMessages: Effect.succeed([]),
               close: Effect.void,
-              attach: () => Effect.die("unused"),
               send: (input) =>
                 Effect.sync(() => {
                   sentMessages.push(
@@ -1069,7 +1057,6 @@ describe("CursorAdapterV2", () => {
       ];
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
-        settings: yield* decodeCursorSettings({}),
         environment: { HOME: workspace },
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
@@ -1078,7 +1065,6 @@ describe("CursorAdapterV2", () => {
             Effect.succeed({
               agentId: "native-cursor-search",
               listMessages: Effect.succeed([]),
-              attach: () => Effect.die("unused"),
               close: Effect.void,
               send: (input) =>
                 Effect.gen(function* () {
@@ -1343,7 +1329,6 @@ describe("CursorAdapterV2", () => {
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
         environment: { HOME: workspace },
-        settings: yield* decodeCursorSettings({}),
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
           assertComplete: Effect.void,
@@ -1352,7 +1337,6 @@ describe("CursorAdapterV2", () => {
               agentId: "native-cursor-task-ls",
               listMessages: Effect.succeed([]),
               close: Effect.void,
-              attach: () => Effect.die("unused"),
               send: (input) =>
                 Effect.gen(function* () {
                   const args = {
@@ -1527,7 +1511,6 @@ describe("CursorAdapterV2", () => {
             );
       const adapter = yield* makeCursorAdapterV2({
         instanceId,
-        settings: yield* decodeCursorSettings({}),
         environment: { HOME: workspace },
       }).pipe(
         Effect.provideService(CursorAgentSdk.CursorAgentSdkRunner, {
@@ -1537,7 +1520,6 @@ describe("CursorAdapterV2", () => {
               Effect.as({
                 agentId: "native-cursor-custom-model",
                 listMessages: Effect.succeed([]),
-                attach: () => Effect.die("unused"),
                 close: Effect.void,
                 send: (sendInput) =>
                   checkModel("run.start", sendInput.options?.model).pipe(
@@ -1762,36 +1744,6 @@ describe("CursorAdapterV2", () => {
         sandboxEnabled: true,
       },
     );
-  });
-
-  it("fits a delegated child's long thread id into Cursor's agent name limit", () => {
-    const threadId = ThreadId.make(
-      "thread:delegated-task:command%3Amcp%3A63584d9a-67b9-4862-ba87-7b9be48af5f6%3Adelegate-task%3Acursor-cloud-fix-round-3",
-    );
-    const options = makeCursorAgentOptions({
-      modelSelection: {
-        instanceId: ProviderInstanceId.make("cursor"),
-        model: "composer-2.5",
-      },
-      runtimePolicy: { runtimeMode: "full-access", interactionMode: "default", cwd: null },
-      platform: "linux",
-      threadId,
-      mcpSession: undefined,
-      cloud: {
-        checkout: {
-          repository: null,
-          branch: null,
-          unpushedCommits: 0,
-          uncommittedChanges: false,
-        },
-        autoCreatePR: false,
-        openAsCursorGithubApp: true,
-      },
-    });
-    assert.strictEqual(options.name?.length, 100);
-    assert.isTrue(options.name?.startsWith("T3 Code …"));
-    assert.isTrue(options.name?.endsWith("delegate-task%3Acursor-cloud-fix-round-3"));
-    assert.deepStrictEqual(options.cloud?.metadata, { t3ThreadId: threadId });
   });
 
   it("injects thread-scoped MCP credentials without logging them", () => {
