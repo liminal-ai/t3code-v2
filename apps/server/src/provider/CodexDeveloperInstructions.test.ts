@@ -69,12 +69,10 @@ describe("Codex orchestration context", () => {
     NodeAssert.ok(
       orchestration.includes("Background agent: `delegate_task`, never a background `Agent`."),
     );
-    NodeAssert.ok(orchestration.includes("Every new delegate review is a new `delegate_task`"));
     NodeAssert.ok(
-      orchestration.includes(
-        "A re-check after a fix goes to the same reviewer: `t3_thread_send` its thread",
-      ),
+      orchestration.includes("Every new delegate review or re-check is a new `delegate_task`"),
     );
+    NodeAssert.ok(orchestration.includes("never a `t3_thread_send`"));
     NodeAssert.ok(!orchestration.includes("inheritedOptions"));
     NodeAssert.ok(!orchestration.includes("Prefer native"));
     // The ACP terminal fallback is ACP-only; Codex agents never need it.
