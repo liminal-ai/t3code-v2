@@ -429,7 +429,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     ).pipe(Effect.catch((error) => Effect.succeed({ ok: false, output: error.message })));
 
   // Resolve without the lockfile in a temp copy to preserve the working tree and lockfile.
-  // Copy mobile modules too: they are file: dependencies, not workspace packages.
+  // Copy mobile modules and vendor/ too: they are file: dependencies, not workspace packages.
   // Cached registry metadata limits this to patches stranded by local changes, not registry drift.
   const checkPatches = Effect.scoped(
     Effect.gen(function* () {
@@ -449,7 +449,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           if (yield* fs.exists(inRoot(manifest))) yield* copy(manifest);
         }
       }
-      for (const extra of ["apps/mobile/deps", "patches", ".pnpmfile.cjs"]) {
+      for (const extra of ["apps/mobile/deps", "patches", "vendor", ".pnpmfile.cjs"]) {
         if (yield* fs.exists(inRoot(extra))) yield* copy(extra);
       }
       const result = yield* vp(["install", "--lockfile-only", "--ignore-scripts"], temp);

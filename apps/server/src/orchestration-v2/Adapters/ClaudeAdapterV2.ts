@@ -179,6 +179,7 @@ import {
   type CompiledClaudeModelSelection,
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
+import * as Limbase from "../../fork/Limbase.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProcessRunner from "../../processRunner.ts";
 import * as ServerSettings from "../../serverSettings.ts";
@@ -610,6 +611,7 @@ export type ClaudeAgentSdkQueryOptions = Omit<
 
 export interface ClaudeAgentSdkQueryOpenInput {
   readonly options: ClaudeAgentSdkQueryOptions;
+  readonly query?: typeof query;
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
 }
@@ -1422,7 +1424,7 @@ export const layerQueryRunner: Layer.Layer<
           const queryRuntime = yield* Effect.uninterruptibleMask((restore) =>
             Effect.try({
               try: () =>
-                query({
+                (input.query ?? query)({
                   prompt,
                   options: { ...options, spawnClaudeCodeProcess },
                 }),
@@ -12091,10 +12093,15 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const resolvedTurnCwd = yield* fileSystem
             .realPath(turnInput.runtimePolicy.cwd ?? ".")
             .pipe(Effect.orElseSucceed(() => turnInput.runtimePolicy.cwd));
+          const limbaseQuery = yield* Limbase.queryFor(
+            adapterOptions.settings,
+            turnInput.providerThread,
+          );
           const openQueryRuntime = queryRunner.open({
             threadId: turnInput.threadId,
             providerSessionId: input.providerSessionId,
             options: queryOptions,
+            ...(limbaseQuery === undefined ? {} : { query: limbaseQuery }),
           });
           // The SDK spawns the CLI per turn, so only the open waits for a provider update.
           const querySession = yield* (
@@ -12254,7 +12261,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         });
 
         const startTurn = Effect.fn("ClaudeAdapterV2.startTurn")(
-          function* (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+          function* (storedTurnInput: ProviderAdapter.ProviderAdapterV2TurnInput) {
+            const turnInput = Limbase.onLiveSession(
+              storedTurnInput,
+              yield* Ref.get(queryContext),
+              clearedNativeSessions,
+            );
             modelCatalog = yield* loadModelCatalog;
             const startedAt = yield* DateTime.now;
             const nativeThreadId = yield* getNativeThreadId(turnInput.providerThread);
@@ -13083,6 +13095,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 providerSessionId: input.providerSessionId,
                 nativeThreadId,
                 now: createdAt,
+                ...(yield* Limbase.ensureThread({
+                  settings: adapterOptions.settings,
+                  existing: threadInput.existingProviderThread,
+                  title: threadInput.title,
+                  cwd: threadInput.runtimePolicy.cwd,
+                })),
               });
             },
             (effect, threadInput) =>
@@ -13449,6 +13467,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
               }
 
+              yield* Limbase.refuse(rollbackInput.providerThread, "rollback");
               const nativeThreadId = yield* getNativeThreadId(rollbackInput.providerThread);
               yield* closeLiveQueryForNativeThread(nativeThreadId);
               const now = yield* DateTime.now;
@@ -13524,6 +13543,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 });
               }
 
+              yield* Limbase.refuse(forkInput.sourceProviderThread, "fork");
               const sourceNativeThreadId = yield* getNativeThreadId(forkInput.sourceProviderThread);
               yield* closeLiveQueryForNativeThread(sourceNativeThreadId);
               const upToMessageId = yield* resolveClaudeForkUpToMessageId(forkInput);

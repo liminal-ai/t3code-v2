@@ -843,8 +843,8 @@ importers:
   apps/server:
     dependencies:
       '@anthropic-ai/claude-agent-sdk':
-        specifier: ^0.3.321
-        version: 0.3.321(@anthropic-ai/sdk@0.93.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(supports-color@8.1.1)(zod@4.6.7))(zod@4.6.7)
+        specifier: ^0.3.322
+        version: 0.3.322(@anthropic-ai/sdk@0.93.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(supports-color@8.1.1)(zod@4.6.7))(zod@4.6.7)
       '@cursor/sdk':
         specifier: 1.2.0
         version: 1.2.0(patch_hash=57f502128bf6accd976963b126e227c86a45d815a53a8dc450461beae3bed4a4)(zod@4.6.7)
@@ -857,6 +857,9 @@ importers:
       '@ff-labs/fff-node':
         specifier: 0.11.0
         version: 0.11.0(patch_hash=a71dc3a5544fc47afacf0fe9da04dccec3018e625a76c96087ebfdf35e293768)
+      '@limbase/host-agent-sdk':
+        specifier: file:../../vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz
+        version: file:vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz(@anthropic-ai/claude-agent-sdk@0.3.322(@anthropic-ai/sdk@0.93.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(supports-color@8.1.1)(zod@4.6.7))(zod@4.6.7))(@effect/platform-node@4.1.2(bufferutil@4.1.0)(effect@4.1.2)(redis@6.2.1)(utf-8-validate@6.0.6))(effect@4.1.2)(zod@4.6.7)
       '@muse-code/sdk':
         specifier: 1.4.6
         version: 1.4.6(patch_hash=7b495b607fc5d76b444c7c4d58821e839726a30e6f3c53564f0d59f2d5b42101)(@types/node@24.12.4)
@@ -2743,8 +2746,8 @@ packages:
       vitest:
         optional: true
 
-  '@anthropic-ai/claude-agent-sdk@0.3.321':
-    resolution: {integrity: sha512-Smer/h/jQLTtT+l4sxaAUwZq7wif/9RzzuqltS5Gy+kAFo/iP89H7JHa8avhVT0xGkPBvBD/1Bbdg3pcArhQcw==}
+  '@anthropic-ai/claude-agent-sdk@0.3.322':
+    resolution: {integrity: sha512-r88ij7R3SPV2j3BtFuavgrbWZNE8SVVS42AOQ1KxlS+QnSwNNnUhmVXV3Es2dniZySBYX8ENebL43ffhiB0azw==}
     engines: {node: '>=18.14.0'}
     peerDependencies:
       '@anthropic-ai/sdk': '>=0.93.0'
@@ -4956,6 +4959,20 @@ packages:
     resolution: {integrity: sha512-4/0CvEdhi6+KjMxMaVbFM2n2Z44escBRoEYpR+gZg64DdetzGnYm8mcNLcoySaDJZNaBd6wz5DNdgRmcI4hXcg==}
     cpu: [x64]
     os: [win32]
+
+  '@limbase/host-agent-sdk@file:vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz':
+    resolution: {integrity: sha512-a5DqJW0SW+dDeiYLW5lIAwa2HqofycoJwLQyOxp67xmgIJXFAhYntTAB4/mhoLBGDk/xHWRxIcjMMGZpR9aC2w==, tarball: file:vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz}
+    version: 0.1.0
+    peerDependencies:
+      '@anthropic-ai/claude-agent-sdk': ^0.3.322
+      '@effect/platform-node': 4.1.2
+      effect: 4.1.2
+      zod: ^4.2.0
+    peerDependenciesMeta:
+      '@anthropic-ai/claude-agent-sdk':
+        optional: true
+    bundledDependencies:
+      - '@limbase/contract'
 
   '@malept/cross-spawn-promise@2.0.0':
     resolution: {integrity: sha512-1DpKU0Z5ThltBwjNySMC14g0CkbyhCaz9FkhxqNsZI6uAPJXFS8cMXlBKo26FJ8ZuW6S9GCMcR9IO5k2X5/9Fg==}
@@ -13210,7 +13227,7 @@ snapshots:
       - bufferutil
       - utf-8-validate
 
-  '@anthropic-ai/claude-agent-sdk@0.3.321(@anthropic-ai/sdk@0.93.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(supports-color@8.1.1)(zod@4.6.7))(zod@4.6.7)':
+  '@anthropic-ai/claude-agent-sdk@0.3.322(@anthropic-ai/sdk@0.93.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(supports-color@8.1.1)(zod@4.6.7))(zod@4.6.7)':
     dependencies:
       '@anthropic-ai/sdk': 0.93.0(zod@4.6.7)
       '@modelcontextprotocol/sdk': 1.32.2(supports-color@8.1.1)(zod@4.6.7)
@@ -15600,6 +15617,14 @@ snapshots:
 
   '@libsql/win32-x64-msvc@0.5.29':
     optional: true
+
+  '@limbase/host-agent-sdk@file:vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz(@anthropic-ai/claude-agent-sdk@0.3.322(@anthropic-ai/sdk@0.93.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(supports-color@8.1.1)(zod@4.6.7))(zod@4.6.7))(@effect/platform-node@4.1.2(bufferutil@4.1.0)(effect@4.1.2)(redis@6.2.1)(utf-8-validate@6.0.6))(effect@4.1.2)(zod@4.6.7)':
+    dependencies:
+      '@effect/platform-node': 4.1.2(bufferutil@4.1.0)(effect@4.1.2)(redis@6.2.1)(utf-8-validate@6.0.6)
+      effect: 4.1.2
+      zod: 4.6.7
+    optionalDependencies:
+      '@anthropic-ai/claude-agent-sdk': 0.3.322(@anthropic-ai/sdk@0.93.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.2(supports-color@8.1.1)(zod@4.6.7))(zod@4.6.7)
 
   '@malept/cross-spawn-promise@2.0.0':
     dependencies:

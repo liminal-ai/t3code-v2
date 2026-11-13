@@ -826,6 +826,14 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
+    limbaseHome: Schema.optionalKey(TrimmedString).pipe(
+      Schema.annotateKey({
+        title: "Limbase home",
+        description:
+          "A Limbase home folder. Threads on this instance then keep their history in Limbase and run on its compacted view. Leave empty to turn Limbase off.",
+        providerSettingsForm: { placeholder: "e.g. ~/.limbase/home", clearWhenEmpty: "omit" },
+      }),
+    ),
     idleCompaction: InstanceIdleCompaction.pipe(
       Schema.withDecodingDefault(Effect.succeed("default" as const)),
       Schema.annotateKey({
@@ -841,7 +849,14 @@ export const ClaudeSettings = makeProviderSettingsSchema(
     ),
   },
   {
-    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
+    order: [
+      "binaryPath",
+      "homePath",
+      "autoCompactWindow",
+      "idleCompaction",
+      "limbaseHome",
+      "launchArgs",
+    ],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;

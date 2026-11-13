@@ -31,6 +31,7 @@ import { EventSinkV2 } from "./EventSink.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import { GIT_INDEX_LOCKED_DETAIL } from "../vcs/VcsProcess.ts";
+import * as Limbase from "../fork/Limbase.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
@@ -84,6 +85,8 @@ const isRuntimePolicyAboveCeilingError = Schema.is(RuntimePolicyAboveCeilingErro
  */
 export function rollbackFailureClientMessage(error: CheckpointRollbackExecutionError): string {
   if (isRuntimePolicyAboveCeilingError(error.cause)) return error.cause.message;
+  const limbaseRefusal = Limbase.refusalIn(error);
+  if (limbaseRefusal !== undefined) return limbaseRefusal;
   const restoreCause = isCheckpointRestoreError(error.cause) ? error.cause.cause : undefined;
   return isVcsProcessExitError(restoreCause) && restoreCause.detail === GIT_INDEX_LOCKED_DETAIL
     ? GIT_INDEX_LOCKED_DETAIL
