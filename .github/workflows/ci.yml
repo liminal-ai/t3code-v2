@@ -200,6 +200,11 @@ jobs:
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: node apps/desktop/scripts/verify-preload-bundle.mjs
 
+      # Dev servers and tests never run this; it rejects an import the single-executable cannot resolve.
+      - name: Build the server single-executable
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: node apps/server/scripts/cli.ts build-exe
+
       # The release launch check, run unpackaged against the same old-state fixture, for
       # startup and sidebar changes. Packaging and signing stay release-only.
       - name: Open the seeded thread in the built desktop app
