@@ -1629,6 +1629,7 @@ describe("ClaudeAdapterV2 project TMPDIR", () => {
         Layer.mergeAll(
           IdAllocator.layer,
           McpProviderSessions.layer,
+          ProviderInstallationGate.layer,
           NodeServices.layer,
           NodeCrypto.layer,
         ),
