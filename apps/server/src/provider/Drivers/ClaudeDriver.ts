@@ -55,12 +55,6 @@ import {
   resolveClaudeHomePath,
 } from "./ClaudeHome.ts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import type * as PortScanner from "../../preview/PortScanner.ts";
-import {
-  makeClaudeLhcEngine,
-  parseClaudeEngine,
-  reportClaudeLhcUnavailable,
-} from "./claudeLhc/engine.ts";
 import { makeClaudeMaintenanceResolution } from "./ClaudeMaintenance.ts";
 const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 
@@ -84,7 +78,6 @@ export type ClaudeDriverEnv =
   | ProviderLatestVersions.ProviderLatestVersions
   | ModelCatalog.ModelCatalog
   | Path.Path
-  | PortScanner.PortDiscovery
   | ProviderEventLoggers.ProviderEventLoggers
   | ServerConfig.ServerConfig;
 
@@ -139,18 +132,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     );
     const continuationGroupKey = yield* makeClaudeContinuationGroupKey(effectiveConfig, processEnv);
     const configDir = yield* resolveClaudeHomePath(effectiveConfig, processEnv);
-    const engine = parseClaudeEngine(config);
-    const lhc =
-      engine.engine === "claude"
-        ? undefined
-        : yield* makeClaudeLhcEngine({
-            engine,
-            config: effectiveConfig,
-            instanceEnvironment: processEnv,
-            continuationKey: continuationGroupKey,
-            claudeHome: configDir,
-            stateDir,
-          });
     const accountConfigPath = yield* ClaudeResetCredits.claudeAccountConfigPath(
       effectiveConfig.homePath.trim() || processEnv.CLAUDE_CONFIG_DIR?.trim()
         ? configDir
@@ -172,19 +153,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         accentColor,
         environment,
         enabled,
-        config: lhc === undefined ? config : { ...config, autoCompactWindow: "" },
+        config,
       },
       {
         scopedLimitNames,
         onUsageLimits: (update) => snapshot.applyUsageLimits(update),
         modelCatalog,
-        ...(lhc === undefined
-          ? {}
-          : {
-              queryRunner: lhc.queryRunner,
-              capabilities: lhc.capabilities,
-              engineBinding: lhc.engineBinding,
-            }),
       },
     ).pipe(
       Effect.mapError(
@@ -285,9 +259,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
               ? Cache.invalidateAll(capabilitiesProbeCache)
               : Effect.void,
           ),
-          Effect.map((provider) =>
-            reportClaudeLhcUnavailable(stampIdentity(provider), lhc?.unavailableReason),
-          ),
+          Effect.map(stampIdentity),
         ),
       ),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
@@ -400,7 +372,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         ...fallbackContinuationIdentity,
         continuationKey: continuationGroupKey,
       },
-      ...(lhc === undefined ? {} : { engineBinding: lhc.engineBinding }),
       displayName,
       accentColor,
       enabled,

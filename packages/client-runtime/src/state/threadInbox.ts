@@ -8,7 +8,6 @@ type WorkingThreadInput = Pick<
   | "hasActionableProposedPlan"
   | "hasPendingApprovals"
   | "hasPendingUserInput"
-  | "openWorkflowQuestions"
   | "pendingSubagentRequest"
   | "interactionMode"
   | "latestRun"
@@ -17,7 +16,6 @@ type WorkingThreadInput = Pick<
 
 export function isThreadWorking(thread: WorkingThreadInput): boolean {
   if (thread.hasPendingApprovals || thread.hasPendingUserInput) return false;
-  if ((thread.openWorkflowQuestions ?? 0) > 0) return false;
   if (thread.pendingSubagentRequest != null) return false;
   if (!threadRuntimeIsActive(thread.runtime) && thread.runtime?.status !== "idle") return false;
   const run = thread.latestRun;
@@ -204,7 +202,6 @@ export function createInboxReturnTracker() {
         const actionable =
           thread.hasPendingApprovals ||
           thread.hasPendingUserInput ||
-          (thread.openWorkflowQuestions ?? 0) > 0 ||
           thread.pendingSubagentRequest != null ||
           (thread.pendingGuestMessageCount ?? 0) > 0 ||
           (thread.interactionMode === "plan" && thread.hasActionableProposedPlan) ||

@@ -44,10 +44,6 @@ vi.mock(import("../state/presentation"), async (original) => {
     },
   };
 });
-vi.mock("../state/threadWorkflowAttention", () => ({
-  threadWorkflowAttentionAtom: (id: string) => attentionAtom(id),
-  threadWorkflowAttentionReadyAtom: (id: string) => attentionReadyAtom(id),
-}));
 vi.mock(import("../state/threads"), async (original) => {
   const actual = await original();
   return {
@@ -84,23 +80,9 @@ import { startThreadNotifications } from "./ThreadNotificationCoordinator";
 let registry: AtomRegistry.AtomRegistry;
 const shellAtom = Atom.family((_id: string) => Atom.make<unknown>(null));
 const environmentIdsAtom = Atom.make<ReadonlyArray<string>>([]);
-const attentionAtom = Atom.family((_id: string) =>
-  Atom.make<ReadonlyMap<string, { openQuestions: number; latestQuestionId: string }>>(new Map()),
-);
-const attentionReadyAtom = Atom.family((_id: string) => Atom.make(true));
 const noRequestsAtom = Atom.make(new Map());
 const noDelegatedAtom = Atom.make<ReadonlySet<string>>(new Set<string>());
 state.shells = { set: (id, value) => registry.set(shellAtom(id), value) };
-const setAttention = (id: string, questions: ReadonlyArray<readonly [number, string]>) =>
-  registry.set(
-    attentionAtom(id),
-    new Map(
-      questions.map(([openQuestions, latestQuestionId]) => [
-        "thread",
-        { openQuestions, latestQuestionId },
-      ]),
-    ),
-  );
 
 class TestNotification extends EventTarget {
   static permission = "granted";
@@ -270,66 +252,6 @@ it("presents completion notifications and sound as soon as the shell completes",
   );
   expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Thread completed"]);
   expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
-});
-
-it("remembers nothing until the attention snapshot is live, so an old open question does not notify at startup", async () => {
-  await using app = setup();
-  registry.set(attentionReadyAtom("one"), false);
-  app.start();
-  setAttention("one", [[1, "w1.q1"]]);
-  expect(TestNotification.sent).toHaveLength(0);
-  registry.set(attentionReadyAtom("one"), true);
-  expect(TestNotification.sent).toHaveLength(0);
-  setAttention("one", [[2, "w1.q2"]]);
-  expect(TestNotification.sent).toHaveLength(1);
-});
-
-it("notifies once per open workflow question and clears when the last is answered", async () => {
-  await using app = setup();
-  app.start();
-  setAttention("one", [[1, "w1.q1"]]);
-  expect(TestNotification.sent).toHaveLength(1);
-  expect(TestNotification.sent[0]?.title).toBe("Input needed");
-  expect(state.badge).toHaveBeenLastCalledWith(1);
-
-  state.shells.set("one", shell({ title: "Renamed thread" }));
-  expect(TestNotification.sent).toHaveLength(1);
-  state.shells.set(
-    "one",
-    shell({ latestTurn: { turnId: "turn-2", state: "running", completedAt: null } }),
-  );
-  expect(TestNotification.sent).toHaveLength(1);
-
-  setAttention("one", [[2, "w1.q2"]]);
-  expect(TestNotification.sent).toHaveLength(2);
-  expect(TestNotification.sent[1]?.title).toBe("Input needed");
-
-  setAttention("one", [[1, "w1.q1"]]);
-  expect(TestNotification.sent).toHaveLength(2);
-
-  setAttention("one", []);
-  expect(TestNotification.sent).toHaveLength(2);
-  setAttention("one", [[1, "w1.q3"]]);
-  expect(TestNotification.sent).toHaveLength(3);
-});
-
-it("notifies on reconnect for a workflow question asked while disconnected, and not for one already seen", async () => {
-  await using app = setup();
-  app.start();
-  setAttention("one", [[1, "w1.q1"]]);
-  expect(TestNotification.sent).toHaveLength(1);
-
-  state.shells.set("one", { ...shell(), status: "cached" });
-  registry.set(attentionReadyAtom("one"), false);
-  setAttention("one", [[2, "w1.q2"]]);
-  expect(TestNotification.sent).toHaveLength(1);
-  registry.set(attentionReadyAtom("one"), true);
-  state.shells.set("one", shell());
-  expect(TestNotification.sent).toHaveLength(2);
-
-  state.shells.set("one", { ...shell(), status: "cached" });
-  state.shells.set("one", shell());
-  expect(TestNotification.sent).toHaveLength(2);
 });
 
 it.each(["hasPendingApprovals", "hasPendingUserInput"] as const)(

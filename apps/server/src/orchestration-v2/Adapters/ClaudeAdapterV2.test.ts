@@ -39,7 +39,6 @@ import {
   type ModelSelection,
   NodeId,
   type OrchestrationV2AppThread,
-  type OrchestrationV2EngineBinding,
   type OrchestrationV2PendingBackgroundTask,
   OrchestrationV2ProviderThread,
   ProjectId,
@@ -65,7 +64,6 @@ import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as PubSub from "effect/PubSub";
@@ -95,7 +93,6 @@ import { WorktreeToolkit } from "../../mcp/toolkits/worktree/tools.ts";
 import { ThreadToolkit } from "../../mcp/toolkits/thread/tools.ts";
 import { OrchestratorToolkit } from "../../mcp/toolkits/orchestrator/tools.ts";
 import { ClaudeExecutableFileCheck } from "../../provider/Drivers/ClaudeExecutable.ts";
-import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import {
   BUNDLED_CLAUDE_MODEL_CATALOG,
   type ClaudeModelCatalog,
@@ -107,11 +104,6 @@ import { makeProviderFailure } from "@t3tools/provider-core/server/failure";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import { ClaudeOrchestratorReplayHarness } from "./ClaudeAdapterV2.testkit.ts";
-import {
-  adoptClaudeGeneration,
-  CLAUDE_CONTEXT_REBUILT_NOTE,
-  NO_CLAUDE_GENERATION,
-} from "../../provider/Drivers/claudeLhc/generation.ts";
 import { provideDeterministicTestRuntime } from "../testkit/DeterministicRuntime.ts";
 import { runOrchestratorV2Scenario } from "../testkit/OrchestratorScenario.ts";
 import { layerProviderReplay } from "../testkit/ProviderReplayHarness.ts";
@@ -197,30 +189,6 @@ const CLAUDE_TEST_RUNTIME_POLICY = ProviderAdapter.ProviderAdapterV2RuntimePolic
   interactionMode: "default",
   cwd: "/workspace",
 });
-
-const CLAUDE_LHC_BINDING = {
-  providerInstanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
-  engine: "claude-lhc",
-  continuationKey: "claude-lhc:home:/lhc/claude-home",
-  claudeHome: "/lhc/claude-home",
-  compact: { trigger: 700_000, target: 140_000 },
-  nativeContinuation: "required",
-  compaction: "provider",
-} satisfies OrchestrationV2EngineBinding;
-
-function engineBindingTemplate({
-  providerInstanceId: _providerInstanceId,
-  ...template
-}: OrchestrationV2EngineBinding): ProviderEngineBindingTemplate {
-  return template;
-}
-
-function withoutEngineBinding(
-  providerThread: OrchestrationV2ProviderThread,
-): OrchestrationV2ProviderThread {
-  const { nativeMetadata: _nativeMetadata, ...unbound } = providerThread;
-  return unbound;
-}
 
 function makeClaudeTestAppThread(input: {
   readonly threadId: ThreadId;
@@ -2610,8 +2578,8 @@ describe("ClaudeAdapterV2 native fork", () => {
               upToMessageId: "assistant-message-cursor",
             },
             environment: { CLAUDE_CONFIG_DIR: "/custom/claude-home" },
+            threadId: targetThreadId,
             providerSessionId,
-            thread: { appThreadId: targetThreadId, engineBinding: null },
           },
         ]);
         assert.equal(forkedProviderThread.nativeThreadRef?.nativeId, "forked-native-session");
@@ -2751,8 +2719,8 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
       return yield* runner.open({
+        threadId: ThreadId.make("thread-claude-mcp-channel"),
         providerSessionId: ProviderSessionId.make("provider-session-claude-mcp-channel"),
-        thread: { appThreadId: ThreadId.make("thread-claude-mcp-channel"), engineBinding: null },
         options: {
           ...ClaudeAdapterV2.makeClaudeQueryOptions({
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
@@ -3219,7 +3187,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly freshQueueOnReopen?: boolean;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
-    readonly engineBinding?: OrchestrationV2EngineBinding;
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -3227,7 +3194,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
         prefix: "t3-claude-v2-wake-",
       });
-      let queryCloses = 0;
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const processQueues: Array<Queue.Queue<SDKMessage>> = [];
       const processedMessages = new WeakMap<SDKMessage, Deferred.Deferred<void>>();
@@ -3274,10 +3240,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_thread.updated" }>
         >();
       let openedOptions: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined;
-      const runnerCalls: Array<{
-        readonly method: "open" | "forkSession" | "subagentLaunchToolUseId";
-        readonly thread: ClaudeAdapterV2.ClaudeThreadContext;
-      }> = [];
       const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
         instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
         settings: options?.settings ?? DEFAULT_CLAUDE_SETTINGS,
@@ -3288,9 +3250,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         path: yield* Path.Path,
         random: yield* SecureRandom.SecureRandom,
         idAllocator,
-        ...(options?.engineBinding === undefined
-          ? {}
-          : { engineBinding: engineBindingTemplate(options.engineBinding) }),
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {
@@ -3307,7 +3266,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           open: (input) =>
             Effect.gen(function* () {
               openedOptions = input.options;
-              runnerCalls.push({ method: "open", thread: input.thread });
               const processMessages =
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
@@ -3351,9 +3309,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                   listPermissionRules: Effect.die("unexpected permission rules read"),
                   stopTask: options?.stopTask ?? (() => Effect.void),
                   interrupt: Effect.void,
-                  close: Effect.sync(() => void queryCloses++).pipe(
-                    Effect.andThen(Queue.shutdown(processMessages)),
-                  ),
+                  close: Queue.shutdown(processMessages),
                 };
               }
               processQueues.push(sdkMessages);
@@ -3387,21 +3343,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 listPermissionRules: options?.mcp?.listPermissionRules ?? Effect.succeed([]),
                 stopTask: options?.stopTask ?? (() => Effect.void),
                 interrupt: options?.interrupt ?? Effect.void,
-                close: Effect.sync(() => void queryCloses++).pipe(
-                  Effect.andThen(options?.close?.(sdkMessages) ?? Effect.void),
-                ),
+                close: options?.close?.(sdkMessages) ?? Effect.void,
               };
             }),
-          forkSession: (input) =>
-            Effect.suspend(() => {
-              runnerCalls.push({ method: "forkSession", thread: input.thread });
-              return options?.forkSession?.(input) ?? Effect.die("unused forkSession");
-            }),
-          subagentLaunchToolUseId: (input) =>
-            Effect.sync(() => {
-              runnerCalls.push({ method: "subagentLaunchToolUseId", thread: input.thread });
-              return options?.subagentLaunchToolUseId ?? null;
-            }),
+          forkSession: options?.forkSession ?? (() => Effect.die("unused forkSession")),
+          subagentLaunchToolUseId: () => Effect.succeed(options?.subagentLaunchToolUseId ?? null),
           assertComplete: Effect.void,
         },
       });
@@ -3416,7 +3362,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         threadId,
         modelSelection: CLAUDE_TEST_MODEL_SELECTION,
         runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-        ...(options?.engineBinding === undefined ? {} : { engineBinding: options.engineBinding }),
       });
       const events: Array<ProviderAdapter.ProviderAdapterV2Event> = [];
       yield* runtime.events.pipe(
@@ -3483,8 +3428,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         planReceipts,
         providerThreadReceipts,
         getOpenedOptions: () => openedOptions,
-        runnerCalls,
-        queryCloses: () => queryCloses,
         terminalEvents,
         hasPendingBackgroundWork,
         until: changes.until,
@@ -9202,11 +9145,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       isError?: boolean;
       extraToolResult?: boolean;
       nonExecutionKind?: string;
-      sessionId?: string;
     },
   ): ReadonlyArray<SDKMessage> {
     const uuid = nextUuid();
-    const sessionId = options?.sessionId ?? WAKE_NATIVE_SESSION;
     const toolUseId = `tool-${uuid}`;
     const parentToolUseId = options?.parentToolUseId ?? null;
     return [
@@ -9229,7 +9170,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         },
         parent_tool_use_id: parentToolUseId,
         uuid,
-        session_id: sessionId,
+        session_id: WAKE_NATIVE_SESSION,
       }),
       claudeSdkFrame({
         type: "user",
@@ -9263,15 +9204,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             }),
         parent_tool_use_id: parentToolUseId,
         uuid: nextUuid(),
-        session_id: sessionId,
+        session_id: WAKE_NATIVE_SESSION,
       }),
     ];
   }
 
-  const makeTaskToolHarnessWithOptions = (
-    environment: NodeJS.ProcessEnv = {},
-    engineBinding?: OrchestrationV2EngineBinding,
-  ) =>
+  const makeTaskToolHarnessWithOptions = (environment: NodeJS.ProcessEnv = {}) =>
     Effect.gen(function* () {
       const configDir = yield* (yield* FileSystem.FileSystem).makeTempDirectoryScoped({
         prefix: "t3-claude-tasks-",
@@ -9282,7 +9220,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           CLAUDE_CONFIG_DIR: path.relative(CLAUDE_TEST_RUNTIME_POLICY.cwd ?? ".", configDir),
           ...environment,
         },
-        ...(engineBinding === undefined ? {} : { engineBinding }),
       });
       let sequence = 600;
       let turn = 0;
@@ -9731,52 +9668,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
-  );
-
-  it.effect.each([
-    { engine: "stock", engineBinding: undefined, task: "Stale" },
-    { engine: "LHC", engineBinding: CLAUDE_LHC_BINDING, task: "Inspect" },
-  ] as const)(
-    "reads a $engine thread's persisted task list under its files session after a compact",
-    ({ engineBinding, task }) =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const harness = yield* makeTaskToolHarnessWithOptions({}, engineBinding);
-        const writeTask = Effect.fnUntraced(function* (sessionId: string, subject: string) {
-          const tasksDir = `${harness.configDir}/tasks/${sessionId}`;
-          yield* fs.makeDirectory(tasksDir, { recursive: true });
-          yield* fs.writeFileString(
-            `${tasksDir}/1.json`,
-            JSON.stringify({ id: "1", subject, status: "pending", blockedBy: [] }),
-          );
-        });
-        yield* writeTask(WAKE_NATIVE_SESSION, "Stale");
-        yield* writeTask("claude-lhc-generation-2", "Inspect");
-
-        yield* harness.startTurn();
-        yield* harness.launchSubagent("tool-parent-agent");
-        yield* harness.call(
-          { name: "TaskList", input: {}, output: { tasks: [] } },
-          { parentToolUseId: "tool-parent-agent", sessionId: "claude-lhc-generation-2" },
-        );
-        yield* harness.call(updateTask({ taskId: "1", status: "completed" }), {
-          sessionId: "claude-lhc-generation-2",
-        });
-        yield* harness.finishTurn();
-        assert.deepEqual(harness.plans().at(-1)?.steps, [
-          { id: "task-1", text: task, status: "completed" },
-        ]);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-          ),
-        ),
-      ),
   );
 
   // regression: #14964 structured task output attaches to exactly one tool result
@@ -17726,482 +17617,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect(
-    "hands the runner the app thread and the provider row's binding on open, subagent lookup and fork",
-    () =>
-      Effect.scoped(
-        Effect.gen(function* () {
-          const engineBinding = CLAUDE_LHC_BINDING;
-          const harness = yield* makeWorkflowHarnessWithOptions({
-            close: Queue.shutdown,
-            subagentLaunchToolUseId: WORKFLOW_TOOL_USE_ID,
-            forkSession: () => Effect.succeed({ sessionId: "forked-bound-session" }),
-            engineBinding,
-          });
-          const providerThread = harness.providerThread;
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-claude-bound-runner"),
-              text: "Continue the workflow.",
-              attachments: [],
-            }),
-          );
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              ...workflowToolUse,
-              message: {
-                model: "claude-sonnet-4-6",
-                content: [
-                  { type: "tool_use", id: "toolu-resume-workflow", name: "SendMessage", input: {} },
-                ],
-              },
-            }),
-          );
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              ...workflowTaskStarted,
-              tool_use_id: "toolu-resume-workflow",
-              prompt: "Continue the workflow.",
-            }),
-          );
-          yield* harness.offerAndWait(
-            makeResultFrame({ uuid: "00000000-0000-4000-8000-000000001050", result: "Done." }),
-          );
-          yield* Queue.take(harness.terminalReceipts);
-          const targetThreadId = ThreadId.make("thread-claude-bound-fork");
-          yield* harness.runtime.forkThread({
-            sourceProviderThread: providerThread,
-            sourceProviderTurns: [],
-            targetThreadId,
-          });
-
-          const rowThread = { appThreadId: harness.threadId, engineBinding };
-          assert.deepEqual(harness.runnerCalls, [
-            { method: "open", thread: rowThread },
-            { method: "subagentLaunchToolUseId", thread: rowThread },
-            { method: "forkSession", thread: { appThreadId: targetThreadId, engineBinding } },
-          ]);
-        }).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-      ),
-  );
-
-  describe("engine binding", () => {
-    const isContinuationMismatch = Schema.is(
-      ProviderAdapter.ProviderAdapterContinuationMismatchError,
-    );
-    const mismatchCause = (error: { readonly cause?: unknown }) => {
-      if (!isContinuationMismatch(error.cause)) {
-        throw new Error(`Expected a continuation mismatch, got ${String(error.cause)}.`);
-      }
-      return error.cause;
-    };
-    const openLiveQuery = Effect.fnUntraced(function* (
-      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
-    ) {
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId: RunAttemptId.make("attempt-binding-live-query"),
-          text: "Open the query.",
-          attachments: [],
-        }),
-      );
-      yield* harness.offerAndWait(
-        makeResultFrame({ uuid: "00000000-0000-4000-8000-000000009001", result: "Open." }),
-      );
-      assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
-    });
-    const metadataOnlyTranscriptHome = Effect.gen(function* () {
-      const fileSystem = yield* FileSystem.FileSystem;
-      const configDir = yield* fileSystem.makeTempDirectoryScoped({
-        prefix: "t3-claude-metadata-only-",
-      });
-      const projectDir = NodePath.join(configDir, "projects", "-workspace");
-      yield* fileSystem.makeDirectory(projectDir, { recursive: true });
-      yield* fileSystem.writeFileString(
-        NodePath.join(projectDir, `${WAKE_NATIVE_SESSION}.jsonl`),
-        `{"type":"last-prompt","lastPrompt":"hello","sessionId":"${WAKE_NATIVE_SESSION}"}\n`,
-      );
-      return configDir;
-    });
-    const providerThreadUpdates = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
-      events.filter((event) => event.type === "provider_thread.updated").length;
-
-    const rows = [
-      {
-        row: "a bound row on a stock instance",
-        instanceBinding: undefined,
-        refusedRow: (providerThread: OrchestrationV2ProviderThread) => ({
-          ...providerThread,
-          nativeMetadata: { engineBinding: CLAUDE_LHC_BINDING },
-        }),
-        rowContinuationKey: CLAUDE_LHC_BINDING.continuationKey,
-        instanceContinuationKey: null,
-      },
-      {
-        row: "an unbound row on an LHC instance",
-        instanceBinding: CLAUDE_LHC_BINDING,
-        refusedRow: withoutEngineBinding,
-        rowContinuationKey: null,
-        instanceContinuationKey: CLAUDE_LHC_BINDING.continuationKey,
-      },
-    ];
-    const operations = [
-      { operation: "resume", wrapper: "ProviderAdapterResumeThreadError" },
-      { operation: "open", wrapper: "ProviderAdapterTurnStartError" },
-      { operation: "fork", wrapper: "ProviderAdapterForkThreadError" },
-      { operation: "rollback", wrapper: "ProviderAdapterRollbackThreadError" },
-    ] as const;
-
-    it.effect.each(
-      rows.flatMap((row) => operations.map((operation) => ({ ...row, ...operation }))),
-    )(
-      "refuses $operation of $row before it reuses or closes the live query",
-      ({
-        instanceBinding,
-        refusedRow,
-        rowContinuationKey,
-        instanceContinuationKey,
-        operation,
-        wrapper,
-      }) =>
-        Effect.gen(function* () {
-          let allocations = 0;
-          const harness = yield* makeWakeHarnessWithOptions({
-            ...(instanceBinding === undefined ? {} : { engineBinding: instanceBinding }),
-            allocateSessionId: Effect.sync(() => {
-              allocations++;
-              return WAKE_NATIVE_SESSION;
-            }),
-            forkSession: () => Effect.die("A refused fork must not reach the runner."),
-          });
-          yield* openLiveQuery(harness);
-          const updatesBefore = providerThreadUpdates(harness.events);
-          const providerThread = refusedRow(harness.providerThread);
-          const attempts: Record<
-            typeof operation,
-            Effect.Effect<unknown, ProviderAdapter.ProviderAdapterV2Error>
-          > = {
-            resume: harness.runtime.resumeThread({ providerThread }),
-            open: harness.runtime.startTurn(
-              makeClaudeTestTurnInput({
-                threadId: harness.threadId,
-                providerThread,
-                now: yield* DateTime.now,
-                attemptId: RunAttemptId.make("attempt-binding-refused"),
-                providerTurnOrdinal: 2,
-                text: "Continue.",
-                attachments: [],
-              }),
-            ),
-            fork: harness.runtime.forkThread({
-              sourceProviderThread: providerThread,
-              sourceProviderTurns: [],
-              targetThreadId: ThreadId.make("thread-binding-refused-fork"),
-            }),
-            rollback: harness.runtime.rollbackThread({
-              providerThread,
-              target: {
-                type: "thread_start",
-                checkpointId: CheckpointId.make("checkpoint-binding-refused"),
-                appRunOrdinal: 0,
-              },
-              providerThreadTurns: [],
-            }),
-          };
-
-          const error = yield* Effect.flip(Effect.asVoid(attempts[operation]));
-          yield* yieldTicks(50);
-
-          assert.equal(error._tag, wrapper);
-          const mismatch = mismatchCause(error);
-          assert.equal(mismatch.providerThreadId, providerThread.id);
-          assert.equal(mismatch.rowContinuationKey, rowContinuationKey);
-          assert.equal(mismatch.instanceContinuationKey, instanceContinuationKey);
-          assert.deepEqual(
-            harness.runnerCalls.map((call) => call.method),
-            ["open"],
-          );
-          assert.equal(harness.queryCloses(), 0);
-          assert.equal(allocations, 1);
-          assert.equal(providerThreadUpdates(harness.events), updatesBefore);
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
-    it.effect(
-      "rejects resumeThread of an unbound stock row moved by restart_and_resume to a same-home LHC instance",
-      () =>
-        Effect.gen(function* () {
-          const configDir = yield* metadataOnlyTranscriptHome;
-          const harness = yield* makeWakeHarnessWithOptions({
-            engineBinding: CLAUDE_LHC_BINDING,
-            environment: { CLAUDE_CONFIG_DIR: configDir },
-          });
-          const movedRow = withoutEngineBinding(harness.providerThread);
-          const nativeThreadRef = movedRow.nativeThreadRef;
-          const refuseMovedRow = Effect.gen(function* () {
-            const updatesBefore = providerThreadUpdates(harness.events);
-            const error = yield* Effect.flip(
-              harness.runtime.resumeThread({ providerThread: movedRow }),
-            );
-            yield* yieldTicks(50);
-            assert.equal(error._tag, "ProviderAdapterResumeThreadError");
-            const mismatch = mismatchCause(error);
-            assert.equal(mismatch.providerThreadId, movedRow.id);
-            assert.isNull(mismatch.rowContinuationKey);
-            assert.equal(mismatch.instanceContinuationKey, CLAUDE_LHC_BINDING.continuationKey);
-            assert.deepEqual(movedRow.nativeThreadRef, nativeThreadRef);
-            assert.equal(providerThreadUpdates(harness.events), updatesBefore);
-          });
-
-          yield* refuseMovedRow;
-          assert.lengthOf(harness.runnerCalls, 0);
-          assert.equal(harness.queryCloses(), 0);
-
-          yield* openLiveQuery(harness);
-          yield* refuseMovedRow;
-          assert.deepEqual(
-            harness.runnerCalls.map((call) => call.method),
-            ["open"],
-          );
-          assert.equal(harness.queryCloses(), 0);
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
-    it.effect("stamps only a seed that names this instance into a new row", () =>
-      Effect.gen(function* () {
-        const lhc = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
-        assert.deepEqual(lhc.providerThread.nativeMetadata, { engineBinding: CLAUDE_LHC_BINDING });
-        const ensure = (engineBinding?: OrchestrationV2EngineBinding) =>
-          lhc.runtime.ensureThread({
-            threadId: lhc.threadId,
-            modelSelection: CLAUDE_TEST_MODEL_SELECTION,
-            runtimePolicy: CLAUDE_TEST_RUNTIME_POLICY,
-            ...(engineBinding === undefined ? {} : { engineBinding }),
-          });
-        assert.notProperty(
-          yield* ensure({
-            ...CLAUDE_LHC_BINDING,
-            providerInstanceId: ProviderInstanceId.make("claude-lhc-elsewhere"),
-          }),
-          "nativeMetadata",
-        );
-        assert.notProperty(yield* ensure(), "nativeMetadata");
-
-        const stock = yield* makeWakeHarnessWithOptions();
-        assert.notProperty(stock.providerThread, "nativeMetadata");
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-          ),
-        ),
-      ),
-    );
-
-    it.effect.each([
-      { engine: "stock", rowBinding: undefined, instanceBinding: undefined },
-      {
-        engine: "LHC",
-        rowBinding: CLAUDE_LHC_BINDING,
-        instanceBinding: {
-          ...CLAUDE_LHC_BINDING,
-          compact: { trigger: 400_000, target: 80_000 },
-        },
-      },
-    ])(
-      "gives a $engine fork row and thread-start reset row the source row's binding",
-      ({ rowBinding, instanceBinding }) =>
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarnessWithOptions({
-            ...(instanceBinding === undefined ? {} : { engineBinding: instanceBinding }),
-            forkSession: () =>
-              Effect.succeed({
-                sessionId: "forked-binding-session",
-                headMessageId: "msg-fork-head",
-              }),
-          });
-          const source =
-            rowBinding === undefined
-              ? harness.providerThread
-              : { ...harness.providerThread, nativeMetadata: { engineBinding: rowBinding } };
-          const binding = rowBinding === undefined ? {} : { engineBinding: rowBinding };
-
-          const fork = yield* harness.runtime.forkThread({
-            sourceProviderThread: source,
-            sourceProviderTurns: [],
-            targetThreadId: ThreadId.make("thread-binding-fork"),
-          });
-          assert.deepEqual(fork.nativeMetadata, { forkHeadMessageId: "msg-fork-head", ...binding });
-
-          const reset = yield* harness.runtime.rollbackThread({
-            providerThread: source,
-            target: {
-              type: "thread_start",
-              checkpointId: CheckpointId.make("checkpoint-binding-reset"),
-              appRunOrdinal: 0,
-            },
-            providerThreadTurns: [],
-          });
-          if (rowBinding === undefined) assert.notProperty(reset.providerThread, "nativeMetadata");
-          else assert.deepEqual(reset.providerThread.nativeMetadata, binding);
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
-    it.effect.each([
-      { engine: "stock", engineBinding: undefined, resumes: false },
-      { engine: "LHC", engineBinding: CLAUDE_LHC_BINDING, resumes: true },
-    ])(
-      "lets an empty first-generation transcript block a resume only on $engine",
-      ({ engineBinding, resumes }) =>
-        Effect.gen(function* () {
-          const configDir = yield* metadataOnlyTranscriptHome;
-          const harness = yield* makeWakeHarnessWithOptions({
-            ...(engineBinding === undefined ? {} : { engineBinding }),
-            environment: { CLAUDE_CONFIG_DIR: configDir },
-          });
-          const resumed = yield* Effect.result(
-            harness.runtime.resumeThread({ providerThread: harness.providerThread }),
-          );
-          assert.equal(resumed._tag, resumes ? "Success" : "Failure");
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
-    it.effect.each([
-      {
-        compact: { trigger: 150_000, target: 30_000 },
-        model: "claude-sonnet-4-6",
-        threshold: 150_000,
-      },
-      {
-        compact: { trigger: 700_000, target: 140_000 },
-        model: "claude-sonnet-4-6",
-        threshold: 160_000,
-      },
-      {
-        compact: { trigger: 180_000, target: 30_000 },
-        model: "claude-sonnet-4-6",
-        threshold: 160_000,
-      },
-      {
-        compact: { trigger: 700_000, target: 140_000 },
-        model: "uncatalogued-model",
-        threshold: 700_000,
-      },
-      { compact: null, model: "claude-sonnet-4-6", threshold: undefined },
-    ])(
-      "paints an LHC row's compact trigger capped to $threshold for $model over the instance's window",
-      ({ compact, model, threshold }) =>
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarnessWithOptions({
-            settings: { ...DEFAULT_CLAUDE_SETTINGS, autoCompactWindow: "100000" },
-            engineBinding: { ...CLAUDE_LHC_BINDING, compact },
-          });
-          yield* harness.runtime.startTurn(
-            makeClaudeTestTurnInput({
-              threadId: harness.threadId,
-              providerThread: harness.providerThread,
-              now: yield* DateTime.now,
-              attemptId: RunAttemptId.make("attempt-lhc-threshold"),
-              text: "Continue.",
-              attachments: [],
-              modelSelection: { ...CLAUDE_TEST_MODEL_SELECTION, model },
-            }),
-          );
-          const usage = { ...zeroUsage, input_tokens: 1_000, output_tokens: 75 };
-          const frames = [
-            usageSnapshotFrame("msg_lhc", "00000000-0000-4000-8000-000000009101", usage),
-            claudeSdkFrame({
-              type: "system",
-              subtype: "compact_boundary",
-              compact_metadata: { trigger: "auto", pre_tokens: 1_075, post_tokens: 400 },
-              uuid: "00000000-0000-4000-8000-000000009102",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-            makeResultFrame({ uuid: "00000000-0000-4000-8000-000000009103", result: "Done." }),
-          ];
-          for (const frame of frames) yield* Queue.offer(harness.sdkMessages, frame);
-          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
-          assert.deepEqual(
-            harness.events.flatMap((event) =>
-              event.type === "provider_turn.updated" && event.providerTurn.tokenUsage
-                ? [event.providerTurn.tokenUsage.autoCompactThreshold]
-                : [],
-            ),
-            [threshold, threshold],
-          );
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-  });
-
   it.effect.each([
     "root result",
     "resume after root result",
@@ -19376,538 +18791,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       ),
     ),
   );
-
-  describe("LHC generations", () => {
-    const stockFixturesDir = new URL("../testkit/fixtures/", import.meta.url);
-
-    it("finds no generation change in any stock fixture's query", () => {
-      const transcripts = NodeFS.readdirSync(stockFixturesDir).flatMap((scenario) => {
-        const file = new URL(`${scenario}/claude_transcript.ndjson`, stockFixturesDir);
-        return NodeFS.existsSync(file) ? [{ scenario, file }] : [];
-      });
-      assert.isAtLeast(transcripts.length, 39);
-      let frames = 0;
-      for (const { scenario, file } of transcripts) {
-        let generation = NO_CLAUDE_GENERATION;
-        for (const line of NodeFS.readFileSync(file, "utf8").split("\n")) {
-          if (line.trim() === "") continue;
-          const entry = JSON.parse(line) as {
-            readonly type: string;
-            readonly label?: string;
-            readonly frame?: SDKMessage;
-          };
-          if (entry.type === "expect_outbound" && entry.label?.startsWith("query.open")) {
-            generation = NO_CLAUDE_GENERATION;
-          }
-          if (entry.type !== "emit_inbound" || entry.frame === undefined) continue;
-          frames++;
-          const step = adoptClaudeGeneration(generation, entry.frame);
-          assert.notEqual(
-            step.kind,
-            "replaced",
-            `${scenario} replaced a generation at ${entry.label}`,
-          );
-          if (step.kind !== "stayed") generation = step.generation;
-        }
-      }
-      assert.isAtLeast(frames, 2000);
-    });
-
-    const captureAdoptions = () => {
-      const adoptions: Array<{ readonly generation: string; readonly replaced: string | null }> =
-        [];
-      const logger = Logger.make(({ message }) => {
-        const [name, fields] = Array.isArray(message) ? message : [message];
-        if (name === "orchestration-v2.claude-generation-adopted") {
-          const { generation, replaced } = fields as {
-            generation: string;
-            replaced: string | null;
-          };
-          adoptions.push({ generation, replaced });
-        }
-      });
-      return { adoptions, layer: Logger.layer([logger], { mergeWithExisting: false }) };
-    };
-    const rebuiltNotices = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
-      events.flatMap((event) =>
-        event.type === "turn_item.updated" &&
-        event.turnItem.type === "system_notice" &&
-        event.turnItem.message.includes(CLAUDE_CONTEXT_REBUILT_NOTE)
-          ? [event.turnItem.message]
-          : [],
-      );
-    const lastRoster = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
-      (providerThreadRosterEvents(events).at(-1)?.providerThread.pendingBackgroundTasks ?? []).map(
-        (task) => task.taskId,
-      );
-    const lastSubagentStatus = (
-      events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>,
-      taskId: string,
-    ) =>
-      events.findLast(
-        (event) =>
-          event.type === "subagent.updated" && event.subagent.nativeTaskRef?.nativeId === taskId,
-      );
-    const startLhcTurn = Effect.fnUntraced(function* (
-      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
-      attempt: string,
-      text: string,
-    ) {
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId: RunAttemptId.make(attempt),
-          text,
-          attachments: [],
-        }),
-      );
-    });
-
-    const P_REPLAY = NodeFS.readFileSync(
-      new URL("./testkit/fixtures/claude-lhc-generation.jsonl", import.meta.url),
-      "utf8",
-    )
-      .trim()
-      .split("\n")
-      .map((line) => claudeSdkFrame(JSON.parse(line)));
-    const sessionOf = (frame: SDKMessage | undefined) => {
-      const sessionId = frame === undefined ? undefined : Reflect.get(frame, "session_id");
-      if (typeof sessionId !== "string") throw new Error("P-replay frame has no session id.");
-      return sessionId;
-    };
-    const fixturePromptIds = P_REPLAY.flatMap((frame) => {
-      const type: unknown = Reflect.get(frame, "type");
-      return type === "command_lifecycle" && Reflect.get(frame, "state") === "queued"
-        ? [String(Reflect.get(frame, "command_uuid"))]
-        : [];
-    });
-    const withPrompt = (frame: SDKMessage, fixtureId: string, promptUuid: string) =>
-      claudeSdkFrame(JSON.parse(JSON.stringify(frame).replaceAll(fixtureId, promptUuid)));
-    const P_REPLAY_TURN_1 = P_REPLAY.slice(0, 7);
-    const P_REPLAY_TURN_2_TO_REPLY = P_REPLAY.slice(7, 11);
-    const P_REPLAY_TURN_2_RESULT = P_REPLAY.slice(11, 13);
-    const P_REPLAY_COMPACT = P_REPLAY.slice(13, 17);
-    const P_REPLAY_RESTART = P_REPLAY.slice(17);
-    const COMPACT_BOUNDARY = P_REPLAY_COMPACT[2];
-    const RESTART_INIT = P_REPLAY_RESTART[3];
-    const [GEN_1, GEN_2, GEN_3] = [
-      sessionOf(P_REPLAY_TURN_1[0]),
-      sessionOf(COMPACT_BOUNDARY),
-      sessionOf(RESTART_INIT),
-    ];
-
-    it.effect.each([
-      { variant: "the live trace", restartFrames: P_REPLAY_RESTART },
-      {
-        variant: "its restart init moved ahead of any turn frame",
-        restartFrames: [
-          RESTART_INIT!,
-          ...P_REPLAY_RESTART.filter((frame) => frame !== RESTART_INIT),
-        ],
-      },
-    ])("replays P-replay's generations from $variant", ({ restartFrames }) => {
-      const { adoptions, layer } = captureAdoptions();
-      return Effect.gen(function* () {
-        assert.equal(new Set([GEN_1, GEN_2, GEN_3]).size, 3);
-        assert.equal(Reflect.get(COMPACT_BOUNDARY!, "subtype"), "compact_boundary");
-        assert.equal(Reflect.get(RESTART_INIT!, "subtype"), "init");
-
-        const initial = yield* makeWakeHarnessWithOptions({
-          engineBinding: CLAUDE_LHC_BINDING,
-          nativeSessionId: GEN_1,
-        });
-        yield* startLhcTurn(initial, "attempt-p-replay-1", "Remember ALPHA.");
-        for (const frame of P_REPLAY_TURN_1) {
-          yield* initial.offerAndWait(
-            withPrompt(frame, fixturePromptIds[0]!, initial.promptUuid(0)),
-          );
-        }
-        yield* startLhcTurn(initial, "attempt-p-replay-2", "Remember BRAVO.");
-        for (const frame of [
-          ...P_REPLAY_TURN_2_TO_REPLY,
-          claudeSdkFrame({ ...wakeTaskStarted, session_id: GEN_1 }),
-          ...P_REPLAY_TURN_2_RESULT,
-        ]) {
-          yield* initial.offerAndWait(
-            withPrompt(frame, fixturePromptIds[1]!, initial.promptUuid(1)),
-          );
-        }
-        yield* initial.until(() => lastRoster(initial.events).includes(WAKE_TASK_ID));
-        yield* startLhcTurn(initial, "attempt-p-replay-compact", "/compact");
-        for (const frame of P_REPLAY_COMPACT) yield* initial.offerAndWait(frame);
-        yield* initial.awaitTerminal(3);
-        assert.deepEqual(
-          initial.terminalEvents().map((event) => event.status),
-          ["completed", "completed", "completed"],
-        );
-        assert.deepEqual(lastRoster(initial.events), []);
-        assert.deepEqual(rebuiltNotices(initial.events), [
-          `Command "${WAKE_TASK_DESCRIPTION}" was stopped. ${CLAUDE_CONTEXT_REBUILT_NOTE}`,
-        ]);
-
-        const restarted = yield* makeWakeHarnessWithOptions({
-          engineBinding: CLAUDE_LHC_BINDING,
-          nativeSessionId: GEN_1,
-        });
-        yield* startLhcTurn(restarted, "attempt-p-replay-restart", "Reply REPLAYPROBE.");
-        for (const frame of restartFrames) {
-          yield* restarted.offerAndWait(
-            withPrompt(frame, fixturePromptIds[2]!, restarted.promptUuid(0)),
-          );
-        }
-        yield* restarted.awaitTerminal(1);
-        yield* yieldTicks(20);
-        assert.deepEqual(
-          restarted.terminalEvents().map((event) => event.status),
-          ["completed"],
-        );
-        assert.deepEqual(rebuiltNotices(restarted.events), []);
-        assert.deepEqual(adoptions, [
-          { generation: GEN_1, replaced: null },
-          { generation: GEN_2, replaced: GEN_1 },
-          { generation: GEN_3, replaced: null },
-        ]);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-            layer,
-          ),
-        ),
-      );
-    });
-
-    const SUBAGENT_TASK_ID = "task-lhc-generation-subagent";
-    const midTurnFrames = (sessions: {
-      readonly old: string;
-      readonly next: string;
-      readonly last: string;
-    }) => ({
-      work: [
-        claudeSdkFrame({
-          type: "system",
-          subtype: "init",
-          uuid: "00000000-0000-4000-8000-000000006001",
-          session_id: sessions.old,
-        }),
-        makeSubagentTaskStartedFrame({
-          taskId: SUBAGENT_TASK_ID,
-          toolUseId: "toolu-lhc-generation-subagent",
-          uuid: "00000000-0000-4000-8000-000000006002",
-        }),
-        wakeTaskStarted,
-      ],
-      boundaryThenInit: [
-        claudeSdkFrame({
-          type: "system",
-          subtype: "status",
-          status: "compacting",
-          uuid: "00000000-0000-4000-8000-000000006003",
-          session_id: sessions.old,
-        }),
-        claudeSdkFrame({
-          type: "system",
-          subtype: "status",
-          status: null,
-          compact_result: "success",
-          uuid: "00000000-0000-4000-8000-000000006004",
-          session_id: sessions.old,
-        }),
-        claudeSdkFrame({
-          type: "system",
-          subtype: "compact_boundary",
-          compact_metadata: { trigger: "auto", pre_tokens: 1_000, post_tokens: 200 },
-          uuid: "00000000-0000-4000-8000-000000006005",
-          session_id: sessions.next,
-        }),
-        claudeSdkFrame({
-          type: "system",
-          subtype: "init",
-          uuid: "00000000-0000-4000-8000-000000006006",
-          session_id: sessions.next,
-        }),
-      ],
-      initBeforeOldStatus: [
-        claudeSdkFrame({
-          type: "system",
-          subtype: "status",
-          status: "compacting",
-          uuid: "00000000-0000-4000-8000-000000006007",
-          session_id: sessions.next,
-        }),
-        claudeSdkFrame({
-          type: "system",
-          subtype: "init",
-          uuid: "00000000-0000-4000-8000-000000006008",
-          session_id: sessions.last,
-        }),
-        claudeSdkFrame({
-          type: "system",
-          subtype: "status",
-          status: null,
-          compact_result: "success",
-          uuid: "00000000-0000-4000-8000-000000006009",
-          session_id: sessions.next,
-        }),
-        claudeSdkFrame({
-          type: "system",
-          subtype: "compact_boundary",
-          compact_metadata: { trigger: "auto", pre_tokens: 1_000, post_tokens: 200 },
-          uuid: "00000000-0000-4000-8000-000000006010",
-          session_id: sessions.last,
-        }),
-      ],
-      result: claudeSdkFrame({
-        ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000006011", result: "Done." }),
-        session_id: sessions.last,
-      }),
-    });
-
-    it.effect(
-      "ends the old generation's work once per mid-turn compact and keeps the root turn open",
-      () => {
-        const { adoptions, layer } = captureAdoptions();
-        return Effect.gen(function* () {
-          const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
-          const frames = midTurnFrames({
-            old: WAKE_NATIVE_SESSION,
-            next: "lhc-generation-2",
-            last: "lhc-generation-3",
-          });
-          yield* startLhcTurn(harness, "attempt-lhc-mid-turn", "Audit and build.");
-          for (const frame of frames.work) yield* harness.offerAndWait(frame);
-          yield* harness.until(() => lastRoster(harness.events).includes(WAKE_TASK_ID));
-
-          for (const frame of frames.boundaryThenInit) yield* harness.offerAndWait(frame);
-          yield* harness.until(() => rebuiltNotices(harness.events).length > 0);
-          assert.deepEqual(lastRoster(harness.events), []);
-          const subagent = lastSubagentStatus(harness.events, SUBAGENT_TASK_ID);
-          assert.equal(
-            subagent?.type === "subagent.updated" && subagent.subagent.status,
-            "cancelled",
-          );
-          assert.equal(
-            subagent?.type === "subagent.updated" && subagent.subagent.result,
-            CLAUDE_CONTEXT_REBUILT_NOTE,
-          );
-          assert.deepEqual(rebuiltNotices(harness.events), [
-            `Command "${WAKE_TASK_DESCRIPTION}" and subagent "Audit recent commits" were stopped. ${CLAUDE_CONTEXT_REBUILT_NOTE}`,
-          ]);
-
-          for (const frame of frames.initBeforeOldStatus) yield* harness.offerAndWait(frame);
-          yield* yieldTicks(20);
-          assert.lengthOf(harness.terminalEvents(), 0);
-          yield* harness.offerAndWait(frames.result);
-          yield* harness.awaitTerminal(1);
-          yield* yieldTicks(20);
-          assert.deepEqual(
-            harness.terminalEvents().map((event) => event.status),
-            ["completed"],
-          );
-          assert.lengthOf(rebuiltNotices(harness.events), 1);
-          assert.deepEqual(adoptions, [
-            { generation: WAKE_NATIVE_SESSION, replaced: null },
-            { generation: "lhc-generation-2", replaced: WAKE_NATIVE_SESSION },
-            { generation: "lhc-generation-3", replaced: "lhc-generation-2" },
-          ]);
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-              layer,
-            ),
-          ),
-        );
-      },
-    );
-
-    const subagentStatus = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) => {
-      const subagent = lastSubagentStatus(events, SUBAGENT_TASK_ID);
-      return subagent?.type === "subagent.updated" ? subagent.subagent : undefined;
-    };
-    const continueNativeWake = Effect.fnUntraced(function* (
-      harness: Effect.Success<ReturnType<typeof makeWakeHarnessWithOptions>>,
-      attempt: string,
-    ) {
-      yield* harness.runtime.startTurn(
-        makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId: RunAttemptId.make(attempt),
-          text: "Continue the native wake.",
-          attachments: [],
-          providerTurnOrdinal: 2,
-          messageCreatedBy: "agent",
-          messageCreationSource: "provider",
-        }),
-      );
-    });
-    const compactToGeneration2 = midTurnFrames({
-      old: WAKE_NATIVE_SESSION,
-      next: "lhc-generation-2",
-      last: "lhc-generation-2",
-    }).boundaryThenInit;
-
-    it.effect(
-      "stops a subagent an idle wake started in the replaced generation when the wake replays",
-      () =>
-        Effect.gen(function* () {
-          const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
-          yield* startLhcTurn(harness, "attempt-lhc-buffered-1", "Start work.");
-          yield* harness.offerAndWait(wakeTurnInit);
-          yield* harness.offerAndWait(turnOneResult);
-          yield* harness.awaitTerminal(1);
-          yield* harness.offerAndWait(
-            makeSubagentTaskStartedFrame({
-              taskId: SUBAGENT_TASK_ID,
-              toolUseId: "toolu-lhc-buffered",
-              uuid: "00000000-0000-4000-8000-000000006101",
-            }),
-          );
-          yield* harness.offerAndWait(wakeAssistant);
-          for (const frame of compactToGeneration2) yield* harness.offerAndWait(frame);
-          assert.lengthOf(harness.continuationRequests, 1);
-
-          yield* continueNativeWake(harness, "attempt-lhc-buffered-2");
-          yield* harness.until(() => subagentStatus(harness.events)?.status === "cancelled");
-          assert.equal(subagentStatus(harness.events)?.result, CLAUDE_CONTEXT_REBUILT_NOTE);
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              ...makeResultFrame({ uuid: "00000000-0000-4000-8000-000000006105", result: "Done." }),
-              session_id: "lhc-generation-2",
-            }),
-          );
-          yield* harness.awaitTerminal(2);
-          assert.isFalse(yield* harness.hasPendingBackgroundWork);
-          const modelChange = yield* harness.runtime
-            .startTurn(
-              makeClaudeTestTurnInput({
-                threadId: harness.threadId,
-                providerThread: harness.providerThread,
-                now: yield* DateTime.now,
-                attemptId: RunAttemptId.make("attempt-lhc-buffered-3"),
-                text: "Switch model after compaction.",
-                attachments: [],
-                providerTurnOrdinal: 3,
-                modelSelection: CLAUDE_TEST_RESTART_MODEL_SELECTION,
-              }),
-            )
-            .pipe(Effect.result);
-          assert.equal(modelChange._tag, "Success");
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            Layer.mergeAll(
-              IdAllocator.layer,
-              McpProviderSessions.layer,
-              NodeServices.layer,
-              NodeCrypto.layer,
-            ),
-          ),
-        ),
-    );
-
-    it.effect("stops a subagent whose last buffered lifecycle frame is a resumed start", () =>
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarnessWithOptions({ engineBinding: CLAUDE_LHC_BINDING });
-        yield* startLhcTurn(harness, "attempt-lhc-resumed-1", "Start work.");
-        yield* harness.offerAndWait(wakeTurnInit);
-        yield* harness.offerAndWait(
-          makeSubagentTaskStartedFrame({
-            taskId: SUBAGENT_TASK_ID,
-            toolUseId: "toolu-lhc-resumed",
-            uuid: "00000000-0000-4000-8000-000000006102",
-          }),
-        );
-        yield* harness.offerAndWait(turnOneResult);
-        yield* harness.awaitTerminal(1);
-        yield* harness.offerAndWait(
-          makeSubagentNotificationFrame({
-            taskId: SUBAGENT_TASK_ID,
-            toolUseId: "toolu-lhc-resumed",
-            summary: "First attempt finished.",
-            uuid: "00000000-0000-4000-8000-000000006103",
-          }),
-        );
-        yield* harness.offerAndWait(
-          makeSubagentTaskStartedFrame({
-            taskId: SUBAGENT_TASK_ID,
-            toolUseId: "toolu-lhc-resumed-2",
-            uuid: "00000000-0000-4000-8000-000000006104",
-          }),
-        );
-        for (const frame of compactToGeneration2) yield* harness.offerAndWait(frame);
-        assert.lengthOf(harness.continuationRequests, 1);
-
-        yield* continueNativeWake(harness, "attempt-lhc-resumed-2");
-        yield* harness.until(() => subagentStatus(harness.events)?.status === "cancelled");
-        assert.equal(subagentStatus(harness.events)?.result, CLAUDE_CONTEXT_REBUILT_NOTE);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-          ),
-        ),
-      ),
-    );
-
-    it.effect.each([
-      { compactIds: "one session id, as stock sends", next: WAKE_NATIVE_SESSION },
-      { compactIds: "new session ids", next: "stock-other-session" },
-    ])("leaves a stock thread's work running across a compact with $compactIds", ({ next }) => {
-      const { adoptions, layer } = captureAdoptions();
-      return Effect.gen(function* () {
-        const harness = yield* makeWakeHarnessWithOptions();
-        const frames = midTurnFrames({ old: WAKE_NATIVE_SESSION, next, last: next });
-        yield* startLhcTurn(harness, "attempt-stock-compact", "Audit and build.");
-        for (const frame of [
-          ...frames.work,
-          ...frames.boundaryThenInit,
-          ...frames.initBeforeOldStatus,
-        ]) {
-          yield* harness.offerAndWait(frame);
-        }
-        yield* harness.offerAndWait(frames.result);
-        yield* harness.awaitTerminal(1);
-        yield* yieldTicks(20);
-        assert.deepEqual(
-          harness.terminalEvents().map((event) => event.status),
-          ["completed"],
-        );
-        assert.deepEqual(lastRoster(harness.events), [WAKE_TASK_ID]);
-        const subagent = lastSubagentStatus(harness.events, SUBAGENT_TASK_ID);
-        assert.equal(subagent?.type === "subagent.updated" && subagent.subagent.status, "running");
-        assert.deepEqual(rebuiltNotices(harness.events), []);
-        assert.deepEqual(adoptions, []);
-      }).pipe(
-        Effect.scoped,
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
-            layer,
-          ),
-        ),
-      );
-    });
-  });
 
   describe("native goals", () => {
     const syntheticFrame = (uuid: string, text: string) =>

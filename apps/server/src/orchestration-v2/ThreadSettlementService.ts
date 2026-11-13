@@ -35,7 +35,6 @@ import * as ProjectStore from "./ProjectStore.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
 import * as Orchestrator from "./Orchestrator.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
-import { ThreadHooks } from "./ThreadHooks.ts";
 
 export interface SettlementPullRequest {
   readonly state: "open" | "closed" | "merged";
@@ -305,7 +304,6 @@ export const make = Effect.gen(function* () {
   const git = yield* GitManager.GitManager;
   const pullRequests = yield* PullRequestService.PullRequestService;
   const random = yield* SecureRandom.SecureRandom;
-  const threadHooks = yield* ThreadHooks;
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   // A shell merge or close sends no event, and the branch lookup caches an open pull request for
@@ -350,12 +348,6 @@ export const make = Effect.gen(function* () {
           autoSettleKeepPullRequests: currentSettings.sidebarAutoSettleKeepPullRequests,
         });
         if (settledAt === null) return thread;
-        // The orchestrator would refuse it; skipping keeps the sweep from logging that every minute.
-        const blocker = yield* threadHooks.lifecycleBlocker({
-          threadId: thread.id,
-          action: "settle",
-        });
-        if (blocker !== null) return null;
         const uuid = yield* random.uuidV4();
         yield* orchestrator.dispatch({
           type: "thread.auto-settle",

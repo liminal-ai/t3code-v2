@@ -660,7 +660,6 @@ type ThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
-  | "openWorkflowQuestions"
   | "pendingGuestMessageCount"
   | "interactionMode"
   | "latestRun"
@@ -854,30 +853,16 @@ type SidebarThreadStatusInput = Pick<
   | "hasPendingApprovals"
   | "hasPendingUserInput"
   | "pendingSubagentRequest"
-  | "openWorkflowQuestions"
   | "pendingGuestMessageCount"
   | "runtime"
   | "blockedOnThreadWait"
 >;
 
-function awaitsInput(
-  thread: Pick<
-    SidebarThreadSummary,
-    "hasPendingUserInput" | "pendingSubagentRequest" | "openWorkflowQuestions"
-  >,
-): boolean {
-  return (
-    thread.hasPendingUserInput ||
-    thread.pendingSubagentRequest === "user_input" ||
-    (thread.openWorkflowQuestions ?? 0) > 0
-  );
-}
-
 export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): SidebarThreadStatus {
   if (thread.hasPendingApprovals || thread.pendingSubagentRequest === "approval") {
     return "approval";
   }
-  if (awaitsInput(thread)) {
+  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return "input";
   }
   // A guest is waiting on the owner; the agent's own requests come first.
@@ -1117,7 +1102,7 @@ export function resolveThreadStatusPill(input: {
     };
   }
 
-  if (awaitsInput(thread)) {
+  if (thread.hasPendingUserInput || thread.pendingSubagentRequest === "user_input") {
     return {
       label: "Awaiting Input",
       colorClass: "text-indigo-600 dark:text-indigo-300/90",

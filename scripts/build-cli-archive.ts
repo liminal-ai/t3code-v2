@@ -28,7 +28,6 @@ import {
 } from "./build-desktop-artifact.ts";
 import { assertLinuxArm64PageCompatibility } from "./lib/linux-arm64-sea.ts";
 import { selectCliRuntimeExternalDependencies } from "./lib/cli-external-packages.ts";
-import { type NodePlatformKey, stageClaudeLhcRuntime } from "./lib/stage-claude-lhc.ts";
 import { signWithJsign } from "./lib/windows-jsign.ts";
 import { windowsSystemTar } from "./lib/windows-tar.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
@@ -90,7 +89,7 @@ export class CliArchiveInputMissingError extends Schema.TaggedError<CliArchiveIn
   }
 }
 
-export function cliArchivePlatformKey(platform: BuildPlatform, arch: BuildArch): NodePlatformKey {
+export function cliArchivePlatformKey(platform: BuildPlatform, arch: BuildArch): string {
   const nodePlatform = platform === "mac" ? "darwin" : platform === "win" ? "win32" : "linux";
   return `${nodePlatform}-${arch}`;
 }
@@ -539,23 +538,10 @@ const buildCliArchive = Effect.fn("buildCliArchive")(function* (input: {
     arch: input.arch,
     version: input.version,
   });
-  const lhcNode = yield* stageClaudeLhcRuntime({
-    vendorDir: path.join(repoRoot, "vendor/claude-lhc"),
-    releaseDir: contentDir,
-    target: cliArchivePlatformKey(input.platform, input.arch),
-    nodeVersion: rootPackageJson.engines.node,
-  });
 
   const executablePath = path.join(contentDir, executableName);
   if (input.platform === "linux") {
     yield* bundleLinuxLibatomic({ repoRoot, contentDir, executablePath });
-    if (Option.isSome(lhcNode)) {
-      // The staged Node links libatomic.so.1 too.
-      yield* runCommand(
-        ChildProcess.make("patchelf", ["--set-rpath", "$ORIGIN/../lib", lhcNode.value]),
-        "patchelf --set-rpath (lhc-runtime/node)",
-      );
-    }
   }
   // TEMPORARY one-time Node fix. Remove when fixed: https://github.com/nodejs/node/issues/67048
   if (input.platform === "linux" && input.arch === "arm64") {

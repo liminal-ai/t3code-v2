@@ -2,7 +2,6 @@ import {
   type EnvironmentThreadShell,
   type PendingSubagentRequest,
   presentThreadShell,
-  type WorkflowAttention,
 } from "@t3tools/client-runtime/state/models";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
 import type { AnyRouter } from "@tanstack/react-router";
@@ -24,10 +23,6 @@ import { environmentSummaries } from "../state/presentation";
 import { environmentShell } from "../state/shell";
 import { environmentThreadShells } from "../state/threads";
 import {
-  threadWorkflowAttentionAtom,
-  threadWorkflowAttentionReadyAtom,
-} from "../state/threadWorkflowAttention";
-import {
   hasDesktopNotifications,
   hasNotificationSound,
   playNotificationSound,
@@ -38,8 +33,6 @@ import {
 import { resolveSidebarThreadStatus, type SidebarThreadStatus } from "./Sidebar.logic";
 import {
   createThreadNotificationGate,
-  laterWorkflowQuestion,
-  threadAttentionKey,
   type ThreadNotificationKind,
   type ThreadNotificationObservation,
 } from "./ThreadNotificationCoordinator.logic";
@@ -50,23 +43,13 @@ interface NotificationState extends ThreadNotificationObservation {
   readonly subagentRequest: PendingSubagentRequest | null;
   readonly thread: EnvironmentThreadShell;
   readonly status: SidebarThreadStatus;
-  readonly workflowAttention: WorkflowAttention | null;
-  readonly workflowHighWater: string | null;
 }
-
-const sameWorkflowAttention = (left: WorkflowAttention | null, right: WorkflowAttention | null) =>
-  left === right ||
-  (left !== null &&
-    right !== null &&
-    left.openQuestions === right.openQuestions &&
-    left.latestQuestionId === right.latestQuestionId);
 
 type ToastId = ReturnType<typeof toastManager.add>;
 
 interface WatchedEnvironment {
   unsubscribe: () => void;
   previous: Map<ThreadId, NotificationState>;
-  threads: ReadonlyArray<OrchestrationV2ThreadShell> | null;
   reconnecting: boolean;
   readonly gate: ReturnType<typeof createThreadNotificationGate<ThreadId>>;
 }
@@ -245,7 +228,6 @@ export function startThreadNotifications(
       environmentThreadShells.pendingSubagentRequestsAtom(environmentId),
     );
     const delegatedUnderParent = registry.get(environmentThreadShells.delegatedUnderParentAtom);
-    const workflowAttention = registry.get(threadWorkflowAttentionAtom(environmentId));
     const changed: Array<[NotificationState | undefined, NotificationState]> = [];
     for (const rawThread of threads) {
       if (
@@ -259,24 +241,25 @@ export function startThreadNotifications(
       }
       const prior = previous.get(rawThread.id);
       const subagentRequest = subagentRequests.get(rawThread.id) ?? null;
-      const attentionEntry = workflowAttention.get(rawThread.id) ?? null;
       if (
         !entry.reconnecting &&
         prior?.raw === rawThread &&
-        prior.subagentRequest === subagentRequest &&
-        sameWorkflowAttention(prior.workflowAttention, attentionEntry)
+        prior.subagentRequest === subagentRequest
       ) {
         next.set(rawThread.id, prior);
         continue;
       }
-      const thread = presentThreadShell(environmentId, rawThread, subagentRequest, attentionEntry);
+      const thread = presentThreadShell(environmentId, rawThread, subagentRequest);
       let status = resolveSidebarThreadStatus(thread);
       if (status === "ready" && thread.latestRun?.status === "failed") status = "failed";
-      const workflowHighWater = laterWorkflowQuestion(
-        prior?.workflowHighWater,
-        attentionEntry?.latestQuestionId,
-      );
-      const attention = threadAttentionKey(status, thread, workflowHighWater);
+      const attention =
+        status === "input" ||
+        status === "request" ||
+        status === "approval" ||
+        status === "failed" ||
+        status === "limited"
+          ? `${thread.latestRun?.runId ?? ""}:${status}`
+          : null;
       const completedAt = Date.parse(thread.latestRun?.completedAt ?? "");
       const settled = status === "ready" && thread.latestRun?.status === "completed";
       const state = {
@@ -284,8 +267,6 @@ export function startThreadNotifications(
         subagentRequest,
         thread,
         status,
-        workflowAttention: attentionEntry,
-        workflowHighWater,
         attention,
         settled,
         completedAt: settled && Number.isFinite(completedAt) ? completedAt : null,
@@ -307,7 +288,6 @@ export function startThreadNotifications(
   const watchEnvironment = (environmentId: EnvironmentId): WatchedEnvironment => {
     const entry: WatchedEnvironment = {
       previous: new Map(),
-      threads: null,
       reconnecting: false,
       unsubscribe: () => {},
       gate: createThreadNotificationGate<ThreadId>((threadId, kind) => {
@@ -315,46 +295,35 @@ export function startThreadNotifications(
         if (state) present(environmentId, state, kind);
       }),
     };
-    // A baseline recorded before the attention snapshot arrives would make every open question
-    // look new once it does, so both snapshots have to be live before anything is remembered.
-    const observe = () => {
-      if (entry.threads !== null && registry.get(threadWorkflowAttentionReadyAtom(environmentId))) {
-        observeThreads(environmentId, entry, entry.threads);
-        return;
-      }
-      entry.reconnecting = true;
-    };
+    let threads: ReadonlyArray<OrchestrationV2ThreadShell> | null = null;
     const unsubscribeShell = registry.subscribe(
       environmentShell.stateValueAtom(environmentId),
       (shell) => {
-        entry.threads =
+        threads =
           shell.status === "live" && Option.isSome(shell.snapshot)
             ? shell.snapshot.value.threads
             : null;
-        observe();
+        if (threads !== null) {
+          observeThreads(environmentId, entry, threads);
+          return;
+        }
+        entry.reconnecting = true;
       },
       { immediate: true },
     );
-    const unsubscribeAttentionReady = registry.subscribe(
-      threadWorkflowAttentionReadyAtom(environmentId),
-      observe,
-    );
-    const unsubscribeAttention = registry.subscribe(
-      threadWorkflowAttentionAtom(environmentId),
-      observe,
-    );
+    const reobserve = () => {
+      if (threads !== null) observeThreads(environmentId, entry, threads);
+    };
     const unsubscribeRequests = registry.subscribe(
       environmentThreadShells.pendingSubagentRequestsAtom(environmentId),
-      observe,
+      reobserve,
     );
     const unsubscribeDelegated = registry.subscribe(
       environmentThreadShells.delegatedUnderParentAtom,
-      observe,
+      reobserve,
     );
     entry.unsubscribe = () => {
       unsubscribeShell();
-      unsubscribeAttentionReady();
-      unsubscribeAttention();
       unsubscribeRequests();
       unsubscribeDelegated();
       entry.gate.clear();

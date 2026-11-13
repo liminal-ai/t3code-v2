@@ -246,32 +246,6 @@ describe("resolveSidebarThreadStatus", () => {
     ).toBe("approval");
   });
 
-  it("awaits input while the workflow has an open question, below approval", () => {
-    expect(resolveSidebarThreadStatus({ ...idle, openWorkflowQuestions: 1, runtime })).toBe(
-      "input",
-    );
-    expect(
-      resolveSidebarThreadStatus({
-        ...idle,
-        hasPendingApprovals: true,
-        openWorkflowQuestions: 2,
-        runtime,
-      }),
-    ).toBe("approval");
-    expect(resolveSidebarThreadStatus({ ...idle, openWorkflowQuestions: 0 })).toBe("ready");
-    expect(
-      resolveThreadStatusPill({
-        thread: {
-          ...idle,
-          openWorkflowQuestions: 1,
-          hasActionableProposedPlan: false,
-          interactionMode: "default",
-          latestRun: null,
-        },
-      })?.label,
-    ).toBe("Awaiting Input");
-  });
-
   it("shows a waiting guest message as a Request, below the agent's own requests", () => {
     expect(resolveSidebarThreadStatus({ ...idle, pendingGuestMessageCount: 1, runtime })).toBe(
       "request",

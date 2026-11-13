@@ -52,7 +52,6 @@ import * as ProjectionStore from "./ProjectionStore.ts";
 import * as ProviderSessionManager from "./ProviderSessionManager.ts";
 import {
   ContextHandoffBackgroundWorkError,
-  continuationMismatchMessage,
   knownProviderFailureMessage,
   makeProviderFailure,
 } from "@t3tools/provider-core/server/failure";
@@ -63,7 +62,6 @@ import {
   pendingRestartCancelledBackgroundWork,
   restartCancelledBackgroundWorkNote,
 } from "./RestartBackgroundNote.ts";
-import { failOpen, HOOK_DEADLINE, ThreadHooks } from "./ThreadHooks.ts";
 
 export class ProviderTurnStartError extends Schema.TaggedError<ProviderTurnStartError>()(
   "ProviderTurnStartError",
@@ -95,38 +93,10 @@ class WorktreeRecreateNoBaseError extends Schema.TaggedError<WorktreeRecreateNoB
   }
 }
 
-class NativeContinuationRequiredError extends Schema.TaggedError<NativeContinuationRequiredError>()(
-  "NativeContinuationRequiredError",
-  {
-    reason: Schema.Literals([
-      "uncertain_history_delivery",
-      "resume_failed",
-      "handoff_budget_exhausted",
-    ]),
-    detail: Schema.String,
-    cause: Schema.optional(Schema.Defect()),
-  },
-) {
-  override get message(): string {
-    return `This thread can only continue in its own native session, so T3 did not start a fresh one (${this.reason}). ${this.detail}`;
-  }
-}
-
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
 const isProviderAdapterOpenSessionError = Schema.is(
   ProviderAdapter.ProviderAdapterOpenSessionError,
 );
-
-const isContinuationMismatch = Schema.is(ProviderAdapter.ProviderAdapterContinuationMismatchError);
-
-const continuationMismatch = (
-  error: unknown,
-): ProviderAdapter.ProviderAdapterContinuationMismatchError | undefined =>
-  isContinuationMismatch(error)
-    ? error
-    : Predicate.hasProperty(error, "cause")
-      ? continuationMismatch(error.cause)
-      : undefined;
 
 /**
  * Claude refuses these before it reads the prompt: replacing a process running background work,
@@ -139,7 +109,6 @@ const PROMPT_REFUSAL_TAGS = [
   "ClaudeAppendSystemPromptMissingValueError",
   "ClaudeSettingsLaunchArgError",
   "ClaudeMcpRegistrationTimeoutError",
-  "ClaudeQueryOpenError",
 ] as const;
 
 const refusedBeforePrompt = (error: unknown): boolean =>
@@ -192,8 +161,6 @@ export const layer: Layer.Layer<
     const providerSessions = yield* ProviderSessionManager.ProviderSessionManagerV2;
     const runExecution = yield* RunExecutionService.RunExecutionServiceV2;
     const runtimePolicy = yield* RuntimePolicy.RuntimePolicyV2;
-    const threadHooks = yield* ThreadHooks;
-    const serverSettings = yield* ServerSettings.ServerSettingsService;
     const isManagedWorktreePath = yield* makeIsManagedWorktreePath;
 
     const resolveRecreateBase = Effect.fn("ProviderTurnStartService.resolveRecreateBase")(
@@ -884,11 +851,6 @@ export const layer: Layer.Layer<
         projection.providerTurns,
         projection.attempts,
       );
-      const compactionMessageIds = new Set(
-        projection.messages
-          .filter((candidate) => isCompactionCommandMessage(candidate))
-          .map((candidate) => candidate.id),
-      );
       const restartCancelledWork = pendingRestartCancelledBackgroundWork({
         runs: projection.runs,
         providerTurns: projection.providerTurns,
@@ -896,7 +858,7 @@ export const layer: Layer.Layer<
           projection.messages
             .filter(
               (candidate) =>
-                compactionMessageIds.has(candidate.id) ||
+                isCompactionCommandMessage(candidate) ||
                 (goalDriver && parseGoalCommand(candidate) !== null),
             )
             .map((candidate) => candidate.id),
@@ -1148,10 +1110,6 @@ export const layer: Layer.Layer<
       };
       let resumedRetryHandoff: ReadonlyArray<OrchestrationV2ContextHandoff> | undefined;
       let resumedHandoffContext: ReturnType<typeof handoffContextForThread> | undefined;
-      const engineBindingSeed =
-        projection.thread.engineBinding === undefined
-          ? {}
-          : { engineBinding: projection.thread.engineBinding };
       let portableForkFallback: OrchestrationV2ContextHandoff | undefined;
       const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -1243,7 +1201,6 @@ export const layer: Layer.Layer<
               runtimePolicy: resolvedRuntimePolicy,
               providerSessionId,
               existingProviderThread: { ...providerThread, forkedFrom: null },
-              ...engineBindingSeed,
             }),
           );
           if (loaded === undefined) return undefined;
@@ -1290,7 +1247,6 @@ export const layer: Layer.Layer<
               runtimePolicy: resolvedRuntimePolicy,
               providerSessionId,
               existingProviderThread: providerThread,
-              ...engineBindingSeed,
             }),
           );
         }
@@ -1382,65 +1338,17 @@ export const layer: Layer.Layer<
           return yield* loadFromProvider(Effect.fail(resumed.failure));
         }
 
-        const reason: NativeContinuationRequiredError["reason"] = uncertainDelivery
-          ? "uncertain_history_delivery"
-          : resumed._tag === "Success"
-            ? "handoff_budget_exhausted"
-            : "resume_failed";
-        const recovery = {
+        yield* Effect.logWarning("Recovering provider context in a fresh native session", {
           driver: session.driver,
           providerThreadId: providerThread.id,
           runId,
-          reason,
+          reason: uncertainDelivery
+            ? "uncertain_history_delivery"
+            : resumed._tag === "Success"
+              ? "handoff_budget_exhausted"
+              : "resume_failed",
           errorTag: resumed._tag === "Failure" ? resumed.failure._tag : "ContextHandoffBudgetError",
-        };
-        const mismatch =
-          resumed._tag === "Failure" ? continuationMismatch(resumed.failure) : undefined;
-        if (
-          providerThread.nativeMetadata?.engineBinding?.nativeContinuation === "required" ||
-          mismatch !== undefined
-        ) {
-          const failure = resumed._tag === "Failure" ? resumed.failure : undefined;
-          const instanceName =
-            mismatch === undefined
-              ? undefined
-              : yield* serverSettings.getSettings.pipe(
-                  Effect.map(
-                    (settings) =>
-                      settings.providerInstances[mismatch.providerInstanceId]?.displayName,
-                  ),
-                  Effect.orElseSucceed(() => undefined),
-                );
-          const refusal = new NativeContinuationRequiredError({
-            reason,
-            detail: uncertainDelivery
-              ? "T3 could not confirm whether earlier history reached it."
-              : mismatch !== undefined
-                ? continuationMismatchMessage(mismatch, instanceName)
-                : failure === undefined
-                  ? "The pending history does not fit its context."
-                  : (knownProviderFailureMessage(failure) ??
-                    ("cause" in failure && failure.cause instanceof Error
-                      ? failure.cause.message
-                      : failure.message)),
-            cause: failure,
-          });
-          yield* Effect.logWarning("Refused to replace a native session that must continue", {
-            ...recovery,
-            nativeThreadId: providerThread.nativeThreadRef.nativeId,
-            ...(mismatch === undefined ? {} : { mismatch: mismatch.message }),
-          });
-          if (input.willRetry === true) return yield* refusal;
-          yield* settleStartFailure({
-            signal: "native-continuation-refused",
-            title: "Native session could not continue",
-            error: refusal,
-            // A mismatch's text already says T3 kept the session, so it drops the reason code.
-            message: mismatch === undefined ? refusal.message : refusal.detail,
-          });
-          return undefined;
-        }
-        yield* Effect.logWarning("Recovering provider context in a fresh native session", recovery);
+        });
         const replacement = yield* loadFromProvider(
           session.ensureThread({
             threadId: projection.thread.id,
@@ -1451,7 +1359,6 @@ export const layer: Layer.Layer<
             // Clear the native ref to force a fresh session while preserving row identity.
             existingProviderThread: { ...providerThread, nativeThreadRef: null },
             forceNewNativeThread: true,
-            ...engineBindingSeed,
           }),
         );
         if (replacement === undefined) return undefined;
@@ -1644,41 +1551,6 @@ export const layer: Layer.Layer<
       if (!runningWrite.committed) {
         return;
       }
-      const completedAttemptIds = new Set(
-        projection.providerTurns
-          .filter((turn) => turn.status === "completed")
-          .map((turn) => turn.runAttemptId),
-      );
-      // The run is already committed as running and the outbox retry skips a running run, so a
-      // defect or stall escaping the hook here would strand it. Core bounds the hook itself, over
-      // whatever containment the module brings, including a throw before it returns its effect.
-      const workflowNote = yield* failOpen(
-        Effect.suspend(() =>
-          threadHooks.turnNote({
-            threadId: projection.thread.id,
-            runId: run.id,
-            compacting: compactionMessageIds.has(message.id),
-            context: {
-              providerThreadId: providerThread.id,
-              nativeThreadId: runningProviderThread.nativeThreadRef?.nativeId ?? null,
-              model: `${run.modelSelection.instanceId}/${run.modelSelection.model}`,
-              compactions: projection.compactionCount + compactionMessageIds.size,
-            },
-            completedRunIds: new Set(
-              projection.attempts
-                .filter((attempt) => completedAttemptIds.has(attempt.id))
-                .map((attempt) => attempt.runId),
-            ),
-            message,
-          }),
-        ),
-        {
-          deadline: HOOK_DEADLINE,
-          fallback: "",
-          message: "thread turn note hook failed; the turn goes without it",
-          annotations: { threadId: projection.thread.id, runId: run.id },
-        },
-      );
       const routableSubagents = projection.subagents.filter((subagent) =>
         RunExecutionService.canRouteRelatedSubagent(subagent.status),
       );
@@ -1728,9 +1600,7 @@ export const layer: Layer.Layer<
             sideChatHandoff === undefined || compact || goalCommand
               ? ""
               : sideChatHandoff.summaryText;
-          // The handoff budget was fixed before the native thread was known, so it leaves out the
-          // workflow note, which fits within the budget's reserve.
-          const context = [delivery.context, sideChatContext, restartNote, workflowNote]
+          const context = [delivery.context, sideChatContext, restartNote]
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
@@ -1798,7 +1668,6 @@ export const layer: Layer.Layer<
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
         restartNote === "" &&
-        workflowNote === "" &&
         !noteContinuation
           ? session
           : makeDeliverySession(session, startWithHandoffs);

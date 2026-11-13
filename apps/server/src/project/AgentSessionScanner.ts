@@ -7,7 +7,6 @@ import {
   ProviderDriverKind,
   ProviderInstanceId,
   resolveProviderInstanceEnabled,
-  type AgentSessionHomeDiagnostic,
   type AgentSessionImportSource,
   type AgentSessionProjectCandidate,
   type AgentSessionProjectGit,
@@ -23,7 +22,6 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
-import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
@@ -35,12 +33,6 @@ import { repositoryPathFromRemoteUrl } from "@t3tools/source-control-core/server
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
 import * as ProjectStore from "../orchestration-v2/ProjectStore.ts";
-import * as ClaudeLhcClient from "../provider/Drivers/claudeLhc/client.ts";
-import { claudeContextEngineOf } from "../provider/Drivers/claudeLhc/instanceConfig.ts";
-import {
-  type ClaudeLhcRuntimeProblem,
-  resolveClaudeLhcRuntime,
-} from "../provider/Drivers/claudeLhc/runtime.ts";
 import { resolveCodexHomeLayout } from "../provider/Drivers/CodexHomeLayout.ts";
 import { mergeProviderInstanceEnvironment } from "@t3tools/provider-core/server/instanceEnvironment";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
@@ -207,40 +199,7 @@ export type AgentSessionRecentThread =
     }
   | { readonly _tag: "AlreadyImported"; readonly source: AgentSessionImportSource }
   | { readonly _tag: "Duplicate"; readonly source: AgentSessionImportSource }
-  | { readonly _tag: "Refused"; readonly refusal: AgentSessionRefusal }
   | { readonly _tag: "Skipped" };
-
-export type AgentSessionRefusal = Omit<AgentSessionHomeDiagnostic, "sessionCount">;
-
-export class ClaudeLhcSessionInspector extends Context.Service<
-  ClaudeLhcSessionInspector,
-  {
-    readonly inspect: (
-      sessionIds: ReadonlyArray<string>,
-      lhcHome: string,
-    ) => Effect.Effect<
-      ReadonlyArray<ClaudeLhcClient.SessionInspection>,
-      ClaudeLhcRuntimeProblem | ClaudeLhcClient.ClaudeLhcOperationError
-    >;
-  }
->()("t3/project/AgentSessionScanner/ClaudeLhcSessionInspector") {}
-
-export const layerClaudeLhcSessionInspector = Layer.effect(
-  ClaudeLhcSessionInspector,
-  Effect.gen(function* () {
-    const services = yield* Effect.context<
-      FileSystem.FileSystem | Path.Path | ChildProcessSpawner.ChildProcessSpawner
-    >();
-    return ClaudeLhcSessionInspector.of({
-      inspect: Effect.fn("ClaudeLhcSessionInspector.inspect")(function* (sessionIds, lhcHome) {
-        const runtime = yield* resolveClaudeLhcRuntime().pipe(Effect.provide(services));
-        return yield* ClaudeLhcClient.inspectSessions(sessionIds, {
-          lhc: { home: lhcHome, spawn: { command: runtime.node, args: [runtime.sidecar] } },
-        });
-      }),
-    });
-  }),
-);
 
 export class AgentSessionScanner extends Context.Service<
   AgentSessionScanner,
@@ -274,31 +233,6 @@ interface TranscriptCandidate {
   readonly providerInstanceId: ProviderInstanceId;
   readonly homePath: string;
   readonly size: number;
-}
-
-type LhcStoreVerdict =
-  | {
-      readonly _tag: "Withheld";
-      readonly reason: "lhc-store-missing" | "lhc-store-unreadable";
-      readonly detail?: string;
-    }
-  | { readonly _tag: "Inspected"; readonly managedById: ReadonlyMap<string, boolean> };
-
-interface LhcSharedHome {
-  readonly claudeHome: string;
-  readonly lhcInstanceIds: ReadonlyArray<ProviderInstanceId>;
-  readonly sessionCount: number;
-  verdict: LhcStoreVerdict;
-}
-
-function withheldRefusal(home: LhcSharedHome): AgentSessionRefusal | null {
-  if (home.verdict._tag !== "Withheld") return null;
-  return {
-    claudeHome: home.claudeHome,
-    lhcInstanceIds: home.lhcInstanceIds,
-    reason: home.verdict.reason,
-    ...(home.verdict.detail === undefined ? {} : { detail: home.verdict.detail }),
-  };
 }
 
 interface MetadataReadBudget {
@@ -839,7 +773,6 @@ export const make = Effect.gen(function* () {
   const serverConfig = yield* ServerConfig.ServerConfig;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
   const projectStore = yield* ProjectStore.ProjectStoreV2;
-  const lhcInspector = yield* ClaudeLhcSessionInspector;
   const baseDir = path.resolve(serverConfig.baseDir);
   const worktreesDir = path.resolve(serverConfig.worktreesDir);
   const isWindows = (yield* HostProcess.Platform) === "win32";
@@ -1248,141 +1181,6 @@ export const make = Effect.gen(function* () {
     return path.join(homeDir, ".claude");
   };
 
-  const claudeHomeOf = (instance: ProviderInstanceConfig): string | null => {
-    const config = decodeClaudeSettings(instance.config ?? {});
-    if (Option.isNone(config)) return null;
-    const configuredHome = instance.environment?.findLast(
-      (variable) => variable.name === "CLAUDE_CONFIG_DIR",
-    )?.value;
-    const environmentHome =
-      typeof configuredHome === "string" ? configuredHome : hostEnvironment.CLAUDE_CONFIG_DIR;
-    return resolveClaudeConfigDir(config.value.homePath, environmentHome);
-  };
-
-  const readLhcHomesIncludingDisabled = Effect.fn(
-    "AgentSessionScanner.readLhcHomesIncludingDisabled",
-  )(function* (providerInstances: Readonly<Record<string, ProviderInstanceConfig>>) {
-    const homes = new Map<string, Array<ProviderInstanceId>>();
-    for (const [instanceId, instance] of Object.entries(providerInstances)) {
-      if (
-        instance.driver !== "claudeAgent" ||
-        claudeContextEngineOf(instance.config) !== "claude-lhc"
-      ) {
-        continue;
-      }
-      const homePath = claudeHomeOf(instance);
-      if (homePath === null) continue;
-      const identity = yield* directoryIdentity(homePath);
-      homes.set(identity, [...(homes.get(identity) ?? []), ProviderInstanceId.make(instanceId)]);
-    }
-    return homes;
-  });
-
-  const lhcStore = path.join(serverConfig.stateDir, "lhc");
-  // claude-lhc answers "unknown" for every id when its registry is absent.
-  const lhcRegistry = path.join(lhcStore, "registry.sqlite");
-  const claudeSessionIdOf = (filePath: string) => path.basename(filePath, ".jsonl");
-
-  const inspectLhcStore = (sessionIds: ReadonlyArray<string>): Effect.Effect<LhcStoreVerdict> =>
-    fileSystem.exists(lhcRegistry).pipe(
-      Effect.flatMap((exists) => {
-        if (!exists) {
-          return Effect.succeed<LhcStoreVerdict>({ _tag: "Withheld", reason: "lhc-store-missing" });
-        }
-        if (sessionIds.length === 0) {
-          return Effect.succeed<LhcStoreVerdict>({ _tag: "Inspected", managedById: new Map() });
-        }
-        return lhcInspector.inspect(sessionIds, lhcStore).pipe(
-          Effect.flatMap((inspections) =>
-            inspections.length === sessionIds.length
-              ? Effect.succeed<LhcStoreVerdict>({
-                  _tag: "Inspected",
-                  managedById: new Map(
-                    sessionIds.map((id, index) => [id, inspections[index]?.kind === "managed"]),
-                  ),
-                })
-              : Effect.fail(
-                  new ClaudeLhcClient.ClaudeLhcOperationError({
-                    operation: "inspectSessions",
-                    cause: `answered for ${inspections.length} of ${sessionIds.length} sessions`,
-                  }),
-                ),
-          ),
-        );
-      }),
-      Effect.catch((cause) =>
-        Effect.logWarning("Could not inspect the LHC store", { lhcStore, cause }).pipe(
-          Effect.as<LhcStoreVerdict>({
-            _tag: "Withheld",
-            reason: "lhc-store-unreadable",
-            detail: cause.message,
-          }),
-        ),
-      ),
-    );
-
-  const lhcRefusal = Effect.fn("AgentSessionScanner.lhcRefusal")(function* (
-    home: LhcSharedHome,
-    sessionIds: ReadonlyArray<string>,
-  ) {
-    if (home.verdict._tag === "Inspected") {
-      const known = home.verdict.managedById;
-      const uninspected = sessionIds.filter((id) => !known.has(id));
-      if (uninspected.length > 0) {
-        const verdict = yield* inspectLhcStore(uninspected);
-        home.verdict =
-          verdict._tag === "Withheld"
-            ? verdict
-            : { _tag: "Inspected", managedById: new Map([...known, ...verdict.managedById]) };
-      }
-    }
-    if (home.verdict._tag === "Withheld") return withheldRefusal(home);
-    const managedById = home.verdict.managedById;
-    return sessionIds.some((id) => managedById.get(id) === true)
-      ? ({
-          claudeHome: home.claudeHome,
-          lhcInstanceIds: home.lhcInstanceIds,
-          reason: "lhc-managed",
-        } satisfies AgentSessionRefusal)
-      : null;
-  });
-
-  const readCurrentLhcHomes = serverSettings.getSettings.pipe(
-    Effect.mapError((cause) => new AgentSessionScanError({ operation: "read-settings", cause })),
-    Effect.flatMap((settings) => readLhcHomesIncludingDisabled(settings.providerInstances)),
-  );
-
-  const checkLhcHomes = Effect.fn("AgentSessionScanner.checkLhcHomes")(function* (
-    lhcHomes: ReadonlyMap<string, ReadonlyArray<ProviderInstanceId>>,
-    candidates: ReadonlyArray<{
-      readonly candidate: RawCandidate;
-      readonly transcript: RawCandidate["transcripts"][number];
-    }>,
-  ) {
-    const sessionIdsByHome = new Map<string, Array<string> | null>();
-    for (const { candidate, transcript } of candidates) {
-      if (candidate.source !== "claudeAgent") continue;
-      let sessionIds = sessionIdsByHome.get(candidate.homePath);
-      if (sessionIds === undefined) {
-        const shared = lhcHomes.has(yield* directoryIdentity(candidate.homePath));
-        sessionIds = shared ? [] : null;
-        sessionIdsByHome.set(candidate.homePath, sessionIds);
-      }
-      sessionIds?.push(claudeSessionIdOf(transcript.filePath));
-    }
-    const homes = new Map<string, LhcSharedHome>();
-    for (const [homePath, sessionIds] of sessionIdsByHome) {
-      if (sessionIds === null) continue;
-      homes.set(homePath, {
-        claudeHome: homePath,
-        lhcInstanceIds: lhcHomes.get(yield* directoryIdentity(homePath)) ?? [],
-        sessionCount: sessionIds.length,
-        verdict: yield* inspectLhcStore(sessionIds),
-      });
-    }
-    return homes;
-  });
-
   const discoverClaudeTranscripts = Effect.fn("AgentSessionScanner.discoverClaudeTranscripts")(
     function* (homePath: string, providerInstanceId: ProviderInstanceId, operationBudget: number) {
       const projectsDir = path.join(homePath, "projects");
@@ -1615,10 +1413,7 @@ export const make = Effect.gen(function* () {
         readonly config: ProviderInstanceConfig;
       }> = Object.entries(settings.providerInstances)
         .filter(
-          ([, instance]) =>
-            instance.driver === source &&
-            resolveProviderInstanceEnabled(instance) &&
-            claudeContextEngineOf(instance.config) === "claude",
+          ([, instance]) => instance.driver === source && resolveProviderInstanceEnabled(instance),
         )
         .map(([instanceId, config]) => ({
           instanceId: ProviderInstanceId.make(instanceId),
@@ -1657,9 +1452,12 @@ export const make = Effect.gen(function* () {
           ).pipe(Effect.provideService(HostProcess.HomeDirectory, homeDir));
           homePath = resolvePiSessionsDir(environment, homeDir, path);
         } else if (source === "claudeAgent") {
-          const claudeHome = claudeHomeOf(instance);
-          if (claudeHome === null) continue;
-          homePath = claudeHome;
+          const config = decodeClaudeSettings(instance.config ?? {});
+          if (Option.isNone(config)) continue;
+          homePath = resolveClaudeConfigDir(
+            config.value.homePath,
+            environmentHome("CLAUDE_CONFIG_DIR"),
+          );
         } else {
           const config = decodeCodexSettings(instance.config ?? {});
           if (Option.isNone(config)) continue;
@@ -1725,50 +1523,11 @@ export const make = Effect.gen(function* () {
     return { candidates: raw, truncated };
   });
 
-  const withoutLhcSessions = Effect.fn("AgentSessionScanner.withoutLhcSessions")(function* (
-    candidates: ReadonlyArray<RawCandidate>,
-  ) {
-    const sharedHomes = yield* checkLhcHomes(
-      yield* readCurrentLhcHomes,
-      candidates.flatMap((candidate) =>
-        candidate.transcripts.map((transcript) => ({ candidate, transcript })),
-      ),
-    );
-    const diagnostics: Array<AgentSessionHomeDiagnostic> = [];
-    for (const home of sharedHomes.values()) {
-      const withheld = withheldRefusal(home);
-      if (withheld !== null) diagnostics.push({ ...withheld, sessionCount: home.sessionCount });
-    }
-    const listed = candidates.flatMap((candidate): Array<RawCandidate> => {
-      const home = sharedHomes.get(candidate.homePath);
-      if (candidate.source !== "claudeAgent" || home === undefined) return [candidate];
-      if (home.verdict._tag === "Withheld") return [];
-      const managedById = home.verdict.managedById;
-      const transcripts = candidate.transcripts.filter(
-        (transcript) => managedById.get(claudeSessionIdOf(transcript.filePath)) !== true,
-      );
-      if (transcripts.length === 0) return [];
-      const activity = transcripts.flatMap((transcript) =>
-        transcript.mtimeMs === null ? [] : [transcript.mtimeMs],
-      );
-      return [
-        {
-          ...candidate,
-          transcripts,
-          threadCount: transcripts.length,
-          lastActiveAtMs: activity.length === 0 ? null : Math.max(...activity),
-        },
-      ];
-    });
-    return { candidates: listed, diagnostics };
-  });
-
-  let cachedDiscoveredCandidates: ReadonlyArray<RawCandidate> | null = null;
+  let cachedCandidates: ReadonlyArray<RawCandidate> | null = null;
 
   const scan: AgentSessionScanner["Service"]["scan"] = Effect.gen(function* () {
-    const { candidates: discovered, truncated } = yield* collectCandidates();
-    cachedDiscoveredCandidates = discovered;
-    const { candidates: raw, diagnostics } = yield* withoutLhcSessions(discovered);
+    const { candidates: raw, truncated } = yield* collectCandidates();
+    cachedCandidates = raw;
 
     const merged = new Map<
       string,
@@ -1894,7 +1653,6 @@ export const make = Effect.gen(function* () {
       candidates,
       scannedAt: DateTime.formatIso(yield* DateTime.now),
       ...(truncated ? { truncated: true } : {}),
-      ...(diagnostics.length > 0 ? { diagnostics } : {}),
     };
   });
 
@@ -1909,10 +1667,8 @@ export const make = Effect.gen(function* () {
     const nowMs = DateTime.toEpochMillis(yield* DateTime.now);
     const cutoffMs = nowMs - RECENT_THREAD_WINDOW_MS;
 
-    const candidates = cachedDiscoveredCandidates ?? (yield* collectCandidates()).candidates;
-    cachedDiscoveredCandidates = candidates;
-    const lhcHomes = yield* readCurrentLhcHomes;
-    const lhcInstanceIds = new Set(Array.from(lhcHomes.values()).flat());
+    const candidates = cachedCandidates ?? (yield* collectCandidates()).candidates;
+    cachedCandidates = candidates;
 
     const eligibleTranscripts: Array<{
       readonly candidate: RawCandidate;
@@ -1945,8 +1701,6 @@ export const make = Effect.gen(function* () {
       }
       return left.transcript.filePath.localeCompare(right.transcript.filePath);
     });
-
-    const sharedHomes = yield* checkLhcHomes(lhcHomes, eligibleTranscripts);
 
     const completedByFile = Map.groupBy(
       completedSources,
@@ -2012,17 +1766,6 @@ export const make = Effect.gen(function* () {
           const completed = completedByFile.get(
             `${candidate.providerInstanceId}\0${transcript.filePath}`,
           );
-          const sharedHome =
-            candidate.source === "claudeAgent" ? sharedHomes.get(candidate.homePath) : undefined;
-          if (lhcInstanceIds.has(candidate.providerInstanceId)) {
-            return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
-          }
-          if (completed === undefined && sharedHome !== undefined) {
-            const refusal = yield* lhcRefusal(sharedHome, [claudeSessionIdOf(transcript.filePath)]);
-            if (refusal !== null) {
-              return Option.some<AgentSessionRecentThread>({ _tag: "Refused", refusal });
-            }
-          }
           if (completed === undefined && (transcriptsRemaining === 0 || bytesRemaining === 0)) {
             return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
           }
@@ -2092,15 +1835,6 @@ export const make = Effect.gen(function* () {
           if (parsedThread === null) {
             return Option.some<AgentSessionRecentThread>({ _tag: "Skipped" });
           }
-          if (sharedHome !== undefined) {
-            const refusal = yield* lhcRefusal(sharedHome, [
-              claudeSessionIdOf(transcript.filePath),
-              parsedThread.providerSessionId,
-            ]);
-            if (refusal !== null) {
-              return Option.some<AgentSessionRecentThread>({ _tag: "Refused", refusal });
-            }
-          }
           let savedTitle: string | undefined;
           if (candidate.source === "codex") {
             const names =
@@ -2143,6 +1877,5 @@ export const make = Effect.gen(function* () {
 });
 
 export const layer = Layer.effect(AgentSessionScanner, make).pipe(
-  Layer.provide(layerClaudeLhcSessionInspector),
   Layer.provide(ProcessRunner.layer),
 );

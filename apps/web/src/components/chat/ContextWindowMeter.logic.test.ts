@@ -1,10 +1,7 @@
 import { ProviderDriverKind, ProviderInstanceId, type ServerProvider } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 import { deriveProviderInstanceEntries } from "../../providerInstances";
-import {
-  hasDismissedResumeCompaction,
-  shouldOfferResumeCompaction,
-} from "@t3tools/client-runtime/state/context-window";
+import { hasDismissedResumeCompaction } from "@t3tools/client-runtime/state/context-window";
 import {
   hasAvailableCompactionProvider,
   resolveContextWindowModelDisplayName,
@@ -136,29 +133,6 @@ describe("hasDismissedResumeCompaction", () => {
         },
       ]),
     ).toBe(false);
-  });
-});
-
-describe("shouldOfferResumeCompaction", () => {
-  const coldStockThread = {
-    provider: "claudeAgent",
-    usedTokens: 250_000,
-    updatedAt: "2026-08-24T12:00:00.000Z",
-    promptCacheTtlMs: 60 * 60_000,
-    now: "2026-08-24T13:00:00.000Z",
-  };
-
-  it("offers a stock Claude thread above the minimum once its cache has expired", () => {
-    expect(shouldOfferResumeCompaction(coldStockThread)).toBe(true);
-    expect(
-      shouldOfferResumeCompaction({ ...coldStockThread, now: "2026-08-24T12:59:00.000Z" }),
-    ).toBe(false);
-    expect(shouldOfferResumeCompaction({ ...coldStockThread, usedTokens: 199_999 })).toBe(false);
-    expect(shouldOfferResumeCompaction({ ...coldStockThread, provider: "codex" })).toBe(false);
-  });
-
-  it("offers nothing when the thread's provider owns compaction", () => {
-    expect(shouldOfferResumeCompaction({ ...coldStockThread, compaction: "provider" })).toBe(false);
   });
 });
 

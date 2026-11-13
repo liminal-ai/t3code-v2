@@ -65,28 +65,6 @@ import {
   OrchestrationV2ThreadHistoryPage,
   OrchestrationV2ThreadTranscript,
 } from "./orchestrationV2.ts";
-import {
-  GroupChatCommand,
-  GroupChatDelivery,
-  GroupChatDeliveryParams,
-  GroupChatDispatchResult,
-  GroupChatGroupPage,
-  GroupChatGroupParams,
-  GroupChatGroupQuery,
-  GroupChatHookInboundAccepted,
-  GroupChatHookInboundParams,
-  GroupChatHookQuery,
-  GroupChatHookReplyAccepted,
-  GroupChatHookReplyParams,
-  GROUP_CHAT_HOOK_INBOUND_PATH,
-  GROUP_CHAT_HOOK_REPLY_PATH,
-  GroupChatInvalid,
-  GroupChatNotFound,
-  GroupChatRefused,
-  GroupChatSnapshot,
-  GroupChatThreadRefused,
-  GroupChatUnavailable,
-} from "./groupChat.ts";
 import { Project, ProjectMutation, ProjectSnapshot } from "./project.ts";
 import {
   PullRequestDiffInput,
@@ -103,8 +81,6 @@ import {
   RelayEnvironmentMintResponse,
   RelayLinkProofRequest,
 } from "./relay.ts";
-
-export * from "./groupChat.ts";
 
 const OptionalBearerHeaders = Schema.Struct({
   authorization: Schema.optionalKey(Schema.String),
@@ -969,71 +945,6 @@ class EnvironmentWebhooksHttpApi extends HttpApiGroup.make("webhooks")
   .add(HttpApiEndpoint.patch("webhookPatch", WEBHOOK_PATH, webhookEndpoint))
   .add(HttpApiEndpoint.get("webhookGet", WEBHOOK_PATH, webhookEndpoint)) {}
 
-const GroupChatErrors = [
-  GroupChatUnavailable,
-  GroupChatNotFound,
-  GroupChatInvalid,
-  GroupChatRefused,
-  GroupChatThreadRefused,
-  EnvironmentScopeRequiredError,
-  EnvironmentInternalError,
-] as const;
-
-class EnvironmentGroupChatHttpApi extends HttpApiGroup.make("groupChat")
-  .add(
-    HttpApiEndpoint.get("snapshot", "/api/group-chat/snapshot", {
-      headers: OptionalBearerHeaders,
-      success: GroupChatSnapshot,
-      error: GroupChatErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("group", "/api/group-chat/groups/:groupId", {
-      headers: OptionalBearerHeaders,
-      params: GroupChatGroupParams,
-      query: GroupChatGroupQuery,
-      success: GroupChatGroupPage,
-      error: GroupChatErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.get("delivery", "/api/group-chat/deliveries/:deliveryId", {
-      headers: OptionalBearerHeaders,
-      params: GroupChatDeliveryParams,
-      success: GroupChatDelivery,
-      error: GroupChatErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  )
-  .add(
-    HttpApiEndpoint.post("dispatch", "/api/group-chat/dispatch", {
-      headers: OptionalBearerHeaders,
-      payload: GroupChatCommand,
-      success: GroupChatDispatchResult,
-      error: GroupChatErrors,
-    }).middleware(EnvironmentAuthenticatedAuth),
-  ) {}
-
-/**
- * Where external group chat members post. Unauthenticated like `webhooks`: the token in the
- * query and an optional body signature are the credential, and the handler reads the raw body
- * itself so the signature covers the exact bytes and the size cap applies while reading.
- */
-class EnvironmentGroupChatHooksHttpApi extends HttpApiGroup.make("groupChatHooks")
-  .add(
-    HttpApiEndpoint.post("reply", GROUP_CHAT_HOOK_REPLY_PATH, {
-      params: GroupChatHookReplyParams,
-      query: GroupChatHookQuery,
-      success: GroupChatHookReplyAccepted,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("inbound", GROUP_CHAT_HOOK_INBOUND_PATH, {
-      params: GroupChatHookInboundParams,
-      query: GroupChatHookQuery,
-      success: GroupChatHookInboundAccepted,
-    }),
-  ) {}
-
 export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentMetadataHttpApi)
   .add(EnvironmentAuthHttpApi)
@@ -1043,6 +954,4 @@ export class EnvironmentHttpApi extends HttpApi.make("environment")
   .add(EnvironmentProjectsHttpApi)
   .add(EnvironmentVoiceHttpApi)
   .add(EnvironmentConnectHttpApi)
-  .add(EnvironmentWebhooksHttpApi)
-  .add(EnvironmentGroupChatHttpApi)
-  .add(EnvironmentGroupChatHooksHttpApi) {}
+  .add(EnvironmentWebhooksHttpApi) {}

@@ -1,6 +1,4 @@
 import "vite-plus/test/config";
-// @effect-diagnostics-next-line nodeBuiltinImport:off
-import * as NodeFS from "node:fs";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- tsdown needs the asset path when it reads this config.
 import * as NodePath from "node:path";
 import { defineConfig, mergeConfig } from "vite-plus";
@@ -62,9 +60,6 @@ if (packExecutableTarget && !Object.hasOwn(SEA_TARGETS, packExecutableTarget)) {
     `T3CODE_PACK_EXE_TARGET must be one of ${Object.keys(SEA_TARGETS).join(", ")}, got "${packExecutableTarget}".`,
   );
 }
-// The embedded CLI holds the server's module graph; the bootstrap only loads it.
-const exeModuleList =
-  packMode === "bundle" ? process.env.T3CODE_EXE_MODULE_LIST?.trim() : undefined;
 const packExecutableTargets = packExecutableTarget
   ? [
       {
@@ -104,21 +99,6 @@ export default mergeConfig(
       clean: true,
       // SEA can only resolve built-ins; keep dynamic imports inside each emitted module.
       ...(packExecutable ? { outputOptions: { codeSplitting: false } } : {}),
-      ...(exeModuleList
-        ? {
-            plugins: [
-              {
-                name: "t3code:exe-module-list",
-                generateBundle(_options, bundle) {
-                  const moduleIds = Object.values(bundle).flatMap((output) =>
-                    output.type === "chunk" ? output.moduleIds : [],
-                  );
-                  NodeFS.writeFileSync(exeModuleList, JSON.stringify(moduleIds.toSorted()));
-                },
-              },
-            ],
-          }
-        : {}),
       ...(packMode === "1"
         ? {
             exe: {

@@ -21,8 +21,6 @@ export function ThreadHeader(props: {
   readonly inspectorMode: ThreadInspectorMode | null;
   readonly onToggleInspector: () => void;
   readonly onOpenFilesInspector: () => void;
-  /** Set only while the thread has an open workflow; the button appears with it. */
-  readonly onOpenWorkflow?: () => void;
 }) {
   const goBack = useWorkspaceBackNavigation("threads");
   const { panes, toggleAuxiliaryPane, composerKeyboardActive, startNewTask } =
@@ -43,14 +41,6 @@ export function ThreadHeader(props: {
         },
       ]
     : [];
-  if (props.onOpenWorkflow) {
-    actions.push({
-      accessibilityLabel: "Open workflow",
-      icon: "list.number",
-      separateBackground: false,
-      onPress: props.onOpenWorkflow,
-    });
-  }
   const menus = [gitMenu, terminalMenu].filter((menu): menu is AppBarMenu => menu !== null);
 
   return (

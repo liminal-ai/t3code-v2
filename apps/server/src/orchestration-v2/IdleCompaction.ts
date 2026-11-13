@@ -51,8 +51,6 @@ export function idleCompactionWindow(
   if (thread.snoozedUntil != null && DateTime.toEpochMillis(thread.snoozedUntil) > nowMs)
     return null;
   if (!isListedThreadLineage(thread.lineage)) return null;
-  // A provider that owns compaction compacts at its own trigger, not Claude's.
-  if (thread.engineBinding?.compaction === "provider") return null;
   // A removed or steered queued message leaves a cancelled run that never started.
   const latestRun = runs
     .filter((run) => run.status !== "cancelled" || run.startedAt !== null)

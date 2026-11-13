@@ -19,7 +19,6 @@ import * as FileSystem from "effect/FileSystem";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import * as Path from "effect/Path";
 import * as Stream from "effect/Stream";
 import { vi } from "vite-plus/test";
 import * as HttpClient from "effect/http/HttpClient";
@@ -131,7 +130,6 @@ it.layer(layerTest)("CursorDriver", (it) => {
                 return {
                   agentId: "browser-auth-agent",
                   listMessages: Effect.succeed([]),
-                  attach: () => Effect.die("unused"),
                   send: () => Effect.die("This test only opens a session"),
                   close: Effect.sync(() => {
                     closed += 1;
@@ -194,67 +192,6 @@ it.layer(layerTest)("CursorDriver", (it) => {
       }).pipe(Effect.scoped),
   );
 
-  it.effect.each(["local", "cloud"] as const)(
-    "advertises the skills a %s instance's agent can load",
-    (runtime) =>
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-driver-home-" });
-        const workspace = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "cursor-driver-workspace-",
-        });
-        for (const [root, name] of [
-          [path.join(workspace, ".cursor", "skills"), "repo-skill"],
-          [path.join(home, ".cursor", "skills"), "home-skill"],
-          [path.join(home, ".cursor", "skills-cursor"), "builtin-skill"],
-        ] as const) {
-          const directory = path.join(root, name);
-          yield* fileSystem.makeDirectory(directory, { recursive: true });
-          yield* fileSystem.writeFileString(path.join(directory, "SKILL.md"), "---\n---\n");
-        }
-        const instance = yield* CursorDriver.create({
-          instanceId: ProviderInstanceId.make(`cursor-${runtime}-skills`),
-          displayName: "Cursor skills",
-          enabled: true,
-          environment: [
-            { name: "HOME", value: home, sensitive: false },
-            { name: "CURSOR_API_KEY", value: "skills-key", sensitive: true },
-          ],
-          config: { ...CursorDriver.defaultConfig(), runtime },
-        });
-
-        const snapshot = yield* instance.snapshotForCwd!(workspace);
-
-        expect(snapshot.skills?.map((skill) => skill.name)).toEqual(
-          runtime === "cloud" ? ["repo-skill"] : ["builtin-skill", "home-skill", "repo-skill"],
-        );
-      }).pipe(Effect.scoped),
-  );
-
-  it.effect.each(["local", "cloud"] as const)(
-    "builds a %s adapter from the instance's Runs on setting",
-    (runtime) =>
-      Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const home = yield* fileSystem.makeTempDirectoryScoped({ prefix: "cursor-driver-home-" });
-        const instance = yield* CursorDriver.create({
-          instanceId: ProviderInstanceId.make(`cursor-${runtime}-runs-on`),
-          displayName: "Cursor runs on",
-          enabled: true,
-          environment: [
-            { name: "HOME", value: home, sensitive: false },
-            { name: "CURSOR_API_KEY", value: "runs-on-key", sensitive: true },
-          ],
-          config: { ...CursorDriver.defaultConfig(), runtime },
-        });
-
-        const capabilities = yield* instance.orchestrationAdapter.getCapabilities();
-
-        expect(capabilities.checkpointing.appCanCheckpointFilesystem).toBe(runtime === "local");
-      }).pipe(Effect.scoped),
-  );
-
   it.effect("budgets handoffs for the SDK model across catalog refreshes and option changes", () =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -298,7 +235,6 @@ it.layer(layerTest)("CursorDriver", (it) => {
               return {
                 agentId: "native-cursor-window",
                 listMessages: Effect.succeed([]),
-                attach: () => Effect.die("unused"),
                 close: Effect.void,
                 send: (input) =>
                   Effect.sync(() => {

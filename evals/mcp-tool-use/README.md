@@ -8,7 +8,7 @@ The model sees what it sees in T3 Code. A trimmed capture of a real harness turn
 
 ```sh
 cd evals
-pnpm mcp-tool-use --case review-round-goes-to-same-verifier --samples 1 --out runs/check
+pnpm mcp-tool-use --case review-round-uses-thread-send --samples 1 --out runs/check
 pnpm mcp-tool-use --model claude-opus-5-5 --out runs/opus
 ```
 

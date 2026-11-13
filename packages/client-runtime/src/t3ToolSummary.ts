@@ -368,9 +368,6 @@ export function summarizeT3ToolCalls(
         quantity(countEntities(entityIds("environmentId")), "linked environment"),
       );
       break;
-    case "thread-workflow":
-      label = phrase("Worked", "work", `the thread workflow ${times}`);
-      break;
     case "attachment-prepare":
       label = phrase(
         "Prepared",

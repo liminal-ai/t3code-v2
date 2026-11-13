@@ -58,7 +58,6 @@ import {
   type OrchestrationV2Subagent,
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
-  engineBindingsAgree,
   latestProviderTurnForAttempt,
   parseGoalCommand,
   orchestrationV2RunWorkStartedAt,
@@ -191,9 +190,7 @@ import {
   ThreadForkServiceV2,
 } from "./ThreadForkService.ts";
 import { planThreadDeletion } from "./ThreadDeletion.ts";
-import { lifecycleActionOf, ThreadHooks } from "./ThreadHooks.ts";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
-import type { ProviderEngineBindingTemplate } from "@t3tools/provider-core/server/driver";
 import * as ServerSettings from "../serverSettings.ts";
 
 const isMessageQuestionAnswer = Schema.is(
@@ -1063,7 +1060,6 @@ function uniqueSessions(
 function rootProviderThreadsForProvider(
   projection: Pick<OrchestrationV2ThreadProjection, "providerThreads" | "thread" | "runs">,
   providerInstanceId: ModelSelection["instanceId"],
-  engineBinding: ProviderEngineBindingTemplate | undefined,
 ): ReadonlyArray<OrchestrationV2ProviderThread> {
   const boundary = contextBoundaryOrdinal(projection.runs);
   return projection.providerThreads
@@ -1072,7 +1068,6 @@ function rootProviderThreadsForProvider(
         providerThread.providerInstanceId === providerInstanceId &&
         providerThread.appThreadId === projection.thread.id &&
         providerThread.ownerNodeId === null &&
-        engineBindingsAgree(providerThread.nativeMetadata?.engineBinding, engineBinding) &&
         !providerThreadPredatesBoundary(providerThread, boundary),
     )
     .toSorted(
@@ -1108,7 +1103,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const idAllocator = yield* IdAllocator.IdAllocatorV2;
   const projects = yield* ProjectStore.ProjectStoreV2;
   const projectionStore = yield* ProjectionStoreV2;
-  const threadHooks = yield* ThreadHooks;
   const effectOutbox = yield* EffectOutbox.EffectOutboxV2;
   const nextTurnItemOrdinal = (
     projection: Pick<OrchestrationV2ThreadProjection, "thread"> &
@@ -1189,18 +1183,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ),
       );
 
-  const refuseIfThreadBlocked = (
-    command: Extract<OrchestrationV2ServerCommand, { type: keyof typeof lifecycleActionOf }>,
-  ) =>
-    threadHooks
-      .lifecycleBlocker({ threadId: command.threadId, action: lifecycleActionOf[command.type] })
-      .pipe(
-        Effect.flatMap((blocker) =>
-          blocker === null ? Effect.void : Effect.fail(`Thread ${command.threadId} ${blocker}`),
-        ),
-        mapDispatchError(command),
-      );
-
   const mapDelegatedCompletionError = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
       Effect.mapError(
@@ -1251,61 +1233,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       } as Event;
     });
 
-  const engineBindingTemplate = (providerInstanceId: ProviderInstanceId) =>
-    providerAdapters.getMetadata === undefined
-      ? Effect.undefined
-      : providerAdapters
-          .getMetadata(providerInstanceId)
-          .pipe(Effect.map((metadata) => metadata.engineBinding));
-
-  const seedEngineBinding =
-    /* This helper runs for individual orchestration events; the enclosing operation owns the span. */
-    Effect.fnUntraced(function* <Event extends Omit<OrchestrationV2DomainEvent, "id">>(
-      event: Event,
-    ) {
-      if (!event.type.startsWith("thread.")) return event;
-      const thread = (
-        event as Omit<OrchestrationV2DomainEvent, "id"> & {
-          readonly payload: OrchestrationV2AppThread;
-        }
-      ).payload;
-      if (thread.engineBinding?.providerInstanceId === thread.providerInstanceId) return event;
-      // A restart steer moves the thread to its run's instance as a model-selection update.
-      // A fork continues its source's conversation, so it keeps the source's missing seed too.
-      if (
-        thread.engineBinding === undefined &&
-        (event.type === "thread.created"
-          ? thread.forkedFrom !== null
-          : event.type !== "thread.provider-switched")
-      ) {
-        return event;
-      }
-      const template = yield* engineBindingTemplate(thread.providerInstanceId).pipe(
-        Effect.catch((cause) =>
-          Effect.logWarning("Engine binding template unreadable, thread keeps no seed", {
-            threadId: thread.id,
-            providerInstanceId: thread.providerInstanceId,
-            cause,
-          }).pipe(Effect.as(undefined)),
-        ),
-      );
-      if (template === undefined && thread.engineBinding === undefined) return event;
-      const { engineBinding: _replaced, ...unseeded } = thread;
-      const payload: OrchestrationV2AppThread =
-        template === undefined
-          ? unseeded
-          : {
-              ...unseeded,
-              engineBinding: { ...template, providerInstanceId: thread.providerInstanceId },
-            };
-      return { ...event, payload };
-    });
-
   const emit =
     (events: Ref.Ref<Array<OrchestrationV2DomainEvent>>, command: OrchestrationV2ServerCommand) =>
     <Event extends OrchestrationV2DomainEvent>(event: Omit<Event, "id">) =>
       Effect.gen(function* () {
-        const withId = yield* makeEvent(command, yield* seedEngineBinding(event));
+        const withId = yield* makeEvent(command, event);
         yield* Ref.update(events, (existing) => [...existing, withId]);
         return withId;
       });
@@ -1503,9 +1435,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       effects: ReadonlyArray<PendingOrchestrationEffectV2> = [],
       options: { readonly updateDelegatedCompletionOnly?: boolean } = {},
     ) {
-      const withIds = yield* Effect.forEach(events, (event) =>
-        seedEngineBinding(event).pipe(Effect.flatMap(makeSystemEvent)),
-      );
+      const withIds = yield* Effect.forEach(events, (event) => makeSystemEvent(event));
       yield* eventSink.writeWithEffects({ events: withIds, effects, ...options });
     });
 
@@ -1944,41 +1874,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const followsLatestContext =
         !freshContext &&
         (followsCurrent || providerThreadPredatesBoundary(storedProviderThread, contextBoundary));
-      const reusableRootProviderThreads = engineBindingTemplate(queuedRun.providerInstanceId).pipe(
-        Effect.map((template) =>
-          rootProviderThreadsForProvider(projection, queuedRun.providerInstanceId, template),
-        ),
-        Effect.mapError(
-          (cause) =>
-            new OrchestratorDispatchError({
-              commandId,
-              commandType: "message.dispatch",
-              cause,
-            }),
-        ),
-      );
-      const reusableStoredProviderThread = Effect.gen(function* () {
-        if (
-          storedProviderThread.nativeThreadRef === null ||
-          storedProviderThread.id === activeProviderThread?.id
-        ) {
-          return storedProviderThread;
-        }
-        const rows = yield* reusableRootProviderThreads;
-        return rows.some((row) => row.id === storedProviderThread.id)
-          ? storedProviderThread
-          : rows[0];
-      });
       const targetProviderThread = followsLatestContext
         ? activeProviderThread?.providerInstanceId === queuedRun.providerInstanceId &&
           !providerThreadPredatesBoundary(activeProviderThread, contextBoundary)
           ? activeProviderThread
-          : (yield* reusableRootProviderThreads)[0]
+          : rootProviderThreadsForProvider(projection, queuedRun.providerInstanceId)[0]
         : freshContext &&
             (storedProviderThread.firstRunOrdinal !== null ||
               storedProviderThread.nativeThreadRef !== null)
           ? undefined
-          : yield* reusableStoredProviderThread;
+          : storedProviderThread;
       const queuedProviderThread: OrchestrationV2ProviderThread = targetProviderThread ?? {
         id: idAllocator.derive.providerThread({
           driver: targetAdapter.driver,
@@ -3467,9 +3372,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         commandType: command.type,
         cause: `Thread ${command.threadId} is already archived.`,
       });
-    }
-    if (command.type === "thread.settle" || command.type === "thread.archive") {
-      yield* refuseIfThreadBlocked(command);
     }
     if (command.type === "thread.unarchive" && thread.archivedAt === null) {
       return yield* new OrchestratorDispatchError({
@@ -5375,16 +5277,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const existingTargetProviderThread = rootProviderThreadsForProvider(
         input.projection,
         input.modelSelection.instanceId,
-        yield* engineBindingTemplate(input.modelSelection.instanceId).pipe(
-          Effect.mapError(
-            (cause) =>
-              new OrchestratorProviderAdapterError({
-                commandId: input.command.commandId,
-                providerInstanceId: input.modelSelection.instanceId,
-                cause,
-              }),
-          ),
-        ),
       ).find((candidate) => candidate.id !== providerThread.id);
       const targetProviderSessionId =
         existingTargetProviderThread?.providerSessionId ??
@@ -6271,13 +6163,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         ? undefined
         : modelSelection.instanceId === queueProviderThread.providerInstanceId
           ? queueProviderThread
-          : rootProviderThreadsForProvider(
-              projection,
-              modelSelection.instanceId,
-              yield* engineBindingTemplate(modelSelection.instanceId).pipe(
-                mapDispatchError(command),
-              ),
-            )[0];
+          : rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0];
       const queuedAdapter = yield* providerAdapters
         .get(modelSelection.instanceId)
         .pipe(mapDispatchError(command));
@@ -7088,20 +6974,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     const targetProviderThread =
       isProviderSwitch && !canResumeAcrossInstances
-        ? rootProviderThreadsForProvider(
-            projection,
-            modelSelection.instanceId,
-            yield* engineBindingTemplate(modelSelection.instanceId).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new OrchestratorProviderAdapterError({
-                    commandId: command.commandId,
-                    providerInstanceId: modelSelection.instanceId,
-                    cause,
-                  }),
-              ),
-            ),
-          )[0]
+        ? rootProviderThreadsForProvider(projection, modelSelection.instanceId)[0]
         : activeProviderThread;
     const providerSessionId =
       (canResumeAcrossInstances ? undefined : targetProviderThread?.providerSessionId) ??
@@ -13533,7 +13406,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       }
       case "thread.delete": {
-        yield* refuseIfThreadBlocked(command);
         const now = yield* DateTime.now;
         const planDeletion = Effect.fn("Orchestrator.planDeletion")(function* (
           deletion: typeof command,
@@ -13580,14 +13452,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         // The dispatch wrapper holds each side chat's lock, so none can commit after this plan.
         const plans = [
           yield* planDeletion(command),
-          ...(yield* Effect.forEach(sideChatIds, (threadId) => {
-            const deletion = {
+          ...(yield* Effect.forEach(sideChatIds, (threadId) =>
+            planDeletion({
               ...command,
               commandId: CommandId.make(`${command.commandId}:side-chat:${threadId}`),
               threadId,
-            };
-            return refuseIfThreadBlocked(deletion).pipe(Effect.andThen(planDeletion(deletion)));
-          })),
+            }),
+          )),
         ];
         return {
           events: plans.flatMap((plan) => plan.events),

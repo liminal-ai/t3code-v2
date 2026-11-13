@@ -21,7 +21,6 @@ import type {
   ProjectId,
   PullRequestState,
   ResolvedKeybindingsConfig,
-  ScopedThreadRef,
   ThreadId,
 } from "@t3tools/contracts";
 import { getTerminalLabel } from "@t3tools/shared/terminalLabels";
@@ -44,7 +43,6 @@ import {
   FileDiff,
   Files,
   Globe2,
-  ListChecks,
   MessagesSquare,
   Plus,
   TerminalSquare,
@@ -89,7 +87,6 @@ import { PanelTabCloseButton } from "~/components/ui/panel-tab-close-button";
 import { faviconUrlForOrigin } from "@t3tools/shared/favicon";
 import { useTheme } from "~/hooks/useTheme";
 import { useDeviceState } from "~/state/device";
-import { ThreadWorkflowTabCount } from "~/threadWorkflow/ThreadWorkflowTabCount";
 import type { PreviewPanelInlineSize } from "~/hooks/usePreviewPanelInlineSize";
 import {
   newestPullRequestSummary,
@@ -120,8 +117,6 @@ export interface RightPanelTabsProps {
   layoutControls?: ReactNode;
   surfaces: readonly RightPanelSurface[];
   environmentId: EnvironmentId | null;
-  /** The thread beside the panel; absent on the pull requests page, which has no Workflow tab. */
-  threadRef?: ScopedThreadRef | null;
   activeSurfaceId: string | null;
   pendingSurfaceIds: ReadonlySet<string>;
   previewSessions: Readonly<Record<string, PreviewSessionSnapshot>>;
@@ -146,7 +141,6 @@ export interface RightPanelTabsProps {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
-  onAddWorkflow: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
   browserAvailable: boolean;
@@ -156,7 +150,6 @@ export interface RightPanelTabsProps {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   deviceAvailable: boolean;
-  workflowAvailable: boolean;
   sideChatAvailable?: boolean;
   /** Overrides the default reason while side chats are available but cannot start. */
   sideChatDisabledReason?: string | null;
@@ -187,7 +180,6 @@ const SURFACE_DISABLED_REASONS = {
   pullRequests: "No linked pull requests are available for this thread.",
   device: "Devices are only available from a thread.",
   sideChat: "Side chats start after the first message.",
-  workflow: "Thread workflows are turned off on this environment's server.",
 } as const;
 
 // Closed keepMounted popups must stop blocking shortcuts once their exit transition ends.
@@ -213,7 +205,6 @@ const SURFACE_UNAVAILABLE_HINTS = {
   pullRequests: "No linked pull requests available.",
   device: "Available from a thread.",
   sideChat: "Available after the first message.",
-  workflow: "Turned off on this server.",
 } as const;
 
 type TabContextMenuAction =
@@ -331,7 +322,6 @@ function RightPanelEmptyState(props: {
   onAddPullRequest: () => void;
   onAddPullRequests: () => void;
   onAddDevice: () => void;
-  onAddWorkflow: () => void;
   /** Absent where side chats are not offered. */
   onAddSideChat?: (() => void) | undefined;
   browserAvailable: boolean;
@@ -341,7 +331,6 @@ function RightPanelEmptyState(props: {
   pullRequestAvailable: boolean;
   pullRequestsAvailable: boolean;
   deviceAvailable: boolean;
-  workflowAvailable: boolean;
   sideChatAvailable: boolean;
   sideChatDisabledReason: string | null;
 }) {
@@ -404,14 +393,6 @@ function RightPanelEmptyState(props: {
       available: props.deviceAvailable,
       disabledReason: SURFACE_UNAVAILABLE_HINTS.device,
       onClick: props.onAddDevice,
-    },
-    {
-      label: "Workflow",
-      icon: ListChecks,
-      shortcut: "W",
-      available: props.workflowAvailable,
-      disabledReason: SURFACE_UNAVAILABLE_HINTS.workflow,
-      onClick: props.onAddWorkflow,
     },
     ...(props.onAddSideChat
       ? [
@@ -609,8 +590,6 @@ function surfaceTitle(
       return `#${surface.number}`;
     case "pull-requests":
       return "Pull requests";
-    case "workflow":
-      return "Workflow";
     case "device":
       return surface.title ?? surface.target?.name ?? "Device";
     case "side-chat":
@@ -703,8 +682,6 @@ function SurfaceIcon({
       );
     case "pull-requests":
       return <PullRequestGlyph.link className="size-3 shrink-0" />;
-    case "workflow":
-      return <ListChecks className="size-3 shrink-0" />;
     case "side-chat":
       return <SideChatTabIcon environmentId={environmentId} threadId={surface.threadId} />;
     case "device":
@@ -903,7 +880,6 @@ function RightPanelTab(
     theme: "light" | "dark";
     environmentId: EnvironmentId | null;
     pullRequestStatusSeed: PullRequestTabStatusSeed | undefined;
-    threadRef: ScopedThreadRef | null;
     renaming: boolean;
     canRename: boolean;
     ownsDesktopTitleBar: boolean;
@@ -1004,9 +980,6 @@ function RightPanelTab(
                 onClick={() => onActivate(surface)}
               >
                 <span className="truncate">{title}</span>
-                {surface.kind === "workflow" ? (
-                  <ThreadWorkflowTabCount threadRef={props.threadRef} />
-                ) : null}
               </button>
             }
           />
@@ -1173,14 +1146,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
       available: props.deviceAvailable,
       disabledReason: SURFACE_DISABLED_REASONS.device,
       onClick: props.onAddDevice,
-    },
-    {
-      label: "Workflow",
-      icon: ListChecks,
-      shortcut: "W",
-      available: props.workflowAvailable,
-      disabledReason: SURFACE_DISABLED_REASONS.workflow,
-      onClick: props.onAddWorkflow,
     },
     ...(props.onAddSideChat
       ? [
@@ -1412,7 +1377,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
                     theme={resolvedTheme}
                     environmentId={props.environmentId}
                     pullRequestStatusSeed={props.pullRequestStatusSeeds?.[surface.id]}
-                    threadRef={surface.kind === "workflow" ? (props.threadRef ?? null) : null}
                     renaming={renamingDevice === surface.id}
                     canRename={props.onRenameDevice !== undefined}
                     ownsDesktopTitleBar={ownsDesktopTitleBar}
@@ -1569,7 +1533,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             onAddPullRequest={props.onAddPullRequest}
             onAddPullRequests={props.onAddPullRequests}
             onAddDevice={props.onAddDevice}
-            onAddWorkflow={props.onAddWorkflow}
             onAddSideChat={props.onAddSideChat}
             browserAvailable={props.browserAvailable}
             terminalAvailable={props.terminalAvailable}
@@ -1578,7 +1541,6 @@ export function RightPanelTabs(props: RightPanelTabsProps) {
             pullRequestAvailable={props.pullRequestAvailable}
             pullRequestsAvailable={props.pullRequestsAvailable}
             deviceAvailable={props.deviceAvailable}
-            workflowAvailable={props.workflowAvailable}
             sideChatAvailable={props.sideChatAvailable === true}
             sideChatDisabledReason={props.sideChatDisabledReason ?? null}
           />

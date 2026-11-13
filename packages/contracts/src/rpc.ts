@@ -310,17 +310,6 @@ import {
   DeviceShutdownInput,
 } from "./device.ts";
 import {
-  ThreadWorkflowApplyInput,
-  ThreadWorkflowApplyResult,
-  ThreadWorkflowAttention,
-  ThreadWorkflowError,
-  ThreadWorkflowGetInput,
-  ThreadWorkflowInstance,
-  ThreadWorkflowSubscribeInput,
-  ThreadWorkflowSubscriptionState,
-  ThreadWorkflowTemplateSummary,
-} from "./threadWorkflow.ts";
-import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
   OtlpEndpointCheckInput,
@@ -623,12 +612,6 @@ export const WS_METHODS = {
   subscribeServerConfig: "subscribeServerConfig",
   subscribeServerLifecycle: "subscribeServerLifecycle",
   subscribeAuthAccess: "subscribeAuthAccess",
-
-  threadWorkflowSubscribe: "threadWorkflow.subscribe",
-  threadWorkflowGet: "threadWorkflow.get",
-  threadWorkflowApply: "threadWorkflow.apply",
-  threadWorkflowTemplates: "threadWorkflow.templates",
-  threadWorkflowAttention: "threadWorkflow.attention",
   subscribeResourceTelemetry: "subscribeResourceTelemetry",
 } as const;
 
@@ -2011,34 +1994,6 @@ const WsSubscribeResourceTelemetryRpc = Rpc.make(WS_METHODS.subscribeResourceTel
   stream: true,
 });
 
-const WsThreadWorkflowSubscribeRpc = Rpc.make(WS_METHODS.threadWorkflowSubscribe, {
-  payload: ThreadWorkflowSubscribeInput,
-  success: ThreadWorkflowSubscriptionState,
-  error: EnvironmentAuthorizationError,
-  stream: true,
-});
-const WsThreadWorkflowGetRpc = Rpc.make(WS_METHODS.threadWorkflowGet, {
-  payload: ThreadWorkflowGetInput,
-  success: ThreadWorkflowInstance,
-  error: Schema.Union([ThreadWorkflowError, EnvironmentAuthorizationError]),
-});
-const WsThreadWorkflowApplyRpc = Rpc.make(WS_METHODS.threadWorkflowApply, {
-  payload: ThreadWorkflowApplyInput,
-  success: ThreadWorkflowApplyResult,
-  error: Schema.Union([ThreadWorkflowError, EnvironmentAuthorizationError]),
-});
-const WsThreadWorkflowTemplatesRpc = Rpc.make(WS_METHODS.threadWorkflowTemplates, {
-  payload: Schema.Struct({}),
-  success: Schema.Array(ThreadWorkflowTemplateSummary),
-  error: EnvironmentAuthorizationError,
-});
-const WsThreadWorkflowAttentionRpc = Rpc.make(WS_METHODS.threadWorkflowAttention, {
-  payload: Schema.Struct({}),
-  success: ThreadWorkflowAttention,
-  error: EnvironmentAuthorizationError,
-  stream: true,
-});
-
 export class RpcScopeAuthorization extends RpcMiddleware.Service<RpcScopeAuthorization>()(
   "t3/contracts/RpcScopeAuthorization",
   { error: EnvironmentAuthorizationError },
@@ -2235,11 +2190,6 @@ export const WsRpcGroup = RpcGroup.make(
   WsSubscribeServerLifecycleRpc,
   WsSubscribeAuthAccessRpc,
   WsSubscribeResourceTelemetryRpc,
-  WsThreadWorkflowSubscribeRpc,
-  WsThreadWorkflowGetRpc,
-  WsThreadWorkflowApplyRpc,
-  WsThreadWorkflowTemplatesRpc,
-  WsThreadWorkflowAttentionRpc,
   WsOrchestrationV2DispatchCommandRpc,
   WsOrchestrationV2GetWorkflowScriptRpc,
   WsOrchestrationV2GetNativeChildWorkRpc,

@@ -27,55 +27,6 @@ const layerDatabase = Layer.mergeAll(
   ProjectionStore.layer.pipe(Layer.provide(SqlitePersistence.layerMemory)),
 );
 
-const instanceId = ProviderInstanceId.make("codex");
-
-const appThread = (threadId: ThreadId, now: DateTime.Utc): OrchestrationV2AppThread => ({
-  id: threadId,
-  projectId: ProjectId.make("project:completion-reads"),
-  title: "Completion controls",
-  providerInstanceId: instanceId,
-  modelSelection: { instanceId, model: "test" },
-  runtimeMode: "full-access",
-  interactionMode: "default",
-  branch: null,
-  worktreePath: null,
-  activeProviderThreadId: null,
-  lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
-  forkedFrom: null,
-  createdBy: "user",
-  creationSource: "web",
-  createdAt: now,
-  updatedAt: now,
-  archivedAt: null,
-  settledOverride: null,
-  settledAt: null,
-  lastVisitedAt: null,
-  deletedAt: null,
-});
-
-const appRun = (
-  runId: RunId,
-  threadId: ThreadId,
-  messageId: MessageId,
-  now: DateTime.Utc,
-): OrchestrationV2Run => ({
-  id: runId,
-  threadId,
-  ordinal: 2,
-  providerInstanceId: instanceId,
-  modelSelection: { instanceId, model: "test" },
-  providerThreadId: null,
-  userMessageId: messageId,
-  rootNodeId: NodeId.make("startup:root"),
-  activeAttemptId: null,
-  status: "queued",
-  requestedAt: now,
-  startedAt: null,
-  completedAt: null,
-  checkpointId: null,
-  contextHandoffId: null,
-});
-
 it.effect.each(["sqlite"] as const)(
   "loads startup state without obsolete transcript payloads in %s",
   (storage) =>
@@ -85,8 +36,47 @@ it.effect.each(["sqlite"] as const)(
       const threadId = ThreadId.make("thread:completion-reads");
       const runId = RunId.make("run:completion-reads");
       const messageId = MessageId.make("message:completion-reads");
-      const thread = appThread(threadId, now);
-      const run = appRun(runId, threadId, messageId, now);
+      const instanceId = ProviderInstanceId.make("codex");
+      const thread: OrchestrationV2AppThread = {
+        id: threadId,
+        projectId: ProjectId.make("project:completion-reads"),
+        title: "Completion controls",
+        providerInstanceId: instanceId,
+        modelSelection: { instanceId, model: "test" },
+        runtimeMode: "full-access",
+        interactionMode: "default",
+        branch: null,
+        worktreePath: null,
+        activeProviderThreadId: null,
+        lineage: { parentThreadId: null, relationshipToParent: null, rootThreadId: threadId },
+        forkedFrom: null,
+        createdBy: "user",
+        creationSource: "web",
+        createdAt: now,
+        updatedAt: now,
+        archivedAt: null,
+        settledOverride: null,
+        settledAt: null,
+        lastVisitedAt: null,
+        deletedAt: null,
+      };
+      const run: OrchestrationV2Run = {
+        id: runId,
+        threadId,
+        ordinal: 2,
+        providerInstanceId: instanceId,
+        modelSelection: thread.modelSelection,
+        providerThreadId: null,
+        userMessageId: messageId,
+        rootNodeId: NodeId.make("startup:root"),
+        activeAttemptId: null,
+        status: "queued",
+        requestedAt: now,
+        startedAt: null,
+        completedAt: null,
+        checkpointId: null,
+        contextHandoffId: null,
+      };
       const putThread = (value: OrchestrationV2AppThread) =>
         store.apply({
           id: EventId.make(`event:thread:${value.id}`),
@@ -442,74 +432,6 @@ it.effect.each(["sqlite"] as const)(
         recordingId,
       ]);
     }).pipe(Effect.provide(layerDatabase)),
-);
-
-it.effect("counts the thread's compactions for a run whose own items hold none in sqlite", () =>
-  Effect.gen(function* () {
-    const store = yield* ProjectionStore.ProjectionStoreV2;
-    const now = yield* DateTime.now;
-    const threadId = ThreadId.make("thread:compaction-count");
-    const runId = RunId.make("run:compaction-count");
-    const oldRunId = RunId.make("run:compaction-count:old");
-    const messageId = MessageId.make("message:compaction-count");
-    const thread = appThread(threadId, now);
-    const run = appRun(runId, threadId, messageId, now);
-    yield* store.apply({
-      id: EventId.make(`event:thread:${threadId}`),
-      type: "thread.created",
-      threadId,
-      occurredAt: now,
-      payload: thread,
-    });
-    for (const value of [{ ...run, id: oldRunId, ordinal: 1, status: "completed" as const }, run]) {
-      yield* store.apply({
-        id: EventId.make(`event:run:${value.id}`),
-        type: "run.updated",
-        threadId,
-        runId: value.id,
-        occurredAt: now,
-        payload: value,
-      });
-    }
-    yield* store.apply({
-      id: EventId.make("event:compaction"),
-      type: "turn-item.updated",
-      threadId,
-      runId: oldRunId,
-      occurredAt: now,
-      payload: {
-        id: TurnItemId.make("item:compaction"),
-        threadId,
-        runId: oldRunId,
-        nodeId: null,
-        providerThreadId: null,
-        providerTurnId: null,
-        nativeItemRef: null,
-        parentItemId: null,
-        ordinal: 1,
-        status: "completed",
-        title: null,
-        startedAt: now,
-        completedAt: now,
-        updatedAt: now,
-        type: "compaction",
-        driver: null,
-      },
-    });
-    const context = yield* store.getTurnStartContext(threadId, runId);
-    assert.equal(context.compactionCount, 1);
-    assert.deepEqual(context.turnItems, []);
-    assert.equal((yield* store.getTurnStartContext(threadId, oldRunId)).compactionCount, 1);
-    const other = ThreadId.make("thread:compaction-count:other");
-    yield* store.apply({
-      id: EventId.make(`event:thread:${other}`),
-      type: "thread.created",
-      threadId: other,
-      occurredAt: now,
-      payload: appThread(other, now),
-    });
-    assert.equal((yield* store.getTurnStartContext(other, runId)).compactionCount, 0);
-  }).pipe(Effect.provide(layerDatabase)),
 );
 
 it.effect(

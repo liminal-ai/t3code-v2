@@ -7,7 +7,6 @@ import {
   NodeId,
   OrchestrationV2AppThread,
   OrchestrationV2ConversationMessage,
-  OrchestrationV2EngineBinding,
   OrchestrationV2ExecutionNode,
   OrchestrationV2ProviderSession,
   OrchestrationV2PlanArtifact,
@@ -427,22 +426,6 @@ export class ProviderAdapterProtocolError extends Schema.TaggedError<ProviderAda
   }
 }
 
-export class ProviderAdapterContinuationMismatchError extends Schema.TaggedError<ProviderAdapterContinuationMismatchError>()(
-  "ProviderAdapterContinuationMismatchError",
-  {
-    driver: ProviderDriverKind,
-    providerThreadId: ProviderThreadId,
-    providerInstanceId: ProviderInstanceId,
-    rowContinuationKey: Schema.NullOr(Schema.String),
-    instanceContinuationKey: Schema.NullOr(Schema.String),
-  },
-) {
-  override get message(): string {
-    const key = (value: string | null) => value ?? "stock";
-    return `${this.driver} provider thread ${this.providerThreadId} continues as ${key(this.rowContinuationKey)}, but instance ${this.providerInstanceId} continues as ${key(this.instanceContinuationKey)}.`;
-  }
-}
-
 export class ProviderAdapterSessionStoppedError extends Schema.TaggedError<ProviderAdapterSessionStoppedError>()(
   "ProviderAdapterSessionStoppedError",
   { driver: ProviderDriverKind },
@@ -470,7 +453,6 @@ export const ProviderAdapterV2Error = Schema.Union([
   ProviderAdapterRuntimeRequestResponseError,
   ProviderAdapterEventStreamError,
   ProviderAdapterProtocolError,
-  ProviderAdapterContinuationMismatchError,
   ProviderAdapterSessionStoppedError,
 ]);
 export type ProviderAdapterV2Error = typeof ProviderAdapterV2Error.Type;
@@ -493,8 +475,6 @@ export interface ProviderAdapterV2EnsureThreadInput {
   readonly providerSessionId?: ProviderSessionId;
   readonly existingProviderThread?: OrchestrationV2ProviderThread;
   readonly forceNewNativeThread?: boolean;
-  /** The app thread's seed, written into a new row only. An existing row keeps its own. */
-  readonly engineBinding?: OrchestrationV2EngineBinding;
 }
 
 export interface ProviderAdapterV2TurnInput {

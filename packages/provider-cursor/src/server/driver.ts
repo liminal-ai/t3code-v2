@@ -168,7 +168,6 @@ export const CursorDriver: ProviderDriver<
     let catalogModels: ReadonlyArray<ServerProviderModel> = [];
     const orchestrationAdapter = yield* makeCursorAdapterV2({
       instanceId,
-      settings: effectiveConfig,
       environment: processEnv,
       getModels: () => catalogModels,
     }).pipe(
@@ -298,7 +297,7 @@ export const CursorDriver: ProviderDriver<
           ? snapshot.getSnapshot
           : Effect.all([
               snapshot.getSnapshot,
-              probeCursorSkills(cwd, processEnv, effectiveConfig.runtime).pipe(
+              probeCursorSkills(cwd, processEnv).pipe(
                 Effect.provideService(FileSystem.FileSystem, fileSystem),
                 Effect.provideService(Path.Path, path),
                 Effect.mapError(

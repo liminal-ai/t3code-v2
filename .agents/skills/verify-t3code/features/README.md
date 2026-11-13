@@ -42,12 +42,9 @@ Keep implementation details out of the map. Name only user paths, stable handles
 ## Features
 
 - [Start a thread and run a turn](./agent-turn.md) covers the composer, the model picker, and how a run ends.
-- [Workflow tab](./workflow-tab.md) covers starting a template, the agent's note, questions in the tab and above the composer, Done, closing, and the settle refusal.
 - [A delegated task's unanswered prompt](./delegated-requests.md) covers the parent's wake, the decline at 10 minutes with its note, the child finishing, and a top-level thread left alone.
-- [Group chat](./group-chat.md) covers opening it, creating a group, a message and each member's reply, Back, and Escape.
 - [Projects](./projects.md) covers adding a local folder as a project and starting a thread in it.
-- [Settings for verification](./settings.md) covers `threadWorkflowsEnabled` and provider instances.
+- [Settings for verification](./settings.md) covers provider instances.
 - [Pair another browser](./pairing.md) covers a fresh pairing URL, the pairing page, and a second browser.
 - [Link another environment](./linked-environments.md) covers the Labs flag, linking two throwaway servers, the link list, a `delegate_task` on the linked one, and Forget.
-- [Claude with long-horizon context (LHC)](./claude-lhc.md) covers adding an LHC instance, its error status, recall across compaction, restart, idle release, rollback, fork, refusals and handoff.
-- [Import Claude Code and Codex history](./session-import.md) covers the welcome screen's project list, Claude homes an LHC instance shares, the line shown when the LHC store is missing or unreadable, and the refusals an import names.
+- [Import Claude Code and Codex history](./session-import.md) covers the welcome screen's project list and the import of the selected projects.

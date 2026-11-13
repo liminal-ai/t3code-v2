@@ -12,14 +12,11 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as WelcomeRouteImport } from './routes/welcome'
 import { Route as PairRouteImport } from './routes/pair'
 import { Route as GuestRouteImport } from './routes/guest'
-import { Route as GroupChatRouteImport } from './routes/group-chat'
 import { Route as ConnectAgentRouteImport } from './routes/connect-agent'
 import { Route as ConnectRouteImport } from './routes/connect'
 import { Route as ChatRouteImport } from './routes/_chat'
-import { Route as GroupChatIndexRouteImport } from './routes/group-chat.index'
 import { Route as ChatIndexRouteImport } from './routes/_chat.index'
 import { Route as ProjectsProjectKeyRouteImport } from './routes/projects.$projectKey'
-import { Route as GroupChatGroupIdRouteImport } from './routes/group-chat.$groupId'
 import { Route as ChatUsageRouteImport } from './routes/_chat.usage'
 import { Route as ChatSettingsRouteImport } from './routes/_chat.settings'
 import { Route as ChatPullRequestsRouteImport } from './routes/_chat.pull-requests'
@@ -70,11 +67,6 @@ const GuestRoute = GuestRouteImport.update({
   path: '/guest',
   getParentRoute: () => rootRouteImport,
 } as any)
-const GroupChatRoute = GroupChatRouteImport.update({
-  id: '/group-chat',
-  path: '/group-chat',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ConnectAgentRoute = ConnectAgentRouteImport.update({
   id: '/connect-agent',
   path: '/connect-agent',
@@ -89,11 +81,6 @@ const ChatRoute = ChatRouteImport.update({
   id: '/_chat',
   getParentRoute: () => rootRouteImport,
 } as any)
-const GroupChatIndexRoute = GroupChatIndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => GroupChatRoute,
-} as any)
 const ChatIndexRoute = ChatIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -103,11 +90,6 @@ const ProjectsProjectKeyRoute = ProjectsProjectKeyRouteImport.update({
   id: '/projects/$projectKey',
   path: '/projects/$projectKey',
   getParentRoute: () => rootRouteImport,
-} as any)
-const GroupChatGroupIdRoute = GroupChatGroupIdRouteImport.update({
-  id: '/$groupId',
-  path: '/$groupId',
-  getParentRoute: () => GroupChatRoute,
 } as any)
 const ChatUsageRoute = ChatUsageRouteImport.update({
   id: '/usage',
@@ -290,7 +272,6 @@ export interface FileRoutesByFullPath {
   '/': typeof ChatIndexRoute
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
-  '/group-chat': typeof GroupChatRouteWithChildren
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
@@ -298,9 +279,7 @@ export interface FileRoutesByFullPath {
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/usage': typeof ChatUsageRoute
-  '/group-chat/$groupId': typeof GroupChatGroupIdRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
-  '/group-chat/': typeof GroupChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/settings/about': typeof ChatSettingsAboutRoute
@@ -342,10 +321,8 @@ export interface FileRoutesByTo {
   '/pull-requests': typeof ChatPullRequestsRoute
   '/settings': typeof ChatSettingsRouteWithChildren
   '/usage': typeof ChatUsageRoute
-  '/group-chat/$groupId': typeof GroupChatGroupIdRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/': typeof ChatIndexRoute
-  '/group-chat': typeof GroupChatIndexRoute
   '/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/settings/about': typeof ChatSettingsAboutRoute
@@ -382,7 +359,6 @@ export interface FileRoutesById {
   '/_chat': typeof ChatRouteWithChildren
   '/connect': typeof ConnectRoute
   '/connect-agent': typeof ConnectAgentRoute
-  '/group-chat': typeof GroupChatRouteWithChildren
   '/guest': typeof GuestRoute
   '/pair': typeof PairRoute
   '/welcome': typeof WelcomeRoute
@@ -390,10 +366,8 @@ export interface FileRoutesById {
   '/_chat/pull-requests': typeof ChatPullRequestsRoute
   '/_chat/settings': typeof ChatSettingsRouteWithChildren
   '/_chat/usage': typeof ChatUsageRoute
-  '/group-chat/$groupId': typeof GroupChatGroupIdRoute
   '/projects/$projectKey': typeof ProjectsProjectKeyRoute
   '/_chat/': typeof ChatIndexRoute
-  '/group-chat/': typeof GroupChatIndexRoute
   '/_chat/$environmentId/$threadId': typeof ChatEnvironmentIdThreadIdRoute
   '/_chat/draft/$draftId': typeof ChatDraftDraftIdRoute
   '/_chat/settings/about': typeof ChatSettingsAboutRoute
@@ -431,7 +405,6 @@ export interface FileRouteTypes {
     | '/'
     | '/connect'
     | '/connect-agent'
-    | '/group-chat'
     | '/guest'
     | '/pair'
     | '/welcome'
@@ -439,9 +412,7 @@ export interface FileRouteTypes {
     | '/pull-requests'
     | '/settings'
     | '/usage'
-    | '/group-chat/$groupId'
     | '/projects/$projectKey'
-    | '/group-chat/'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/settings/about'
@@ -483,10 +454,8 @@ export interface FileRouteTypes {
     | '/pull-requests'
     | '/settings'
     | '/usage'
-    | '/group-chat/$groupId'
     | '/projects/$projectKey'
     | '/'
-    | '/group-chat'
     | '/$environmentId/$threadId'
     | '/draft/$draftId'
     | '/settings/about'
@@ -522,7 +491,6 @@ export interface FileRouteTypes {
     | '/_chat'
     | '/connect'
     | '/connect-agent'
-    | '/group-chat'
     | '/guest'
     | '/pair'
     | '/welcome'
@@ -530,10 +498,8 @@ export interface FileRouteTypes {
     | '/_chat/pull-requests'
     | '/_chat/settings'
     | '/_chat/usage'
-    | '/group-chat/$groupId'
     | '/projects/$projectKey'
     | '/_chat/'
-    | '/group-chat/'
     | '/_chat/$environmentId/$threadId'
     | '/_chat/draft/$draftId'
     | '/_chat/settings/about'
@@ -570,7 +536,6 @@ export interface RootRouteChildren {
   ChatRoute: typeof ChatRouteWithChildren
   ConnectRoute: typeof ConnectRoute
   ConnectAgentRoute: typeof ConnectAgentRoute
-  GroupChatRoute: typeof GroupChatRouteWithChildren
   GuestRoute: typeof GuestRoute
   PairRoute: typeof PairRoute
   WelcomeRoute: typeof WelcomeRoute
@@ -601,13 +566,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof GuestRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/group-chat': {
-      id: '/group-chat'
-      path: '/group-chat'
-      fullPath: '/group-chat'
-      preLoaderRoute: typeof GroupChatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/connect-agent': {
       id: '/connect-agent'
       path: '/connect-agent'
@@ -629,13 +587,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/group-chat/': {
-      id: '/group-chat/'
-      path: '/'
-      fullPath: '/group-chat/'
-      preLoaderRoute: typeof GroupChatIndexRouteImport
-      parentRoute: typeof GroupChatRoute
-    }
     '/_chat/': {
       id: '/_chat/'
       path: '/'
@@ -649,13 +600,6 @@ declare module '@tanstack/react-router' {
       fullPath: '/projects/$projectKey'
       preLoaderRoute: typeof ProjectsProjectKeyRouteImport
       parentRoute: typeof rootRouteImport
-    }
-    '/group-chat/$groupId': {
-      id: '/group-chat/$groupId'
-      path: '/$groupId'
-      fullPath: '/group-chat/$groupId'
-      preLoaderRoute: typeof GroupChatGroupIdRouteImport
-      parentRoute: typeof GroupChatRoute
     }
     '/_chat/usage': {
       id: '/_chat/usage'
@@ -984,25 +928,10 @@ const ChatRouteChildren: ChatRouteChildren = {
 
 const ChatRouteWithChildren = ChatRoute._addFileChildren(ChatRouteChildren)
 
-interface GroupChatRouteChildren {
-  GroupChatGroupIdRoute: typeof GroupChatGroupIdRoute
-  GroupChatIndexRoute: typeof GroupChatIndexRoute
-}
-
-const GroupChatRouteChildren: GroupChatRouteChildren = {
-  GroupChatGroupIdRoute: GroupChatGroupIdRoute,
-  GroupChatIndexRoute: GroupChatIndexRoute,
-}
-
-const GroupChatRouteWithChildren = GroupChatRoute._addFileChildren(
-  GroupChatRouteChildren,
-)
-
 const rootRouteChildren: RootRouteChildren = {
   ChatRoute: ChatRouteWithChildren,
   ConnectRoute: ConnectRoute,
   ConnectAgentRoute: ConnectAgentRoute,
-  GroupChatRoute: GroupChatRouteWithChildren,
   GuestRoute: GuestRoute,
   PairRoute: PairRoute,
   WelcomeRoute: WelcomeRoute,

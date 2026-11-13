@@ -43,7 +43,6 @@ import {
 import { loadRepoEnv } from "./lib/public-config.ts";
 import { selectDesktopRuntimeExternalDependencies } from "./lib/desktop-external-packages.ts";
 import { resolveCatalogDependencies } from "./lib/resolve-catalog.ts";
-import { stageClaudeLhcRuntime } from "./lib/stage-claude-lhc.ts";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -64,7 +63,6 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
-const LIM_DESKTOP_APP_ID = "ai.liminal.t3code.lim";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -1002,8 +1000,6 @@ export const DESKTOP_FILE_EXCLUSIONS = [
   "!apps/desktop/prod-resources/windows-server/**/*",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz",
   "!apps/desktop/prod-resources/wsl-runtime.tar.gz.sha256",
-  "!apps/desktop/prod-resources/lhc-runtime",
-  "!apps/desktop/prod-resources/lhc-runtime/**/*",
   "!apps/desktop/gnome-extension",
   "!apps/desktop/gnome-extension/**/*",
 ] as const;
@@ -1122,12 +1118,6 @@ export const LINUX_CAPTURE_EXTRA_RESOURCES = [
 export const LINUX_BROWSER_SECRET_EXTRA_RESOURCES = [
   { from: "apps/desktop/prod-resources/browser-secret", to: "browser-secret" },
 ] as const;
-/** electron-builder drops a `node_modules` at the root of an extraResources source, so each top-level entry is its own source. */
-const claudeLhcRuntimeExtraResources = (entries: ReadonlyArray<string>) =>
-  entries.map((entry) => ({
-    from: `apps/desktop/prod-resources/lhc-runtime/${entry}`,
-    to: `lhc-runtime/${entry}`,
-  }));
 
 export interface MacPasskeySigningConfiguration {
   readonly appId: string;
@@ -2732,19 +2722,6 @@ export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
-// liminal-ai/t3code-v2 builds carry `-lim.<sha>` and install beside upstream's app.
-export function isDesktopLimVersion(version: string): boolean {
-  return /-lim\./.test(version);
-}
-
-export function resolveDesktopAppId(version: string): string {
-  return isDesktopLimVersion(version) ? LIM_DESKTOP_APP_ID : DESKTOP_APP_ID;
-}
-
-export function resolveDesktopDmgBackgroundChannel(version: string): "latest" | "nightly" {
-  return isDesktopLimVersion(version) ? "nightly" : resolveDesktopUpdateChannel(version);
-}
-
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
 }
@@ -2781,7 +2758,6 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
-  if (isDesktopLimVersion(version)) return "T3 Code Lim";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2802,11 +2778,10 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     | undefined,
   wslRuntimeBundled = false,
   arch?: typeof BuildArch.Type,
-  lhcRuntimeEntries: ReadonlyArray<string> = [],
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
-    appId: resolveDesktopAppId(version),
+    appId: DESKTOP_APP_ID,
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2831,13 +2806,12 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
       ...(platform === "linux" ? LINUX_BROWSER_SECRET_EXTRA_RESOURCES : []),
       ...(platform === "win" ? WINDOWS_SERVER_EXTRA_RESOURCES : []),
       ...(platform === "win" && wslRuntimeBundled ? WSL_RUNTIME_EXTRA_RESOURCES : []),
-      ...claudeLhcRuntimeExtraResources(lhcRuntimeEntries),
     ],
   };
   const updateChannel = resolveDesktopUpdateChannel(version);
   // Missing publish config infers a GitHub feed from tokens; staging has no repository, so manifest generation would crash.
   buildConfig.publish = null;
-  if (!isDesktopPreviewVersion(version) && !isDesktopLimVersion(version)) {
+  if (!isDesktopPreviewVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
@@ -2905,7 +2879,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
     buildConfig.dmg = {
       // Finder caches DMG backgrounds by volume name; give each installer its own.
       title: `${resolveDesktopProductName(version)} ${version} Installer`,
-      background: `dmg/dmg-background-${resolveDesktopDmgBackgroundChannel(version)}.png`,
+      background: `dmg/dmg-background-${updateChannel}.png`,
       window: {
         width: 640,
         // DMG bounds include Finder's 32px title bar; keep that artwork strip clear.
@@ -3784,7 +3758,7 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   if (options.platform === "mac" && options.target === "dmg") {
     yield* stageDesktopDmgBackground(
       stageResourcesDir,
-      resolveDesktopDmgBackgroundChannel(appVersion),
+      resolveDesktopUpdateChannel(appVersion),
       options.verbose,
     );
   }
@@ -3830,15 +3804,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   // electron-builder is filtering out stageResourcesDir directory in the AppImage for production
   const stageProdResourcesDir = path.join(stageAppDir, "apps/desktop/prod-resources");
   yield* fs.copy(stageResourcesDir, stageProdResourcesDir);
-  yield* stageClaudeLhcRuntime({
-    vendorDir: path.join(repoRoot, "vendor/claude-lhc"),
-    releaseDir: stageProdResourcesDir,
-    target: `${options.platform === "mac" ? "darwin" : options.platform === "win" ? "win32" : "linux"}-${options.arch}`,
-  });
-  const lhcRuntimeDir = path.join(stageProdResourcesDir, "lhc-runtime");
-  const lhcRuntimeEntries = (yield* fs.exists(lhcRuntimeDir))
-    ? yield* fs.readDirectory(lhcRuntimeDir)
-    : [];
 
   const configuredMacPasskeySigning =
     options.platform === "mac" && options.signed
@@ -3850,7 +3815,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
   const macPasskeySigning = configuredMacPasskeySigning
     ? {
         ...configuredMacPasskeySigning,
-        appId: resolveDesktopAppId(appVersion),
         provisioningProfilePath: path.resolve(
           repoRoot,
           configuredMacPasskeySigning.provisioningProfilePath,
@@ -3928,7 +3892,6 @@ const buildDesktopArtifactUnlocked = Effect.fn("buildDesktopArtifactUnlocked")(f
         : undefined,
       bundlesWslRuntime({ platform: options.platform, runtimeArchivePath: options.wslRuntime }),
       options.arch,
-      lhcRuntimeEntries,
     ),
     dependencies: stageDependencies,
     devDependencies: {

@@ -186,8 +186,6 @@ overrides:
   # stays pinned on its own.
   "@opencode/protocol>effect": "catalog:"
   "@opencode/schema>effect": "catalog:"
-  # The vendored claude-lhc 0.2.0 and its bundled lhc run on Effect 3.
-  "claude-lhc>effect": ^3.21.2
   node-abi: 4.33.0
   # react-native-worklets peers on any version, so a fresh resolve takes the newest
   # one; React Native's CLI plugin wants exactly its own. Move with react-native.

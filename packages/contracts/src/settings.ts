@@ -746,23 +746,6 @@ const InstanceIdleCompaction = Schema.Literals(
   INSTANCE_IDLE_COMPACTION_MODES.map((mode) => mode.value),
 );
 
-const CLAUDE_CONTEXT_ENGINES = [
-  { value: "claude", label: "Claude Code" },
-  { value: "claude-lhc", label: "Long-horizon context (LHC)" },
-] as const;
-const ClaudeContextEngine = Schema.Literals(CLAUDE_CONTEXT_ENGINES.map((engine) => engine.value));
-type ClaudeContextEngine = typeof ClaudeContextEngine.Type;
-
-const ClaudeContextEngineOmittedWhenStock = Schema.optionalKey(ClaudeContextEngine).pipe(
-  Schema.decodeTo(
-    Schema.toType(ClaudeContextEngine),
-    SchemaTransformation.transformOptional<ClaudeContextEngine, ClaudeContextEngine>({
-      decode: (stored) => Option.some(Option.getOrElse(stored, () => "claude" as const)),
-      encode: (engine) => Option.filter(engine, (value) => value !== "claude"),
-    }),
-  ),
-);
-
 export const ClaudeSettings = makeProviderSettingsSchema(
   {
     enabled: Schema.Boolean.pipe(
@@ -827,45 +810,9 @@ export const ClaudeSettings = makeProviderSettingsSchema(
         },
       }),
     ),
-    contextEngine: ClaudeContextEngineOmittedWhenStock.pipe(
-      Schema.annotateKey({
-        title: "Context",
-        description:
-          "How threads on this instance keep their context. LHC records every message, compacts at the trigger below, and starts each compacted thread from its own record.",
-        providerSettingsForm: {
-          control: "select",
-          options: CLAUDE_CONTEXT_ENGINES,
-          clearWhenEmpty: "omit",
-        },
-      }),
-    ),
-    lhcCompactTrigger: Schema.optionalKey(TrimmedString).pipe(
-      Schema.annotateKey({
-        title: "LHC compact trigger",
-        description:
-          "Tokens at which LHC compacts a thread. Required for LHC. A new thread keeps the value it starts with.",
-        providerSettingsForm: { placeholder: "e.g. 700000", clearWhenEmpty: "omit" },
-      }),
-    ),
-    lhcCompactTarget: Schema.optionalKey(TrimmedString).pipe(
-      Schema.annotateKey({
-        title: "LHC compact target",
-        description: "Tokens LHC compacts a thread down to. Required for LHC, below the trigger.",
-        providerSettingsForm: { placeholder: "e.g. 140000", clearWhenEmpty: "omit" },
-      }),
-    ),
   },
   {
-    order: [
-      "binaryPath",
-      "homePath",
-      "contextEngine",
-      "lhcCompactTrigger",
-      "lhcCompactTarget",
-      "autoCompactWindow",
-      "idleCompaction",
-      "launchArgs",
-    ],
+    order: ["binaryPath", "homePath", "autoCompactWindow", "idleCompaction", "launchArgs"],
   },
 );
 export type ClaudeSettings = typeof ClaudeSettings.Type;
@@ -1456,15 +1403,6 @@ export const ServerSettings = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(null)),
   ),
   reviewGuideInstructions: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
-  /** The fork's thread workflow module. Off means no new instances; open ones keep working. */
-  threadWorkflowsEnabled: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  /**
-   * The operator's bypass: open workflows stop blocking settle, archive and delete. Read on every
-   * check. `T3CODE_THREAD_WORKFLOW_ENFORCEMENT=off` does the same when settings cannot be edited.
-   */
-  threadWorkflowEnforcementDisabled: Schema.Boolean.pipe(
-    Schema.withDecodingDefault(Effect.succeed(false)),
-  ),
 
   pullRequestMergeMethod: Schema.NullOr(PullRequestMergeMethod).pipe(
     Schema.withDecodingDefault(Effect.succeed(null)),
@@ -1816,8 +1754,6 @@ export const ServerSettingsPatch = Schema.Struct({
   reviewGuidesEnabled: Schema.optionalKey(Schema.Boolean),
   reviewGuideModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   reviewGuideInstructions: Schema.optionalKey(TrimmedString),
-  threadWorkflowsEnabled: Schema.optionalKey(Schema.Boolean),
-  threadWorkflowEnforcementDisabled: Schema.optionalKey(Schema.Boolean),
   pullRequestMergeMethod: Schema.optionalKey(Schema.NullOr(PullRequestMergeMethod)),
   observability: Schema.optionalKey(
     Schema.Struct({

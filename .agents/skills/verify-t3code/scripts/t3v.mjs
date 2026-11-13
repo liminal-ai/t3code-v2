@@ -25,8 +25,6 @@ const USAGE = `t3v.mjs [--run <name>] <command>
   browser press <key>        Enter, Escape, Tab, Control+Enter, ...
   browser wait (--text <text> | --gone <text> | --role <role> (--name <name> | --name-prefix <text>)) [--timeout <ms>]
   browser close
-  outcome workflow [<thread-id>]   read-only: the thread workflow logs
-  outcome note <thread-id>         read-only: each workflow note the provider was sent
   outcome sql <select>             read-only: one query against statev2.sqlite
   down                       stop the browser and dev server this checkout's \`up\` started, by their PIDs
 Options: --run <name> picks <main checkout>/.pstack/runs/<name>/ (default T3V_RUN, else verify-t3code).`;
@@ -476,67 +474,7 @@ async function browser(sub) {
   }
 }
 
-// The workflow store's file name: `[a-z0-9-]` as is and every other byte as `_xx`, so an
-// `mcp:` thread's log is `mcp_3a….jsonl` (`threadLogFileName` in apps/server/src/threadWorkflow/store.ts).
-const workflowLogName = (threadId) =>
-  `${[...new TextEncoder().encode(threadId)]
-    .map((byte) =>
-      /[a-z0-9-]/.test(String.fromCharCode(byte))
-        ? String.fromCharCode(byte)
-        : `_${byte.toString(16).padStart(2, "0")}`,
-    )
-    .join("")}.jsonl`;
-
-// Codex records name the native thread; Claude records name the provider session, which
-// carries the T3 thread id. Every provider logs into the file of whichever thread opened its
-// session first, so read them all.
-const providerLogLinesForThread = (threadId, nativeIds) => {
-  const dir = NodePath.join(stateDir, "logs", "provider");
-  const marks = [
-    `:thread:${threadId}:`,
-    `:thread:${encodeURIComponent(threadId)}:`,
-    ...nativeIds.map((id) => `"threadId":"${id}"`),
-  ];
-  return NodeFS.readdirSync(dir)
-    .flatMap((name) => NodeFS.readFileSync(NodePath.join(dir, name), "utf8").split("\n"))
-    .filter((line) => marks.some((mark) => line.includes(mark)));
-};
-
 function outcome(sub) {
-  if (sub === "workflow") {
-    const dir = NodePath.join(stateDir, "thread-workflows", "threads");
-    if (!NodeFS.existsSync(dir)) return console.log(`no workflow logs under ${dir}`);
-    const wanted = argv[0];
-    for (const name of NodeFS.readdirSync(dir).sort()) {
-      if (wanted && name !== workflowLogName(wanted)) continue;
-      console.log(`# ${NodePath.join(dir, name)}`);
-      process.stdout.write(NodeFS.readFileSync(NodePath.join(dir, name), "utf8"));
-    }
-    return;
-  }
-  if (sub === "note") {
-    if (!argv[0]) fail("outcome note needs a thread id");
-    const db = new NodeSqlite.DatabaseSync(NodePath.join(stateDir, "statev2.sqlite"), {
-      readOnly: true,
-    });
-    const rows = db
-      .prepare(
-        "SELECT payload_json FROM orchestration_v2_projection_provider_threads WHERE thread_id = ?",
-      )
-      .all(argv[0]);
-    db.close();
-    const nativeIds = rows.flatMap(
-      (row) => /"nativeId":"([^"]+)"/.exec(row.payload_json)?.[1] ?? [],
-    );
-    const notes = new Set(
-      providerLogLinesForThread(argv[0], nativeIds).flatMap(
-        (line) => line.match(/<thread-workflow>.*?<\/thread-workflow>/g) ?? [],
-      ),
-    );
-    for (const note of notes) console.log(`${JSON.parse(`"${note}"`)}\n`);
-    if (notes.size === 0) console.log(`no workflow note sent to thread ${argv[0]}`);
-    return;
-  }
   if (sub === "sql") {
     const sql = argv.join(" ");
     if (!/^\s*(select|pragma|with)\b/i.test(sql))
