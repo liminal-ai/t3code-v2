@@ -1,7 +1,6 @@
 import {
   resolveIdleCompaction,
   type ModelSelection,
-  type OrchestrationV2EngineBinding,
   type OrchestrationV2ProviderTurn,
   type OrchestrationV2ProviderTurnTokenUsage,
   type OrchestrationV2ProviderThread,
@@ -216,12 +215,10 @@ export function shouldOfferResumeCompaction(input: {
   readonly usedTokens: number | null | undefined;
   readonly updatedAt: string | null | undefined;
   readonly promptCacheTtlMs?: number | undefined;
-  readonly compaction?: OrchestrationV2EngineBinding["compaction"] | undefined;
   readonly now: string;
 }): boolean {
   if (
     input.provider !== "claudeAgent" ||
-    input.compaction === "provider" ||
     (input.usedTokens ?? 0) < COMPACTION_SUGGESTION_MIN_TOKENS
   ) {
     return false;
@@ -316,7 +313,6 @@ export function shouldCompactBeforeSend(input: {
       usedTokens: contextWindow.usedTokens,
       updatedAt: contextWindow.updatedAt,
       promptCacheTtlMs: liveUsage?.promptCacheTtlMs,
-      compaction: projection.thread.engineBinding?.compaction,
       now: input.now,
     })
   );

@@ -15,7 +15,6 @@ import {
   ProviderDriverKind,
   ThreadId,
   TurnItemId,
-  type AgentSessionHomeDiagnostic,
   type AgentSessionImportInput,
   type AgentSessionImportResult,
   type OrchestrationV2AppThread,
@@ -236,21 +235,11 @@ const make = Effect.gen(function* () {
     const importedThreadIds = new Set<ThreadId>();
     let importedCount = 0;
     let skippedCount = 0;
-    const refused = new Map<string, AgentSessionHomeDiagnostic>();
 
     yield* Stream.runForEach(outcomes, (outcome) =>
       Effect.gen(function* () {
         if (outcome._tag === "Skipped") {
           skippedCount += 1;
-          return;
-        }
-        if (outcome._tag === "Refused") {
-          skippedCount += 1;
-          const key = `${outcome.refusal.claudeHome}\0${outcome.refusal.reason}`;
-          refused.set(key, {
-            ...outcome.refusal,
-            sessionCount: (refused.get(key)?.sessionCount ?? 0) + 1,
-          });
           return;
         }
         const source = outcome.source;
@@ -460,11 +449,7 @@ const make = Effect.gen(function* () {
       }),
     );
 
-    return {
-      importedCount,
-      skippedCount,
-      ...(refused.size > 0 ? { refused: Array.from(refused.values()) } : {}),
-    } satisfies AgentSessionImportResult;
+    return { importedCount, skippedCount } satisfies AgentSessionImportResult;
   });
 
   return { importRecentAgentThreads };

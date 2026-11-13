@@ -1308,7 +1308,6 @@ export default function ChatView(props: ChatViewProps) {
     ],
     lockedProvider,
     lockedInstanceId: activeRuntime?.providerInstanceId ?? activeThreadModelInstanceId,
-    lockedEngineBinding: activeThread?.source.engineBinding ?? null,
   });
   const selectedProvider = selectedProviderEntry?.driverKind ?? requestedDriverKind;
   const activeProviderInstanceId = selectedProviderEntry?.instanceId ?? null;
@@ -2507,7 +2506,6 @@ export default function ChatView(props: ChatViewProps) {
       usedTokens: activeContextWindow.usedTokens,
       updatedAt: activeContextWindow.updatedAt,
       promptCacheTtlMs: activeThreadLiveTokenUsage?.promptCacheTtlMs,
-      compaction: activeThread?.source.engineBinding?.compaction,
       now: `${nowMinute}:00.000Z`,
     })
       ? activeContextWindow.usedTokens
