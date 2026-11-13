@@ -32,7 +32,7 @@ node $T3V <command>
 
 1. Check the worktree is set up. While `.t3/setup-running` names a live PID, wait for it and do not run `vp i`. `.t3/setup-failed` holds the error tail. With no marker and broken module resolution, run `vp i`.
 2. `node $T3V up` runs `vp run dev` in its own process group and waits for the pairing URL and both ports. It prints the `[dev-runner]` line with the real ports and state dir. Ports derive from the worktree path, so they stay stable across restarts, but an occupied port shifts them, so always read that line.
-3. Turn on what the feature needs, such as `node $T3V settings threadWorkflowsEnabled=true` for workflows. It merges keys into `.t3/userdata/settings.json`, and the server picks the change up without a restart.
+3. Set what the feature needs with `node $T3V settings <key>=<value>`. It merges keys into `.t3/userdata/settings.json`, and the server picks the change up without a restart.
 4. `node $T3V browser open` pairs the browser with the one-time startup URL and waits for the `Threads` navigation. Then the instance is usable.
 
 Ready means a thread can start. The first agent turn of a recipe proves it. The proof run took 7 seconds from an empty `.t3` to both ports answering.
@@ -75,7 +75,7 @@ A turn ends when `Working` leaves the page. `browser wait --text` matches your o
 The other surfaces:
 
 - **HTTP.** `curl http://127.0.0.1:<server port>/.well-known/t3/environment` answers without auth, and `/api/auth/session` reports the session. The web origin proxies both.
-- **MCP tools in a thread.** A dev thread's agent gets T3's MCP tools, and the `thread_workflow_*` tools when `threadWorkflowsEnabled` is on. Prove a tool change by asking the agent in a dev thread to call it, then read the outcome below.
+- **MCP tools in a thread.** A dev thread's agent gets T3's MCP tools. Prove a tool change by asking the agent in a dev thread to call it, then read the outcome below.
 
 ### Free turns with Replay (dev)
 
@@ -83,7 +83,7 @@ A dev server run from source registers the `Replay (dev)` provider, instance `de
 
 - It stands in for a turn's UI and pipeline: a thread starting, `Working`, streaming, plan and tool-call rows, an approval card (`approval`, on an approval-required thread as `t3dev.replay` starts it) or a question card (`question`) and its answer, and the run ending. Use it for a change to those surfaces, and to rehearse a recipe before a paid turn.
 - It cannot stand in for a provider. A change to a driver, adapter, sign-in or model list, such as `packages/provider-cursor/`, needs that provider's real turn.
-- It cannot stand in for anything the agent must do. Its tool calls are recorded rows: nothing runs, and it never calls T3's MCP tools. `delegate_task`, the workflow tools, linked environments and delegated requests need a real agent.
+- It cannot stand in for anything the agent must do. Its tool calls are recorded rows: nothing runs, and it never calls T3's MCP tools. `delegate_task`, linked environments and delegated requests need a real agent.
 - Its reply never follows the prompt, so a recipe that grades a `pong` reply needs a real provider.
 - A packaged release has no agent script, so the Release check cannot use it.
 
@@ -91,15 +91,13 @@ A dev server run from source registers the `Replay (dev)` provider, instance `de
 
 Save proof under `proof/` with names in drive order. For a user-visible path, keep a screenshot of each action and of the state it produced, and the thread timeline (`browser text`). Exercise the real user path, never internal setters, direct SQLite writes or test-only endpoints. A screen alone is not proof of a change that stores something, so read the side effect too:
 
-| Outcome                                 | Where it lives                                            | Read it with                               |
-| --------------------------------------- | --------------------------------------------------------- | ------------------------------------------ |
-| Workflow changes, with who made each    | `.t3/userdata/thread-workflows/threads/<thread-id>.jsonl` | `node $T3V outcome workflow [<thread-id>]` |
-| The workflow note the agent was sent    | `.t3/userdata/logs/provider/events.<thread-id>.log`       | `node $T3V outcome note <thread-id>`       |
-| Projects, threads, runs, messages       | `.t3/userdata/statev2.sqlite`, opened read-only           | `node $T3V outcome sql "<select>"`         |
-| A tool the agent called, and its result | `.t3/userdata/logs/provider/events.<thread-id>.log`       | `grep` it for `mcp__t3-code__<tool name>`  |
-| Server behavior and errors              | the dev log in scratch                                    | `grep` it                                  |
+| Outcome                                 | Where it lives                                      | Read it with                              |
+| --------------------------------------- | --------------------------------------------------- | ----------------------------------------- |
+| Projects, threads, runs, messages       | `.t3/userdata/statev2.sqlite`, opened read-only     | `node $T3V outcome sql "<select>"`        |
+| A tool the agent called, and its result | `.t3/userdata/logs/provider/events.<thread-id>.log` | `grep` it for `mcp__t3-code__<tool name>` |
+| Server behavior and errors              | the dev log in scratch                              | `grep` it                                 |
 
-The thread id is the last path segment of the thread's URL. Pass it as is. On disk an `mcp:` id becomes `mcp_3a….jsonl` and `events.mcp-….log`, and `outcome` finds both. Clients read projects from `projection_projects` and everything else from the `orchestration_v2_projection_*` tables. To seed SQLite fixtures, read [the fixtures reference](references/sqlite-fixtures.md), and stop the server before any write.
+The thread id is the last path segment of the thread's URL. Pass it as is. On disk an `mcp:` id becomes `events.mcp-….log`. Clients read projects from `projection_projects` and everything else from the `orchestration_v2_projection_*` tables. To seed SQLite fixtures, read [the fixtures reference](references/sqlite-fixtures.md), and stop the server before any write.
 
 Two kinds of check prove a feature:
 
@@ -112,7 +110,7 @@ Two checkouts run two dev servers side by side, because each derives its ports a
 
 The dev server restarts on any write under `apps/server/src` or `packages/`, and a restart cancels every pending approval and the run that raised it. `vp test` and `vp run check:changed` in the same worktree write a vite temp file under `packages/`, so they restart it too. While a drive waits on a live approval, run nothing in its worktree. Run checks in another worktree, or before or after the drive.
 
-An idle wait or a timing probe needs a server without the watcher. During one LHC idle wait, a watching server restarted three times on `packages/client-runtime/node_modules/.vite-temp/vite.config.ts.timestamp-*` with no source change, and each restart released the query early. Copy `apps/server/package.json` to the run's scratch, set its `dev` script to `node src/bin.ts`, run `node $T3V up`, then copy the saved file back at once. `git checkout` would drop any uncommitted edit to it. The running server keeps no watcher, so a source change then needs `down` and `up`.
+An idle wait or a timing probe needs a server without the watcher. During one idle wait, a watching server restarted three times on `packages/client-runtime/node_modules/.vite-temp/vite.config.ts.timestamp-*` with no source change, and each restart released the query early. Copy `apps/server/package.json` to the run's scratch, set its `dev` script to `node src/bin.ts`, run `node $T3V up`, then copy the saved file back at once. `git checkout` would drop any uncommitted edit to it. The running server keeps no watcher, so a source change then needs `down` and `up`.
 
 ## Release check
 
@@ -121,19 +119,8 @@ A dev server runs the worktree's source, so it cannot show a fault that only the
 1. **Base dir.** Make `<run scratch>/<name>/base/userdata/` with a `settings.json` holding FORK.md's safety settings and the provider instances to check, copied from prod's `settings.json`, which holds no secrets. To time the first start's migrations against real data, add a copy of prod's database taken with `sqlite3 -readonly "file:<prod statev2.sqlite>?mode=ro" "VACUUM INTO '<copy>'"`, then run the safety list's SQL pass on the copy. `.backup` restarts on every prod write and never finishes. The safety list says to boot a copy only when no migration will run, because a migration that backfills from `orchestration_events` brings back the wakes the SQL pass removed from projections alone. So first read each migration the release adds (`git diff --name-only <prod's release sha> <new sha> -- apps/server/src/persistence/Migrations/`), and boot the copy only if none reads `orchestration_events` or rebuilds a projection. 3770's two, `068_ShellStopRequestIndex` and `069_ThreadMessageSearch`, add an index and fill a search table from `orchestration_v2_projection_messages`.
 2. **Cursor sign-in.** Cursor signs in from its instance credential. Copy only `secrets/provider-auth-<sha256 of "6:cursor" followed by the instance id>.bin` from prod's `userdata/secrets/`, keep it mode 0600, never print it, and delete the copy at teardown. Claude and Codex use this machine's CLI logins.
 3. **Start.** `T3CODE_HOME=<base> T3CODE_NO_BROWSER=1 T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD=false T3CODE_TELEMETRY_ENABLED=false setsid nohup <release>/t3 serve --host 127.0.0.1 --port <free port> --base-dir <base> --no-browser > <base>/../serve.log 2>&1 &`. The log names each migration that ran and when the server listened. `$!` is the shell wrapper's PID, so find the server's with `ss -H -ltnp` on that port, and confirm its `/proc/<pid>/cwd` before you stop it.
-4. **Turns.** Add a disposable project with `<release>/t3 project add --base-dir <base> <folder>`, then from inside that folder run one turn per provider: `<release>/t3 thread start --base-dir <base> --provider <instance> --model <slug> --wait --json . "Reply with the single word pong. Do not call tools or change files."`. Each prints `"status":"completed"` and `"reply":"pong"`. Slugs in use here: `cursor` `grok-4.7`, `claudeAgent` `claude-haiku-5-5`, `codex` `gpt-6-astra`. Add one LHC turn on an instance with `"contextEngine":"claude-lhc"`, a trigger and target such as `40000` and `20000`, and a disposable `homePath`. The server's environment needs a Claude credential: `CLAUDE_CODE_OAUTH_TOKEN` from the credential file, or `ANTHROPIC_AUTH_TOKEN` with `ANTHROPIC_BASE_URL`, which prod's `config/cliproxy.env` holds. It needs the release's `lhc-runtime/`, which holds `engine.json`, and its reply proves the release's staged Node and sidecar run. `sqlite3 -readonly <base>/userdata/lhc/registry.sqlite "select count(*) from threads"` then prints 1.
-5. **LHC across a restart.** On a fresh disposable base, teach an LHC thread a codeword, have it Read two files of about 70,000 characters each, send `/compact`, and ask for the codeword. Stop the server, start it on the same base, and ask again. Both replies name the codeword, and `select count(*) from orchestration_v2_projection_turn_items where thread_id='<id>' and type='compaction' and status='completed'` is above 0. A compaction that failed or was stopped keeps its row with `failed` or `interrupted`. The release that cut over at c7d897cee3 passed this with nine compactions.
-6. **UI on the release.** t3v cannot attach to `t3 serve`. Open the pairing URL from the log in T3's Browser panel with `preview_open` (`profileId: "incognito"`), as above.
-
-**A Cursor turn for a review runs here.** A fresh dev server starts with Cursor signed out, and `features/agent-turn.md` forbids copying prod's credential into its `.t3`. Someone can sign it in with Cursor, but an unattended verifier can't, so the merge brief sends a `packages/provider-cursor/` change to this check. Steps 1 to 4 with only the `cursor` instance are enough. A release built from an earlier commit than the PR's head stands in for the head only when `git diff --stat <release sha> <head>` changes no runtime code. On #45 the release `fb48715408` differed from head `661cacaf88` only in `FORK.md` and `driver.test.ts`. Otherwise build the head with `t3-v2-deploy <head>`.
-
-**Desktop.** The packaged app runs its server on Electron's own Node from inside `app.asar`, which neither a dev server nor the CLI release does. There `fs.accessSync` on `resources/app.asar` fails with ENOENT while `fs.statSync` succeeds, a bug T15 (#71) found only on a real AppImage. Prove a desktop or packaging change on a real AppImage:
-
-1. Check `df -h /`, then build with `node scripts/build-desktop-artifact.ts --platform linux --target AppImage --arch x64 --output-dir <run scratch>/desktop`. The AppImage is about 200 MB.
-2. In an empty scratch folder, run `<AppImage> --appimage-extract`, which writes `squashfs-root/`.
-3. Start its server with the Release check's environment plus `ELECTRON_RUN_AS_NODE=1`, a fresh `HOME` and `CLAUDE_CONFIG_DIR`, and a Claude credential: `squashfs-root/t3code squashfs-root/resources/app.asar/apps/server/dist/bin.mjs serve --host 127.0.0.1 --port <free port> --base-dir <base> --no-browser`. The same command with `project add` and `thread start` in place of `serve` runs the CLI.
-4. The log's `claude-lhc runtime resolved` line names a `sidecar` under `squashfs-root/resources/lhc-runtime/`. Run one LHC turn as in step 4, and it replies `pong`.
-5. Steps 3 and 4 never start the desktop main process, its preload or a window. For a change to desktop startup, IPC or UI, also launch the app normally, `squashfs-root/t3code` without `ELECTRON_RUN_AS_NODE`, on a fresh `HOME`, and drive the flow the change touches in its window. The extracted binary aborts on its sandbox setup without `--no-sandbox`, and a host with no display runs it under `xvfb-run`.
+4. **Turns.** Add a disposable project with `<release>/t3 project add --base-dir <base> <folder>`, then from inside that folder run one turn per provider: `<release>/t3 thread start --base-dir <base> --provider <instance> --model <slug> --wait --json . "Reply with the single word pong. Do not call tools or change files."`. Each prints `"status":"completed"` and `"reply":"pong"`. Slugs in use here: `cursor` `grok-4.7`, `claudeAgent` `claude-haiku-5-5`, `codex` `gpt-6-astra`.
+5. **UI on the release.** t3v cannot attach to `t3 serve`. Open the pairing URL from the log in T3's Browser panel with `preview_open` (`profileId: "incognito"`), as above.
 
 **What a turn here cannot show.**
 
@@ -146,17 +133,17 @@ A dev server runs the worktree's source, so it cannot show a fault that only the
 
 After a rebase or a small change, a review may carry an earlier passing lane to the new head instead of rerunning it, when nothing that changed reaches what the lane runs (poteto-mode's Shipping playbook, step 3). Compare `git range-diff` of the PR's own patch, and the diff of `main` under it, against what each lane runs:
 
-| Lane                                                  | Runs                                                                                                 | Rerun when the change touches                                          |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `.agents/merge-brief.md` checks                       | `vp run check:changed`, the seam tests of each FORK.md seam the PR changes                           | anything. They rerun at every new head.                                |
-| A focused suite or package typecheck outside them     | the files it compiles or imports                                                                     | one of those files, a test config, `package.json` or the lockfile      |
-| `features/agent-turn.md` and every recipe with a turn | the web app, `apps/server/src/orchestration-v2/`, the provider package of that turn                  | any of those. A change in one adapter reruns only that provider's turn |
-| A feature recipe (`features/<name>.md`)               | the paths the merge brief maps to it, and the web screens it drives                                  | those paths, or a screen or ARIA name the recipe targets               |
-| A user-only check                                     | the screens and `docs/user/`                                                                         | either                                                                 |
-| An outcome check                                      | the store or log it reads (`threadWorkflow/store.ts`, the provider event log, the projection tables) | that store's writer or format                                          |
-| The Release check's turns                             | the release archive, its CLI, server and provider packages                                           | runtime code, a dependency or packaging, or the Release check's steps  |
+| Lane                                                  | Runs                                                                                | Rerun when the change touches                                          |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| `.agents/merge-brief.md` checks                       | `vp run check:changed`, the seam tests of each FORK.md seam the PR changes          | anything. They rerun at every new head.                                |
+| A focused suite or package typecheck outside them     | the files it compiles or imports                                                    | one of those files, a test config, `package.json` or the lockfile      |
+| `features/agent-turn.md` and every recipe with a turn | the web app, `apps/server/src/orchestration-v2/`, the provider package of that turn | any of those. A change in one adapter reruns only that provider's turn |
+| A feature recipe (`features/<name>.md`)               | the paths the merge brief maps to it, and the web screens it drives                 | those paths, or a screen or ARIA name the recipe targets               |
+| A user-only check                                     | the screens and `docs/user/`                                                        | either                                                                 |
+| An outcome check                                      | the store or log it reads (the provider event log, the projection tables)           | that store's writer or format                                          |
+| The Release check's turns                             | the release archive, its CLI, server and provider packages                          | runtime code, a dependency or packaging, or the Release check's steps  |
 
-Any change to this skill's steps for a lane (its feature file, this file's section, or `scripts/t3v.mjs` for what the lane calls) reruns that lane. Docs outside `docs/user/`, FORK.md and test-only changes carry every live lane, and the changed tests and text get a fresh run and read. The review lists each carry as `shortcut <id>: <what was not rerun, and the review it carries>. <why nothing that changed reaches it>`, and the lead accepts each on the gate run. Accepted precedents: #49's last verdict carried Claude turns, the TMPDIR filesystem cases and the provider typechecks across a Codex-only sandbox-policy fix. #50's re-verification after #48 landed under it carried the release turns and the provider settings, and reran the workflow-question screens #48 changed. #51 carried its base-v2 upgrade lane because the workflow domain and replay were unchanged since it ran.
+Any change to this skill's steps for a lane (its feature file, this file's section, or `scripts/t3v.mjs` for what the lane calls) reruns that lane. Docs outside `docs/user/`, FORK.md and test-only changes carry every live lane, and the changed tests and text get a fresh run and read. The review lists each carry as `shortcut <id>: <what was not rerun, and the review it carries>. <why nothing that changed reaches it>`, and the lead accepts each on the gate run. Accepted precedents: #49's last verdict carried Claude turns, the TMPDIR filesystem cases and the provider typechecks across a Codex-only sandbox-policy fix.
 
 ## Cleanup
 

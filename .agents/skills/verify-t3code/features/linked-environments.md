@@ -43,5 +43,5 @@ Preconditions:
 - `t3_environment_read` does not report `linkedEnvironmentsEnabled`. Read it from the server's `settings.json`, or with `node $T3V settings` on a dev server.
 - A server you cannot drive through its UI, such as a fleet box, watches its `settings.json`. Write the flag with an atomic rename so the watcher never reads half a file. The fleet run's `enable-linked.py` in `.pstack/runs/sync-3824-chain/proof/fleet/` does that.
 - Never link to or from prod in a verification. The fleet run linked prod to seven fleet machines with `link-from-prod.sh` as an operations task, not a check.
-- A tool reaches the linked environment only when it takes `environmentId`. The `thread_workflow_*` tools do not, so they always act on this environment.
+- A tool reaches the linked environment only when it takes `environmentId`. A tool without it always acts on this environment.
 - Links expire after 30 days. Link again with a fresh pairing code to renew one.
