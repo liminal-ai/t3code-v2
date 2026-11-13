@@ -36,6 +36,8 @@ Preconditions:
 - **Refusals.** In the browser, open the thread, expand a sent message's bubble, choose `Edit from here`, then `Revert and keep changes`. A toast reads `Edit from here does not work on a Limbase thread yet.` and the timeline is unchanged. Choose `Fork from this response` on a reply and send a message in the fork. The fork's turn shows `Could not fork the source conversation natively (Limbase does not fork threads yet). Started a fresh session with its history.`, and its row has a new `limbaseThreadId`.
 - **Plain.** Run the turn above with `--provider claudeAgent`. Its row has no `limbaseThreadId`, and its events log has no `mcp__limbase`. Drive `features/agent-turn.md` on it too.
 
+- **Release build.** A dev server never runs the single-executable step, which rejects a static import of a file-backed package such as `zod` or `undici`. After `vp run --filter t3 build`, run `VP_NODE_VERSION=<engines.node> vp env exec --node <engines.node> node apps/server/scripts/cli.ts build-exe`. It ends `Built dist-exe/t3`, not `ServerCliExecutableImportError`. Before a merge, `~/lim-v2/bin/t3-v2-deploy <head>` builds the release and passes its smoke test. It never switches prod.
+
 ## Gotchas
 
 - The Limbase service's socket path comes from `<home>/config/membase.json`, read at each open. A home whose path is long keeps its socket under `/tmp`.

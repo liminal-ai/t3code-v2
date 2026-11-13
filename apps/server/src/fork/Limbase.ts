@@ -6,6 +6,7 @@
  * session moves to a compacted view when one is due. A thread on any other instance is untouched.
  */
 import * as NodeFSP from "node:fs/promises";
+import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 
 import { createSdkMcpServer, query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
@@ -16,6 +17,9 @@ import { connectLimbase, createAgentSdkHost, threadCalls } from "@limbase/host-a
 import hostPackage from "@limbase/host-agent-sdk/package.json" with { type: "json" };
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+
+// zod is external to the CLI bundle; a single-executable loads it from disk only with require.
+const zod = NodeModule.createRequire(import.meta.url)("zod") as typeof import("zod");
 
 /** Limbase compacts a thread at the trigger, down to a view of about the target, in tokens. */
 const COMPACT_POLICY = { trigger: 700_000, target: 100_000 } as const;
@@ -155,6 +159,7 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
       ...sdk,
       limbase: threadCalls(connection, limbaseThreadId),
       alias: providerThread.id,
+      zod: zod.z,
       onEvent: (event) => {
         if (event.kind === "failOut")
           failedStep = `limbase: stopped at ${event.where}: ${event.what}`;
