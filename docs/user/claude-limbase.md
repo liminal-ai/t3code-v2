@@ -67,11 +67,11 @@ version, and change **Binary path** to it.
 - **Edit from here.** Works as on any Claude thread. When you send the edited message, Limbase cuts
   the thread back to the turn before it, and the answer knows nothing after that turn. Editing the
   first message starts a new Limbase thread.
-- **An edit that Limbase cannot make.** The run fails with `limbase: stopped at view: rollback
-  refused: ...` and a sentence that says what to do. Every message you send fails the same way until
-  you edit again. `anchor` and `overBound` (more than 1,001 turns after the edited message) say
-  `Edit an earlier message to go on.` `failed`, or a Limbase that did not answer in time, says
-  `Edit the message again to retry.`
+- **An edit that Limbase cannot make.** The run fails with `limbase: stopped at`, the reason, and
+  a sentence that says what to do. Every message you send fails the same way until you edit again.
+  `rollback refused: anchor` and `overBound` (more than 1,001 turns after the edited message) say
+  `Edit an earlier message to go on.` Any other failure of the edited message, such as a Limbase
+  that is down, says `Edit the message again to retry.`
 - **Restarts.** After a restart of T3 Code, or after the 30-minute idle release, the thread resumes
   the session that Limbase last installed.
 

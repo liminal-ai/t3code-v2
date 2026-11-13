@@ -112,20 +112,36 @@ export const ensureThread = Effect.fn("Limbase.ensureThread")(function* (input: 
   return { nativeMetadata: { limbaseThreadId: thread.threadId } };
 });
 
-/** A step Limbase failed: the host's reason, and what the user can do when the reason alone does not say. */
-type FailedStep = { readonly reason: string; readonly wayOut: string | undefined };
+/**
+ * What to do after Limbase failed a step of a query an edit opened at a place, before the place took
+ * hold. Resending in that query fails again, and only an edit opens a new one: at an earlier place
+ * when Limbase cannot keep this one, or at the same place otherwise.
+ */
+const wayOutOfPlace = (what: string) =>
+  what.startsWith("rollback refused: anchor") || what.startsWith("rollback refused: overBound")
+    ? "Edit an earlier message to go on."
+    : "Edit the message again to retry.";
+
+/** A step Limbase failed: where, and the host's words for why. */
+type FailedStep = { readonly where: string; readonly what: string };
 
 /**
  * The CLI ends a step that Limbase failed with a successful `result`: at a prompt its text is the
  * hook's reason, and at a tool boundary it is empty with `terminal_reason: "hook_stopped"`. As an
- * error result carrying the host's reason, the run fails instead of ending as done.
+ * error result carrying the host's reason, the run fails instead of ending as done. In a query an
+ * edit opened at a place that no step has run from yet, the error also says which edit gets past it.
  */
-const asFailedStep = (message: SDKMessage, failed: FailedStep | undefined): SDKMessage => {
+const asFailedStep = (
+  message: SDKMessage,
+  failed: FailedStep | undefined,
+  placed: boolean,
+): SDKMessage => {
+  const reason = failed === undefined ? "" : `limbase: stopped at ${failed.where}: ${failed.what}`;
   if (
     failed === undefined ||
     message.type !== "result" ||
     message.subtype !== "success" ||
-    !(message.terminal_reason === "hook_stopped" || message.result.endsWith(failed.reason))
+    !(message.terminal_reason === "hook_stopped" || message.result.endsWith(reason))
   )
     return message;
   const { result: _result, ...rest } = message;
@@ -133,7 +149,7 @@ const asFailedStep = (message: SDKMessage, failed: FailedStep | undefined): SDKM
     ...rest,
     subtype: "error_during_execution" as const,
     is_error: true,
-    errors: [failed.wayOut === undefined ? failed.reason : `${failed.reason}. ${failed.wayOut}`],
+    errors: [placed ? `${reason}. ${wayOutOfPlace(failed.what)}` : reason],
   };
 };
 
@@ -156,18 +172,6 @@ export const threadAfterReset = Effect.fn("Limbase.threadAfterReset")(function* 
 });
 
 /**
- * What to do after a rollback Limbase did not make, by the host's words for it. Every prompt of that
- * query fails, and only an edit opens a new one: at an earlier place when this one cannot be kept,
- * or at the same place when Limbase could not answer.
- */
-const ROLLBACK_WAY_OUT = [
-  ["rollback refused: anchor", "Edit an earlier message to go on."],
-  ["rollback refused: overBound", "Edit an earlier message to go on."],
-  ["rollback refused: failed", "Edit the message again to retry."],
-  ["the rollback did not reach Limbase", "Edit the message again to retry."],
-] as const;
-
-/**
  * The SDK `query` for a thread on a Limbase instance, or undefined for a plain one. A thread that
  * began before the instance had a Limbase home has no Limbase thread and stays plain.
  */
@@ -188,17 +192,15 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
     }
     /** The reason of the step Limbase last failed, which the next `result` ends on. */
     let failedStep: FailedStep | undefined;
+    /** Whether this query was opened at a place that no step has yet run from. */
+    let placed = rest.resumeSessionAt !== undefined;
     const session = createAgentSdkHost({
       ...sdk,
       limbase: threadCalls(connection, limbaseThreadId),
       alias: providerThread.id,
       zod: zod.z,
       onEvent: (event) => {
-        if (event.kind === "failOut")
-          failedStep = {
-            reason: `limbase: stopped at ${event.where}: ${event.what}`,
-            wayOut: ROLLBACK_WAY_OUT.find(([what]) => event.what.startsWith(what))?.[1],
-          };
+        if (event.kind === "failOut") failedStep = { where: event.where, what: event.what };
       },
     }).query({ prompt, options: { ...rest, ...(settings === undefined ? {} : { settings }) } });
     const next = session.next.bind(session);
@@ -208,8 +210,9 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
           ? async (...args: []) => {
               const result = await next(...args);
               if (result.done === true) return result;
-              const message = asFailedStep(result.value, failedStep);
+              const message = asFailedStep(result.value, failedStep, placed);
               if (message.type === "result") failedStep = undefined;
+              if (message.type === "result" && message.subtype === "success") placed = false;
               if (
                 message.type === "system" &&
                 message.subtype === "init" &&
