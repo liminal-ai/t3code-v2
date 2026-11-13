@@ -50,9 +50,10 @@ version, and change **Binary path** to it.
   to the view, then goes on.
 - **Each step.** Limbase saves each step before the next request. Each step waits about 0.2 seconds
   for that.
-- **A step that Limbase fails.** The thread shows a warning line that starts `Operation stopped by
-  hook: limbase: stopped at`, then where and why. The turn ends there. Send the next message when
-  Limbase is back, and the thread goes on.
+- **A step that Limbase fails.** The run fails, and the thread shows a provider error that starts
+  `limbase: stopped at`, then where and why. A step stopped at a prompt also shows a warning line
+  that starts `Operation stopped by hook:`. A queued message waits, as after any failed run. Send
+  the next message when Limbase is back, and the thread goes on.
 - **Limbase down.** A step waits up to 90 seconds for Limbase, then fails as above. A new thread
   fails at once with `Limbase: the service did not create a thread`, or `Limbase: could not reach the
   Limbase home` when the home folder has no `config/membase.json`. The server and other threads keep

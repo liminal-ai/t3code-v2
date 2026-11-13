@@ -24,20 +24,37 @@ import * as Limbase from "./Limbase.ts";
 
 const created: unknown[] = [];
 
-vi.mock("@limbase/host-agent-sdk", async (original) => ({
-  ...(await original<typeof import("@limbase/host-agent-sdk")>()),
-  // The fake service answers each call with its value, which `call` resolves to.
-  connectLimbase: async () => ({
-    call: async (rpc: (client: unknown) => unknown) =>
-      rpc({
-        CreateThread: (payload: unknown) => {
-          created.push(payload);
-          return { threadId: `th_${created.length}`, createdAt: 0 };
-        },
-      }),
-    close: async () => {},
-  }),
-}));
+/** A fail-out the host reports as it starts, as the real host does from the hook that failed. */
+let failOut: { readonly where: string; readonly what: string } | undefined;
+
+vi.mock("@limbase/host-agent-sdk", async (original) => {
+  const actual = await original<typeof import("@limbase/host-agent-sdk")>();
+  return {
+    ...actual,
+    createAgentSdkHost: (options: Parameters<typeof actual.createAgentSdkHost>[0]) => {
+      if (failOut !== undefined)
+        options.onEvent?.({
+          kind: "failOut",
+          hook: "PostToolBatch",
+          ms: 0,
+          retriedMs: 0,
+          ...failOut,
+        } as never);
+      return actual.createAgentSdkHost(options);
+    },
+    // The fake service answers each call with its value, which `call` resolves to.
+    connectLimbase: async () => ({
+      call: async (rpc: (client: unknown) => unknown) =>
+        rpc({
+          CreateThread: (payload: unknown) => {
+            created.push(payload);
+            return { threadId: `th_${created.length}`, createdAt: 0 };
+          },
+        }),
+      close: async () => {},
+    }),
+  };
+});
 
 const decodeSettings = Schema.decodeUnknownSync(ClaudeSettings);
 
@@ -191,6 +208,55 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         "PreCompact",
       ]);
     }),
+  );
+
+  it.effect(
+    "fails a step that Limbase stopped with the host's reason, at a prompt and at a tool boundary",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+        const result = (text: string, terminal?: string) =>
+          ({
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            result: text,
+            ...(terminal === undefined ? {} : { terminal_reason: terminal }),
+          }) as SDKMessage;
+        const reason =
+          "limbase: stopped at convex: the step's records were not saved within the retry window";
+        const run = (messages: ReadonlyArray<SDKMessage>) =>
+          Effect.gen(function* () {
+            const hosted = yield* Limbase.queryFor(
+              settings,
+              providerThread({ limbaseThreadId: "th_1" }),
+              fakeSdk(messages).sdk,
+            );
+            return yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
+          });
+        const failed: Partial<SDKMessage> = {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          errors: [reason],
+        };
+        failOut = {
+          where: "convex",
+          what: "the step's records were not saved within the retry window",
+        };
+        const atPrompt = yield* run([
+          result(`Operation stopped by hook: ${reason}`),
+          result("Done."),
+        ]);
+        const atBatch = yield* run([result("", "hook_stopped"), result("Done.")]);
+        failOut = undefined;
+        const ordinary = yield* run([result("", "hook_stopped")]);
+        assert.deepInclude(atPrompt[0], failed);
+        assert.deepEqual(atPrompt[1], result("Done."));
+        assert.deepInclude(atBatch[0], failed);
+        assert.deepEqual(atBatch[1], result("Done."));
+        assert.deepEqual(ordinary[0], result("", "hook_stopped"));
+      }),
   );
 
   it.effect("warns when the CLI is not the version the host is tested on", () => {

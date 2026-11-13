@@ -8,7 +8,7 @@
 import * as NodeFSP from "node:fs/promises";
 import * as NodePath from "node:path";
 
-import { createSdkMcpServer, query } from "@anthropic-ai/claude-agent-sdk";
+import { createSdkMcpServer, query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSettings, OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -109,6 +109,28 @@ export const ensureThread = Effect.fn("Limbase.ensureThread")(function* (input: 
 });
 
 /**
+ * The CLI ends a step that Limbase failed with a successful `result`: at a prompt its text is the
+ * hook's reason, and at a tool boundary it is empty with `terminal_reason: "hook_stopped"`. As an
+ * error result carrying the host's reason, the run fails instead of ending as done.
+ */
+const asFailedStep = (message: SDKMessage, reason: string | undefined): SDKMessage => {
+  if (
+    reason === undefined ||
+    message.type !== "result" ||
+    message.subtype !== "success" ||
+    !(message.terminal_reason === "hook_stopped" || message.result.endsWith(reason))
+  )
+    return message;
+  const { result: _result, ...rest } = message;
+  return {
+    ...rest,
+    subtype: "error_during_execution" as const,
+    is_error: true,
+    errors: [reason],
+  };
+};
+
+/**
  * The SDK `query` for a thread on a Limbase instance, or undefined for a plain one. A thread that
  * began before the instance had a Limbase home has no Limbase thread and stays plain.
  */
@@ -127,10 +149,16 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
     if (typeof prompt === "string" || typeof settings === "string") {
       throw new Error("Limbase needs prompts as a stream and settings as an object.");
     }
+    /** The reason of the step Limbase last failed, which the next `result` ends on. */
+    let failedStep: string | undefined;
     const session = createAgentSdkHost({
       ...sdk,
       limbase: threadCalls(connection, limbaseThreadId),
       alias: providerThread.id,
+      onEvent: (event) => {
+        if (event.kind === "failOut")
+          failedStep = `limbase: stopped at ${event.where}: ${event.what}`;
+      },
     }).query({ prompt, options: { ...rest, ...(settings === undefined ? {} : { settings }) } });
     const next = session.next.bind(session);
     const watched: typeof session = new Proxy(session, {
@@ -138,9 +166,11 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
         property === "next"
           ? async (...args: []) => {
               const result = await next(...args);
-              const message = result.done === true ? undefined : result.value;
+              if (result.done === true) return result;
+              const message = asFailedStep(result.value, failedStep);
+              if (message.type === "result") failedStep = undefined;
               if (
-                message?.type === "system" &&
+                message.type === "system" &&
                 message.subtype === "init" &&
                 message.claude_code_version !== TESTED_CLAUDE_CODE
               ) {
@@ -151,7 +181,7 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
                   }),
                 );
               }
-              return result;
+              return { ...result, value: message };
             }
           : property === Symbol.asyncIterator
             ? () => watched

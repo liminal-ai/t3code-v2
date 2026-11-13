@@ -856,6 +856,24 @@
       "name": "iobuffer",
       "license": "MIT",
       "sourceUrl": "https://github.com/image-js/iobuffer"
+    },
+    {
+      "name": "@limbase/host-agent-sdk",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/liminal-ai/limbase",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 Lee Moore"]
+      }
+    },
+    {
+      "name": "@limbase/contract",
+      "license": "MIT",
+      "sourceUrl": "https://github.com/liminal-ai/limbase",
+      "generatedNotice": {
+        "licenseId": "MIT",
+        "copyrights": ["Copyright (c) 2026 Lee Moore"]
+      }
     }
   ]
 }
