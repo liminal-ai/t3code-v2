@@ -43,8 +43,6 @@ import {
   resolveMacPasskeySigningConfiguration,
   resolveMergedStageDependencies,
   resolveBuildOptions,
-  resolveDesktopProductName,
-  resolveDesktopUpdateChannel,
   stageWslRuntimeArchive,
   ancestorNodeModulesPaths,
   copyDirectoryPreservingSymlinks,
@@ -238,24 +236,6 @@ const makeMacPayloadFixture = Effect.fn("test.makeMacPayloadFixture")(function* 
 });
 
 it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
-  it("resolves the dedicated nightly updater channel from nightly versions", () => {
-    assert.equal(resolveDesktopUpdateChannel("0.0.17-nightly.20260413.42"), "nightly");
-    assert.equal(resolveDesktopUpdateChannel("0.0.17"), "latest");
-    assert.equal(
-      resolveDesktopUpdateChannel("0.1.1-nightly.20261017.3238-lim.39aa16c70e"),
-      "latest",
-    );
-  });
-
-  it("switches desktop packaging product names to nightly for nightly builds", () => {
-    assert.equal(resolveDesktopProductName("0.1.0"), "T3 Code (Beta)");
-    assert.equal(resolveDesktopProductName("0.0.17-nightly.20260413.42"), "T3 Code (Nightly)");
-    assert.equal(
-      resolveDesktopProductName("0.1.1-nightly.20261017.3238-lim.39aa16c70e"),
-      "T3 Code Lim",
-    );
-  });
-
   it.effect("rejects overlapping builds from another process until restoration finishes", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
@@ -548,19 +528,8 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         undefined,
       );
 
-      const lim = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.1.1-nightly.20261017.3238-lim.39aa16c70e",
-        false,
-        true,
-        undefined,
-        undefined,
-      );
-
       assert.isNull(preview.publish);
       assert.isNull(previewChannel.publish);
-      assert.isNull(lim.publish);
       assert.deepStrictEqual(release.publish, [
         {
           provider: "github",
@@ -1651,47 +1620,6 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         ),
       ),
     ),
-  );
-
-  it.effect("gives fork macOS builds their own app identity and the nightly DMG background", () =>
-    Effect.gen(function* () {
-      const stable = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.1.1",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-      const nightly = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.1.1-nightly.20261017.3238",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-      const lim = yield* createBuildConfig(
-        "mac",
-        "dmg",
-        "0.1.1-nightly.20261017.3238-lim.39aa16c70e",
-        false,
-        false,
-        undefined,
-        undefined,
-      );
-
-      assert.equal(stable.appId, "com.t3tools.t3code");
-      assert.equal(nightly.appId, "com.t3tools.t3code");
-      assert.equal(lim.appId, "ai.liminal.t3code.lim");
-      assert.equal(lim.productName, "T3 Code Lim");
-      assert.equal(
-        (lim.dmg as Record<string, unknown>).background,
-        "dmg/dmg-background-nightly.png",
-      );
-    }).pipe(Effect.provide(ConfigProvider.layer(ConfigProvider.fromEnv({ env: {} })))),
   );
 
   it("parses Windows bsdtar member listings with CRLF line endings", () => {
