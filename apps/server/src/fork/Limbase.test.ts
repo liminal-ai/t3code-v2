@@ -316,4 +316,20 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     const plain = { providerThread: { ...limbase.providerThread, nativeMetadata: null } };
     assert.equal(Limbase.onLiveSession(plain, live, moved), plain);
   });
+
+  it("finds a moved row's live process for stop, model and MCP App calls, and the stored id otherwise", () => {
+    const moved = new Map([["session-1", "session-2"]]);
+    const live = { nativeThreadId: "session-1", stopping: false };
+    const row = (nativeId: string, limbaseThreadId?: string) =>
+      ({
+        ...providerThread(limbaseThreadId === undefined ? undefined : { limbaseThreadId }),
+        nativeThreadRef: { driver: "claudeAgent", nativeId, strength: "strong" },
+      }) as OrchestrationV2ProviderThread;
+    // Two installs in one process leave the newest id under the process's first id.
+    moved.set("session-1", "session-3");
+    assert.equal(Limbase.liveNativeId(row("session-3", "th_1"), live, moved), "session-1");
+    assert.equal(Limbase.liveNativeId(row("session-2", "th_1"), live, moved), "session-2");
+    assert.equal(Limbase.liveNativeId(row("session-3"), live, moved), "session-3");
+    assert.equal(Limbase.liveNativeId(row("session-3", "th_1"), null, moved), "session-3");
+  });
 });

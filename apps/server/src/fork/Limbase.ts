@@ -226,32 +226,42 @@ export const refusalIn = (error: unknown): string | undefined => {
   return undefined;
 };
 
+type LiveQuery = { readonly nativeThreadId: string; readonly stopping: boolean } | null;
+
 /**
- * An install moves the live CLI process to a new session id, which the row then stores as the one
- * to resume. A turn on that row while the process still runs keeps the process's first id, which
- * the adapter's live state is keyed by, so the turn goes to the running process.
+ * The session id the adapter's live state knows a row by. An install moves the live CLI process to
+ * a new session id, which the row then stores as the one to resume, while the adapter keeps the
+ * process's state under its first id. For a Limbase row whose stored id is the one the running
+ * process moved to, that first id; otherwise the stored id.
  */
+export const liveNativeId = (
+  providerThread: OrchestrationV2ProviderThread,
+  live: LiveQuery,
+  moved: ReadonlyMap<string, string>,
+) => {
+  const stored = providerThread.nativeThreadRef?.nativeId;
+  return providerThread.nativeMetadata?.limbaseThreadId !== undefined &&
+    live !== null &&
+    !live.stopping &&
+    stored != null &&
+    moved.get(live.nativeThreadId) === stored
+    ? live.nativeThreadId
+    : stored;
+};
+
+/** A turn on a row an install moved, keyed as `liveNativeId` resolves it, so it goes to the running process. */
 export const onLiveSession = <
   Input extends { readonly providerThread: OrchestrationV2ProviderThread },
 >(
   input: Input,
-  live: { readonly nativeThreadId: string; readonly stopping: boolean } | null,
+  live: LiveQuery,
   moved: ReadonlyMap<string, string>,
 ): Input => {
   const ref = input.providerThread.nativeThreadRef;
-  if (
-    input.providerThread.nativeMetadata?.limbaseThreadId === undefined ||
-    ref === null ||
-    live === null ||
-    live.stopping ||
-    moved.get(live.nativeThreadId) !== ref.nativeId
-  )
-    return input;
+  const nativeId = liveNativeId(input.providerThread, live, moved);
+  if (ref == null || nativeId == null || nativeId === ref.nativeId) return input;
   return {
     ...input,
-    providerThread: {
-      ...input.providerThread,
-      nativeThreadRef: { ...ref, nativeId: live.nativeThreadId },
-    },
+    providerThread: { ...input.providerThread, nativeThreadRef: { ...ref, nativeId } },
   };
 };

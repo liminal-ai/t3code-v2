@@ -7999,7 +7999,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (
             liveQuery === null ||
             liveQuery.stopping ||
-            liveQuery.nativeThreadId !== providerThread.nativeThreadRef?.nativeId
+            liveQuery.nativeThreadId !==
+              Limbase.liveNativeId(providerThread, liveQuery, clearedNativeSessions)
           ) {
             return yield* new ProviderAdapter.ProviderAdapterSessionStoppedError({
               driver: CLAUDE_PROVIDER,
@@ -12638,7 +12639,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           function* (turnInput: ProviderAdapter.ProviderAdapterV2InterruptInput) {
             const existing = yield* Ref.get(queryContext);
             const currentTurn = yield* Ref.get(activeTurn);
-            const nativeThreadId = turnInput.providerThread.nativeThreadRef?.nativeId ?? null;
+            const nativeThreadId =
+              Limbase.liveNativeId(turnInput.providerThread, existing, clearedNativeSessions) ??
+              null;
             if (currentTurn === null && turnInput.requestRuntimeRestart === true) {
               if (nativeThreadId === null) return;
               if (existing === null || existing.nativeThreadId !== nativeThreadId) {
@@ -13064,7 +13067,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }),
           // Untraced: the run's event stream calls this once per provider event.
           hasPendingBackgroundWorkForThread: Effect.fnUntraced(function* (providerThread, options) {
-            const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+            const nativeThreadId = Limbase.liveNativeId(
+              providerThread,
+              yield* Ref.get(queryContext),
+              clearedNativeSessions,
+            );
             if (nativeThreadId === undefined || nativeThreadId === null) {
               return false;
             }
@@ -13259,7 +13266,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (
               live === null ||
               live.stopping ||
-              live.nativeThreadId !== providerThread.nativeThreadRef?.nativeId ||
+              live.nativeThreadId !==
+                Limbase.liveNativeId(providerThread, live, clearedNativeSessions) ||
               live.selection.queryIdentity === selection.queryIdentity ||
               live.selection.apiModelId !== selection.apiModelId ||
               !canApplyClaudeSelectionLive(live.selection, selection)
@@ -13279,7 +13287,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if (
               liveQuery === null ||
               liveQuery.stopping ||
-              liveQuery.nativeThreadId !== providerThread.nativeThreadRef?.nativeId ||
+              liveQuery.nativeThreadId !==
+                Limbase.liveNativeId(providerThread, liveQuery, clearedNativeSessions) ||
               task === undefined ||
               task.task.threadId !== providerThread.appThreadId ||
               task.task.workflow === undefined ||
@@ -13304,7 +13313,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           }),
           awaitBackgroundTasks: Effect.fn("ClaudeAdapterV2.awaitBackgroundTasks")(
             function* ({ providerThread, taskIds, awaited }) {
-              const nativeThreadId = providerThread.nativeThreadRef?.nativeId;
+              const nativeThreadId = Limbase.liveNativeId(
+                providerThread,
+                yield* Ref.get(queryContext),
+                clearedNativeSessions,
+              );
               if (nativeThreadId == null) return { matched: [] };
               const roster = rosterForNativeThread(
                 yield* Ref.get(pendingBackgroundTasksByNativeThread),
@@ -13339,7 +13352,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           interruptTurn,
           stopSubagent: Effect.fn("ClaudeAdapterV2.stopSubagent")(function* (input) {
             const existing = yield* Ref.get(queryContext);
-            const nativeThreadId = input.providerThread.nativeThreadRef?.nativeId;
+            const nativeThreadId = Limbase.liveNativeId(
+              input.providerThread,
+              existing,
+              clearedNativeSessions,
+            );
             const subagent = (yield* Ref.get(sessionSubagentsByTaskId)).get(input.nativeTaskId);
             if (subagent?.task.threadId !== input.providerThread.appThreadId) {
               return yield* new ProviderAdapter.ProviderAdapterProtocolError({
