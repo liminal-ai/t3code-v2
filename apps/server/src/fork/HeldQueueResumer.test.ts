@@ -68,6 +68,7 @@ import {
 const driver = ProviderDriverKind.make("codex");
 const instanceId = ProviderInstanceId.make("codex");
 const modelSelection = { instanceId, model: "test-model" } satisfies ModelSelection;
+const otherInstanceId = ProviderInstanceId.make("other");
 const projectId = ProjectId.make("project:held-queue");
 const projectOff = ProjectId.make("project:held-queue-off");
 
@@ -197,9 +198,13 @@ const layerTest = (
     orchestrationAdapter: adapter,
     textGeneration: {} as ProviderInstance["textGeneration"],
   } satisfies ProviderInstance;
+  const otherInstance = { ...providerInstance, instanceId: otherInstanceId };
   const layerProviderInstances = Layer.succeed(ProviderInstanceRegistry.ProviderInstanceRegistry, {
-    getInstance: (id) => Effect.succeed(id === instanceId ? providerInstance : undefined),
-    listInstances: Effect.succeed([providerInstance]),
+    getInstance: (id) =>
+      Effect.succeed(
+        id === instanceId ? providerInstance : id === otherInstanceId ? otherInstance : undefined,
+      ),
+    listInstances: Effect.succeed([providerInstance, otherInstance]),
     listUnavailable: Effect.succeed([]),
     streamChanges: Stream.empty,
     subscribeChanges: Effect.never,
@@ -1473,4 +1478,113 @@ it.effect.each([false, true])(
         assert.deepEqual([held?.status, held?.queueHeld], ["running", false]);
       }),
     ),
+);
+
+it.effect("keeps a restart-held queue held until its provider's usage limit resets", () =>
+  withHarness("usage-limit", ({ cwd }) =>
+    Effect.gen(function* () {
+      const threadId = ThreadId.make("thread:usage-limit");
+      const { active, queued } = yield* busyThread({ threadId, cwd });
+      const sink = yield* EventSink.EventSinkV2;
+      const now = yield* DateTime.now;
+      const errorId = TurnItemId.make(`${threadId}:limit-error`);
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:limit-error`),
+            type: "turn-item.updated",
+            threadId,
+            runId: active.id,
+            nodeId: active.rootNodeId!,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: {
+              id: errorId,
+              type: "error",
+              threadId,
+              runId: active.id,
+              nodeId: active.rootNodeId!,
+              providerThreadId: active.providerThreadId,
+              providerTurnId: null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal: 100,
+              status: "failed",
+              title: "Usage limit",
+              startedAt: now,
+              completedAt: now,
+              updatedAt: now,
+              failure: {
+                class: "usage_limit",
+                message: "Usage limit reached",
+                code: "usage_limit",
+                retryable: null,
+                resetAt: DateTime.formatIso(DateTime.add(now, { hours: 1 })),
+              },
+            },
+          },
+          {
+            id: EventId.make(`${threadId}:limited`),
+            type: "run.updated",
+            threadId,
+            runId: active.id,
+            providerInstanceId: instanceId,
+            occurredAt: now,
+            payload: { ...active, status: "failed", completedAt: now },
+          },
+        ],
+      });
+      const switchId = MessageId.make(`${threadId}:switch`);
+      yield* dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`${threadId}:switch`),
+        threadId,
+        messageId: switchId,
+        text: "Use the other provider",
+        attachments: [],
+        createdBy: "user",
+        creationSource: "web",
+        modelSelection: { instanceId: otherInstanceId, model: "other-model" },
+        dispatchMode: { type: "start_immediately" },
+      });
+      const switched = (yield* runsOf(threadId)).find((run) => run.userMessageId === switchId)!;
+      yield* sink.write({
+        events: [
+          {
+            id: EventId.make(`${threadId}:switch-complete`),
+            type: "run.updated",
+            threadId,
+            runId: switched.id,
+            providerInstanceId: switched.providerInstanceId,
+            occurredAt: now,
+            payload: { ...switched, status: "completed", startedAt: now, completedAt: now },
+          },
+        ],
+      });
+      const queuedRun = Effect.map(runsOf(threadId), (runs) =>
+        runs.find((run) => run.id === queued[0]!.id),
+      );
+      yield* Effect.flatMap(
+        Orchestrator.OrchestratorV2,
+        (orchestrator) => orchestrator.resumeQueuedRuns,
+      );
+      assert.equal((yield* queuedRun)?.status, "queued", "core holds it for the limit");
+      yield* crashAndRestartOneSecondLater;
+      assert.equal((yield* queuedRun)?.queueHeld, true);
+
+      const scanning = yield* scan.pipe(Effect.forkScoped);
+      yield* Effect.repeat(Effect.yieldNow, { times: 200 });
+      const held = yield* queuedRun;
+      assert.deepEqual([held?.status, held?.queueHeld], ["queued", true], "held before the reset");
+      assert.deepEqual(yield* resumeCommandIds(threadId), []);
+
+      yield* TestClock.adjust("1 hour");
+      yield* Fiber.join(scanning);
+      yield* drain;
+      const resumed = yield* queuedRun;
+      assert.notEqual(resumed?.status, "queued", "resumed after the reset");
+      assert.equal(resumed?.queueHeld, false);
+      assert.lengthOf(yield* resumeCommandIds(threadId), 1);
+    }),
+  ),
 );
