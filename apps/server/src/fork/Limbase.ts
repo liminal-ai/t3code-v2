@@ -18,10 +18,10 @@ import hostPackage from "@limbase/host-agent-sdk/package.json" with { type: "jso
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-/** Limbase compacts a thread at the trigger, down to a view of about the target, in tokens. */
 // zod is external to the CLI bundle; a single-executable loads it from disk only with require.
 const zod = NodeModule.createRequire(import.meta.url)("zod") as typeof import("zod");
 
+/** Limbase compacts a thread at the trigger, down to a view of about the target, in tokens. */
 const COMPACT_POLICY = { trigger: 700_000, target: 100_000 } as const;
 
 /** The Claude Code version whose session-file format the vendored host writes. */
