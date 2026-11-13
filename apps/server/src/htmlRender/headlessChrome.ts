@@ -201,8 +201,6 @@ const launchBrowser = Effect.fnUntraced(function* (input: {
           "--hide-scrollbars",
           "--mute-audio",
           "--block-new-web-contents",
-          // Chrome would otherwise ask the desktop keyring first, which can wait forever headless.
-          "--password-store=basic",
           `--proxy-server=socks5://127.0.0.1:${proxy.port}`,
           // Loopback would otherwise skip the proxy.
           "--proxy-bypass-list=<-loopback>",
