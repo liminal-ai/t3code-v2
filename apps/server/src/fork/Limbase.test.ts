@@ -18,11 +18,11 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { vi } from "vite-plus/test";
 
-import { rollbackFailureClientMessage } from "../orchestration-v2/CheckpointRollbackService.ts";
-import { CheckpointRollbackExecutionError } from "../orchestration-v2/CheckpointRollbackService.ts";
 import * as Limbase from "./Limbase.ts";
 
 const created: unknown[] = [];
+/** The host entry of each rollback the fake service made. */
+const rolledBack: unknown[] = [];
 
 /** A fail-out the host reports as it starts, as the real host does from the hook that failed. */
 let failOut: { readonly where: string; readonly what: string } | undefined;
@@ -52,6 +52,17 @@ vi.mock("@limbase/host-agent-sdk", async (original) => {
           },
         }),
       close: async () => {},
+    }),
+    // A thread's capture ends at its second turn, whose answer is `assistant-2`.
+    threadCalls: (...args: Parameters<typeof actual.threadCalls>) => ({
+      ...actual.threadCalls(...args),
+      registerAlias: async () => ({}),
+      open: async () => ({}),
+      cursor: async () => ({ durableThrough: "claude:assistant-2:turn_end", viewRevision: 0 }),
+      rollBack: async (entry: string) => {
+        rolledBack.push(entry);
+        return { _tag: "rolledBack", viewRevision: 1, through: "claude:assistant-1:turn_end" };
+      },
     }),
   };
 });
@@ -259,6 +270,49 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
       }),
   );
 
+  it.effect("tells the user how to get past a rollback Limbase did not make", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      const shown = (where: string, what: string) =>
+        Effect.gen(function* () {
+          failOut = { where, what };
+          const reason = `limbase: stopped at ${where}: ${what}`;
+          const hosted = yield* Limbase.queryFor(
+            settings,
+            providerThread({ limbaseThreadId: "th_1" }),
+            fakeSdk([
+              {
+                type: "result",
+                subtype: "success",
+                is_error: false,
+                result: `Operation stopped by hook: ${reason}`,
+              } as SDKMessage,
+            ]).sdk,
+          );
+          const [result] = yield* Effect.promise(() =>
+            drain(hosted!({ prompt: prompts, options: {} })),
+          );
+          failOut = undefined;
+          return result?.type === "result" && result.subtype !== "success" ? result.errors : [];
+        });
+      assert.deepEqual(yield* shown("view", "rollback refused: anchor"), [
+        "limbase: stopped at view: rollback refused: anchor. Edit an earlier message to go on.",
+      ]);
+      assert.deepEqual(yield* shown("view", "rollback refused: overBound"), [
+        "limbase: stopped at view: rollback refused: overBound. Edit an earlier message to go on.",
+      ]);
+      assert.deepEqual(yield* shown("view", "rollback refused: failed"), [
+        "limbase: stopped at view: rollback refused: failed. Edit the message again to retry.",
+      ]);
+      assert.deepEqual(
+        yield* shown("convex", "the rollback did not reach Limbase within the retry window"),
+        [
+          "limbase: stopped at convex: the rollback did not reach Limbase within the retry window. Edit the message again to retry.",
+        ],
+      );
+    }),
+  );
+
   it.effect("warns when the CLI is not the version the host is tested on", () => {
     const warnings: unknown[] = [];
     const logger = Logger.make(({ message, logLevel }) => {
@@ -280,22 +334,54 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
 
-  it.effect("tells the user why Edit from here is refused on a Limbase thread", () =>
+  it.effect(
+    "rolls the Limbase thread back to the place an edit pins, and the CLI never sees it",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+        const { opened, sdk } = fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]);
+        const hosted = yield* Limbase.queryFor(
+          settings,
+          providerThread({ limbaseThreadId: "th_1" }),
+          sdk,
+        );
+        const before = rolledBack.length;
+        yield* Effect.promise(() =>
+          drain(
+            hosted!({
+              prompt: prompts,
+              options: { resume: "session-1", resumeSessionAt: "assistant-1", cwd: "/work/app" },
+            }),
+          ),
+        );
+        assert.deepEqual(rolledBack.slice(before), ["assistant-1"]);
+        assert.equal(opened[0]?.resumeSessionAt, undefined);
+        assert.equal(opened[0]?.resume, undefined);
+      }),
+  );
+
+  it.effect("gives a reset row a new Limbase thread when the old row had one", () =>
     Effect.gen(function* () {
-      const refusal = yield* Effect.flip(
-        Limbase.refuse(providerThread({ limbaseThreadId: "th_1" }), "rollback"),
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      const before = created.length;
+      const reset = yield* Limbase.threadAfterReset({
+        settings,
+        reset: providerThread({ limbaseThreadId: "th_1" }),
+        cwd: "/work/app",
+      });
+      assert.equal(created.length, before + 1);
+      assert.deepEqual(created.at(-1), {
+        cwd: "/work/app",
+        compactPolicy: { trigger: 700_000, target: 100_000 },
+      });
+      assert.notEqual(reset.nativeMetadata?.limbaseThreadId, "th_1");
+      assert.isDefined(reset.nativeMetadata?.limbaseThreadId);
+      // A thread that began before its instance had a home stays plain.
+      assert.deepEqual(
+        yield* Limbase.threadAfterReset({ settings, reset: providerThread(), cwd: "/work/app" }),
+        {},
       );
-      const message = rollbackFailureClientMessage(
-        new CheckpointRollbackExecutionError({
-          reason: "unexpected-failure",
-          threadId: "thread-1" as never,
-          providerThreadId: providerThread().id,
-          checkpointId: "checkpoint-1" as never,
-          cause: { _tag: "ProviderAdapterRollbackThreadError", cause: refusal },
-        }),
-      );
-      assert.equal(message, "Edit from here does not work on a Limbase thread yet.");
-      yield* Limbase.refuse(providerThread(), "rollback");
+      assert.equal(created.length, before + 1);
     }),
   );
 
