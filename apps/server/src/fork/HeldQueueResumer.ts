@@ -5,7 +5,11 @@
  * one record of why, and only a `command:runtime-reconcile:` hold counts as a restart.
  */
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
+import {
+  latestExecutedRun,
+  latestRootProviderFailure,
+  usageLimitBlockedRun,
+} from "@t3tools/shared/orchestrationV2ThreadError";
 import { resolveProjectSettings } from "@t3tools/shared/projectSettings";
 import {
   CommandId,
@@ -17,6 +21,7 @@ import {
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -25,6 +30,7 @@ import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
+import { isBufferedProviderNotification } from "../orchestration-v2/NotificationMailbox.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -366,6 +372,37 @@ const make = Effect.gen(function* () {
       ),
   );
 
+  // Core's queue.resume counts as a user start, which skips the usage-limit hold core keeps for
+  // automatic starts until the limited provider's reported reset.
+  const usageLimitResetAhead = Effect.fn("heldQueueResumer.usageLimitResetAhead")(function* (
+    threadId: ThreadId,
+    runs: ReadonlyArray<OrchestrationV2Run>,
+    providerInstanceId: OrchestrationV2Run["providerInstanceId"],
+  ) {
+    const providerRuns = runs.filter((run) => run.providerInstanceId === providerInstanceId);
+    const failed = latestExecutedRun(providerRuns);
+    if (failed?.status !== "failed") return undefined;
+    const { turnItems, providerSessions } = yield* projections.getThreadRecords(
+      threadId,
+      ["turnItems", "providerSessions"],
+      { turnItemRunIds: [failed.id] },
+    );
+    const session = providerSessions
+      .filter((candidate) => candidate.providerInstanceId === providerInstanceId)
+      .reduce<(typeof providerSessions)[number] | undefined>(
+        (latest, candidate) =>
+          latest === undefined || DateTime.isGreaterThan(candidate.updatedAt, latest.updatedAt)
+            ? candidate
+            : latest,
+        undefined,
+      );
+    const limited = usageLimitBlockedRun(providerRuns, turnItems, session?.lastError ?? null);
+    const resetAt = latestRootProviderFailure(limited, turnItems)?.resetAt;
+    if (resetAt == null) return undefined;
+    const resetMs = Date.parse(resetAt);
+    return resetMs > DateTime.toEpochMillis(yield* DateTime.now) ? resetMs : undefined;
+  });
+
   const decide = Effect.fn("heldQueueResumer.decide")(function* (
     held: RestartHeld,
     runs: ReadonlyArray<OrchestrationV2Run>,
@@ -394,6 +431,22 @@ const make = Effect.gen(function* () {
       );
     const head = queued[0];
     if (head === undefined || !queued.some((run) => run.queueHeld === true)) return "released";
+    const message = (yield* projections.getMessagesById(threadId, [head.userMessageId])).get(
+      head.userMessageId,
+    );
+    // Upstream's queuedRunModelSelection: a delegated result or an unbuffered monitor notice
+    // starts on the thread's current provider, not the one stored on the run.
+    const followsThread =
+      message !== undefined &&
+      (message.delegatedCompletion !== undefined ||
+        (message.notification?.source.kind === "monitor" &&
+          !isBufferedProviderNotification(message)));
+    const resetMs = yield* usageLimitResetAhead(
+      threadId,
+      runs,
+      followsThread ? shell.modelSelection.instanceId : head.providerInstanceId,
+    );
+    if (resetMs !== undefined) return { limitedUntilMs: resetMs };
     yield* orchestrator.dispatch({
       type: "queue.resume",
       commandId: resumeCommandId({
@@ -408,11 +461,28 @@ const make = Effect.gen(function* () {
 
   const release = Effect.fn("heldQueueResumer.release")(
     function* (held: RestartHeld) {
-      const from = yield* Clock.currentTimeMillis;
-      const runs = yield* quiet(held.threadId);
-      const waitedMs = (yield* Clock.currentTimeMillis) - from;
-      const outcome = yield* decide(held, runs);
-      yield* Effect.logInfo("held queue release", { threadId: held.threadId, outcome, waitedMs });
+      while (true) {
+        const from = yield* Clock.currentTimeMillis;
+        const runs = yield* quiet(held.threadId);
+        const waitedMs = (yield* Clock.currentTimeMillis) - from;
+        const outcome = yield* decide(held, runs);
+        if (typeof outcome === "string") {
+          yield* Effect.logInfo("held queue release", {
+            threadId: held.threadId,
+            outcome,
+            waitedMs,
+          });
+          return;
+        }
+        const until = outcome.limitedUntilMs;
+        yield* Effect.logInfo("held queue release", {
+          threadId: held.threadId,
+          outcome: "limited",
+          until: DateTime.formatIso(DateTime.makeUnsafe(until)),
+          waitedMs,
+        });
+        yield* Effect.sleep(Duration.millis(until - (yield* Clock.currentTimeMillis)));
+      }
     },
     (effect, held) =>
       effect.pipe(

@@ -367,7 +367,7 @@ it.effect(
       assert.include(wake.text, "1970-01-01T00:10:00.000Z");
       assert.deepEqual(wake.notification, {
         source: { kind: "delegated_task", taskIds: [task.id], childThreadId },
-        outcome: "updated",
+        outcome: "unknown",
         summary: 'Delegated task "Remove the target directory" needs approval',
       });
 
