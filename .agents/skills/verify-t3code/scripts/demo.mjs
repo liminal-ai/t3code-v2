@@ -81,7 +81,11 @@ function demoPart(mod, side) {
   return { scenes, seed: mod.seed };
 }
 
-const allScenes = (mod) => ["scenes", "before", "after"].flatMap((k) => mod.default?.[k] ?? []);
+const sceneLists = (def) =>
+  ["scenes", "before", "after"].filter((k) => Array.isArray(def[k])).map((k) => [k, def[k]]);
+
+export const lintDemo = (def) =>
+  sceneLists(def).flatMap(([name, list]) => lint(list).map((problem) => `${name}: ${problem}`));
 
 const clipKey = (scene, voice = VOICE) =>
   NodeCrypto.createHash("sha256")
@@ -344,8 +348,8 @@ const loadDemo = (file) => import(NodeURL.pathToFileURL(NodePath.resolve(file)).
 
 async function tts(opts) {
   const mod = await loadDemo(opts.demo);
-  const scenes = allScenes(mod);
-  const problems = lint(scenes);
+  const scenes = sceneLists(mod.default).flatMap(([, list]) => list);
+  const problems = lintDemo(mod.default);
   if (problems.length > 0)
     fail(`the scene file breaks the pacing grammar:\n  ${problems.join("\n  ")}`);
   const cache = NodePath.join(mainCheckout(), ".pstack", "demo-tts-cache");
@@ -397,8 +401,7 @@ async function tts(opts) {
     clips[key] = { file: NodePath.join(clipsDir, `${key}.wav`), ms: durationMs(final) };
   }
   writeJson(NodePath.join(opts.out, "clips.json"), { voice: VOICE, clips });
-  for (const [label, list] of Object.entries(mod.default)) {
-    if (!Array.isArray(list)) continue;
+  for (const [label, list] of sceneLists(mod.default)) {
     const ms = list.reduce(
       (sum, s) => sum + clips[clipKey(s)].ms + (s.tailMs ?? PACING.minTailMs),
       0,

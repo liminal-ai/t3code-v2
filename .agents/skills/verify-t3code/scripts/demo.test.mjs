@@ -6,6 +6,7 @@ import {
   drift,
   layout,
   lint,
+  lintDemo,
   muxArgs,
   parseSilences,
   renderComment,
@@ -222,3 +223,9 @@ NodeTest.test(
     ]);
   },
 );
+
+NodeTest.test("each side is linted on its own, so before and after may share scene ids", () => {
+  const scene = { id: "menu", say: "Fine.", caption: "Open the thread menu", ready: "x" };
+  NodeAssert.deepEqual(lintDemo({ before: [scene], after: [scene] }), []);
+  NodeAssert.deepEqual(lintDemo({ after: [scene, scene] }), ["after: scene menu: id used twice"]);
+});
