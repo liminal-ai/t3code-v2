@@ -261,10 +261,10 @@ export const refuse = (
 type LiveQuery = { readonly nativeThreadId: string; readonly stopping: boolean } | null;
 
 /**
- * The session id the adapter's live state knows a row by. An install moves the live CLI process to
- * a new session id, which the row then stores as the one to resume, while the adapter keeps the
- * process's state under its first id. For a Limbase row whose stored id is the one the running
- * process moved to, that first id; otherwise the stored id.
+ * The session id the adapter's live state knows a row by. An install that had to close the CLI
+ * process moves it to a new session id, which the row then stores as the one to resume, while the
+ * adapter keeps the process's state under its first id. For a Limbase row whose stored id is the
+ * one the running process moved to, that first id; otherwise the stored id.
  */
 export const liveNativeId = (
   providerThread: OrchestrationV2ProviderThread,
