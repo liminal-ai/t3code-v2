@@ -15,7 +15,8 @@ type ThreadItem = Extract<SidebarListItem, { kind: "thread" }>;
 type Layout = Parameters<SortingStrategy>[0];
 const isShelfHeader = (item: SidebarListItem | undefined) =>
   item?.kind === "marker" &&
-  (item.marker === "working-header" ||
+  (item.marker === "agents-header" ||
+    item.marker === "working-header" ||
     item.marker === "snoozed-header" ||
     item.marker === "settled-header");
 
@@ -56,7 +57,9 @@ export function createSidebarCollisionDetection(
       if (pointer.x >= boundary.left && pointer.x <= boundary.right) {
         if (pointer.y < previousY && pointer.y <= boundary.bottom) boundarySection = "pinned";
         else if (pointer.y > previousY && pointer.y >= boundary.top) boundarySection = "active";
-        const nextHeader = (["working-header", "snoozed-header", "settled-header"] as const)
+        const nextHeader = (
+          ["agents-header", "working-header", "snoozed-header", "settled-header"] as const
+        )
           .map((marker) =>
             args.droppableContainers.find((container) => container.id === sidebarMarkerId(marker)),
           )
@@ -117,6 +120,7 @@ export function createSidebarSortingStrategy(input: {
     const groups: Record<SidebarSection, ThreadItem[]> = {
       pinned: [],
       active: [],
+      agents: [],
       working: [],
       snoozed: [],
       settled: [],
@@ -176,6 +180,10 @@ export function createSidebarSortingStrategy(input: {
     projected.push(...groups.pinned);
     marker("pinned-divider");
     section("active");
+    if (items.some((item) => item.kind === "marker" && item.marker === "agents-header")) {
+      marker("agents-header");
+      projected.push(...groups.agents);
+    }
     if (items.some((item) => item.kind === "marker" && item.marker === "working-header")) {
       marker("working-header");
       projected.push(...groups.working);

@@ -1,5 +1,6 @@
 import type { ContextMenuItem } from "@t3tools/contracts";
 import type { SnoozePreset } from "@t3tools/client-runtime/state/thread-settled";
+import { withAgentMenuItems } from "../fork/agentMenu";
 
 export type ThreadActionMenuId =
   | "find"
@@ -9,6 +10,8 @@ export type ThreadActionMenuId =
   | "project-settings"
   | "pin"
   | "unpin"
+  | "agent-pin"
+  | "agent-unpin"
   | "settle"
   | "unsettle"
   | "auto-settle"
@@ -76,6 +79,7 @@ export interface ThreadActionMenuState {
     readonly isActive: boolean;
   } | null;
   readonly isPinned: boolean;
+  readonly isAgent?: boolean;
   readonly isSettled: boolean;
   readonly autoSettleEnabled: boolean;
   readonly isSnoozed: boolean;
@@ -116,7 +120,7 @@ export function threadActionRequiresOperate(action: ThreadActionMenuId): boolean
 export function buildThreadActionMenuItems(
   state: ThreadActionMenuState,
 ): ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> {
-  const items: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
+  const listed: ReadonlyArray<ContextMenuItem<ThreadActionMenuId>> = [
     ...(state.canFind
       ? [{ id: "find" as const, label: "Find in thread", icon: "text-search" }]
       : []),
@@ -253,6 +257,7 @@ export function buildThreadActionMenuItems(
       icon: "trash",
     },
   ];
+  const items = withAgentMenuItems(listed, state.isAgent === true);
   return state.canOperate
     ? items
     : items.map((item) =>

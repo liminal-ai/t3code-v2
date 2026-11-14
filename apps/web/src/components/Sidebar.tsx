@@ -35,6 +35,8 @@ import {
   isThreadWorking,
 } from "@t3tools/client-runtime/state/thread-inbox";
 import { sortSettledThreads } from "@t3tools/client-runtime/state/thread-sort";
+import { AGENTS_SHELF_EXPANDED_KEY, isAgentThread, splitAgentThreads } from "../fork/agentThreads";
+import { useAgentPin } from "../fork/useAgentPin";
 import {
   nextShownOrder,
   threadSearchMatchKey,
@@ -464,6 +466,11 @@ function useSidebarThreads(input: {
     false,
     Schema.Boolean,
   );
+  const [agentsShelfExpanded, setAgentsShelfExpanded] = useLocalStorage(
+    AGENTS_SHELF_EXPANDED_KEY,
+    true,
+    Schema.Boolean,
+  );
   // Shared with the old per-project sidebar, so folders keep their open state.
   const projectExpandedById = useUiStateStore((store) => store.projectExpandedById);
   const setProjectExpanded = useUiStateStore((store) => store.setProjectExpanded);
@@ -523,6 +530,9 @@ function useSidebarThreads(input: {
   const visibleWorkingThreads = workingShelfExpanded
     ? workingThreads
     : routeThreadOnly(workingThreads, routeRowThreadKey);
+  const visibleAgentThreads = agentsShelfExpanded
+    ? partition.agentThreads
+    : routeThreadOnly(partition.agentThreads, routeRowThreadKey);
   const projectFolders =
     folderGroups === null
       ? null
@@ -548,6 +558,7 @@ function useSidebarThreads(input: {
     ...(projectFolders === null
       ? activeThreads
       : projectFolders.flatMap((folder) => folder.threads)),
+    ...visibleAgentThreads,
     ...visibleWorkingThreads,
     ...visibleSnoozedThreads,
     ...renderedSettledThreads,
@@ -556,6 +567,7 @@ function useSidebarThreads(input: {
   for (const [list, section] of [
     [pinnedThreads, "pinned"],
     [activeThreads, "active"],
+    [partition.agentThreads, "agents"],
     [workingThreads, "working"],
     [snoozedThreads, "snoozed"],
     [settledThreads, "settled"],
@@ -569,6 +581,7 @@ function useSidebarThreads(input: {
     searchableThreads: [
       ...pinnedThreads,
       ...activeThreads,
+      ...partition.agentThreads,
       ...workingThreads,
       ...snoozedThreads,
       ...settledThreads,
@@ -588,6 +601,9 @@ function useSidebarThreads(input: {
     toggleSnoozedShelf: () => setSnoozedShelfExpanded((value) => !value),
     workingShelfExpanded,
     toggleWorkingShelf: () => setWorkingShelfExpanded((value) => !value),
+    agentsShelfExpanded,
+    toggleAgentsShelf: () => setAgentsShelfExpanded((value) => !value),
+    visibleAgentThreads,
     projectFolders,
     toggleProjectFolder: (group: SidebarProjectSnapshot) => {
       const keys = sidebarFolderExpansionKeys(group);
@@ -624,6 +640,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
+  const { agents, others } = splitAgentThreads(visible);
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -640,7 +657,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
     serverConfigs,
     connectedEnvironmentIds: input.connectedEnvironmentIds,
   });
-  for (const thread of visible) {
+  for (const thread of others) {
     const configLoaded = serverConfigs.has(thread.environmentId);
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
     if (optimisticDrop?.key === threadKey) {
@@ -702,6 +719,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
             preferredIds: optimisticDrop.order,
             getId: (thread) => scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id)),
           }),
+    agentThreads: agents,
     workingThreads: sortWorkingThreadsBySend(working),
     snoozedThreads: snoozed.toSorted(
       (left, right) =>
@@ -934,6 +952,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     archiveThread,
     deleteThread,
   } = useThreadActions();
+  const { handleAgentMenuAction } = useAgentPin();
   const updateThreadMetadata = useOrchestrationCommand(threadEnvironment.updateMetadata, {
     reportFailure: false,
   });
@@ -1311,6 +1330,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     draggableThreadKeys,
     activeReorderableThreadKeys,
     activeThreads,
+    agentThreads,
     workingThreads,
     snoozedThreads,
     settledThreads,
@@ -1327,6 +1347,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     toggleSnoozedShelf,
     workingShelfExpanded,
     toggleWorkingShelf,
+    agentsShelfExpanded,
+    toggleAgentsShelf,
+    visibleAgentThreads,
     projectFolders,
     toggleProjectFolder,
     renderedSettledThreads,
@@ -1729,6 +1752,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const isContextDrag =
     projectFolders !== null ||
     dragState?.contextDrag === true ||
+    dragState?.activeSection === "agents" ||
     dragState?.activeSection === "working";
   const dragTargetSection = isContextDrag ? null : (dragState?.targetSection ?? null);
   const finishThreadDrag = (started: boolean) => {
@@ -1950,6 +1974,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       !hasProjectFolders &&
       pinnedThreads.length +
         activeThreads.length +
+        agentThreads.length +
         workingThreads.length +
         snoozedThreads.length +
         settledCount ===
@@ -1964,6 +1989,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     const activeRows = rowsOf(activeThreads, "active");
     items.push({ kind: "marker", marker: "active-placeholder" });
     items.push(...activeRows);
+    if (agentThreads.length > 0) {
+      items.push({ kind: "marker", marker: "agents-header" });
+      items.push(...rowsOf(visibleAgentThreads, "agents"));
+    }
     if (workingThreads.length > 0) {
       items.push({ kind: "marker", marker: "working-header" });
       items.push(...rowsOf(visibleWorkingThreads, "working"));
@@ -2013,9 +2042,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     dragState === null && sidebarListItems.length + visibleDraftSessionCount > 0;
   // Cache on both fields so layout-key changes trigger the effect even when animate is unchanged.
   const listMotionPass = { layoutKey: listMotionLayoutKey, animate: listMotionAnimate };
-  const shelfExpansionKey = [workingShelfExpanded, snoozedShelfExpanded, settledShelfExpanded].join(
-    ":",
-  );
+  const shelfExpansionKey = [
+    agentsShelfExpanded,
+    workingShelfExpanded,
+    snoozedShelfExpanded,
+    settledShelfExpanded,
+  ].join(":");
   const previousShelfExpansionKeyRef = useRef(shelfExpansionKey);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the list motion controller to animate or not after each layout-affecting commit
   useLayoutEffect(() => {
@@ -2304,10 +2336,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         return thread ? [thread] : [];
       });
       const settlingThreads = selectedThreads.filter(
-        (thread) => thread.settledOverride !== "settled",
+        (thread) => thread.settledOverride !== "settled" && !isAgentThread(thread),
       );
       const canSnoozeSelection = selectedThreads.every(
         (thread) =>
+          !isAgentThread(thread) &&
           serverConfigs.has(thread.environmentId) &&
           canSnooze(thread, { now: selectionNow.toISOString() }),
       );
@@ -2322,7 +2355,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         actionableCount: regeneratableTitleThreads.length,
       });
       const pinnedSelectedThreads = selectedThreads.filter(
-        (thread) => serverConfigs.has(thread.environmentId) && thread.pinnedAt != null,
+        (thread) =>
+          serverConfigs.has(thread.environmentId) &&
+          thread.pinnedAt != null &&
+          !isAgentThread(thread),
       );
       const unpinMenuItem = buildBulkUnpinContextMenuItem({
         pinnedCount: pinnedSelectedThreads.length,
@@ -2645,6 +2681,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     }
                   : null,
               isPinned,
+              isAgent: isAgentThread(thread),
               isSettled,
               autoSettleEnabled: thread.autoSettleDisabledAt == null,
               isSnoozed,
@@ -2669,6 +2706,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
         );
         if (clicked._tag === "Failure" || clicked.value === null) return;
         if (threadActionRequiresOperate(clicked.value) && !checkThreadOperations([thread])) return;
+        if (handleAgentMenuAction(clicked.value, threadRef)) return;
         if (clicked.value?.startsWith("snooze:")) {
           const preset =
             clicked.value === "snooze:custom"
@@ -3364,13 +3402,18 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         );
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
+                        const isAgent = section === "agents";
                         const rowVariant = folderRow
                           ? folderRowsMultiline
                             ? "folder-multiline"
                             : "folder"
-                          : isCard
-                            ? "card"
-                            : "slim";
+                          : isAgent
+                            ? "agent"
+                            : isCard
+                              ? "card"
+                              : "slim";
+                        const lifecycleSupported =
+                          !isAgent && serverConfigs.has(thread.environmentId);
                         return (
                           <SortableThreadRow
                             key={threadKey}
@@ -3385,7 +3428,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             variant={rowVariant}
                             navigationParent={
                               folderRow ??
-                              (section === "working" ||
+                              (isAgent ||
+                              section === "working" ||
                               section === "snoozed" ||
                               section === "settled"
                                 ? `shelf:${section}`
@@ -3398,10 +3442,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   ? "unsettle"
                                   : "settle"
                             }
-                            settlementSupported={serverConfigs.has(thread.environmentId)}
-                            snoozeSupported={serverConfigs.has(thread.environmentId)}
-                            pinningSupported={serverConfigs.has(thread.environmentId)}
-                            isPinned={thread.pinnedAt != null}
+                            settlementSupported={lifecycleSupported}
+                            snoozeSupported={lifecycleSupported}
+                            pinningSupported={lifecycleSupported}
+                            isPinned={!isAgent && thread.pinnedAt != null}
                             dropVerb={
                               dragState?.activeKey === threadKey
                                 ? resolveSidebarDropVerb(dragState.activeSection, dragTargetSection)
@@ -3557,12 +3601,27 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               />,
                             );
                             break;
+                          case "agents-header":
+                            items.push(
+                              <SidebarSectionHeader
+                                key="agents-shelf-header"
+                                marker="agents-header"
+                                className="mt-auto"
+                                label="Agents"
+                                count={agentThreads.length}
+                                toggle={{
+                                  expanded: agentsShelfExpanded,
+                                  onToggle: toggleAgentsShelf,
+                                }}
+                              />,
+                            );
+                            break;
                           case "working-header":
                             items.push(
                               <SidebarSectionHeader
                                 key="working-shelf-header"
                                 marker="working-header"
-                                className="mt-auto"
+                                className={cn(agentThreads.length === 0 && "mt-auto")}
                                 label="Working"
                                 count={workingThreads.length}
                                 toggle={{
@@ -3577,7 +3636,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                               <SidebarSectionHeader
                                 key="snoozed-shelf-header"
                                 marker="snoozed-header"
-                                className={cn(workingThreads.length === 0 && "mt-auto")}
+                                className={cn(
+                                  agentThreads.length + workingThreads.length === 0 && "mt-auto",
+                                )}
                                 label="Snoozed"
                                 count={snoozedThreads.length}
                                 toggle={{
@@ -3593,7 +3654,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 key="settled-shelf-header"
                                 marker="settled-header"
                                 className={cn(
-                                  workingThreads.length + snoozedThreads.length === 0 && "mt-auto",
+                                  agentThreads.length +
+                                    workingThreads.length +
+                                    snoozedThreads.length ===
+                                    0 && "mt-auto",
                                 )}
                                 label="Settled"
                                 count={settledCount}

@@ -35,6 +35,7 @@ import {
 } from "@t3tools/client-runtime/state/thread-execution";
 import { useAcknowledgeThreadWoke, useThreadActions } from "../../hooks/useThreadActions";
 import { settleAndAdvance } from "../../settleAndAdvance";
+import { isAgentThread } from "../../fork/agentThreads";
 import type { ChatShortcutCommands } from "./useChatShortcuts";
 import { resolveThreadLastVisitedAt } from "../Sidebar.logic";
 import { scopedThreadKey, scopeThreadRef } from "@t3tools/client-runtime/environment";
@@ -663,6 +664,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
     "thread.settle": () => {
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
       if (!activeThreadShell || !activeThreadRef || !serverConfigLoaded) return;
+      if (isAgentThread(activeThreadShell)) return;
       if (activeThreadSettled) {
         void handleUnsettleActiveThread();
         return;
@@ -680,6 +682,7 @@ export function useThreadLifecycle(input: ThreadLifecycleInput) {
       }
       if (!readEnvironmentScope(environmentId, AuthOrchestrationOperateScope)) return false;
       if (!activeThreadShell || !activeThreadRef || !serverConfigLoaded) return;
+      if (isAgentThread(activeThreadShell)) return;
       void (
         activeThreadPinned ? confirmAndUnpinThread(activeThreadRef) : pinThread(activeThreadRef)
       ).then(

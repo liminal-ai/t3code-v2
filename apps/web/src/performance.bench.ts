@@ -1,4 +1,4 @@
-import { ProjectId } from "@t3tools/contracts";
+import { ProjectId, ThreadId } from "@t3tools/contracts";
 import {
   getLatestThreadForProject,
   sortActiveThreadsByOrderKey,
@@ -7,6 +7,8 @@ import {
 } from "@t3tools/client-runtime/state/thread-sort";
 import { formatHourShort, formatRelativeHourShort } from "@t3tools/shared/usageFormat";
 import { describe, test } from "vite-plus/test";
+
+import { AGENT_THREAD_TAG, splitAgentThreads } from "./fork/agentThreads";
 
 const projectId = ProjectId.make("benchmark-project");
 const start = Date.parse("2026-08-11T00:00:00.000Z");
@@ -20,6 +22,16 @@ const threads = Array.from({ length: 1_000 }, (_, index) => {
     updatedAt: timestamp,
     latestUserMessageAt: timestamp,
     unsettledAt: null,
+  };
+});
+const threadsWithAgents = threads.map((thread, index) => {
+  const agent = index % 100 === 0;
+  return {
+    ...thread,
+    id: ThreadId.make(thread.id),
+    latestRun: null,
+    pinnedAt: agent ? thread.updatedAt : null,
+    source: { tags: agent ? [AGENT_THREAD_TAG] : [] },
   };
 });
 const hours = Array.from({ length: 24 }, (_, index) =>
@@ -46,6 +58,11 @@ describe("client performance", () => {
   test("select latest project thread from 1000 threads", async ({ bench }) => {
     await bench("select", () => {
       getLatestThreadForProject(threads, projectId, "updated_at");
+    }).run();
+  });
+  test("split 1000 threads with 10 agents", async ({ bench }) => {
+    await bench("split", () => {
+      splitAgentThreads(threadsWithAgents);
     }).run();
   });
   test("format 24 hourly usage labels and tooltips", async ({ bench }) => {

@@ -546,7 +546,7 @@ type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
   // "folder" is a one-line row inside a boring sidebar project folder;
   // "folder-multiline" adds the card's branch and PR line under it.
-  variant: "card" | "slim" | "folder" | "folder-multiline";
+  variant: "card" | "slim" | "folder" | "folder-multiline" | "agent";
   navigationParent?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
@@ -1322,7 +1322,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         />
                         <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
                       </Tooltip>
-                    ) : inFolder && topStatus ? (
+                    ) : (inFolder || variant === "agent") && topStatus ? (
                       // Folder rows have no status line, so the status takes the time slot.
                       <span
                         className={cn(
