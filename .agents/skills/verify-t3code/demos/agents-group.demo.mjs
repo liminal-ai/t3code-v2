@@ -97,7 +97,6 @@ export async function seed({ page, t3v, checkout }) {
   await row(newest).click();
 }
 
-// The details and unpin scenes need the lead thread's pane open, and a closed pane persists per thread.
 async function openDetailsPane(page, leadRow) {
   await leadRow.click();
   const name = "Toggle thread details panel";

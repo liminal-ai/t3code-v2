@@ -83,7 +83,6 @@ type SentCommand = {
   readonly tagged?: boolean;
 };
 
-/** Stands in for the server: each command updates the threads the sidebar reads. */
 function fakeServer(initial: EnvironmentThreadShell[]) {
   let threads = initial;
   const listeners = new Set<() => void>();
