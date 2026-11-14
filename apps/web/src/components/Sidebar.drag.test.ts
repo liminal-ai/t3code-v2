@@ -530,6 +530,22 @@ describe("sidebar drag projection", () => {
     expect(byTime.get("w")).toEqual(stationary);
   });
 
+  it("keeps the Agents shelf in place under a card that opens in Active", () => {
+    const items = [
+      pinnedHeader,
+      thread("p", "pinned"),
+      divider,
+      thread("a", "active"),
+      marker("agents-header"),
+      thread("g", "agents"),
+      settledHeader,
+      thread("s", "settled"),
+    ];
+    const result = preview({ items, settledOrder: [], settledExpanded: true }, "s", "a");
+    expect(result.get(sidebarMarkerId("agents-header"))).toEqual({ ...stationary, y: 83 });
+    expect(result.get("g")).toEqual({ ...stationary, y: 83 });
+  });
+
   it("updates the projection when the target or measured geometry changes", () => {
     const strategy = createSidebarSortingStrategy({
       items: pinned,

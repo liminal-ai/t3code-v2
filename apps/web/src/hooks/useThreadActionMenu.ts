@@ -48,6 +48,8 @@ import { useCopyToClipboard } from "./useCopyToClipboard";
 import { useNewThreadHandler } from "./useHandleNewThread";
 import { useClientSettings } from "./useSettings";
 import { canTurnThreadIntoProject, useThreadActions } from "./useThreadActions";
+import { isAgentThread } from "../fork/agentThreads";
+import { useAgentPin } from "../fork/useAgentPin";
 
 function failureToast(title: string, error: unknown) {
   toastManager.add(
@@ -89,6 +91,7 @@ export function useThreadActionMenu(input: {
     markThreadUnread,
     turnThreadIntoProject,
   } = useThreadActions();
+  const { handleAgentMenuAction } = useAgentPin();
   const regenerateThreadTitle = useOrchestrationCommand(threadEnvironment.regenerateTitle, {
     reportFailure: false,
   });
@@ -143,6 +146,7 @@ export function useThreadActionMenu(input: {
         branch: thread.branch ?? null,
         projectFilter: null,
         isPinned: thread.pinnedAt != null,
+        isAgent: isAgentThread(thread),
         isSettled: supports.settlement && thread.settledOverride === "settled",
         autoSettleEnabled: thread.autoSettleDisabledAt == null,
         isSnoozed: supports.snooze && effectiveSnoozed(thread, { now: now.toISOString() }),
@@ -167,6 +171,7 @@ export function useThreadActionMenu(input: {
         );
         return;
       }
+      if (handleAgentMenuAction(action, threadRef)) return;
       if (action.startsWith("snooze:")) {
         const preset =
           action === "snooze:custom"

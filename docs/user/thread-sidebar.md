@@ -76,7 +76,7 @@ files directly; see [Attach files](./composer.md#attach-files).
 On web and desktop, pinning or unpinning a thread keeps the sidebar at your current
 scroll position instead of following the thread to its new place in the list.
 
-Pinning does not prevent automatic settlement. Settling a thread removes its pin.
+A pinned thread does not settle automatically. Settling a thread removes its pin.
 
 On web and desktop, drag a thread between sections to change its state. Drag a thread up into
 the pinned section to pin it at the spot you drop it; drag a pinned thread down into the active
@@ -158,6 +158,41 @@ needs you. Use the pen button on a folder, or right-click it, to start a thread 
 Pinned threads stay above the folders, and Snoozed and Settled stay below them. In this mode you
 can drag a thread onto the composer to mention it, but not within the sidebar, and the Working
 section is off. Each device keeps its own choice.
+
+### Pin a thread as an agent
+
+Here an agent is a thread you keep open for a long time to run other work, such as a lead
+thread that delegates tasks. It is not a provider or a subagent.
+
+On web and desktop, choose **Pin as agent** from a thread's menu, under **Pin thread**. The
+thread moves into the **Agents** group directly above **Working**, one line per thread. The
+thread that had activity most recently comes first, and each row shows the thread's status in
+place of its time. With **Group threads by project** on, **Agents** sits above **Snoozed** and
+**Settled**. Click the **Agents** header to collapse or expand the group. It starts expanded, and
+each device keeps its own choice.
+
+An agent thread stays pinned, so it does not settle automatically and stays in **Agents** after a
+reload even when it is old. Its menu has no **Pin**, **Settle** or **Snooze** items, its row has no
+hover actions, and the pin shortcut does nothing on it. You can still drag its row onto the
+composer to mention it, but not within the sidebar, and no thread can be dropped into the group.
+
+The thread details pane shows **Pinned as agent** for an agent thread. To return the thread to
+the active list, choose **Unpin agent** from its menu, or click **Unpin** in the details pane.
+
+**Pin as agent** pins the thread and then tags it. **Unpin agent** removes the tag and then
+unpins it. If the second step fails, you see an error and the thread stays in **Pinned**. Choose
+**Pin as agent** again to finish marking it, or **Unpin thread** to finish unpinning it.
+
+The mark is the thread tag `agent` together with the pin. A thread that has the tag but no pin
+shows as an ordinary thread, and pinning it with **Pin thread** makes it an agent again. This
+happens in two ways. A forked agent thread keeps the tag but not the pin. On mobile, agent threads
+appear like any other thread, and settling one there removes its pin, so it moves to **Settled**
+with the tag. In the command palette, agent threads also appear like any other thread.
+
+T3 Code has no settings screen for hidden thread tags. They are two keys in the server's
+`settings.json` in its `userdata` directory. When `hideTaggedThreads` is `true` and
+`hiddenThreadTags` includes `agent`, every agent thread is hidden, along with its Agents row.
+With either one unset, agent threads show.
 
 ## Settle finished work
 
