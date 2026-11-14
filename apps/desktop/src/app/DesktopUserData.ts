@@ -58,7 +58,6 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
     if (input.isDevelopment) {
       return (yield* inspect(legacyPath)) ? legacyPath : destinationPath;
     }
-    // The fork's build installs beside upstream's and never adopts its profile.
     if (isLimDesktopVersion(input.appVersion)) {
       return path.join(input.appDataDirectory, "t3code-lim");
     }

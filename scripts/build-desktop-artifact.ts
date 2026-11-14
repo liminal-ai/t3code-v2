@@ -2723,7 +2723,6 @@ export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
-// liminal-ai/t3code-v2 builds carry `-lim.<sha>` and install beside upstream's app.
 function isDesktopLimVersion(version: string): boolean {
   return /-lim\./.test(version);
 }
