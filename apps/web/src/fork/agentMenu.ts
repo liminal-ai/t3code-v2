@@ -4,19 +4,20 @@ import type { ThreadActionMenuId } from "../components/threadActionMenu.logic";
 
 type Item = ContextMenuItem<ThreadActionMenuId>;
 
-const PIN_SETTLE_SNOOZE_IDS = new Set<ThreadActionMenuId>([
+const HIDDEN_ON_AGENTS = new Set<ThreadActionMenuId>([
   "pin",
   "unpin",
   "settle",
   "unsettle",
   "snooze",
   "unsnooze",
+  "auto-settle",
 ]);
 
 export function withAgentMenuItems(items: ReadonlyArray<Item>, isAgent: boolean): Item[] {
   return items.flatMap((item): Item[] => {
     if (item.id !== "pin" && item.id !== "unpin") {
-      return isAgent && PIN_SETTLE_SNOOZE_IDS.has(item.id) ? [] : [item];
+      return isAgent && HIDDEN_ON_AGENTS.has(item.id) ? [] : [item];
     }
     return isAgent
       ? [{ id: "agent-unpin", label: "Unpin agent", icon: "pin-off" }]

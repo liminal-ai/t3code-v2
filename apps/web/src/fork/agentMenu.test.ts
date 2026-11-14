@@ -40,10 +40,20 @@ describe("agent menu items", () => {
     expect(ids(state).slice(0, 2)).toEqual(["unpin", "agent-pin"]);
   });
 
-  it("gives an agent only Unpin agent, with no pin, settle or snooze item", () => {
+  it("gives an agent only Unpin agent, with no pin, settle, snooze or auto-settle item", () => {
+    expect(ids(state)).toContain("auto-settle");
     const agentIds = ids({ ...state, isAgent: true, isSettled: true, isSnoozed: true });
     expect(agentIds[0]).toBe("agent-unpin");
-    for (const id of ["pin", "unpin", "agent-pin", "settle", "unsettle", "snooze", "unsnooze"]) {
+    for (const id of [
+      "pin",
+      "unpin",
+      "agent-pin",
+      "settle",
+      "unsettle",
+      "snooze",
+      "unsnooze",
+      "auto-settle",
+    ]) {
       expect(agentIds).not.toContain(id);
     }
   });

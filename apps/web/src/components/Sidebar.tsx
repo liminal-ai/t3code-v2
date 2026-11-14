@@ -3319,6 +3319,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           visibleDraftSessionCount === 0 &&
           pinnedThreads.length +
             activeThreads.length +
+            agentThreads.length +
             workingThreads.length +
             snoozedThreads.length ===
             0 &&

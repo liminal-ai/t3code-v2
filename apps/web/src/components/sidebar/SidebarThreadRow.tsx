@@ -1296,7 +1296,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                   <span
                     className={cn(
                       "inline-flex justify-end tabular-nums text-secondary-label transition-opacity",
-                      !isWoke && "group-any-hover/sidebar-row:opacity-0",
+                      !isWoke && variant !== "agent" && "group-any-hover/sidebar-row:opacity-0",
                     )}
                   >
                     {variantAction === "unsnooze" && props.snoozeWakeLabelText !== null ? (

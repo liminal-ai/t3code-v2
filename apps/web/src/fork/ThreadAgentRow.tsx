@@ -1,5 +1,9 @@
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
-import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
+import {
+  AuthOrchestrationOperateScope,
+  type EnvironmentId,
+  type ThreadId,
+} from "@t3tools/contracts";
 import { PinIcon } from "lucide-react";
 
 import { ThreadDetailsControl } from "../components/chat/ThreadDetailsControl";
@@ -11,12 +15,14 @@ import {
 } from "../components/chat/threadDetailsPanelStyles";
 import { cn } from "../lib/utils";
 import { useThreadShell } from "../state/entities";
+import { useEnvironmentScope } from "../state/session";
 import { isAgentThread } from "./agentThreads";
 import { useAgentPin } from "./useAgentPin";
 
 export function ThreadAgentRow(props: { environmentId: EnvironmentId; threadId: ThreadId }) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const thread = useThreadShell(ref);
+  const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const { unpinAgent } = useAgentPin();
   if (thread === null || !isAgentThread(thread)) return null;
   return (
@@ -31,7 +37,11 @@ export function ThreadAgentRow(props: { environmentId: EnvironmentId; threadId: 
         <span className={cn("min-w-0 flex-1 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
           Pinned as agent
         </span>
-        <ThreadDetailsControl part="meta" onClick={() => void unpinAgent(ref)}>
+        <ThreadDetailsControl
+          part="meta"
+          disabled={!canOperate}
+          onClick={() => void unpinAgent(ref)}
+        >
           Unpin
         </ThreadDetailsControl>
       </div>

@@ -154,6 +154,13 @@ describe("Agents group", () => {
     expect(screen.container.querySelector('[data-sidebar-row="shelf:agents"]')).toBeNull();
   });
 
+  it("does not call a sidebar of only agents empty", async () => {
+    mockApp([shell("lead-agent", true)]);
+    await using screen = await renderSidebar();
+    expect(rowOf(screen.container, "lead-agent")).toBeDefined();
+    expect(screen.container.textContent).not.toContain("No threads yet");
+  });
+
   it("offers Pin as agent under Pin thread, and only Unpin agent on an agent", async () => {
     mockApp([shell("plain-thread", false), shell("lead-agent", true)]);
     await using screen = await renderSidebar();
@@ -172,6 +179,7 @@ describe("ThreadAgentRow", () => {
     const agent = shell("lead-agent", true);
     vi.mocked(useThreadShell).mockReturnValue(agent);
     vi.mocked(readEnvironmentScope).mockReturnValue(true);
+    vi.mocked(useEnvironmentScope).mockReturnValue(true);
     const dispatch = vi.fn().mockResolvedValue({ _tag: "Success", value: { sequence: 1 } });
     vi.mocked(useOrchestrationCommand).mockReturnValue(dispatch);
     await using screen = await render(
@@ -184,6 +192,16 @@ describe("ThreadAgentRow", () => {
       { threadId: agent.id },
       { threadId: agent.id, tag: AGENT_THREAD_TAG, tagged: false },
     ]);
+  });
+
+  it("disables Unpin without operate access", async () => {
+    const agent = shell("lead-agent", true);
+    vi.mocked(useThreadShell).mockReturnValue(agent);
+    vi.mocked(useEnvironmentScope).mockReturnValue(false);
+    await using screen = await render(
+      <ThreadAgentRow environmentId={environmentId} threadId={agent.id} />,
+    );
+    await expect.element(screen.getByRole("button", { name: "Unpin", exact: true })).toBeDisabled();
   });
 
   it("renders nothing for a plain thread", async () => {
