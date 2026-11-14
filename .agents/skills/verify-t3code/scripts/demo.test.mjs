@@ -10,7 +10,6 @@ import {
   parseSilences,
   renderComment,
   runScenes,
-  unexplainedSilences,
 } from "./demo.mjs";
 
 const fakeClock = (readyDelays) => {
@@ -193,7 +192,7 @@ NodeTest.test(
       "scene a: tailMs under 900",
       "scene a: say has more than 2 sentences",
       "scene a: caption has 2 words, not 3 to 6",
-      "scene b: unknown action drag; use click, hover, press, type, scroll, goto",
+      "scene b: unknown action drag; use click, hover, press, scroll",
     ]);
   },
 );
@@ -223,30 +222,3 @@ NodeTest.test(
     ]);
   },
 );
-
-NodeTest.test("a long silence counts only where no title card or hold explains it", () => {
-  const runs = layout(
-    [
-      {
-        durationMs: 20_000,
-        scenes: [
-          { startMs: 1000, clipMs: 2000, holdMs: 3000 },
-          { startMs: 9000, clipMs: 2000, holdMs: 3000 },
-        ],
-      },
-    ],
-    2500,
-  );
-  const found = unexplainedSilences(
-    [
-      { start: 0, end: 3.5 },
-      { start: 5.5, end: 11.5 },
-    ],
-    runs,
-  );
-  NodeAssert.deepEqual(
-    found,
-    [{ start: 5.5, end: 11.5 }],
-    "the card's silence is fine, a 6 s gap before a scene is not",
-  );
-});

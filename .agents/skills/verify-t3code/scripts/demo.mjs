@@ -10,7 +10,7 @@ import * as NodeUtil from "node:util";
 const USAGE = `demo.mjs <command>   narrated demo videos of the T3 web UI (references/demo-video.md)
   tts --demo <file> --out <dir>
       one wav per scene from gpt-4o-mini-tts, cached by text, voice and instructions
-  record --demo <file> --checkout <path> --cdp <url> --out <dir> [--side before|after] [--label <text>]
+  record --demo <file> --checkout <path> --cdp <url> --out <dir> [--side before|after]
       run seed, then record each scene on the t3v browser at <url> (\`t3v.mjs browser info\`)
   mux --out <dir>
       join <dir>/before and <dir>/after (or <dir>/run) with title cards into <dir>/demo.mp4,
@@ -40,7 +40,7 @@ const PACING = {
 export const MARKER = "<!-- t3code-demo -->";
 const ACCOUNT = "e8e382d5bf8ec24ee2125188819b995c";
 const KEY_FILE = NodePath.join(process.env.HOME ?? "", ".config", "lim-keys", "models.env");
-const ACTIONS = ["click", "hover", "press", "type", "scroll", "goto"];
+const ACTIONS = ["click", "hover", "press", "scroll"];
 
 const sentences = (text) => text.split(/(?<=[.!?])\s+/).filter((s) => s.trim()).length;
 
@@ -78,7 +78,7 @@ function demoPart(mod, side) {
     throw new Error(
       side ? `the demo has no ${side} scene list` : "the demo has no scenes; pass --side",
     );
-  return { scenes, seed: mod.seed ?? def.seed };
+  return { scenes, seed: mod.seed };
 }
 
 const allScenes = (mod) => ["scenes", "before", "after"].flatMap((k) => mod.default?.[k] ?? []);
@@ -142,7 +142,6 @@ export function layout(runs, cardMs = PACING.cardMs) {
     at = offsetMs + run.durationMs;
     return {
       ...run,
-      cardStartMs: offsetMs - cardMs,
       offsetMs,
       scenes: run.scenes.map((s) => ({ ...s, finalStartMs: offsetMs + s.startMs })),
     };
@@ -256,21 +255,6 @@ export function drift({ scenes, onsets, flashes }) {
   });
 }
 
-export function unexplainedSilences(silences, runs, minS = 2) {
-  const quiet = runs.flatMap((run) => [
-    [run.cardStartMs, run.offsetMs],
-    ...run.scenes.map((s) => [s.finalStartMs + s.clipMs, s.finalStartMs + s.holdMs]),
-  ]);
-  const covered = (ms) => quiet.some(([a, b]) => ms >= a - 150 && ms <= b + 150);
-  return silences.filter((s) => {
-    if (s.end === null) return false;
-    let uncoveredMs = 0;
-    for (let ms = s.start * 1000; ms < s.end * 1000; ms += 100)
-      if (!covered(ms)) uncoveredMs += 100;
-    return uncoveredMs > minS * 1000;
-  });
-}
-
 function thumbnailWindow(runs) {
   const scenes = runs.flatMap((run) => run.scenes);
   const key = scenes.findLast((s) => s.key) ?? scenes.at(-1);
@@ -308,19 +292,6 @@ export function renderComment({ title, watch, gif, durationMs, runs }) {
     "",
     `Recorded from ${shas}.`,
   ].join("\n");
-}
-
-function streamUrlProblem(url) {
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return "is not a URL";
-  }
-  if (parsed.protocol !== "https:") return `is ${parsed.protocol}, not https:`;
-  if (!/(^|\.)(cloudflarestream\.com|videodelivery\.net)$/.test(parsed.hostname))
-    return `is on ${parsed.hostname}, not a Cloudflare Stream host`;
-  return null;
 }
 
 const fail = (message) => {
@@ -592,13 +563,9 @@ function pageDriver(page) {
           return moveTo(step.target);
         case "press":
           return page.keyboard.press(step.key);
-        case "type":
-          return page.keyboard.type(step.text, { delay: 45 });
         case "scroll":
           if (step.target) await moveTo(step.target);
           return page.mouse.wheel(0, step.dy);
-        case "goto":
-          return page.goto(new URL(step.path, page.url()).href);
         case "flash":
           return page.evaluate(FLASH, 300);
       }
@@ -694,8 +661,7 @@ async function record(opts) {
     await page.evaluate(() => document.getElementById("t3demo")?.remove()).catch(() => {});
     await browser.close().catch(() => {});
   }
-  const label =
-    opts.label ?? (opts.side ? `${opts.side[0].toUpperCase()}${opts.side.slice(1)}` : "Demo");
+  const label = opts.side ? `${opts.side[0].toUpperCase()}${opts.side.slice(1)}` : "Demo";
   writeJson(NodePath.join(dir, "timeline.json"), {
     demo: NodePath.resolve(opts.demo),
     label,
@@ -830,7 +796,6 @@ function mux(opts) {
     onsets: silences.map((s) => s.end).filter((t) => t !== null),
     flashes,
   });
-  const long = unexplainedSilences(silences, runs);
   const totalMs = durationMs(out);
   const streams = run("ffprobe", [
     "-v",
@@ -844,7 +809,6 @@ function mux(opts) {
   writeJson(NodePath.join(opts.out, "drift.json"), {
     budgetMs: PACING.driftBudgetMs,
     scenes: report,
-    unexplainedSilences: long,
   });
   writeJson(NodePath.join(opts.out, "video.json"), {
     title: NodePath.basename(recorded[0].demo).replace(/\.demo\.mjs$/, ""),
@@ -857,10 +821,6 @@ function mux(opts) {
   for (const d of report)
     console.log(
       `  ${d.id}: drift ${d.driftMs ?? "unmeasured"} ms${d.flashMs === undefined ? "" : " (flash to tone)"}`,
-    );
-  if (long.length > 0)
-    console.log(
-      `  silences over 2s outside cards and holds: ${long.map((s) => `${s.start}-${s.end}s`).join(", ")}`,
     );
   const over = report.filter(
     (d) => d.driftMs === null || Math.abs(d.driftMs) >= PACING.driftBudgetMs,
@@ -890,11 +850,6 @@ function privacy(dir, opts) {
 
 const cf = (args) =>
   run("cf", args, { env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT } }).stdout;
-const streamUrl = (url, what) => {
-  const problem = streamUrlProblem(url);
-  if (problem) fail(`Stream's ${what} URL ${problem}`);
-  return url;
-};
 
 async function publish(dir, opts) {
   if (!dir || !opts.pr) fail(`publish needs <dir> --pr <n>\n${USAGE}`);
@@ -937,14 +892,13 @@ async function publish(dir, opts) {
       await NodeFS.openAsBlob(video, { type: "video/mp4" }),
       `t3code-demo-${repo.replace("/", "-")}-pr${opts.pr}-${meta.title}.mp4`,
     );
-    const sent = await fetch(streamUrl(ticket.uploadURL, "upload"), {
+    const sent = await fetch(ticket.uploadURL, {
       method: "POST",
       body: form,
       signal: AbortSignal.timeout(300_000),
     });
     if (!sent.ok) fail(`upload to Stream video ${ticket.uid} answered ${sent.status}`);
     uid = ticket.uid;
-    writeJson(doneFile, { video: check.video, uid });
   }
   const deadline = Date.now() + 10 * 60_000;
   let v;
@@ -957,10 +911,7 @@ async function publish(dir, opts) {
       fail(`Stream video ${uid} not ready after 10 minutes; publish again to keep waiting`);
     await new Promise((resolve) => setTimeout(resolve, 5000));
   }
-  if (v.requireSignedURLs) fail(`Stream video ${uid} needs signed URLs, which GitHub cannot show`);
-  if (v.scheduledDeletion)
-    fail(`Stream video ${uid} is scheduled for deletion at ${v.scheduledDeletion}`);
-  const watch = streamUrl(v.preview, "watch page");
+  const watch = v.preview;
   const gif = gifUrl(watch, meta.thumbnail);
   for (const url of [watch, gif]) {
     const back = await fetch(url, { signal: AbortSignal.timeout(60_000) });
@@ -1001,7 +952,7 @@ if (import.meta.main) {
   const { values, positionals } = NodeUtil.parseArgs({
     allowPositionals: true,
     options: Object.fromEntries(
-      ["demo", "out", "checkout", "cdp", "side", "label", "by", "note", "pr"]
+      ["demo", "out", "checkout", "cdp", "side", "by", "note", "pr"]
         .map((name) => [name, { type: "string" }])
         .concat([["dry-run", { type: "boolean" }]]),
     ),
