@@ -59,7 +59,7 @@ async function record(readyDelays) {
     driver: clock.driver,
     now: clock.now,
     sleep: clock.sleep,
-    origin: 1000,
+    firstFrameAt: 1000,
   });
   return { timeline, acted: clock.acted };
 }

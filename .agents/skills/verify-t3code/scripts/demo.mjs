@@ -20,7 +20,6 @@ const USAGE = `demo.mjs <command>   narrated demo videos of the T3 web UI (refer
   publish <dir> --pr <n> [--dry-run]
       upload <dir>/demo.mp4 to Cloudflare Stream and update the PR's <!-- t3code-demo --> comment`;
 
-// Lee picks the voice. The lead sets these two values once he has.
 const VOICE = {
   model: "gpt-4o-mini-tts",
   voice: "coral",
@@ -45,7 +44,6 @@ const ACTIONS = ["click", "hover", "press", "type", "scroll", "goto"];
 
 const sentences = (text) => text.split(/(?<=[.!?])\s+/).filter((s) => s.trim()).length;
 
-/** Every way the scenes break the pacing grammar, as messages. */
 export function lint(scenes) {
   const problems = [];
   const ids = new Set();
@@ -73,7 +71,6 @@ export function lint(scenes) {
   return problems;
 }
 
-/** The scene list a demo module records for a side, and its seed. */
 function demoPart(mod, side) {
   const def = mod.default ?? {};
   const scenes = side ? def[side] : def.scenes;
@@ -84,29 +81,21 @@ function demoPart(mod, side) {
   return { scenes, seed: mod.seed ?? def.seed };
 }
 
-/** Every scene list in a demo module, for tts. */
 const allScenes = (mod) => ["scenes", "before", "after"].flatMap((k) => mod.default?.[k] ?? []);
 
-/** What a clip says: the narration, or the probe's tone. Its hash names the cached wav. */
 const clipKey = (scene, voice = VOICE) =>
   NodeCrypto.createHash("sha256")
     .update(JSON.stringify(scene.probe ? { tone: 1000 } : { ...voice, text: scene.say }))
     .digest("hex")
     .slice(0, 16);
 
-/** A scene's steps with each atMs filled in: mid-narration when the scene file leaves it out. */
 const planSteps = (scene, clipMs) =>
   [
     ...(scene.probe ? [{ action: "flash", atMs: 0 }] : []),
     ...(scene.steps ?? []).map((step) => ({ ...step, atMs: step.atMs ?? Math.round(clipMs / 2) })),
   ].sort((a, b) => a.atMs - b.atMs);
 
-/**
- * Runs scenes against a driver and returns the timeline. Each scene's clock starts when its ready
- * locator appears, so a slow page moves the scene, and its narration with it, rather than letting
- * them drift apart. `origin` is the clock reading at the recording's first frame.
- */
-export async function runScenes({ scenes, clipMs, driver, now, sleep, origin }) {
+export async function runScenes({ scenes, clipMs, driver, now, sleep, firstFrameAt }) {
   const timeline = [];
   for (const scene of scenes) {
     await driver.ready(scene.ready);
@@ -129,7 +118,7 @@ export async function runScenes({ scenes, clipMs, driver, now, sleep, origin }) 
       key: Boolean(scene.key),
       probe: Boolean(scene.probe),
       clip: clipKey(scene),
-      startMs: Math.round(start - origin),
+      startMs: Math.round(start - firstFrameAt),
       clipMs: ms,
       holdMs: Math.round(Math.max(holdMs, now() - start)),
       steps,
@@ -146,10 +135,6 @@ const filterValue = (s) => {
 };
 const sec = (ms) => (ms / 1000).toFixed(3);
 
-/**
- * Where each run and scene sits in the final video. A title card opens each run, so a scene's
- * final start is the cards and runs before it plus its own start in its run.
- */
 export function layout(runs, cardMs = PACING.cardMs) {
   let at = 0;
   return runs.map((run) => {
@@ -164,10 +149,6 @@ export function layout(runs, cardMs = PACING.cardMs) {
   });
 }
 
-/**
- * The ffmpeg arguments that turn runs into one mp4: per run a title card, the recording at a
- * constant frame rate with captions burned in, and each clip placed at its scene's real start.
- */
 export function muxArgs({ runs, size, font, out, cardMs = PACING.cardMs, fps = PACING.fps }) {
   const inputs = [];
   const graph = [];
@@ -244,7 +225,6 @@ export function muxArgs({ runs, size, font, out, cardMs = PACING.cardMs, fps = P
   ];
 }
 
-/** silencedetect's report as [{ start, end }] in seconds. */
 export function parseSilences(stderr) {
   const silences = [];
   for (const line of stderr.split("\n")) {
@@ -256,10 +236,6 @@ export function parseSilences(stderr) {
   return silences;
 }
 
-/**
- * Drift per scene, in ms: how far the narration's onset in the final audio sits from the scene's
- * start, and for a probe scene, from its visible flash. A missing onset is reported as null.
- */
 export function drift({ scenes, onsets, flashes }) {
   const nearest = (list, ms, within) =>
     list
@@ -280,7 +256,6 @@ export function drift({ scenes, onsets, flashes }) {
   });
 }
 
-/** Silences with over `minS` seconds that no title card or scene hold explains. */
 export function unexplainedSilences(silences, runs, minS = 2) {
   const quiet = runs.flatMap((run) => [
     [run.cardStartMs, run.offsetMs],
@@ -296,7 +271,6 @@ export function unexplainedSilences(silences, runs, minS = 2) {
   });
 }
 
-/** The animated thumbnail's window: the key scene, else the last scene, at most 6 seconds. */
 function thumbnailWindow(runs) {
   const scenes = runs.flatMap((run) => run.scenes);
   const key = scenes.findLast((s) => s.key) ?? scenes.at(-1);
@@ -320,7 +294,6 @@ const gifUrl = (watch, { startS, durationS }) => {
 const clock = (ms) =>
   `${Math.floor(ms / 60_000)}:${String(Math.round(ms / 1000) % 60).padStart(2, "0")}`;
 
-/** The PR comment: the animated preview linked to the watch page, said to be silent. */
 export function renderComment({ title, watch, gif, durationMs, runs }) {
   const shas = runs
     .map((run) => `${run.label}${run.sha ? ` \`${run.sha.slice(0, 10)}\`` : ""}`)
@@ -337,7 +310,6 @@ export function renderComment({ title, watch, gif, durationMs, runs }) {
   ].join("\n");
 }
 
-/** Why a URL Stream answered with is not one of Stream's own https hosts, or null. */
 function streamUrlProblem(url) {
   let parsed;
   try {
@@ -413,27 +385,10 @@ async function tts(opts) {
   const speak = [...wanted].filter(
     ([key, s]) => !s.probe && !NodeFS.existsSync(NodePath.join(cache, `${key}.wav`)),
   );
-  if (speak.length > 0) {
-    // The key stays in the child's environment. This process never reads it.
-    const child = NodeChildProcess.spawnSync(
-      "bash",
-      [
-        "-c",
-        'set -a && . "$0" && set +a && exec "$1" "$2" __speak',
-        KEY_FILE,
-        process.execPath,
-        import.meta.filename,
-      ],
-      {
-        input: JSON.stringify(
-          speak.map(([key, s]) => ({ text: s.say, raw: NodePath.join(cache, `${key}.raw.wav`) })),
-        ),
-        encoding: "utf8",
-        stdio: ["pipe", "inherit", "inherit"],
-      },
+  if (speak.length > 0)
+    speakInKeyedChild(
+      speak.map(([key, s]) => ({ text: s.say, raw: NodePath.join(cache, `${key}.raw.wav`) })),
     );
-    if (child.status !== 0) fail("speech synthesis failed");
-  }
   const clips = {};
   for (const [key, scene] of wanted) {
     const final = NodePath.join(cache, `${key}.wav`);
@@ -486,6 +441,21 @@ async function tts(opts) {
     `clips in ${clipsDir}, ${speak.length} synthesized, ${wanted.size - speak.length} from cache`,
   );
 }
+
+const speakInKeyedChild = (jobs) => {
+  const child = NodeChildProcess.spawnSync(
+    "bash",
+    [
+      "-c",
+      'set -a && . "$0" && set +a && exec "$1" "$2" __speak',
+      KEY_FILE,
+      process.execPath,
+      import.meta.filename,
+    ],
+    { input: JSON.stringify(jobs), encoding: "utf8", stdio: ["pipe", "inherit", "inherit"] },
+  );
+  if (child.status !== 0) fail("speech synthesis failed");
+};
 
 async function speakChild() {
   const jobs = JSON.parse(NodeFS.readFileSync(0, "utf8"));
@@ -570,7 +540,6 @@ const FLASH = async (ms) => {
   setTimeout(() => flash.remove(), ms);
 };
 
-/** The Playwright side of runScenes: real mouse, rings re-measured until the scene clears. */
 function pageDriver(page) {
   let rings = null;
   const moveTo = async (selector) => {
@@ -710,16 +679,16 @@ async function record(opts) {
     await page.evaluate(OVERLAY);
     await page.mouse.move(size.width / 2, size.height / 2);
     await page.screencast.start({ path: video, size });
-    const origin = performance.now();
+    const firstFrameAt = performance.now();
     timeline = await runScenes({
       scenes,
       clipMs: (s) => clips[clipKey(s)].ms,
       driver: pageDriver(page),
       now: () => performance.now(),
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms))),
-      origin,
+      firstFrameAt,
     });
-    endMs = Math.round(performance.now() - origin);
+    endMs = Math.round(performance.now() - firstFrameAt);
   } finally {
     await page.screencast.stop().catch(() => {});
     await page.evaluate(() => document.getElementById("t3demo")?.remove()).catch(() => {});
@@ -838,8 +807,8 @@ function mux(opts) {
     r.scenes
       .filter((s) => s.probe)
       .flatMap((s) => {
-        // The cut from the title card is a frame change too, so the search starts after it.
-        const from = sec(Math.max(s.finalStartMs - 500, r.offsetMs + 100));
+        const afterCardCutMs = r.offsetMs + 100;
+        const from = sec(Math.max(s.finalStartMs - 500, afterCardCutMs));
         const to = sec(s.finalStartMs + 1000);
         const shown = run("ffmpeg", [
           "-hide_banner",

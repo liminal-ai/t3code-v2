@@ -1,8 +1,14 @@
-// Two narrated scenes on any dev server, with a sync probe between them that tests the tool itself.
+const warmRoute = async (page, path, ready) => {
+  await page.goto(new URL(path, page.url()).href);
+  await ready.waitFor({ timeout: 60_000 });
+};
+
 export async function seed({ page }) {
-  // A cold dev server compiles the settings route on its first visit, which would stall the click on camera.
-  await page.goto(new URL("/settings/general", page.url()).href);
-  await page.getByRole("heading", { name: "Working section" }).waitFor({ timeout: 60_000 });
+  await warmRoute(
+    page,
+    "/settings/general",
+    page.getByRole("heading", { name: "Working section" }),
+  );
   await page.goto(new URL("/", page.url()).href);
   await page.getByRole("navigation", { name: "Threads" }).waitFor();
 }
