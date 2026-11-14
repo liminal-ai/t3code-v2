@@ -393,8 +393,9 @@ async function tts(opts) {
         "48000",
         "-ac",
         "1",
-        final,
+        `${final}.${process.pid}.wav`,
       ]);
+      NodeFS.renameSync(`${final}.${process.pid}.wav`, final);
       NodeFS.rmSync(NodePath.join(cache, `${key}.raw.wav`), { force: true });
     }
     NodeFS.copyFileSync(final, NodePath.join(clipsDir, `${key}.wav`));
@@ -452,7 +453,8 @@ async function speakChild() {
     });
     if (!response.ok)
       fail(`speech API answered ${response.status}: ${(await response.text()).slice(0, 300)}`);
-    NodeFS.writeFileSync(job.raw, Buffer.from(await response.arrayBuffer()));
+    NodeFS.writeFileSync(`${job.raw}.${process.pid}`, Buffer.from(await response.arrayBuffer()));
+    NodeFS.renameSync(`${job.raw}.${process.pid}`, job.raw);
     console.log(`synthesized "${job.text.slice(0, 48)}${job.text.length > 48 ? "..." : ""}"`);
   }
 }
