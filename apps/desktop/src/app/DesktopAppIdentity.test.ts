@@ -176,6 +176,25 @@ describe("DesktopAppIdentity", () => {
     ),
   );
 
+  it.effect("names a fork build T3 Code Lim at runtime and in the About panel", () => {
+    const calls: ElectronAppCalls = {
+      setAboutPanelOptions: [],
+      setDockIcon: [],
+      setName: [],
+    };
+
+    return withIdentity(
+      Effect.gen(function* () {
+        const identity = yield* DesktopAppIdentity.DesktopAppIdentity;
+        yield* identity.configure;
+
+        assert.deepStrictEqual(calls.setName, ["T3 Code Lim"]);
+        assert.equal(calls.setAboutPanelOptions[0]?.applicationName, "T3 Code Lim");
+      }),
+      { calls, environment: { appVersion: "0.1.10-nightly.20261112.4606-lim.155cb40848" } },
+    );
+  });
+
   it.effect.each([
     { stage: "Beta", environment: {} },
     {
