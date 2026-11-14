@@ -107,7 +107,7 @@ Two kinds of check prove a feature:
 
 ## Narrated demo videos
 
-A PR that changes the web UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). `scripts/demo.mjs` makes it from a scene file in `demos/`: it voices each scene, records it on the t3v browser with highlight rings and the real mouse, muxes the narration at each scene's real start, and publishes to Cloudflare Stream with one PR comment. [references/demo-video.md](references/demo-video.md) covers writing a scene, the pacing grammar, the sync probe, the privacy check and publishing.
+A PR that changes what a user sees or does in the web or desktop UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). `scripts/demo.mjs` makes it from a scene file in `demos/`. It voices each scene, records it on the t3v browser with highlight rings and the real mouse, muxes the narration at each scene's real start, and publishes to Cloudflare Stream with one PR comment. [references/demo-video.md](references/demo-video.md) covers writing a scene, the pacing grammar, the sync probe, the privacy check and publishing.
 
 ## Isolation
 
