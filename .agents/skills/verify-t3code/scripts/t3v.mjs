@@ -18,7 +18,8 @@ const USAGE = `t3v.mjs [--run <name>] <command>
   browser shot <name>        screenshot to proof/<name>.png
   browser aria <name>        ARIA snapshot to proof/<name>.aria.txt
   browser text               print the page's visible text
-  browser click (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>]
+  browser click (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>] [--button right]
+  browser drag (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>] --to <x>,<y>
   browser hover (--role <role> (--name <name> | --name-prefix <text>) | --text <text>) [--in <text>] [--nth <n>]
   browser fill --role <role> --name <name> --value <text>
   browser type <text>        type into whatever has focus
@@ -415,13 +416,37 @@ async function browser(sub) {
       return withPage(async (page) => console.log(await page.locator("body").innerText()));
     case "click": {
       const at = flag("at");
+      const button = flag("button") ?? "left";
       return withPage(async (page) => {
         if (at) {
           const [x, y] = at.split(",").map(Number);
-          await page.mouse.click(x, y);
-        } else await locate(page).click({ timeout });
+          await page.mouse.click(x, y, { button });
+        } else await locate(page).click({ timeout, button });
         await page.waitForTimeout(300);
         console.log(`clicked; now ${page.url()}`);
+      });
+    }
+    case "drag": {
+      const at = flag("at");
+      const to = flag("to") ?? fail("give --to <x>,<y>");
+      return withPage(async (page) => {
+        let from;
+        if (at) from = at.split(",").map(Number);
+        else {
+          const box = await locate(page).boundingBox({ timeout });
+          if (!box) fail("the drag source is not visible");
+          from = [box.x + box.width / 2, box.y + box.height / 2];
+        }
+        const [toX, toY] = to.split(",").map(Number);
+        await page.mouse.move(from[0], from[1]);
+        await page.mouse.down();
+        // Sortable lists start a drag only after the pointer travels a few pixels.
+        await page.mouse.move(from[0], from[1] + 8, { steps: 4 });
+        await page.mouse.move(toX, toY, { steps: 20 });
+        await page.waitForTimeout(200);
+        await page.mouse.up();
+        await page.waitForTimeout(300);
+        console.log(`dragged from ${from.map(Math.round).join(",")} to ${toX},${toY}`);
       });
     }
     case "hover":
