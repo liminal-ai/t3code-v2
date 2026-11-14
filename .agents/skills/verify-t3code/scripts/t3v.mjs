@@ -13,6 +13,7 @@ const USAGE = `t3v.mjs [--run <name>] <command>
   settings [<key>=<json> ...] print the dev server's settings.json, or merge keys into it
   pair                       mint a fresh pairing URL with \`bin.ts pair\` (after the startup one is used)
   browser open               headless Chromium with its own profile, paired to the dev server
+  browser info               print {cdp, origin} as JSON, for a tool that attaches to this browser
   browser goto <path>        load a path on the web origin, such as /settings
   browser shot <name>        screenshot to proof/<name>.png
   browser aria <name>        ARIA snapshot to proof/<name>.aria.txt
@@ -380,6 +381,11 @@ async function browser(sub) {
   switch (sub) {
     case "open":
       return browserOpen();
+    case "info": {
+      const state = readJson(files.browser);
+      if (!state || !alive(state.pid)) fail("no t3v browser; run `t3v.mjs browser open`");
+      return console.log(JSON.stringify({ cdp: state.cdp, origin: webOrigin() }));
+    }
     case "close": {
       const state = readJson(files.browser);
       if (state && alive(state.pid)) process.kill(state.pid, "SIGTERM");
