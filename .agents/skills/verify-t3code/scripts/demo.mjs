@@ -989,6 +989,7 @@ async function publish(dir, opts) {
     });
     if (!sent.ok) fail(`upload to Stream video ${ticket.uid} answered ${sent.status}`);
     uid = ticket.uid;
+    writeJson(doneFile, { video: check.video, uid });
   }
   const deadline = Date.now() + 10 * 60_000;
   let v;
