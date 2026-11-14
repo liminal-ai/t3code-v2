@@ -275,7 +275,7 @@ function thumbnailWindow(runs) {
   const scenes = runs.flatMap((run) => run.scenes);
   const key = scenes.findLast((s) => s.key) ?? scenes.at(-1);
   return {
-    startS: Math.floor(key.finalStartMs / 1000),
+    startS: Number((key.finalStartMs / 1000).toFixed(1)),
     durationS: Math.min(6, Math.ceil(key.holdMs / 1000)),
   };
 }
@@ -285,7 +285,7 @@ const gifUrl = (watch, { startS, durationS }) => {
   url.search = new URLSearchParams({
     time: `${startS}s`,
     duration: `${durationS}s`,
-    width: "640",
+    width: "600",
     fps: "8",
   });
   return url.href;
@@ -302,7 +302,7 @@ export function renderComment({ title, watch, gif, durationMs, runs }) {
     MARKER,
     `### Narrated demo: ${title}`,
     "",
-    `<a href="${watch}"><img src="${gif}" width="640" alt="Animated preview of the demo"></a>`,
+    `<a href="${watch}"><img src="${gif}" width="600" alt="Animated preview of the demo"></a>`,
     "",
     `The preview is silent. [Watch the narrated video](${watch}) (${clock(durationMs)}).`,
     "",
@@ -924,11 +924,7 @@ async function publish(dir, opts) {
   const done = NodeFS.existsSync(doneFile) ? readJson(doneFile) : null;
   let uid = done?.video === check.video ? done.uid : null;
   if (!uid) {
-    const body = {
-      maxDurationSeconds: 600,
-      requireSignedURLs: false,
-      meta: { name: `t3code-demo/${repo}#${opts.pr}/${meta.title}` },
-    };
+    const body = { maxDurationSeconds: 600, requireSignedURLs: false };
     const ticket = JSON.parse(
       cf(["stream", "videos", "direct-upload", "create", "--body", JSON.stringify(body)]),
     );
@@ -936,7 +932,11 @@ async function publish(dir, opts) {
     if (!ticket.uid || !ticket.uploadURL)
       fail("direct-upload create answered without a uid and an upload URL");
     const form = new FormData();
-    form.append("file", await NodeFS.openAsBlob(video, { type: "video/mp4" }), "demo.mp4");
+    form.append(
+      "file",
+      await NodeFS.openAsBlob(video, { type: "video/mp4" }),
+      `t3code-demo-${repo.replace("/", "-")}-pr${opts.pr}-${meta.title}.mp4`,
+    );
     const sent = await fetch(streamUrl(ticket.uploadURL, "upload"), {
       method: "POST",
       body: form,
