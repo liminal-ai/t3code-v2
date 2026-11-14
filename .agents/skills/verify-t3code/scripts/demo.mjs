@@ -21,14 +21,14 @@ const USAGE = `demo.mjs <command>   narrated demo videos of the T3 web UI (refer
       upload <dir>/demo.mp4 to Cloudflare Stream and update the PR's <!-- t3code-demo --> comment`;
 
 // Lee picks the voice. The lead sets these two values once he has.
-export const VOICE = {
+const VOICE = {
   model: "gpt-4o-mini-tts",
   voice: "coral",
   instructions:
     "Calm, clear product walkthrough narrator. Moderate pace, warm and confident, slight pause between sentences.",
 };
 
-export const PACING = {
+const PACING = {
   minTailMs: 900,
   maxSentences: 2,
   captionWords: [3, 6],
@@ -43,9 +43,7 @@ const ACCOUNT = "e8e382d5bf8ec24ee2125188819b995c";
 const KEY_FILE = NodePath.join(process.env.HOME ?? "", ".config", "lim-keys", "models.env");
 const ACTIONS = ["click", "hover", "press", "type", "scroll", "goto"];
 
-// Pure core.
-
-export const sentences = (text) => text.split(/(?<=[.!?])\s+/).filter((s) => s.trim()).length;
+const sentences = (text) => text.split(/(?<=[.!?])\s+/).filter((s) => s.trim()).length;
 
 /** Every way the scenes break the pacing grammar, as messages. */
 export function lint(scenes) {
@@ -76,7 +74,7 @@ export function lint(scenes) {
 }
 
 /** The scene list a demo module records for a side, and its seed. */
-export function demoPart(mod, side) {
+function demoPart(mod, side) {
   const def = mod.default ?? {};
   const scenes = side ? def[side] : def.scenes;
   if (!Array.isArray(scenes))
@@ -87,18 +85,17 @@ export function demoPart(mod, side) {
 }
 
 /** Every scene list in a demo module, for tts. */
-export const allScenes = (mod) =>
-  ["scenes", "before", "after"].flatMap((k) => mod.default?.[k] ?? []);
+const allScenes = (mod) => ["scenes", "before", "after"].flatMap((k) => mod.default?.[k] ?? []);
 
 /** What a clip says: the narration, or the probe's tone. Its hash names the cached wav. */
-export const clipKey = (scene, voice = VOICE) =>
+const clipKey = (scene, voice = VOICE) =>
   NodeCrypto.createHash("sha256")
     .update(JSON.stringify(scene.probe ? { tone: 1000 } : { ...voice, text: scene.say }))
     .digest("hex")
     .slice(0, 16);
 
 /** A scene's steps with each atMs filled in: mid-narration when the scene file leaves it out. */
-export const planSteps = (scene, clipMs) =>
+const planSteps = (scene, clipMs) =>
   [
     ...(scene.probe ? [{ action: "flash", atMs: 0 }] : []),
     ...(scene.steps ?? []).map((step) => ({ ...step, atMs: step.atMs ?? Math.round(clipMs / 2) })),
@@ -300,7 +297,7 @@ export function unexplainedSilences(silences, runs, minS = 2) {
 }
 
 /** The animated thumbnail's window: the key scene, else the last scene, at most 6 seconds. */
-export function thumbnailWindow(runs) {
+function thumbnailWindow(runs) {
   const scenes = runs.flatMap((run) => run.scenes);
   const key = scenes.findLast((s) => s.key) ?? scenes.at(-1);
   return {
@@ -309,7 +306,7 @@ export function thumbnailWindow(runs) {
   };
 }
 
-export const gifUrl = (watch, { startS, durationS }) => {
+const gifUrl = (watch, { startS, durationS }) => {
   const url = new URL(watch.replace(/\/watch$/, "/thumbnails/thumbnail.gif"));
   url.search = new URLSearchParams({
     time: `${startS}s`,
@@ -341,7 +338,7 @@ export function renderComment({ title, watch, gif, durationMs, runs }) {
 }
 
 /** Why a URL Stream answered with is not one of Stream's own https hosts, or null. */
-export function streamUrlProblem(url) {
+function streamUrlProblem(url) {
   let parsed;
   try {
     parsed = new URL(url);
@@ -353,8 +350,6 @@ export function streamUrlProblem(url) {
     return `is on ${parsed.hostname}, not a Cloudflare Stream host`;
   return null;
 }
-
-// Shell.
 
 const fail = (message) => {
   console.error(`demo: ${message}`);

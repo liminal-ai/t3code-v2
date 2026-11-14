@@ -69,6 +69,7 @@ Every recipe in `features/` uses these commands. Target by ARIA role and accessi
 | `browser wait --text <text>` / `--gone <text>`            | Waits for text to appear, or for a text such as `Working` to leave, alone or with more words after it, as in `Working for 12s`. Default 15 s, `--timeout <ms>`.                                  |
 | `browser goto <path>`                                     | Loads a path on the web origin, such as `/settings/providers`.                                                                                                                                   |
 | `browser shot <name>` / `aria <name>` / `text`            | A screenshot or ARIA snapshot under proof, or the page's text on stdout.                                                                                                                         |
+| `browser info`                                            | Prints `{"cdp": ..., "origin": ...}`, for a tool that attaches to this browser, such as `scripts/demo.mjs`.                                                                                      |
 
 A turn ends when `Working` leaves the page. `browser wait --text` matches your own message too, so never wait on a word you sent.
 
@@ -103,6 +104,10 @@ Two kinds of check prove a feature:
 
 - **The normal drive** follows the feature's recipe with its handles.
 - **A user-only check** gets only what a user gets: screenshots, a mouse, a keyboard, and the app's own help text, which here includes `docs/user/`. Give it to a fresh agent whose brief states the goal in the user's words and allows only `shot`, `click --at`, `click --text`, `type`, `press` and `scroll`. `scripts/user-only` is the only command its brief names: `user-only shot <name>`, `click <x> <y>`, `click-text <visible text>`, `type <text>`, `press <key>` and `scroll <dy>`. Its screenshots go to `proof/user-only/`, or `proof/$T3V_USER_DIR/`. It never sees selectors, source, this skill or the feature files. **An outcome check** runs beside it and reads the outcome table above to grade whether the user's goal happened. When the user-only check fails where the normal drive passed, the gap is the app's or its help text's. Record it in that feature's `Gotchas`, and never give the check more knowledge.
+
+## Narrated demo videos
+
+A PR that changes the web UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). `scripts/demo.mjs` makes it from a scene file in `demos/`: it voices each scene, records it on the t3v browser with highlight rings and the real mouse, muxes the narration at each scene's real start, and publishes to Cloudflare Stream with one PR comment. [references/demo-video.md](references/demo-video.md) covers writing a scene, the pacing grammar, the sync probe, the privacy check and publishing.
 
 ## Isolation
 
