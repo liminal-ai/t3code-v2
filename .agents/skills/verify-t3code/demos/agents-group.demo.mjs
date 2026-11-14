@@ -5,10 +5,8 @@ import * as NodeUtil from "node:util";
 
 const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 
-// Invented titles, so no frame shows a real thread. Listed oldest first: the newest thread
-// tops the active list, so this order fixes the sidebar for both runs.
 const PROJECTS = ["web-client", "api-server", "release-tools"];
-const THREADS = [
+const THREADS_OLDEST_FIRST = [
   ["web-client", "Fix the settings page tab order"],
   ["api-server", "Paginate the audit log endpoint"],
   ["release-tools", "Tag the weekly build"],
@@ -47,54 +45,28 @@ export async function seed({ page, t3v, checkout }) {
     execFile(process.execPath, ["apps/server/src/bin.ts", ...args, "--base-dir", ".t3"], {
       cwd: checkout,
     });
-  const rows = async (sql) => JSON.parse(await t3v("outcome", "sql", sql));
+  const titles = async (sql) =>
+    new Set(JSON.parse(await t3v("outcome", "sql", sql)).map((row) => row.title));
+  const projectFolder = (name) => NodePath.join(checkout, ".t3", "demo-projects", name);
 
-  // The dev server adds this checkout's apps/server as a project, which would show the real
-  // branch and pull request.
-  const bootstrapRoot = NodePath.join(checkout, "apps", "server");
-  const bootstrapped = await rows(
-    `select project_id from projection_projects where deleted_at is null and workspace_root = ${sqlString(bootstrapRoot)}`,
-  );
-  if (bootstrapped.length > 0) await cli("project", "remove", bootstrapRoot, "--force");
+  await removeCheckoutProject(cli, t3v, checkout);
 
-  const projectTitles = new Set(
-    (await rows("select title from projection_projects where deleted_at is null")).map(
-      (row) => row.title,
-    ),
-  );
+  const projects = await titles("select title from projection_projects where deleted_at is null");
   for (const name of PROJECTS) {
-    if (projectTitles.has(name)) continue;
-    const folder = NodePath.join(checkout, ".t3", "demo-projects", name);
-    NodeFS.mkdirSync(folder, { recursive: true });
-    // Its own repository, or the checkout's branch and pull request show on every row.
-    const git = (...args) => execFile("git", args, { cwd: folder });
-    await git("init", "-q", "-b", "main");
-    await git(
-      "-c",
-      "user.name=Demo",
-      "-c",
-      "user.email=demo@example.invalid",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      "Start",
-    );
-    await cli("project", "add", folder, "--title", name);
+    if (projects.has(name)) continue;
+    await initOwnRepository(projectFolder(name));
+    await cli("project", "add", projectFolder(name), "--title", name);
   }
 
-  const threadTitles = new Set(
-    (
-      await rows("select title from orchestration_v2_projection_threads where deleted_at is null")
-    ).map((row) => row.title),
+  const threads = await titles(
+    "select title from orchestration_v2_projection_threads where deleted_at is null",
   );
-  for (const [project, title] of THREADS) {
-    if (threadTitles.has(title)) continue;
-    const folder = NodePath.join(checkout, ".t3", "demo-projects", project);
+  for (const [project, title] of THREADS_OLDEST_FIRST) {
+    if (threads.has(title)) continue;
     await cli(
       "thread",
       "start",
-      folder,
+      projectFolder(project),
       "Summarize where this stands.",
       "--title",
       title,
@@ -106,12 +78,8 @@ export async function seed({ page, t3v, checkout }) {
     );
   }
 
-  const settled = new Set(
-    (
-      await rows(
-        `select title from orchestration_v2_projection_threads where json_extract(payload_json, '$.settledOverride') = 'settled' and title in (${SETTLED.map(sqlString).join(", ")})`,
-      )
-    ).map((row) => row.title),
+  const settled = await titles(
+    `select title from orchestration_v2_projection_threads where json_extract(payload_json, '$.settledOverride') = 'settled' and title in (${SETTLED.map(sqlString).join(", ")})`,
   );
   await page.reload();
   const sidebar = page.getByRole("navigation", { name: "Threads" });
@@ -124,12 +92,37 @@ export async function seed({ page, t3v, checkout }) {
     await page.getByRole("menuitem", { name: "Settle thread", exact: true }).click();
     await row(title).waitFor({ state: "hidden" });
   }
-  // Open a demo thread, so no frame shows the draft of a removed project.
-  await row(THREADS.at(-1)[1]).click();
-  await page
-    .getByRole("heading", { name: THREADS.at(-1)[1] })
-    .waitFor()
-    .catch(() => {});
+  const newest = THREADS_OLDEST_FIRST.at(-1)[1];
+  await row(newest).click();
+}
+
+async function removeCheckoutProject(cli, t3v, checkout) {
+  const root = NodePath.join(checkout, "apps", "server");
+  const found = JSON.parse(
+    await t3v(
+      "outcome",
+      "sql",
+      `select project_id from projection_projects where deleted_at is null and workspace_root = ${sqlString(root)}`,
+    ),
+  );
+  if (found.length > 0) await cli("project", "remove", root, "--force");
+}
+
+async function initOwnRepository(folder) {
+  NodeFS.mkdirSync(folder, { recursive: true });
+  const git = (...args) => execFile("git", args, { cwd: folder });
+  await git("init", "-q", "-b", "main");
+  await git(
+    "-c",
+    "user.name=Demo",
+    "-c",
+    "user.email=demo@example.invalid",
+    "commit",
+    "-q",
+    "--allow-empty",
+    "-m",
+    "Start",
+  );
 }
 
 const SIDEBAR = 'role=navigation[name="Threads"]';
