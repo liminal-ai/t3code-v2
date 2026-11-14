@@ -51,7 +51,7 @@ describe("splitAgentThreads", () => {
     const threads = [thread("a"), thread("b", { pinnedAt: "2026-11-01T00:00:00.000Z" })];
     const split = splitAgentThreads(threads);
     expect(split.agents).toEqual([]);
-    expect(split.others).toBe(threads);
+    expect(split.others.map((t) => t.id)).toEqual(["a", "b"]);
   });
 
   it("takes pinned, settled and snoozed agents out of every other section", () => {
