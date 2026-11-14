@@ -92,8 +92,18 @@ export async function seed({ page, t3v, checkout }) {
     await page.getByRole("menuitem", { name: "Settle thread", exact: true }).click();
     await row(title).waitFor({ state: "hidden" });
   }
+  await openDetailsPane(page, row("Lead: web client roadmap"));
   const newest = THREADS_OLDEST_FIRST.at(-1)[1];
   await row(newest).click();
+}
+
+// The details and unpin scenes need the lead thread's pane open, and a closed pane persists per thread.
+async function openDetailsPane(page, leadRow) {
+  await leadRow.click();
+  const name = "Toggle thread details panel";
+  const toggle = page.getByRole("button", { name, exact: true });
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  await page.getByRole("button", { name, exact: true, pressed: true }).waitFor();
 }
 
 async function removeCheckoutProject(cli, t3v, checkout) {
@@ -133,15 +143,15 @@ export default {
   before: [
     {
       id: "sidebar",
-      say: "This sidebar holds twenty-two threads. A few are lead threads that run other work for days.",
-      caption: "A busy thread list",
+      say: "Lead threads run other work for days, but here they sit among the task threads they started.",
+      caption: "Leads lost among tasks",
       ready: LEAD_ROW,
       highlight: [LEAD_ROW],
     },
     {
       id: "menu",
-      say: "Before this change, a lead thread's menu can only pin it like any other thread.",
-      caption: "No way to mark agents",
+      say: "The only way to keep one in view is a plain pin, so it still crowds the list.",
+      caption: "Only a plain pin",
       ready: LEAD_ROW,
       highlight: ['role=menuitem[name="Pin thread"]'],
       steps: [{ atMs: 300, action: "click", target: LEAD_ROW, button: "right" }],
@@ -151,24 +161,24 @@ export default {
   after: [
     {
       id: "menu",
-      say: "Now right-click a lead thread. Pin as agent sits right under Pin thread.",
-      caption: "Pin as agent in the menu",
+      say: "Now a lead thread can be marked as an agent from its menu.",
+      caption: "Mark a lead as agent",
       ready: LEAD_ROW,
       highlight: [LEAD_ROW, 'role=menuitem[name="Pin as agent"]'],
       steps: [{ atMs: 300, action: "click", target: LEAD_ROW, button: "right" }],
     },
     {
       id: "pin",
-      say: "Choose it, and the thread leaves the active list.",
-      caption: "Pin the lead thread",
+      say: "Mark it, and it steps out of the task threads.",
+      caption: "Out of the task list",
       ready: 'role=menuitem[name="Pin as agent"]',
       highlight: ['role=menuitem[name="Pin as agent"]'],
       steps: [{ action: "click", target: 'role=menuitem[name="Pin as agent"]' }],
     },
     {
       id: "group",
-      say: "It joins the Agents group at the bottom of the sidebar, one line per thread, with its status where the time goes.",
-      caption: "The Agents group",
+      say: "Agents stay in view in their own compact group, one line each, with what they are doing at a glance. They never settle on their own.",
+      caption: "Leads always in view",
       ready: AGENTS_HEADER,
       highlight: [AGENTS_HEADER],
       steps: [{ atMs: 0, action: "scroll", dy: 3000, target: SIDEBAR }],
@@ -177,8 +187,8 @@ export default {
     },
     {
       id: "details",
-      say: "Open it, and the details pane says Pinned as agent.",
-      caption: "Pinned as agent in details",
+      say: "Open one, and its details confirm it is held as an agent.",
+      caption: "Details show agent status",
       ready: AGENTS_HEADER,
       highlight: ["text=Pinned as agent"],
       steps: [{ atMs: 300, action: "click", target: LEAD_ROW }],
@@ -186,8 +196,8 @@ export default {
     },
     {
       id: "unpin",
-      say: "Unpin returns it to the active list, and the empty group goes away.",
-      caption: "Unpin returns it",
+      say: "One click there sends it back to the task list, and the empty group disappears.",
+      caption: "One click to release",
       ready: 'role=button[name="Unpin"]',
       highlight: ['role=button[name="Unpin"]'],
       steps: [{ action: "click", target: 'role=button[name="Unpin"]' }],
