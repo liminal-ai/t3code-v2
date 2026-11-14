@@ -189,6 +189,11 @@ happens in two ways. A forked agent thread keeps the tag but not the pin. On mob
 appear like any other thread, and settling one there removes its pin, so it moves to **Settled**
 with the tag. In the command palette, agent threads also appear like any other thread.
 
+T3 Code has no settings screen for hidden thread tags. They are two keys in the server's
+`settings.json` in its `userdata` directory. When `hideTaggedThreads` is `true` and
+`hiddenThreadTags` includes `agent`, every agent thread is hidden, along with its Agents row.
+With either one unset, agent threads show.
+
 ## Settle finished work
 
 Choose **Settle thread** from its menu to move finished work out of the active list
