@@ -18,8 +18,9 @@ const USAGE = `t3v.mjs [--run <name>] <command>
   browser shot <name>        screenshot to proof/<name>.png
   browser aria <name>        ARIA snapshot to proof/<name>.aria.txt
   browser text               print the page's visible text
-  browser click (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>] [--button right]
-  browser drag (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>] --to <x>,<y>
+  browser click (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>] [--button right] [--modifiers Control,Shift]
+  browser drag (--role <role> (--name <name> | --name-prefix <text>) | --text <text> | --at <x>,<y>) [--in <text>] [--nth <n>]
+             (--to <x>,<y> | --to-role <role> (--to-name <name> | --to-name-prefix <text>) | --to-text <text>)
   browser hover (--role <role> (--name <name> | --name-prefix <text>) | --text <text>) [--in <text>] [--nth <n>]
   browser fill --role <role> --name <name> --value <text>
   browser type <text>        type into whatever has focus
@@ -417,27 +418,57 @@ async function browser(sub) {
     case "click": {
       const at = flag("at");
       const button = flag("button") ?? "left";
+      const modifiers = flag("modifiers")?.split(",") ?? [];
       return withPage(async (page) => {
         if (at) {
           const [x, y] = at.split(",").map(Number);
+          for (const key of modifiers) await page.keyboard.down(key);
           await page.mouse.click(x, y, { button });
-        } else await locate(page).click({ timeout, button });
+          for (const key of modifiers.toReversed()) await page.keyboard.up(key);
+        } else await locate(page).click({ timeout, button, modifiers });
         await page.waitForTimeout(300);
         console.log(`clicked; now ${page.url()}`);
       });
     }
     case "drag": {
       const at = flag("at");
-      const to = flag("to") ?? fail("give --to <x>,<y>");
+      const to = flag("to");
+      const toRole = flag("to-role");
+      const toName = flag("to-name");
+      const toPrefix = flag("to-name-prefix");
+      const toText = flag("to-text");
+      if (!to && !toRole && !toText) fail("give --to <x>,<y>, --to-role, or --to-text");
       return withPage(async (page) => {
+        const center = async (locator, what) => {
+          const box = await locator.boundingBox({ timeout });
+          const view = page.viewportSize();
+          if (!box) fail(`the drag ${what} is not visible`);
+          const point = [box.x + box.width / 2, box.y + box.height / 2];
+          if (view && (point[1] < 0 || point[1] > view.height))
+            fail(`the drag ${what} is off screen; filter or collapse the list so both ends show`);
+          return point;
+        };
+        const source = at ? null : locate(page);
+        await source?.scrollIntoViewIfNeeded({ timeout });
+        const dropAt = to
+          ? to.split(",").map(Number)
+          : await center(
+              toRole
+                ? page
+                    .getByRole(
+                      toRole,
+                      toPrefix
+                        ? { name: new RegExp(`^${RegExp.escape(toPrefix)}`) }
+                        : { name: toName, exact: true },
+                    )
+                    .first()
+                : page.getByText(toText, { exact: true }).filter({ visible: true }).first(),
+              "target",
+            );
         let from;
         if (at) from = at.split(",").map(Number);
-        else {
-          const box = await locate(page).boundingBox({ timeout });
-          if (!box) fail("the drag source is not visible");
-          from = [box.x + box.width / 2, box.y + box.height / 2];
-        }
-        const [toX, toY] = to.split(",").map(Number);
+        else from = await center(source, "source");
+        const [toX, toY] = dropAt.map(Math.round);
         await page.mouse.move(from[0], from[1]);
         await page.mouse.down();
         // Sortable lists start a drag only after the pointer travels a few pixels.
