@@ -262,8 +262,12 @@ a restart, when **Settings → General → Continue threads after restarts** on 
 **Settings → Maintenance → Continue after restart** on mobile, is on, the interrupted turn continues
 on its own and the held messages resume after it, in order, with no press. A queue that **Stop** held,
 one behind a turn the server chose not to continue, or one held for more than a week, still waits.
-Press **Resume** in an empty composer to continue it. **Resume** also continues a stopped run or one
-that hit a usage limit, even with nothing queued. Sending a new message also resumes the queue, unless it steers a turn that is already
+Press **Resume** in an empty composer to continue it. For stopped runs and usage limits,
+this uses the provider's native continuation without sending a new prompt. If the provider
+does not support it, send a message to continue instead. If the original request never reached
+the provider, Resume sends that request again.
+
+Sending a new message also resumes the queue, unless it steers a turn that is already
 running. You can edit or remove held messages without starting them.
 
 The pencil on a queued message opens it in the composer for editing. The original message
