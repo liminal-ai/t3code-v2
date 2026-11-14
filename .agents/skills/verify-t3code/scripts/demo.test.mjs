@@ -4,11 +4,13 @@ import * as NodeTest from "node:test";
 import {
   MARKER,
   drift,
+  gifUrl,
   layout,
   lint,
   lintDemo,
   muxArgs,
   parseSilences,
+  publishRefusal,
   renderComment,
   runScenes,
 } from "./demo.mjs";
@@ -266,4 +268,35 @@ NodeTest.test("each side is linted on its own, so before and after may share sce
   const scene = { id: "menu", say: "Fine.", caption: "Open the thread menu", ready: "x" };
   NodeAssert.deepEqual(lintDemo({ before: [scene], after: [scene] }), []);
   NodeAssert.deepEqual(lintDemo({ after: [scene, scene] }), ["after: scene menu: id used twice"]);
+});
+
+NodeTest.test(
+  "publish refuses a failed drift check, a video over 75 s, and any reviewed file that changed",
+  () => {
+    const onDisk = { video: "v1", contactSheet: "c1", frames: "f1", narration: "n1" };
+    const ok = {
+      check: { ...onDisk, by: "lead" },
+      onDisk,
+      drift: { passed: true },
+      durationMs: 60_000,
+    };
+    NodeAssert.equal(publishRefusal(ok), null);
+    NodeAssert.match(publishRefusal({ ...ok, drift: { passed: false } }), /drift check failed/);
+    NodeAssert.match(publishRefusal({ ...ok, durationMs: 75_001 }), /over 75s/);
+    NodeAssert.match(publishRefusal({ ...ok, check: null }), /no privacy check/);
+    NodeAssert.match(
+      publishRefusal({ ...ok, onDisk: { ...onDisk, frames: "f2" } }),
+      /^frames changed/,
+    );
+  },
+);
+
+NodeTest.test("the animated preview stays inside Stream's 10 to 600 px width range", () => {
+  const url = new URL(
+    gifUrl("https://customer-x.cloudflarestream.com/uid/watch", { startS: 9.8, durationS: 6 }),
+  );
+  const width = Number(url.searchParams.get("width"));
+  NodeAssert.ok(width >= 10 && width <= 600, `width ${width}`);
+  NodeAssert.equal(url.pathname, "/uid/thumbnails/thumbnail.gif");
+  NodeAssert.equal(url.searchParams.get("time"), "9.8s");
 });

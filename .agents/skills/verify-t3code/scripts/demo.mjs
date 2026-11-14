@@ -14,9 +14,9 @@ const USAGE = `demo.mjs <command>   narrated demo videos of the T3 web UI (refer
       run seed, then record each scene on the t3v browser at <url> (\`t3v.mjs browser info\`)
   mux --out <dir>
       join <dir>/before and <dir>/after (or <dir>/run) with title cards into <dir>/demo.mp4,
-      with contact-sheet.png and drift.json beside it
+      with contact-sheet.png, frames/ (one per second), narration.txt and drift.json beside it
   privacy <dir> --by <who> --note <text>
-      record that <who> checked every contact-sheet frame of <dir>/demo.mp4 for private data
+      record that <who> checked the contact sheet, every frame and the narration for private data
   publish <dir> --pr <n> [--dry-run]
       upload <dir>/demo.mp4 to Cloudflare Stream and update the PR's <!-- t3code-demo --> comment`;
 
@@ -31,7 +31,7 @@ const PACING = {
   minTailMs: 900,
   maxSentences: 2,
   captionWords: [3, 6],
-  maxRunMs: 75_000,
+  maxVideoMs: 75_000,
   driftBudgetMs: 250,
   cardMs: 2500,
   fps: 30,
@@ -122,6 +122,7 @@ export async function runScenes({ scenes, clipMs, driver, now, sleep, firstFrame
     await driver.clear();
     timeline.push({
       id: scene.id,
+      say: scene.say ?? "",
       caption: scene.caption ?? "",
       key: Boolean(scene.key),
       probe: Boolean(scene.probe),
@@ -272,7 +273,7 @@ function thumbnailWindow(runs) {
   };
 }
 
-const gifUrl = (watch, { startS, durationS }) => {
+export const gifUrl = (watch, { startS, durationS }) => {
   const url = new URL(watch.replace(/\/watch$/, "/thumbnails/thumbnail.gif"));
   url.search = new URLSearchParams({
     time: `${startS}s`,
@@ -414,7 +415,6 @@ async function tts(opts) {
     console.log(
       `${label}: ${list.length} scenes, at least ${(ms / 1000).toFixed(1)}s of narration and holds`,
     );
-    if (ms > PACING.maxRunMs) fail(`${label} runs over ${PACING.maxRunMs / 1000}s; cut a scene`);
   }
   console.log(
     `clips in ${clipsDir}, ${speak.length} synthesized, ${wanted.size - speak.length} from cache`,
@@ -694,9 +694,9 @@ async function record(opts) {
 }
 
 function contactSheet(video, runs, out, font) {
-  const frames = NodePath.join(NodePath.dirname(out), "frames");
+  const frames = NodePath.join(NodePath.dirname(out), "mux", "sheet");
   NodeFS.rmSync(frames, { recursive: true, force: true });
-  NodeFS.mkdirSync(frames);
+  NodeFS.mkdirSync(frames, { recursive: true });
   let n = 0;
   for (const r of runs) {
     for (const s of r.scenes) {
@@ -825,10 +825,33 @@ function mux(opts) {
     "csv=p=0",
     out,
   ]).stdout.trim();
+  const over = report.filter(
+    (d) => d.driftMs === null || Math.abs(d.driftMs) >= PACING.driftBudgetMs,
+  );
   writeJson(NodePath.join(opts.out, "drift.json"), {
     budgetMs: PACING.driftBudgetMs,
+    passed: over.length === 0,
     scenes: report,
   });
+  NodeFS.writeFileSync(
+    NodePath.join(opts.out, "narration.txt"),
+    runs
+      .flatMap((r) => r.scenes.filter((s) => s.say).map((s) => `${r.label} / ${s.id}: ${s.say}\n`))
+      .join(""),
+  );
+  const frames = NodePath.join(opts.out, "frames");
+  NodeFS.rmSync(frames, { recursive: true, force: true });
+  NodeFS.mkdirSync(frames);
+  run("ffmpeg", [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-i",
+    out,
+    "-vf",
+    "fps=1",
+    NodePath.join(frames, "%03d.png"),
+  ]);
   writeJson(NodePath.join(opts.out, "video.json"), {
     title: NodePath.basename(recorded[0].demo).replace(/\.demo\.mjs$/, ""),
     durationMs: totalMs,
@@ -841,30 +864,58 @@ function mux(opts) {
     console.log(
       `  ${d.id}: drift ${d.driftMs ?? "unmeasured"} ms${d.flashMs === undefined ? "" : " (flash to tone)"}`,
     );
-  const over = report.filter(
-    (d) => d.driftMs === null || Math.abs(d.driftMs) >= PACING.driftBudgetMs,
-  );
+  if (totalMs > PACING.maxVideoMs)
+    fail(
+      `the video runs ${(totalMs / 1000).toFixed(1)}s, over ${PACING.maxVideoMs / 1000}s; cut a scene`,
+    );
   if (over.length > 0)
     fail(
       `drift unmeasured or over ${PACING.driftBudgetMs} ms in ${over.map((d) => d.id).join(", ")}`,
     );
 }
 
+const reviewed = (dir) => {
+  const frames = NodePath.join(dir, "frames");
+  const missing = ["demo.mp4", "contact-sheet.png", "narration.txt", "frames"].filter(
+    (f) => !NodeFS.existsSync(NodePath.join(dir, f)),
+  );
+  if (missing.length > 0) fail(`${dir} has no ${missing.join(", ")}; run mux`);
+  return {
+    video: sha256(NodePath.join(dir, "demo.mp4")),
+    contactSheet: sha256(NodePath.join(dir, "contact-sheet.png")),
+    narration: sha256(NodePath.join(dir, "narration.txt")),
+    frames: NodeCrypto.createHash("sha256")
+      .update(
+        NodeFS.readdirSync(frames)
+          .sort()
+          .map((f) => `${f} ${sha256(NodePath.join(frames, f))}\n`)
+          .join(""),
+      )
+      .digest("hex"),
+  };
+};
+
+export function publishRefusal({ check, onDisk, drift, durationMs }) {
+  if (!drift.passed) return "its drift check failed; fix the recording and mux again";
+  if (durationMs > PACING.maxVideoMs)
+    return `it runs ${(durationMs / 1000).toFixed(1)}s, over ${PACING.maxVideoMs / 1000}s`;
+  if (!check) return "no privacy check is recorded; run `demo.mjs privacy`";
+  const changed = Object.keys(onDisk).filter((k) => check[k] !== onDisk[k]);
+  if (changed.length > 0)
+    return `${changed.join(", ")} changed since the privacy check; check again, then run \`demo.mjs privacy\``;
+  return null;
+}
+
 function privacy(dir, opts) {
   if (!dir || !opts.by || !opts.note)
     fail(`privacy needs <dir> --by <who> --note <text>\n${USAGE}`);
-  const video = NodePath.join(dir, "demo.mp4");
-  const sheet = NodePath.join(dir, "contact-sheet.png");
-  if (!NodeFS.existsSync(video) || !NodeFS.existsSync(sheet))
-    fail(`${dir} has no demo.mp4 and contact-sheet.png; run mux`);
   writeJson(NodePath.join(dir, "privacy.json"), {
-    video: sha256(video),
-    contactSheet: sha256(sheet),
+    ...reviewed(dir),
     by: opts.by,
     at: new Date().toISOString(),
     note: opts.note,
   });
-  console.log(`privacy check recorded for ${video}`);
+  console.log(`privacy check recorded for ${dir}`);
 }
 
 const cf = (args) =>
@@ -876,10 +927,13 @@ async function publish(dir, opts) {
   const meta = readJson(NodePath.join(dir, "video.json"));
   const checkFile = NodePath.join(dir, "privacy.json");
   const check = NodeFS.existsSync(checkFile) ? readJson(checkFile) : null;
-  if (!check || check.video !== sha256(video))
-    fail(
-      `refused: no privacy check recorded for these exact bytes of ${video}; check every contact-sheet frame, then run \`demo.mjs privacy\``,
-    );
+  const refusal = publishRefusal({
+    check,
+    onDisk: reviewed(dir),
+    drift: readJson(NodePath.join(dir, "drift.json")),
+    durationMs: meta.durationMs,
+  });
+  if (refusal) fail(`refused: ${refusal}`);
   const pr = JSON.parse(run("gh", ["pr", "view", String(opts.pr), "--json", "url"]).stdout);
   const repo = new URL(pr.url).pathname.split("/").slice(1, 3).join("/");
   const comment = (watch) =>
