@@ -176,8 +176,8 @@ export default {
     },
     {
       id: "group",
-      say: "Agents stay in view in their own compact group, one line each, with what they are doing at a glance. They never settle on their own.",
-      caption: "Leads always in view",
+      say: "Agents get their own compact group at the foot of the list, one line each, with what they are doing at a glance. They never settle on their own.",
+      caption: "Leads in their own group",
       ready: AGENTS_HEADER,
       highlight: [AGENTS_HEADER],
       steps: [{ atMs: 0, action: "scroll", dy: 3000, target: SIDEBAR }],
