@@ -553,6 +553,42 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
     ),
   );
 
+  it.effect("gives fork builds their own app identity and no update feed", () =>
+    Effect.gen(function* () {
+      const nightly = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.1.10-nightly.20261112.4606",
+        false,
+        true,
+        undefined,
+        undefined,
+      );
+      const lim = yield* createBuildConfig(
+        "mac",
+        "dmg",
+        "0.1.10-nightly.20261112.4606-lim.155cb40848",
+        false,
+        true,
+        undefined,
+        undefined,
+      );
+
+      assert.equal(nightly.appId, "com.t3tools.t3code");
+      assert.equal(nightly.productName, "T3 Code (Nightly)");
+      assert.isNotNull(nightly.publish);
+      assert.equal(lim.appId, "ai.liminal.t3code.lim");
+      assert.equal(lim.productName, "T3 Code Lim");
+      assert.isNull(lim.publish);
+    }).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          ConfigProvider.fromEnv({ env: { GITHUB_REPOSITORY: "pingdotgg/t3code" } }),
+        ),
+      ),
+    ),
+  );
+
   it.effect("names the Electron window class in the Linux desktop entry", () =>
     Effect.gen(function* () {
       const linux = yield* createBuildConfig(

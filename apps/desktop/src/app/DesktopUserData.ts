@@ -4,6 +4,8 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Schema from "effect/Schema";
 
+import { isLimDesktopVersion } from "../updates/updateChannels.ts";
+
 export class DesktopUserDataInitializationError extends Schema.TaggedError<DesktopUserDataInitializationError>()(
   "DesktopUserDataInitializationError",
   {
@@ -35,6 +37,7 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
   function* (input: {
     readonly appDataDirectory: string;
     readonly isDevelopment: boolean;
+    readonly appVersion: string;
     readonly platform: NodeJS.Platform;
   }) {
     const fs = yield* FileSystem.FileSystem;
@@ -54,6 +57,10 @@ export const resolveUserDataPath = Effect.fn("desktop.userData.resolveUserDataPa
         );
     if (input.isDevelopment) {
       return (yield* inspect(legacyPath)) ? legacyPath : destinationPath;
+    }
+    // The fork's build installs beside upstream's and never adopts its profile.
+    if (isLimDesktopVersion(input.appVersion)) {
+      return path.join(input.appDataDirectory, "t3code-lim");
     }
     // Chromium databases require their own profile for each running version.
     if (input.platform !== "win32") return destinationPath;

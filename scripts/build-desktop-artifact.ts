@@ -63,6 +63,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 const LINUX_ICON_SIZES = [16, 22, 24, 32, 48, 64, 128, 256, 512] as const;
 const DESKTOP_APP_ID = "com.t3tools.t3code";
+const LIM_DESKTOP_APP_ID = "ai.liminal.t3code.lim";
 const APPLE_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/u;
 
 const BuildPlatform = Schema.Literals(["mac", "linux", "win"]);
@@ -2722,6 +2723,15 @@ export function isDesktopPreviewVersion(version: string): boolean {
   return /-pr\./.test(version) || /-preview\.\d{8}\.\d+$/.test(version);
 }
 
+// liminal-ai/t3code-v2 builds carry `-lim.<sha>` and install beside upstream's app.
+function isDesktopLimVersion(version: string): boolean {
+  return /-lim\./.test(version);
+}
+
+function resolveDesktopAppId(version: string): string {
+  return isDesktopLimVersion(version) ? LIM_DESKTOP_APP_ID : DESKTOP_APP_ID;
+}
+
 export function resolveDesktopWebAssetBrand(version: string): WebAssetBrand {
   return resolveWebAssetBrandForChannel(resolveDesktopUpdateChannel(version));
 }
@@ -2758,6 +2768,7 @@ export function resolvePackageManagerUserAgent(packageManager: string): string {
 }
 
 export function resolveDesktopProductName(version: string): string {
+  if (isDesktopLimVersion(version)) return "T3 Code Lim";
   return resolveDesktopUpdateChannel(version) === "nightly"
     ? "T3 Code (Nightly)"
     : (desktopPackageJson.productName ?? "T3 Code");
@@ -2781,7 +2792,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
 ) {
   const buildConfig: Record<string, unknown> = {
     afterPack: (yield* Path.Path).join(yield* RepoRoot, "scripts/prepare-server-compile-cache.cjs"),
-    appId: DESKTOP_APP_ID,
+    appId: resolveDesktopAppId(version),
     productName: resolveDesktopProductName(version),
     artifactName: "T3-Code-${version}-${arch}.${ext}",
     electronLanguages: [...DESKTOP_ELECTRON_LANGUAGES],
@@ -2811,7 +2822,7 @@ export const createBuildConfig = Effect.fn("createBuildConfig")(function* (
   const updateChannel = resolveDesktopUpdateChannel(version);
   // Missing publish config infers a GitHub feed from tokens; staging has no repository, so manifest generation would crash.
   buildConfig.publish = null;
-  if (!isDesktopPreviewVersion(version)) {
+  if (!isDesktopPreviewVersion(version) && !isDesktopLimVersion(version)) {
     const publishConfig = yield* resolveGitHubPublishConfig(updateChannel);
     if (publishConfig) {
       buildConfig.publish = [publishConfig];
