@@ -117,7 +117,7 @@ export async function runScenes({ scenes, clipMs, driver, now, sleep, firstFrame
       await inScene(`${step.action} step failed`, () => driver.act(step));
       steps.push({ action: step.action, atMs, doneMs: now() - start });
     }
-    const holdMs = ms + (scene.tailMs ?? PACING.minTailMs);
+    const holdMs = Math.max(ms, steps.at(-1)?.doneMs ?? 0) + (scene.tailMs ?? PACING.minTailMs);
     await sleep(start + holdMs - now());
     await driver.clear();
     timeline.push({

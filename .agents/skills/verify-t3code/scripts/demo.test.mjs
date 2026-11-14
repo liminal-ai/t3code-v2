@@ -13,7 +13,7 @@ import {
   runScenes,
 } from "./demo.mjs";
 
-const fakeClock = (readyDelays) => {
+const fakeClock = (readyDelays, actMs = 0) => {
   let t = 1000;
   const acted = [];
   return {
@@ -27,7 +27,10 @@ const fakeClock = (readyDelays) => {
         t += readyDelays[selector] ?? 0;
       },
       highlight: async () => {},
-      act: async (step) => acted.push([step.action, t]),
+      act: async (step) => {
+        acted.push([step.action, t]);
+        t += actMs;
+      },
       clear: async () => {},
     },
   };
@@ -51,8 +54,8 @@ const scenes = [
 ];
 const clipMs = { open: 2000, slow: 3000 };
 
-async function record(readyDelays) {
-  const clock = fakeClock(readyDelays);
+async function record(readyDelays, actMs) {
+  const clock = fakeClock(readyDelays, actMs);
   const timeline = await runScenes({
     scenes,
     clipMs: (s) => clipMs[s.id],
@@ -100,6 +103,23 @@ NodeTest.test("a slow ready moves its scene's start, and the narration starts th
     "each clip is delayed to its scene's real start in the run",
   );
 });
+
+NodeTest.test(
+  "an action that outlasts its narration still gets the full hold after it",
+  async () => {
+    const { timeline } = await record({}, 3000);
+    NodeAssert.equal(
+      timeline[0].steps[0].doneMs,
+      4000,
+      "the click starts mid-narration and takes 3 s",
+    );
+    NodeAssert.equal(
+      timeline[0].holdMs,
+      4900,
+      "the 900 ms tail follows the click, not the 2 s clip",
+    );
+  },
+);
 
 NodeTest.test("a ready that never shows names its scene", async () => {
   const clock = fakeClock({});
