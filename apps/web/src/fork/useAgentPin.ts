@@ -45,9 +45,9 @@ export function useAgentPin() {
     input: { threadId: ref.threadId },
   });
   const pinAsAgent = (ref: ScopedThreadRef) =>
-    runInOrder("Failed to pin as agent", [tag(ref, true), () => pin(input(ref))]);
+    runInOrder("Failed to pin as agent", [() => pin(input(ref)), tag(ref, true)]);
   const unpinAgent = (ref: ScopedThreadRef) =>
-    runInOrder("Failed to unpin agent", [() => unpin(input(ref)), tag(ref, false)]);
+    runInOrder("Failed to unpin agent", [tag(ref, false), () => unpin(input(ref))]);
   const handleAgentMenuAction = (action: ThreadActionMenuId, ref: ScopedThreadRef) => {
     if (action === "agent-pin") {
       void pinAsAgent(ref);

@@ -179,10 +179,15 @@ composer to mention it, but not within the sidebar, and no thread can be dropped
 The thread details pane shows **Pinned as agent** for an agent thread. To return the thread to
 the active list, choose **Unpin agent** from its menu, or click **Unpin** in the details pane.
 
-The mark is the thread tag `agent` together with the pin. Adding `agent` to your hidden thread
-tags hides every agent thread. A forked agent thread keeps the tag but not the pin, so it shows
-as an ordinary thread, and pinning it with **Pin thread** makes it an agent. On mobile and in the
-command palette, agent threads appear like any other thread.
+**Pin as agent** pins the thread and then tags it. **Unpin agent** removes the tag and then
+unpins it. If the second step fails, you see an error and the thread stays in **Pinned**. Choose
+**Pin as agent** again to finish marking it, or **Unpin thread** to finish unpinning it.
+
+The mark is the thread tag `agent` together with the pin. A thread that has the tag but no pin
+shows as an ordinary thread, and pinning it with **Pin thread** makes it an agent again. This
+happens in two ways. A forked agent thread keeps the tag but not the pin. On mobile, agent threads
+appear like any other thread, and settling one there removes its pin, so it moves to **Settled**
+with the tag. In the command palette, agent threads also appear like any other thread.
 
 ## Settle finished work
 
