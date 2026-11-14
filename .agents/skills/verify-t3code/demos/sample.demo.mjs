@@ -25,12 +25,6 @@ export default {
       tailMs: 900,
     },
     {
-      id: "sync-probe",
-      probe: true,
-      ready: 'role=heading[name="Working section"]',
-      tailMs: 900,
-    },
-    {
       id: "working-section",
       key: true,
       say: "The Working section setting folds busy threads into one group. It is on by default.",

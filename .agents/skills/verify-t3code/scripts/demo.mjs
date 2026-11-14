@@ -10,8 +10,9 @@ import * as NodeUtil from "node:util";
 const USAGE = `demo.mjs <command>   narrated demo videos of the T3 web UI (references/demo-video.md)
   tts --demo <file> --out <dir>
       one wav per scene from gpt-4o-mini-tts, cached by text, voice and instructions
-  record --demo <file> --checkout <path> --cdp <url> --out <dir> [--side before|after]
-      run seed, then record each scene on the t3v browser at <url> (\`t3v.mjs browser info\`)
+  record --demo <file> --checkout <path> --cdp <url> --out <dir> [--side before|after] [--probe]
+      run seed, then record each scene on the t3v browser at <url> (\`t3v.mjs browser info\`);
+      --probe appends a sync-probe scene for a dry run that measures drift
   mux --out <dir>
       join <dir>/before and <dir>/after (or <dir>/run) with title cards into <dir>/demo.mp4,
       with contact-sheet.png, frames/ (one per second), narration.txt and drift.json beside it
@@ -41,6 +42,8 @@ export const MARKER = "<!-- t3code-demo -->";
 const ACCOUNT = "e8e382d5bf8ec24ee2125188819b995c";
 const KEY_FILE = NodePath.join(process.env.HOME ?? "", ".config", "lim-keys", "models.env");
 const ACTIONS = ["click", "hover", "press", "scroll"];
+
+const PROBE = { id: "sync-probe", probe: true, ready: "body", tailMs: 900 };
 
 const sentences = (text) => text.split(/(?<=[.!?])\s+/).filter((s) => s.trim()).length;
 
@@ -353,7 +356,7 @@ const loadDemo = (file) => import(NodeURL.pathToFileURL(NodePath.resolve(file)).
 
 async function tts(opts) {
   const mod = await loadDemo(opts.demo);
-  const scenes = sceneLists(mod.default).flatMap(([, list]) => list);
+  const scenes = [...sceneLists(mod.default).flatMap(([, list]) => list), PROBE];
   const problems = lintDemo(mod.default);
   if (problems.length > 0)
     fail(`the scene file breaks the pacing grammar:\n  ${problems.join("\n  ")}`);
@@ -594,7 +597,8 @@ async function record(opts) {
   for (const name of ["demo", "checkout", "cdp", "out"])
     if (!opts[name]) fail(`record needs --${name}\n${USAGE}`);
   const mod = await loadDemo(opts.demo);
-  const { scenes, seed } = demoPart(mod, opts.side);
+  const part = demoPart(mod, opts.side);
+  const scenes = opts.probe ? [...part.scenes, PROBE] : part.scenes;
   const problems = lint(scenes);
   if (problems.length > 0)
     fail(`the scene file breaks the pacing grammar:\n  ${problems.join("\n  ")}`);
@@ -661,20 +665,27 @@ async function record(opts) {
   let timeline;
   let endMs;
   try {
-    if (seed) await seed({ page, t3v, checkout });
+    if (part.seed) await part.seed({ page, t3v, checkout });
     await page.evaluate(OVERLAY);
     await page.mouse.move(size.width / 2, size.height / 2);
-    await page.screencast.start({ path: video, size });
-    const firstFrameAt = performance.now();
+    const now = () => performance.timeOrigin + performance.now();
+    let firstFrame;
+    const firstFrameShown = new Promise((resolve) => (firstFrame = resolve));
+    await page.screencast.start({
+      path: video,
+      size,
+      onFrame: (frame) => firstFrame(frame.timestamp),
+    });
+    const firstFrameAt = await firstFrameShown;
     timeline = await runScenes({
       scenes,
       clipMs: (s) => clips[clipKey(s)].ms,
       driver: pageDriver(page),
-      now: () => performance.now(),
+      now,
       sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, ms))),
       firstFrameAt,
     });
-    endMs = Math.round(performance.now() - firstFrameAt);
+    endMs = Math.round(now() - firstFrameAt);
   } finally {
     await page.screencast.stop().catch(() => {});
     await page.evaluate(() => document.getElementById("t3demo")?.remove()).catch(() => {});
@@ -1027,7 +1038,10 @@ if (import.meta.main) {
     options: Object.fromEntries(
       ["demo", "out", "checkout", "cdp", "side", "by", "note", "pr"]
         .map((name) => [name, { type: "string" }])
-        .concat([["dry-run", { type: "boolean" }]]),
+        .concat([
+          ["dry-run", { type: "boolean" }],
+          ["probe", { type: "boolean" }],
+        ]),
     ),
   });
   const [command, dir] = positionals;
