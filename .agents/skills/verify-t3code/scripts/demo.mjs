@@ -43,6 +43,9 @@ const ACCOUNT = "e8e382d5bf8ec24ee2125188819b995c";
 const KEY_FILE = NodePath.join(process.env.HOME ?? "", ".config", "lim-keys", "models.env");
 const ACTIONS = ["click", "hover", "press", "scroll"];
 
+// OpenAI's own per-minute estimate for gpt-4o-mini-tts, for the running log's cost line.
+const TTS_USD_PER_MINUTE = 0.015;
+
 const PROBE = { id: "sync-probe", probe: true, ready: "body", tailMs: 900 };
 
 const sentences = (text) => text.split(/(?<=[.!?])\s+/).filter((s) => s.trim()).length;
@@ -419,8 +422,11 @@ async function tts(opts) {
       `${label}: ${list.length} scenes, at least ${(ms / 1000).toFixed(1)}s of narration and holds`,
     );
   }
+  const spokenMs = speak.reduce((sum, [key]) => sum + clips[key].ms, 0);
+  const characters = speak.reduce((sum, [, s]) => sum + s.say.length, 0);
+  const usd = ((spokenMs / 60_000) * TTS_USD_PER_MINUTE).toFixed(3);
   console.log(
-    `clips in ${clipsDir}, ${speak.length} synthesized, ${wanted.size - speak.length} from cache`,
+    `clips in ${clipsDir}: ${speak.length} synthesized (${characters} characters, ${(spokenMs / 1000).toFixed(1)}s of speech, about $${usd}), ${wanted.size - speak.length} from cache`,
   );
 }
 
@@ -1045,6 +1051,11 @@ if (import.meta.main) {
     ),
   });
   const [command, dir] = positionals;
+  const started = performance.now();
+  process.on("exit", (code) => {
+    if (code === 0 && command && !command.startsWith("__"))
+      console.log(`${command} took ${((performance.now() - started) / 1000).toFixed(1)}s`);
+  });
   if (values.side && !["before", "after"].includes(values.side)) fail("--side is before or after");
   switch (command) {
     case "tts":
