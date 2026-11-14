@@ -7,6 +7,7 @@ import type { ScopedThreadRef } from "@t3tools/contracts";
 
 import type { ThreadActionMenuId } from "../components/threadActionMenu.logic";
 import { stackedThreadToast, toastManager } from "../components/ui/toast";
+import { useThreadActions } from "../hooks/useThreadActions";
 import { threadEnvironment } from "../state/threads";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { AGENT_THREAD_TAG } from "./agentThreads";
@@ -33,21 +34,20 @@ async function runInOrder(failureTitle: string, steps: readonly Step[]) {
 
 export function useAgentPin() {
   const setTag = useOrchestrationCommand(threadEnvironment.setTag, { reportFailure: false });
-  const pin = useOrchestrationCommand(threadEnvironment.pin, { reportFailure: false });
+  const { pinThread } = useThreadActions();
   const unpin = useOrchestrationCommand(threadEnvironment.unpin, { reportFailure: false });
   const tag = (ref: ScopedThreadRef, tagged: boolean) => () =>
     setTag({
       environmentId: ref.environmentId,
       input: { threadId: ref.threadId, tag: AGENT_THREAD_TAG, tagged },
     });
-  const input = (ref: ScopedThreadRef) => ({
-    environmentId: ref.environmentId,
-    input: { threadId: ref.threadId },
-  });
   const pinAsAgent = (ref: ScopedThreadRef) =>
-    runInOrder("Failed to pin as agent", [() => pin(input(ref)), tag(ref, true)]);
+    runInOrder("Failed to pin as agent", [() => pinThread(ref), tag(ref, true)]);
   const unpinAgent = (ref: ScopedThreadRef) =>
-    runInOrder("Failed to unpin agent", [tag(ref, false), () => unpin(input(ref))]);
+    runInOrder("Failed to unpin agent", [
+      tag(ref, false),
+      () => unpin({ environmentId: ref.environmentId, input: { threadId: ref.threadId } }),
+    ]);
   const handleAgentMenuAction = (action: ThreadActionMenuId, ref: ScopedThreadRef) => {
     if (action === "agent-pin") {
       void pinAsAgent(ref);
@@ -56,5 +56,5 @@ export function useAgentPin() {
     }
     return action === "agent-pin" || action === "agent-unpin";
   };
-  return { unpinAgent, handleAgentMenuAction };
+  return { pinAsAgent, unpinAgent, handleAgentMenuAction };
 }
