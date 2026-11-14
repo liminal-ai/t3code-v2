@@ -171,7 +171,7 @@ export default {
       say: "Mark it, and it steps out of the task threads.",
       caption: "Out of the task list",
       ready: 'role=menuitem[name="Pin as agent"]',
-      highlight: ['role=menuitem[name="Pin as agent"]'],
+      highlight: [LEAD_ROW],
       steps: [{ action: "click", target: 'role=menuitem[name="Pin as agent"]' }],
     },
     {
