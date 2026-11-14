@@ -72,4 +72,20 @@ describe("DesktopEnvironment", () => {
       assert.equal(production.stateDir, "/Users/alice/.t3/userdata");
     }),
   );
+
+  it.effect("gives fork builds their own T3 home unless T3CODE_HOME names one", () =>
+    Effect.gen(function* () {
+      const appVersion = "0.1.10-nightly.20261112.4606-lim.155cb40848";
+      const lim = yield* makeEnvironment({ appVersion, isPackaged: true });
+      const configured = yield* makeEnvironment(
+        { appVersion, isPackaged: true },
+        { T3CODE_HOME: "/Users/alice/.t3-test" },
+      );
+
+      assert.equal(lim.baseDir, "/Users/alice/.t3-lim");
+      assert.equal(lim.stateDir, "/Users/alice/.t3-lim/userdata");
+      assert.equal(lim.displayName, "T3 Code Lim");
+      assert.equal(configured.stateDir, "/Users/alice/.t3-test/userdata");
+    }),
+  );
 });

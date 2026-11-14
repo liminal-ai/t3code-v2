@@ -11,6 +11,7 @@ import * as ElectronApp from "../electron/ElectronApp.ts";
 import * as DesktopAssets from "./DesktopAssets.ts";
 import * as DesktopEnvironment from "./DesktopEnvironment.ts";
 import * as DesktopUserData from "./DesktopUserData.ts";
+import { isLimDesktopVersion } from "../updates/updateChannels.ts";
 
 const COMMIT_HASH_PATTERN = /^[0-9a-f]{7,40}$/i;
 const COMMIT_HASH_DISPLAY_LENGTH = 12;
@@ -93,7 +94,9 @@ export const make = Effect.gen(function* () {
     const commitHash = yield* resolveAboutCommitHash;
     // Electron strips spaces but keeps parentheses in its User-Agent token, breaking Turnstile in preview sessions.
     yield* electronApp.setName(
-      `${environment.branding.baseName} ${environment.branding.stageLabel}`,
+      isLimDesktopVersion(environment.appVersion)
+        ? environment.displayName
+        : `${environment.branding.baseName} ${environment.branding.stageLabel}`,
     );
     yield* electronApp.setAboutPanelOptions({
       applicationName: environment.displayName,

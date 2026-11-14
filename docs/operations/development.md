@@ -286,6 +286,10 @@ DMGs default to the host architecture. Use `--arch` to choose another target and
 to retain packaging files for inspection. Run `vp run dist:desktop:artifact --help` for other
 options.
 
+A build whose `--build-version` carries `-lim.` (liminal-ai/t3code-v2's fork) is `T3 Code Lim`,
+with the bundle id `ai.liminal.t3code.lim`, the user data folder `t3code-lim`, the T3 home `~/.t3-lim`
+unless `T3CODE_HOME` names another, and no update feed.
+
 ### Prepared server bytecode
 
 Native macOS and Windows desktop artifact builds, and native Linux x64 and ARM64 builds, generate server

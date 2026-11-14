@@ -13,6 +13,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("reads the persisted linux password-store preference before Electron is ready", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "0.1.0",
       env: { T3CODE_HOME: "/home/user/.t3-test" },
       homeDirectory: "/home/user",
       joinPath,
@@ -25,8 +26,24 @@ describe("DesktopEarlyElectronStartup", () => {
     assert.equal(preference, "kwallet6");
   });
 
+  it("reads a fork build's early settings from its own T3 home", () => {
+    const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "0.1.10-nightly.20261112.4606-lim.155cb40848",
+      env: {},
+      homeDirectory: "/home/user",
+      joinPath,
+      readFileString: (path) => {
+        assert.equal(path, "/home/user/.t3-lim/userdata/desktop-settings.json");
+        return JSON.stringify({ linuxPasswordStore: "kwallet6" });
+      },
+    });
+
+    assert.equal(preference, "kwallet6");
+  });
+
   it("accepts JSONC in the early desktop settings file", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "0.1.0",
       env: { T3CODE_HOME: "/home/user/.t3-test" },
       homeDirectory: "/home/user",
       joinPath,
@@ -41,6 +58,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
   it("falls back to auto when the early settings document is missing or invalid", () => {
     const preference = resolveEarlyLinuxPasswordStorePreference({
+      appVersion: "0.1.0",
       env: {},
       homeDirectory: "/home/user",
       joinPath,
@@ -133,6 +151,7 @@ describe("DesktopEarlyElectronStartup", () => {
 
 describe("Linux device scale persistence failures", () => {
   const input = {
+    appVersion: "0.1.0",
     env: { T3CODE_HOME: "/isolated" },
     homeDirectory: "/home/user",
     joinPath: NodePath.posix.join,

@@ -16,6 +16,7 @@ import {
 } from "./DesktopStatePaths.ts";
 
 interface EarlyDesktopSettingsInput {
+  readonly appVersion: string;
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
@@ -49,12 +50,14 @@ const isDevelopmentEnvironment = (env: NodeJS.ProcessEnv): boolean =>
   trimNonEmpty(env.VITE_DEV_SERVER_URL) !== null;
 
 function resolveEarlyDesktopSettingsPath(input: {
+  readonly appVersion: string;
   readonly env: NodeJS.ProcessEnv;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
 }): string {
   const t3Home = Option.fromUndefinedOr(input.env.T3CODE_HOME);
   const baseDir = resolveDesktopBaseDir({
+    appVersion: input.appVersion,
     homeDirectory: input.homeDirectory,
     joinPath: input.joinPath,
     t3Home,
