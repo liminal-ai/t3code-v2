@@ -1,5 +1,7 @@
 import * as Option from "effect/Option";
 
+import { isLimDesktopVersion } from "../updates/updateChannels.ts";
+
 export type JoinPath = (first: string, ...segments: string[]) => string;
 
 function normalizeConfiguredBaseDir(t3Home: Option.Option<string>): Option.Option<string> {
@@ -11,12 +13,13 @@ function normalizeConfiguredBaseDir(t3Home: Option.Option<string>): Option.Optio
 }
 
 export function resolveDesktopBaseDir(input: {
+  readonly appVersion: string;
   readonly homeDirectory: string;
   readonly joinPath: JoinPath;
   readonly t3Home: Option.Option<string>;
 }): string {
   return Option.getOrElse(normalizeConfiguredBaseDir(input.t3Home), () =>
-    input.joinPath(input.homeDirectory, ".t3"),
+    input.joinPath(input.homeDirectory, isLimDesktopVersion(input.appVersion) ? ".t3-lim" : ".t3"),
   );
 }
 
