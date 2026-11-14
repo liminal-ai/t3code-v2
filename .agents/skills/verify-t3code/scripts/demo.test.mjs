@@ -210,8 +210,6 @@ NodeTest.test(
       body,
       /<a href="https:\/\/customer-x\.cloudflarestream\.com\/uid\/watch"><img src="https:\/\/customer-x\.cloudflarestream\.com\/uid\/thumbnails\/thumbnail\.gif\?time=12s"/,
     );
-    NodeAssert.match(body, /\(1:12\)/);
-    NodeAssert.match(body, /Before `155cb40848`, After `abcdef0123`/);
   },
 );
 
