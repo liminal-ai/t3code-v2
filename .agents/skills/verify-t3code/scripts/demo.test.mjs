@@ -101,6 +101,24 @@ NodeTest.test("a slow ready moves its scene's start, and the narration starts th
   );
 });
 
+NodeTest.test("a ready that never shows names its scene", async () => {
+  const clock = fakeClock({});
+  clock.driver.ready = async () => {
+    throw new Error("Timeout 30000ms exceeded");
+  };
+  await NodeAssert.rejects(
+    runScenes({
+      scenes,
+      clipMs: (s) => clipMs[s.id],
+      driver: clock.driver,
+      now: clock.now,
+      sleep: clock.sleep,
+      firstFrameAt: 1000,
+    }),
+    /^Error: scene open: role=button\[name=Settings\] never became visible: Timeout/,
+  );
+});
+
 NodeTest.test("each run's clips are delayed within that run, after its title card", () => {
   const scene = (id, startMs) => ({
     id,

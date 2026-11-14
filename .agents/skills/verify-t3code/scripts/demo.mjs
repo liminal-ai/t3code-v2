@@ -102,7 +102,11 @@ const planSteps = (scene, clipMs) =>
 export async function runScenes({ scenes, clipMs, driver, now, sleep, firstFrameAt }) {
   const timeline = [];
   for (const scene of scenes) {
-    await driver.ready(scene.ready);
+    const inScene = (what, run) =>
+      run().catch((error) => {
+        throw new Error(`scene ${scene.id}: ${what}: ${error.message}`, { cause: error });
+      });
+    await inScene(`${scene.ready} never became visible`, () => driver.ready(scene.ready));
     const start = now();
     await driver.highlight(scene.highlight ?? []);
     const ms = clipMs(scene);
@@ -110,7 +114,7 @@ export async function runScenes({ scenes, clipMs, driver, now, sleep, firstFrame
     for (const step of planSteps(scene, ms)) {
       await sleep(start + step.atMs - now());
       const atMs = now() - start;
-      await driver.act(step);
+      await inScene(`${step.action} step failed`, () => driver.act(step));
       steps.push({ action: step.action, atMs, doneMs: now() - start });
     }
     const holdMs = ms + (scene.tailMs ?? PACING.minTailMs);
@@ -610,8 +614,18 @@ async function record(opts) {
   const playwright = NodeModule.createRequire(
     NodePath.join(worktree(), "apps", "web", "package.json"),
   )("playwright");
+  const origin = new URL(
+    readJson(NodePath.join(checkout, ".t3", "userdata", "server-runtime.json")).devUrl,
+  ).origin;
   const browser = await playwright.chromium.connectOverCDP(opts.cdp);
-  const page = browser.contexts()[0].pages()[0];
+  const page = browser
+    .contexts()
+    .flatMap((context) => context.pages())
+    .find((p) => p.url().startsWith(`${origin}/`));
+  if (!page) {
+    await browser.close();
+    fail(`no page on ${origin}, the dev server of ${checkout}, in the browser at ${opts.cdp}`);
+  }
   const t3vScript = NodePath.join(
     checkout,
     ".agents",
