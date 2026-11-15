@@ -8,6 +8,7 @@ import { assert, it } from "@effect/vitest";
 import {
   ClaudeSettings,
   type OrchestrationV2ProviderThread,
+  ProviderInstanceId,
   ProviderThreadId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,6 +19,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { vi } from "vite-plus/test";
 
+import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Limbase from "./Limbase.ts";
 
 const created: unknown[] = [];
@@ -247,6 +249,38 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
           "UserPromptSubmit",
           "PreCompact",
         ]);
+      }),
+  );
+
+  it.effect(
+    "opens a Limbase instance's query with the host's compact window, not the instance's",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings({
+          limbaseHome: yield* limbaseHome,
+          autoCompactWindow: "100000",
+        });
+        const { opened, sdk } = fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]);
+        const hosted = yield* Limbase.queryFor(
+          settings,
+          providerThread({ limbaseThreadId: "th_1" }),
+          sdk,
+        );
+        const options = makeClaudeQueryOptions({
+          modelSelection: { instanceId: ProviderInstanceId.make("claudeLimbase"), model: "sonnet" },
+          nativeThreadId: "session-1",
+          resume: false,
+          cwd: "/work/app",
+          settings,
+          toolSearchOverride: "true",
+        });
+        yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options })));
+        const cli = opened[0]!;
+        const cliSettings = cli.settings as Exclude<Options["settings"], string>;
+        assert.equal(cli.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "1000000");
+        assert.isUndefined(cliSettings?.autoCompactWindow);
+        assert.isUndefined(cliSettings?.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+        assert.equal(cliSettings?.env?.ENABLE_TOOL_SEARCH, "true");
       }),
   );
 

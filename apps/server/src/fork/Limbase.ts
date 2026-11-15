@@ -9,7 +9,12 @@ import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 
-import { createSdkMcpServer, query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createSdkMcpServer,
+  query,
+  type SDKMessage,
+  type Settings,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSettings, OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -38,6 +43,17 @@ export class LimbaseThreadError extends Schema.TaggedError<LimbaseThreadError>()
 }
 
 type Sdk = { readonly query: typeof query; readonly createSdkMcpServer: typeof createSdkMcpServer };
+
+/**
+ * The settings without the instance's own compact window. The CLI ranks a window in its settings over
+ * the one the host sets in its environment, and would compact on its own long before Limbase's trigger.
+ */
+const withoutCompactWindow = ({ autoCompactWindow: _window, env, ...settings }: Settings) => {
+  if (env === undefined) return settings;
+  const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _envWindow, ...kept } = env;
+  return { ...settings, env: kept };
+};
+
 type Connection = Awaited<ReturnType<typeof connectLimbase>>;
 
 const connections = new Map<string, Promise<Connection>>();
@@ -203,7 +219,13 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
       onEvent: (event) => {
         if (event.kind === "failOut") failedStep = { where: event.where, what: event.what };
       },
-    }).query({ prompt, options: { ...rest, ...(settings === undefined ? {} : { settings }) } });
+    }).query({
+      prompt,
+      options: {
+        ...rest,
+        ...(settings === undefined ? {} : { settings: withoutCompactWindow(settings) }),
+      },
+    });
     const next = session.next.bind(session);
     const watched: typeof session = new Proxy(session, {
       get: (target, property) =>

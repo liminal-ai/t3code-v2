@@ -31,7 +31,8 @@ these threads. A thread can therefore run for millions of tokens. The agent gets
 4. Set **Binary path** to the `claude` binary from step 2.
 5. Set **Limbase home** to the Limbase home folder, for example `~/.limbase/home`.
 6. Leave **Compact idle threads** at **Never**, or at **Use default** while the default is off.
-7. Leave **Auto-compact after** empty. The Limbase host sets Claude Code's compact window itself.
+7. **Auto-compact after** has no effect on a Limbase instance. The Limbase host sets Claude Code's
+   compact window itself, and Limbase decides when to compact.
 
 Threads that start on the instance after this run on Limbase. A thread that started on the instance
 before you set **Limbase home** stays a plain Claude thread. A thread on any other instance is not
@@ -97,8 +98,9 @@ version, and change **Binary path** to it.
   the Limbase plugin, and every message fails with `limbase: stopped at view: the CLI skipped the
   host's plugin:` and Claude Code's reason.
 - Several prompts that you send during a turn reach the model one tool call apart, in order.
-- Limbase does not keep a subagent's messages. T3 Code may not show the model of a subagent that ran
-  before the last install.
+- Limbase does not keep a subagent's messages. After an edit from an earlier message, a compact
+  that Claude Code did not take, or a restart of T3 Code, T3 Code may not show the model of a
+  subagent that ran before it. An ordinary compact does not change this.
 - A turn whose previous session T3 Code could not resume continues the same Limbase thread in a
   fresh session. T3 Code's recovery text, the thread's history as a summary, is recorded in Limbase
   as a prompt, and the model works from that text until the next install.
