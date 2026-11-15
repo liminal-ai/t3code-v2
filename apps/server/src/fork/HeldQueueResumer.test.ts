@@ -17,6 +17,7 @@ import {
   ProviderTurnId,
   RunId,
   RuntimeRequestId,
+  ScheduledTaskId,
   ThreadId,
   TurnItemId,
   type ModelSelection,
@@ -392,6 +393,24 @@ const resumeCommandIds = (threadId: ThreadId) =>
     `.pipe(Effect.map((rows) => rows.map((row) => row.command_id))),
   );
 
+/** Upstream's Resume can continue a stopped run natively; the resumer must only ever start queued messages. */
+const assertNoNativeResume = (threadId: ThreadId, started: ReadonlyArray<StartedTurn>) =>
+  Effect.gen(function* () {
+    const runs = yield* runsOf(threadId);
+    assert.deepEqual(
+      runs.flatMap((run) => (run.manualContinuationOfRunId === undefined ? [] : [run.id])),
+      [],
+      "no run continues another natively",
+    );
+    assert.deepEqual(
+      started.flatMap((entry) =>
+        entry.turn.threadId === threadId && entry.turn.resume === true ? [entry.turn.runId] : [],
+      ),
+      [],
+      "no turn started as a native resume",
+    );
+  });
+
 const continuationOf = (runs: ReadonlyArray<OrchestrationV2Run>, sourceId: RunId) =>
   runs.find((run) => run.restartContinuationOfRunId === sourceId);
 
@@ -561,6 +580,12 @@ it.effect("resumes a restart-held queue only when the setting is on", () =>
         assert.equal(continuationOf(onRuns, onThread.active.id)?.status, "completed");
         const resumed = onRuns.find((run) => run.id === onThread.queued[0]!.id);
         assert.deepEqual([resumed?.status, resumed?.queueHeld], ["running", false]);
+        assert.equal(
+          started.find((entry) => entry.turn.runId === resumed?.id)?.turn.message.messageId,
+          resumed?.userMessageId,
+          "the resumed run sends its own queued message",
+        );
+        yield* assertNoNativeResume(on, started);
         const offRuns = yield* runsOf(off);
         assert.isUndefined(continuationOf(offRuns, offThread.active.id));
         const stillHeld = offRuns.find((run) => run.id === offThread.queued[0]!.id);
@@ -1047,7 +1072,7 @@ it.effect("leaves the hold when the continuation and its start retries fail", ()
 );
 
 it.effect("leaves the hold when core declines the continuation", () =>
-  withHarness("declined", ({ cwd }) =>
+  withHarness("declined", ({ cwd, started }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:declined");
       const { active, queued } = yield* busyThread({ threadId, cwd });
@@ -1069,6 +1094,7 @@ it.effect("leaves the hold when core declines the continuation", () =>
       assert.isUndefined(continuationOf(runs, active.id));
       const held = runs.find((run) => run.id === queued[0]!.id);
       assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
+      yield* assertNoNativeResume(threadId, started);
     }),
   ),
 );
@@ -1596,93 +1622,115 @@ it.effect("keeps a restart-held queue held until its provider's usage limit rese
   ),
 );
 
-it.effect("checks the usage limit of the provider a held monitor notice starts on", () =>
-  withHarness("monitor-limit", ({ cwd }) =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("thread:monitor-limit");
-      const { active } = yield* busyThread({ threadId, cwd, queued: 0 });
-      yield* limitForAnHour(threadId, active);
-      const switchId = MessageId.make(`${threadId}:switch`);
-      yield* dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(`${threadId}:switch`),
-        threadId,
-        messageId: switchId,
-        text: "Use the other provider",
-        attachments: [],
-        createdBy: "user",
-        creationSource: "web",
-        modelSelection: { instanceId: otherInstanceId, model: "other-model" },
-        dispatchMode: { type: "start_immediately" },
-      });
-      const switched = (yield* runsOf(threadId)).find((run) => run.userMessageId === switchId)!;
-      yield* dispatch({
-        type: "message.dispatch",
-        commandId: CommandId.make(`${threadId}:monitor`),
-        threadId,
-        messageId: MessageId.make(`${threadId}:monitor`),
-        text: "Monitor complete",
-        attachments: [],
-        createdBy: "agent",
-        creationSource: "server",
-        notification: {
-          source: { kind: "monitor" },
-          outcome: "completed",
-          summary: "Monitor complete",
-        },
-        dispatchMode: { type: "queue_after_active" },
-      });
-      const [monitor] = (yield* runsOf(threadId)).filter((run) => run.status === "queued");
-      assert.equal(monitor?.providerInstanceId, otherInstanceId, "stored on the other provider");
-      const now = yield* DateTime.now;
-      yield* Effect.flatMap(EventSink.EventSinkV2, (sink) =>
-        sink.write({
-          commandId: CommandId.make(`${RECONCILE_COMMAND_PREFIX}monitor-limit`),
-          events: [
-            {
-              id: EventId.make(`${threadId}:held`),
-              type: "run.updated",
-              threadId,
-              runId: monitor!.id,
-              providerInstanceId: monitor!.providerInstanceId,
-              occurredAt: now,
-              payload: { ...monitor!, queueHeld: true },
-            },
-            {
-              id: EventId.make(`${threadId}:switch-complete`),
-              type: "run.updated",
-              threadId,
-              runId: switched.id,
-              providerInstanceId: switched.providerInstanceId,
-              occurredAt: now,
-              payload: { ...switched, status: "completed", startedAt: now, completedAt: now },
-            },
-          ],
-        }),
-      );
-      yield* dispatch({
-        type: "thread.model-selection.set",
-        commandId: CommandId.make(`${threadId}:back-to-limited`),
-        threadId,
-        modelSelection,
-      });
-      const monitorRun = Effect.map(runsOf(threadId), (runs) =>
-        runs.find((run) => run.id === monitor!.id),
-      );
+it.effect.each(["monitor notice", "scheduled delivery"] as const)(
+  "checks the usage limit of the provider a held %s starts on",
+  (kind) =>
+    withHarness(`notice-limit-${kind}`, ({ cwd }) =>
+      Effect.gen(function* () {
+        const threadId = ThreadId.make(`thread:notice-limit-${kind}`);
+        const { active } = yield* busyThread({ threadId, cwd, queued: 0 });
+        yield* limitForAnHour(threadId, active);
+        const switchId = MessageId.make(`${threadId}:switch`);
+        yield* dispatch({
+          type: "message.dispatch",
+          commandId: CommandId.make(`${threadId}:switch`),
+          threadId,
+          messageId: switchId,
+          text: "Use the other provider",
+          attachments: [],
+          createdBy: "user",
+          creationSource: "web",
+          modelSelection: { instanceId: otherInstanceId, model: "other-model" },
+          dispatchMode: { type: "start_immediately" },
+        });
+        const switched = (yield* runsOf(threadId)).find((run) => run.userMessageId === switchId)!;
+        // Neither picks a model, so each starts on the thread's provider, not the one it queued on.
+        yield* dispatch(
+          kind === "monitor notice"
+            ? {
+                type: "message.dispatch",
+                commandId: CommandId.make(`${threadId}:monitor`),
+                threadId,
+                messageId: MessageId.make(`${threadId}:monitor`),
+                text: "Monitor complete",
+                attachments: [],
+                createdBy: "agent",
+                creationSource: "server",
+                notification: {
+                  source: { kind: "monitor" },
+                  outcome: "completed",
+                  summary: "Monitor complete",
+                },
+                dispatchMode: { type: "queue_after_active" },
+              }
+            : {
+                type: "message.dispatch",
+                commandId: CommandId.make(`${threadId}:scheduled`),
+                threadId,
+                messageId: MessageId.make(`${threadId}:scheduled`),
+                scheduledTaskId: ScheduledTaskId.make(`${threadId}:task`),
+                text: "Scheduled prompt",
+                attachments: [],
+                createdBy: "user",
+                creationSource: "web",
+                dispatchMode: { type: "queue_after_active" },
+              },
+        );
+        const [monitor] = (yield* runsOf(threadId)).filter((run) => run.status === "queued");
+        assert.equal(monitor?.providerInstanceId, otherInstanceId, "stored on the other provider");
+        const now = yield* DateTime.now;
+        yield* Effect.flatMap(EventSink.EventSinkV2, (sink) =>
+          sink.write({
+            commandId: CommandId.make(`${RECONCILE_COMMAND_PREFIX}notice-limit-${kind}`),
+            events: [
+              {
+                id: EventId.make(`${threadId}:held`),
+                type: "run.updated",
+                threadId,
+                runId: monitor!.id,
+                providerInstanceId: monitor!.providerInstanceId,
+                occurredAt: now,
+                payload: { ...monitor!, queueHeld: true },
+              },
+              {
+                id: EventId.make(`${threadId}:switch-complete`),
+                type: "run.updated",
+                threadId,
+                runId: switched.id,
+                providerInstanceId: switched.providerInstanceId,
+                occurredAt: now,
+                payload: { ...switched, status: "completed", startedAt: now, completedAt: now },
+              },
+            ],
+          }),
+        );
+        yield* dispatch({
+          type: "thread.model-selection.set",
+          commandId: CommandId.make(`${threadId}:back-to-limited`),
+          threadId,
+          modelSelection,
+        });
+        const monitorRun = Effect.map(runsOf(threadId), (runs) =>
+          runs.find((run) => run.id === monitor!.id),
+        );
 
-      const scanning = yield* scan.pipe(Effect.forkScoped);
-      yield* Effect.repeat(Effect.yieldNow, { times: 200 });
-      const held = yield* monitorRun;
-      assert.deepEqual([held?.status, held?.queueHeld], ["queued", true], "held before the reset");
-      assert.deepEqual(yield* resumeCommandIds(threadId), []);
+        const scanning = yield* scan.pipe(Effect.forkScoped);
+        yield* Effect.repeat(Effect.yieldNow, { times: 200 });
+        const held = yield* monitorRun;
+        assert.deepEqual(
+          [held?.status, held?.queueHeld],
+          ["queued", true],
+          "held before the reset",
+        );
+        assert.deepEqual(yield* resumeCommandIds(threadId), []);
 
-      yield* TestClock.adjust("1 hour");
-      yield* Fiber.join(scanning);
-      yield* drain;
-      const resumed = yield* monitorRun;
-      assert.notEqual(resumed?.status, "queued", "resumed after the reset");
-      assert.equal(resumed?.queueHeld, false);
-      assert.lengthOf(yield* resumeCommandIds(threadId), 1);
-    }),
-  ),
+        yield* TestClock.adjust("1 hour");
+        yield* Fiber.join(scanning);
+        yield* drain;
+        const resumed = yield* monitorRun;
+        assert.notEqual(resumed?.status, "queued", "resumed after the reset");
+        assert.equal(resumed?.queueHeld, false);
+        assert.lengthOf(yield* resumeCommandIds(threadId), 1);
+      }),
+    ),
 );
