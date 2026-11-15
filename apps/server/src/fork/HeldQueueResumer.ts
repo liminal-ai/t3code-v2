@@ -434,11 +434,13 @@ const make = Effect.gen(function* () {
     const message = (yield* projections.getMessagesById(threadId, [head.userMessageId])).get(
       head.userMessageId,
     );
-    // Upstream's queuedRunModelSelection: a delegated result or an unbuffered monitor notice
-    // starts on the thread's current provider, not the one stored on the run.
+    // Upstream's queuedRunModelSelection: a delegated result, a scheduled delivery that picked no
+    // model, or an unbuffered monitor notice starts on the thread's current provider, not the one
+    // stored on the run.
     const followsThread =
       message !== undefined &&
       (message.delegatedCompletion !== undefined ||
+        message.followsThreadSelection === true ||
         (message.notification?.source.kind === "monitor" &&
           !isBufferedProviderNotification(message)));
     const resetMs = yield* usageLimitResetAhead(

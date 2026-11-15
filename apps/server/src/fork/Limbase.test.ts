@@ -446,6 +446,23 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     assert.equal(Limbase.onLiveSession(plain, live, moved), plain);
   });
 
+  it("resumes a stopped Limbase thread with a prompt, and a plain one natively", () => {
+    const input = (nativeMetadata?: { readonly limbaseThreadId: string }) =>
+      ({
+        providerThread: providerThread(nativeMetadata),
+        messageId: "message-resume",
+      }) as unknown as Parameters<typeof Limbase.resumeTurnInput>[0];
+    const plain = Limbase.resumeTurnInput(input());
+    assert.equal(plain.resume, true);
+    assert.equal(plain.message.text, "");
+    const limbase = Limbase.resumeTurnInput(input({ limbaseThreadId: "th_1" }));
+    assert.isUndefined(limbase.resume);
+    assert.deepEqual(
+      [limbase.message.messageId, limbase.message.text],
+      ["message-resume", "Continue where you left off."],
+    );
+  });
+
   it("finds a moved row's live process for stop, model and MCP App calls, and the stored id otherwise", () => {
     const moved = new Map([["session-1", "session-2"]]);
     const live = { nativeThreadId: "session-1", stopping: false };
