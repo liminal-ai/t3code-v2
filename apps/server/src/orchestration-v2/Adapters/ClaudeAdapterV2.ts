@@ -13864,7 +13864,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ),
               ),
           ),
-          resumeTurn: (input) => startTurn(ProviderAdapter.resumeTurnInput(input)),
+          resumeTurn: (input) => startTurn(Limbase.resumeTurnInput(input)),
           startTurn,
           compactThread: (turnInput) =>
             startTurn({

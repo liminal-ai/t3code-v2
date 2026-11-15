@@ -12,6 +12,7 @@ import * as NodePath from "node:path";
 import { createSdkMcpServer, query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSettings, OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
+import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import { connectLimbase, createAgentSdkHost, threadCalls } from "@limbase/host-agent-sdk";
 import hostPackage from "@limbase/host-agent-sdk/package.json" with { type: "json" };
@@ -257,6 +258,30 @@ export const refuse = (
   providerThread.nativeMetadata?.limbaseThreadId === undefined
     ? Effect.void
     : Effect.fail(new LimbaseRefusal({ action }));
+
+/**
+ * The turn a Resume starts. The CLI's native resume continues the cut turn from an empty prompt, and
+ * the host fails that step and refuses every later one at the view seam, so a Limbase thread is sent
+ * the prompt Resume sent before upstream resumed natively.
+ */
+export const resumeTurnInput = (
+  input: ProviderAdapter.ProviderAdapterV2ResumeTurnInput,
+): ProviderAdapter.ProviderAdapterV2TurnInput => {
+  if (input.providerThread.nativeMetadata?.limbaseThreadId === undefined) {
+    return ProviderAdapter.resumeTurnInput(input);
+  }
+  const { messageId, ...turn } = input;
+  return {
+    ...turn,
+    message: {
+      messageId,
+      text: "Continue where you left off.",
+      attachments: [],
+      createdBy: "user",
+      creationSource: "server",
+    },
+  };
+};
 
 type LiveQuery = { readonly nativeThreadId: string; readonly stopping: boolean } | null;
 
