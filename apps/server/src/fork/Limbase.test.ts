@@ -127,6 +127,7 @@ const init = (version: string) =>
     subtype: "init",
     session_id: "session-1",
     claude_code_version: version,
+    plugins: [{ name: "limbase", path: "/tmp/limbase-plugin" }],
   }) as SDKMessage;
 
 const drain = async (stream: AsyncIterable<SDKMessage>) => {
@@ -197,47 +198,56 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     }),
   );
 
-  it.effect("runs a Limbase thread's query through the host, with the SDK's compaction off", () =>
-    Effect.gen(function* () {
-      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
-      const { opened, sdk } = fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]);
-      const hosted = yield* Limbase.queryFor(
-        settings,
-        providerThread({ limbaseThreadId: "th_1" }),
-        sdk,
-      );
-      assert.isDefined(hosted);
-      const seen = yield* Effect.promise(() =>
-        drain(
-          hosted!({
-            prompt: prompts,
-            options: {
-              sessionId: "session-1",
-              env: { PATH: "/bin" },
-              settings: { showThinkingSummaries: true },
-              mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
-            },
-          }),
-        ),
-      );
-      assert.deepEqual(
-        seen.map((message) => message.type),
-        ["system"],
-      );
-      const options = opened[0]!;
-      assert.equal(options.sessionId, "session-1");
-      assert.equal(options.env?.DISABLE_COMPACT, "1");
-      assert.deepEqual(options.settings, {
-        showThinkingSummaries: true,
-        autoCompactEnabled: false,
-      });
-      assert.deepEqual(Object.keys(options.mcpServers ?? {}).toSorted(), ["limbase", "t3-code"]);
-      assert.includeMembers(Object.keys(options.hooks ?? {}), [
-        "PostToolBatch",
-        "UserPromptSubmit",
-        "PreCompact",
-      ]);
-    }),
+  it.effect(
+    "runs a Limbase thread's query through the host, which compacts through its plugin",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+        const { opened, sdk } = fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]);
+        const hosted = yield* Limbase.queryFor(
+          settings,
+          providerThread({ limbaseThreadId: "th_1" }),
+          sdk,
+        );
+        assert.isDefined(hosted);
+        const seen = yield* Effect.promise(() =>
+          drain(
+            hosted!({
+              prompt: prompts,
+              options: {
+                sessionId: "session-1",
+                env: { PATH: "/bin" },
+                settings: { showThinkingSummaries: true },
+                mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
+              },
+            }),
+          ),
+        );
+        assert.deepEqual(
+          seen.map((message) => message.type),
+          ["system"],
+        );
+        const options = opened[0]!;
+        assert.equal(options.sessionId, "session-1");
+        assert.equal(options.env?.PATH, "/bin");
+        assert.isUndefined(options.env?.DISABLE_COMPACT);
+        assert.equal(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "1000000");
+        assert.isString(options.env?.LIMBASE_HOST_SOCKET);
+        assert.deepEqual(options.settings, {
+          showThinkingSummaries: true,
+          autoCompactEnabled: true,
+        });
+        assert.deepEqual(
+          options.plugins?.map((plugin) => plugin.type),
+          ["local"],
+        );
+        assert.deepEqual(Object.keys(options.mcpServers ?? {}).toSorted(), ["limbase", "t3-code"]);
+        assert.includeMembers(Object.keys(options.hooks ?? {}), [
+          "PostToolBatch",
+          "UserPromptSubmit",
+          "PreCompact",
+        ]);
+      }),
   );
 
   it.effect(

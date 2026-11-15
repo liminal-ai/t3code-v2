@@ -2,8 +2,8 @@
 /**
  * Runs the Claude threads of an instance whose `limbaseHome` is set on Limbase. Each such thread gets
  * one Limbase thread, whose id rides on the provider-thread row, and its SDK `query` goes through
- * Limbase's Agent SDK host: every message is captured, the SDK's own compaction is off, and the
- * session moves to a compacted view when one is due. A thread on any other instance is untouched.
+ * Limbase's Agent SDK host: every message is captured, and when a view is due the running CLI
+ * compacts onto it through the host's plugin. A thread on any other instance is untouched.
  */
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
