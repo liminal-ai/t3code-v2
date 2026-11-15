@@ -617,6 +617,98 @@ describe.skipIf(HostProcess.Platform.defaultValue() === "win32")("Claude CLI pro
     }),
   );
 
+  // The Limbase host replaces the CLI inside one query, as an edit's rollback or a view install does.
+  it.effect(
+    "keeps a host query's scope for the CLI that replaced another, until the query closes",
+    () =>
+      Effect.gen(function* () {
+        const cli = fakeClaudeCli("cat > /dev/null");
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => NodeFS.rmSync(NodePath.dirname(cli), { recursive: true, force: true })),
+        );
+        let closing = false;
+        const firstStop = yield* Deferred.make<{
+          readonly unit: string;
+          readonly closing: boolean;
+        }>();
+        const children: NodeChildProcess.ChildProcess[] = [];
+        let replaced: Promise<NodeChildProcess.ChildProcess> = Promise.resolve(children[0]!);
+        const hostQuery = (({ options }: { readonly options: ClaudeSdk.Options }) => {
+          const spawn = () =>
+            options.spawnClaudeCodeProcess!({
+              command: options.pathToClaudeCodeExecutable!,
+              args: [],
+              env: { ...process.env },
+              signal: new AbortController().signal,
+            }) as unknown as NodeChildProcess.ChildProcess;
+          const first = spawn();
+          children.push(first);
+          replaced = new Promise((resolve) =>
+            first.once("exit", () => {
+              const next = spawn();
+              children.push(next);
+              resolve(next);
+            }),
+          );
+          first.kill("SIGTERM");
+          let release = () => {};
+          const closed = new Promise<void>((resolve) => (release = resolve));
+          const query = {
+            next: async () => {
+              await closed;
+              return { done: true, value: undefined };
+            },
+            [Symbol.asyncIterator]: () => query,
+            close: () => {
+              for (const child of children) child.kill("SIGTERM");
+              release();
+            },
+          };
+          return query;
+        }) as unknown as typeof ClaudeSdk.query;
+        const session = yield* Effect.gen(function* () {
+          const runner = yield* ClaudeAgentSdkQueryRunner;
+          return yield* runner.open({
+            threadId: ThreadId.make("thread-host-cli"),
+            providerSessionId: ProviderSessionId.make("session-host-cli"),
+            query: hostQuery,
+            options: {
+              sessionId: "native-session-host-cli",
+              model: "claude-sonnet-4-6",
+              tools: [],
+              permissionMode: "default",
+              pathToClaudeCodeExecutable: cli,
+            },
+          });
+        }).pipe(
+          Effect.provide(
+            realQueryRunner.pipe(
+              Layer.provide(
+                Layer.succeed(AgentScope, {
+                  ...AgentScope.defaultValue(),
+                  wrap: ({ command, args }) =>
+                    Effect.succeed({ command, args, unit: "t3code-claude-host.scope" }),
+                  stop: (unit) =>
+                    Deferred.succeed(firstStop, { unit, closing }).pipe(Effect.asVoid),
+                }),
+              ),
+            ),
+          ),
+        );
+        const successor = yield* Effect.promise(() => replaced);
+        assert.isNull(successor.exitCode, "the CLI that replaced the first still runs");
+        const exited = new Promise((resolve) => successor.once("exit", resolve));
+        closing = true;
+        yield* session.close;
+        yield* Effect.promise(() => exited);
+        assert.deepEqual(
+          yield* Deferred.await(firstStop),
+          { unit: "t3code-claude-host.scope", closing: true },
+          "the replaced CLI's exit leaves the scope to its successor, and the query's close stops it",
+        );
+      }),
+  );
+
   // The default AgentScope is what macOS gets: no systemd scope to catch a job outside the CLI's group.
   it.effect("stops a job the CLI started in its own process group when the session closes", () =>
     Effect.gen(function* () {

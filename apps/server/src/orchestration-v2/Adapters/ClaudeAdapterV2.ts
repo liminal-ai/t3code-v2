@@ -1489,8 +1489,15 @@ export const layerQueryRunner: Layer.Layer<
                   executableArgs: [...launch.args, ...(queryOptions.executableArgs ?? [])],
                 };
           const unit = launch?.unit;
+          // The Limbase host replaces the CLI inside one query under this same scope, for an edit
+          // or a view install, so its scope stops when the query closes, not when one CLI exits.
+          let scopeOutlivesCli = input.query !== undefined;
           const stopScope =
-            unit === undefined ? undefined : () => void runFork(agentScope.stop(unit));
+            unit === undefined
+              ? undefined
+              : () => {
+                  if (!scopeOutlivesCli) runFork(agentScope.stop(unit));
+                };
           // Only a CLI that fails before its first message explains itself on
           // stderr. The known root refusal becomes a curated failure; any other
           // stderr can hold private text, so it stays out of turn failures.
@@ -1856,6 +1863,13 @@ export const layerQueryRunner: Layer.Layer<
             ),
             // A job started since the last poll is recorded before the CLI is told to exit.
             close: Effect.suspend(() => (processExited ? Effect.void : refreshDescendants)).pipe(
+              Effect.andThen(
+                Effect.sync(() => {
+                  if (!scopeOutlivesCli) return;
+                  scopeOutlivesCli = false;
+                  if (processExited) stopScope?.();
+                }),
+              ),
               Effect.andThen(Queue.shutdown(promptQueue)),
               Effect.andThen(closeClaudeQuery(queryRuntime)),
               Effect.tap(() =>
