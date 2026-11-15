@@ -56,6 +56,8 @@ version, and change **Binary path** to it.
   Claude Code process. Background commands and subagents keep running. The agent is told once, with
   the context's size before and after and the background tasks still running.
 - **`/compact`.** Compacts through Limbase, the same way. Claude Code's own summary does not run.
+  When Limbase has nothing to fold yet, nothing changes, and the thread shows **Context compaction
+  failed** with `skipped: limbase: the view this session holds is current`.
 - **Each step.** Limbase saves each step before the next request. Each step waits about 0.2 seconds
   for that.
 - **A step that Limbase fails.** The run fails, and the thread shows a provider error that starts
@@ -85,12 +87,12 @@ version, and change **Binary path** to it.
 
 ## Known costs
 
-- A restart of T3 Code, an edit from an earlier message, or a compact that Claude Code did not take
-  starts a new Claude Code process from Limbase. Background work still running then, such as a
-  background shell command, a dev server or a background subagent, stops. A compact that Claude Code
-  did not take also fails the step it happened in, with `limbase: stopped at view: the CLI did not
-  compact at PostToolBatch`, and the agent hears at the next message that its background work
-  stopped.
+- An edit from an earlier message, or a compact that Claude Code did not take, starts a new Claude
+  Code process from Limbase. Background work still running then, such as a background shell command,
+  a dev server or a background subagent, stops. A restart of T3 Code stops it too, as on any Claude
+  thread. A compact that Claude Code did not take also fails the step it happened in, with `limbase:
+  stopped at view: the CLI did not compact at PostToolBatch`, and the agent hears at the next
+  message that its background work stopped.
 - On a machine with managed Claude Code settings, or a Team or Enterprise login, Claude Code skips
   the Limbase plugin, and every message fails with `limbase: stopped at view: the CLI skipped the
   host's plugin:` and Claude Code's reason.
