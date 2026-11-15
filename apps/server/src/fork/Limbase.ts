@@ -2,14 +2,19 @@
 /**
  * Runs the Claude threads of an instance whose `limbaseHome` is set on Limbase. Each such thread gets
  * one Limbase thread, whose id rides on the provider-thread row, and its SDK `query` goes through
- * Limbase's Agent SDK host: every message is captured, the SDK's own compaction is off, and the
- * session moves to a compacted view when one is due. A thread on any other instance is untouched.
+ * Limbase's Agent SDK host: every message is captured, and when a view is due the running CLI
+ * compacts onto it through the host's plugin. A thread on any other instance is untouched.
  */
 import * as NodeFSP from "node:fs/promises";
 import * as NodeModule from "node:module";
 import * as NodePath from "node:path";
 
-import { createSdkMcpServer, query, type SDKMessage } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createSdkMcpServer,
+  query,
+  type SDKMessage,
+  type Settings,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudeSettings, OrchestrationV2ProviderThread } from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -38,6 +43,17 @@ export class LimbaseThreadError extends Schema.TaggedError<LimbaseThreadError>()
 }
 
 type Sdk = { readonly query: typeof query; readonly createSdkMcpServer: typeof createSdkMcpServer };
+
+/**
+ * The settings without the instance's own compact window. The CLI ranks a window in its settings over
+ * the one the host sets in its environment, and would compact on its own long before Limbase's trigger.
+ */
+const withoutCompactWindow = ({ autoCompactWindow: _window, env, ...settings }: Settings) => {
+  if (env === undefined) return settings;
+  const { CLAUDE_CODE_AUTO_COMPACT_WINDOW: _envWindow, ...kept } = env;
+  return { ...settings, env: kept };
+};
+
 type Connection = Awaited<ReturnType<typeof connectLimbase>>;
 
 const connections = new Map<string, Promise<Connection>>();
@@ -203,7 +219,13 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
       onEvent: (event) => {
         if (event.kind === "failOut") failedStep = { where: event.where, what: event.what };
       },
-    }).query({ prompt, options: { ...rest, ...(settings === undefined ? {} : { settings }) } });
+    }).query({
+      prompt,
+      options: {
+        ...rest,
+        ...(settings === undefined ? {} : { settings: withoutCompactWindow(settings) }),
+      },
+    });
     const next = session.next.bind(session);
     const watched: typeof session = new Proxy(session, {
       get: (target, property) =>
@@ -280,45 +302,5 @@ export const resumeTurnInput = (
       createdBy: "user",
       creationSource: "server",
     },
-  };
-};
-
-type LiveQuery = { readonly nativeThreadId: string; readonly stopping: boolean } | null;
-
-/**
- * The session id the adapter's live state knows a row by. An install that had to close the CLI
- * process moves it to a new session id, which the row then stores as the one to resume, while the
- * adapter keeps the process's state under its first id. For a Limbase row whose stored id is the
- * one the running process moved to, that first id; otherwise the stored id.
- */
-export const liveNativeId = (
-  providerThread: OrchestrationV2ProviderThread,
-  live: LiveQuery,
-  moved: ReadonlyMap<string, string>,
-) => {
-  const stored = providerThread.nativeThreadRef?.nativeId;
-  return providerThread.nativeMetadata?.limbaseThreadId !== undefined &&
-    live !== null &&
-    !live.stopping &&
-    stored != null &&
-    moved.get(live.nativeThreadId) === stored
-    ? live.nativeThreadId
-    : stored;
-};
-
-/** A turn on a row an install moved, keyed as `liveNativeId` resolves it, so it goes to the running process. */
-export const onLiveSession = <
-  Input extends { readonly providerThread: OrchestrationV2ProviderThread },
->(
-  input: Input,
-  live: LiveQuery,
-  moved: ReadonlyMap<string, string>,
-): Input => {
-  const ref = input.providerThread.nativeThreadRef;
-  const nativeId = liveNativeId(input.providerThread, live, moved);
-  if (ref == null || nativeId == null || nativeId === ref.nativeId) return input;
-  return {
-    ...input,
-    providerThread: { ...input.providerThread, nativeThreadRef: { ...ref, nativeId } },
   };
 };

@@ -8,6 +8,7 @@ import { assert, it } from "@effect/vitest";
 import {
   ClaudeSettings,
   type OrchestrationV2ProviderThread,
+  ProviderInstanceId,
   ProviderThreadId,
 } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -18,6 +19,7 @@ import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import { vi } from "vite-plus/test";
 
+import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import * as Limbase from "./Limbase.ts";
 
 const created: unknown[] = [];
@@ -127,6 +129,7 @@ const init = (version: string) =>
     subtype: "init",
     session_id: "session-1",
     claude_code_version: version,
+    plugins: [{ name: "limbase", path: "/tmp/limbase-plugin" }],
   }) as SDKMessage;
 
 const drain = async (stream: AsyncIterable<SDKMessage>) => {
@@ -197,47 +200,88 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     }),
   );
 
-  it.effect("runs a Limbase thread's query through the host, with the SDK's compaction off", () =>
-    Effect.gen(function* () {
-      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
-      const { opened, sdk } = fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]);
-      const hosted = yield* Limbase.queryFor(
-        settings,
-        providerThread({ limbaseThreadId: "th_1" }),
-        sdk,
-      );
-      assert.isDefined(hosted);
-      const seen = yield* Effect.promise(() =>
-        drain(
-          hosted!({
-            prompt: prompts,
-            options: {
-              sessionId: "session-1",
-              env: { PATH: "/bin" },
-              settings: { showThinkingSummaries: true },
-              mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
-            },
-          }),
-        ),
-      );
-      assert.deepEqual(
-        seen.map((message) => message.type),
-        ["system"],
-      );
-      const options = opened[0]!;
-      assert.equal(options.sessionId, "session-1");
-      assert.equal(options.env?.DISABLE_COMPACT, "1");
-      assert.deepEqual(options.settings, {
-        showThinkingSummaries: true,
-        autoCompactEnabled: false,
-      });
-      assert.deepEqual(Object.keys(options.mcpServers ?? {}).toSorted(), ["limbase", "t3-code"]);
-      assert.includeMembers(Object.keys(options.hooks ?? {}), [
-        "PostToolBatch",
-        "UserPromptSubmit",
-        "PreCompact",
-      ]);
-    }),
+  it.effect(
+    "runs a Limbase thread's query through the host, which compacts through its plugin",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+        const { opened, sdk } = fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]);
+        const hosted = yield* Limbase.queryFor(
+          settings,
+          providerThread({ limbaseThreadId: "th_1" }),
+          sdk,
+        );
+        assert.isDefined(hosted);
+        const seen = yield* Effect.promise(() =>
+          drain(
+            hosted!({
+              prompt: prompts,
+              options: {
+                sessionId: "session-1",
+                env: { PATH: "/bin" },
+                settings: { showThinkingSummaries: true },
+                mcpServers: { "t3-code": { type: "http", url: "http://127.0.0.1/mcp" } },
+              },
+            }),
+          ),
+        );
+        assert.deepEqual(
+          seen.map((message) => message.type),
+          ["system"],
+        );
+        const options = opened[0]!;
+        assert.equal(options.sessionId, "session-1");
+        assert.equal(options.env?.PATH, "/bin");
+        assert.isUndefined(options.env?.DISABLE_COMPACT);
+        assert.equal(options.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "1000000");
+        assert.isString(options.env?.LIMBASE_HOST_SOCKET);
+        assert.deepEqual(options.settings, {
+          showThinkingSummaries: true,
+          autoCompactEnabled: true,
+        });
+        assert.deepEqual(
+          options.plugins?.map((plugin) => plugin.type),
+          ["local"],
+        );
+        assert.deepEqual(Object.keys(options.mcpServers ?? {}).toSorted(), ["limbase", "t3-code"]);
+        assert.includeMembers(Object.keys(options.hooks ?? {}), [
+          "PostToolBatch",
+          "UserPromptSubmit",
+          "PreCompact",
+        ]);
+      }),
+  );
+
+  it.effect(
+    "opens a Limbase instance's query with the host's compact window, not the instance's",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings({
+          limbaseHome: yield* limbaseHome,
+          autoCompactWindow: "100000",
+        });
+        const { opened, sdk } = fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]);
+        const hosted = yield* Limbase.queryFor(
+          settings,
+          providerThread({ limbaseThreadId: "th_1" }),
+          sdk,
+        );
+        const options = makeClaudeQueryOptions({
+          modelSelection: { instanceId: ProviderInstanceId.make("claudeLimbase"), model: "sonnet" },
+          nativeThreadId: "session-1",
+          resume: false,
+          cwd: "/work/app",
+          settings,
+          toolSearchOverride: "true",
+        });
+        yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options })));
+        const cli = opened[0]!;
+        const cliSettings = cli.settings as Exclude<Options["settings"], string>;
+        assert.equal(cli.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW, "1000000");
+        assert.isUndefined(cliSettings?.autoCompactWindow);
+        assert.isUndefined(cliSettings?.env?.CLAUDE_CODE_AUTO_COMPACT_WINDOW);
+        assert.equal(cliSettings?.env?.ENABLE_TOOL_SEARCH, "true");
+      }),
   );
 
   it.effect(
@@ -428,24 +472,6 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     }),
   );
 
-  it("sends a turn after an install to the live process, and leaves other turns alone", () => {
-    const limbase = { providerThread: { ...providerThread({ limbaseThreadId: "th_1" }) } };
-    limbase.providerThread = {
-      ...limbase.providerThread,
-      nativeThreadRef: { driver: "claudeAgent", nativeId: "session-2", strength: "strong" },
-    } as OrchestrationV2ProviderThread;
-    const moved = new Map([["session-1", "session-2"]]);
-    const live = { nativeThreadId: "session-1", stopping: false };
-    assert.equal(
-      Limbase.onLiveSession(limbase, live, moved).providerThread.nativeThreadRef?.nativeId,
-      "session-1",
-    );
-    assert.equal(Limbase.onLiveSession(limbase, { ...live, stopping: true }, moved), limbase);
-    assert.equal(Limbase.onLiveSession(limbase, null, moved), limbase);
-    const plain = { providerThread: { ...limbase.providerThread, nativeMetadata: null } };
-    assert.equal(Limbase.onLiveSession(plain, live, moved), plain);
-  });
-
   it("resumes a stopped Limbase thread with a prompt, and a plain one natively", () => {
     const input = (nativeMetadata?: { readonly limbaseThreadId: string }) =>
       ({
@@ -461,21 +487,5 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
       [limbase.message.messageId, limbase.message.text],
       ["message-resume", "Continue where you left off."],
     );
-  });
-
-  it("finds a moved row's live process for stop, model and MCP App calls, and the stored id otherwise", () => {
-    const moved = new Map([["session-1", "session-2"]]);
-    const live = { nativeThreadId: "session-1", stopping: false };
-    const row = (nativeId: string, limbaseThreadId?: string) =>
-      ({
-        ...providerThread(limbaseThreadId === undefined ? undefined : { limbaseThreadId }),
-        nativeThreadRef: { driver: "claudeAgent", nativeId, strength: "strong" },
-      }) as OrchestrationV2ProviderThread;
-    // Two installs in one process leave the newest id under the process's first id.
-    moved.set("session-1", "session-3");
-    assert.equal(Limbase.liveNativeId(row("session-3", "th_1"), live, moved), "session-1");
-    assert.equal(Limbase.liveNativeId(row("session-2", "th_1"), live, moved), "session-2");
-    assert.equal(Limbase.liveNativeId(row("session-3"), live, moved), "session-3");
-    assert.equal(Limbase.liveNativeId(row("session-3", "th_1"), null, moved), "session-3");
   });
 });
