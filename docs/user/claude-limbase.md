@@ -72,6 +72,9 @@ version, and change **Binary path** to it.
   `rollback refused: anchor` and `overBound` (more than 1,001 turns after the edited message) say
   `Edit an earlier message to go on.` Any other failure of the edited message, such as a Limbase
   that is down, says `Edit the message again to retry.`
+- **Resume.** After you stop a turn, or a turn stops on a usage limit, **Resume** sends the
+  message `Continue where you left off.` to the agent. On a plain Claude thread, **Resume** continues
+  the stopped turn natively instead.
 - **Restarts.** After a restart of T3 Code, or after the 30-minute idle release, the thread resumes
   the session that Limbase last installed.
 
