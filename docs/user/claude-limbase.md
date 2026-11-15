@@ -2,10 +2,10 @@
 
 A Claude instance can run its threads on Limbase, the memory service on this machine. Limbase keeps
 every message of a thread. When the thread's context reaches 700,000 tokens, Limbase compacts it to
-a view of about 100,000 tokens, and the thread goes on from that view in the same Claude session.
-Claude Code's own compaction is off on these threads. A thread can therefore run for millions of
-tokens. The agent gets two tools, `get_turns` and `get_messages`, to read back any part of the
-thread that the view folded.
+a view of about 100,000 tokens. The compact happens inside the running Claude Code process, so the
+session, its background commands and its subagents go on. Claude Code's own summary never runs on
+these threads. A thread can therefore run for millions of tokens. The agent gets two tools,
+`get_turns` and `get_messages`, to read back any part of the thread that the view folded.
 
 ## Set up a Limbase instance
 
@@ -31,6 +31,7 @@ thread that the view folded.
 4. Set **Binary path** to the `claude` binary from step 2.
 5. Set **Limbase home** to the Limbase home folder, for example `~/.limbase/home`.
 6. Leave **Compact idle threads** at **Never**, or at **Use default** while the default is off.
+7. Leave **Auto-compact after** empty. The Limbase host sets Claude Code's compact window itself.
 
 Threads that start on the instance after this run on Limbase. A thread that started on the instance
 before you set **Limbase home** stays a plain Claude thread. A thread on any other instance is not
@@ -38,9 +39,11 @@ changed.
 
 ### Why the CLI version matters
 
-Limbase writes Claude Code's session file when it installs a view, in the format of the Claude Code
-version its host is tested on. The `claude` on your PATH updates itself, so do not use it for a
-Limbase instance. When a Limbase thread starts on another version, the server log shows the warning
+Limbase writes Claude Code's session file when it starts a session again from Limbase, in the format
+of the Claude Code version its host is tested on. The host also gives that Claude Code a plugin of
+its own, which runs each compact, and the plugin uses parts of Claude Code that may change in
+another version. The `claude` on your PATH updates itself, so do not use it for a Limbase instance.
+When a Limbase thread starts on another version, the server log shows the warning
 `limbase.claude-code-version` with both versions, and the thread still runs.
 
 The tested version is in `vendor/limbase/` of this repository: `limbase.claudeCode` in the
@@ -49,8 +52,10 @@ version, and change **Binary path** to it.
 
 ## What you see
 
-- **An install.** Nothing in the thread. The turn pauses for about a second while the session moves
-  to the view, then goes on.
+- **A compact.** The thread shows a **Context compacted** row, and the turn goes on in the same
+  Claude Code process. Background commands and subagents keep running. The agent is told once, with
+  the context's size before and after and the background tasks still running.
+- **`/compact`.** Compacts through Limbase, the same way. Claude Code's own summary does not run.
 - **Each step.** Limbase saves each step before the next request. Each step waits about 0.2 seconds
   for that.
 - **A step that Limbase fails.** The run fails, and the thread shows a provider error that starts
@@ -75,14 +80,20 @@ version, and change **Binary path** to it.
 - **Resume.** After you stop a turn, or a turn stops on a usage limit, **Resume** sends the
   message `Continue where you left off.` to the agent. On a plain Claude thread, **Resume** continues
   the stopped turn natively instead.
-- **Restarts.** After a restart of T3 Code, or after the 30-minute idle release, the thread resumes
-  the session that Limbase last installed.
+- **Restarts.** After a restart of T3 Code, or after the 30-minute idle release, the thread goes on
+  from the view that Limbase last installed, under the same Claude session.
 
 ## Known costs
 
-- An install replaces the Claude Code process. Background work still running at that moment, such as
-  a background shell command, a dev server or a background subagent, is stopped after 5 seconds. The
-  agent does not hear that it stopped.
+- A restart of T3 Code, an edit from an earlier message, or a compact that Claude Code did not take
+  starts a new Claude Code process from Limbase. Background work still running then, such as a
+  background shell command, a dev server or a background subagent, stops. A compact that Claude Code
+  did not take also fails the step it happened in, with `limbase: stopped at view: the CLI did not
+  compact at PostToolBatch`, and the agent hears at the next message that its background work
+  stopped.
+- On a machine with managed Claude Code settings, or a Team or Enterprise login, Claude Code skips
+  the Limbase plugin, and every message fails with `limbase: stopped at view: the CLI skipped the
+  host's plugin:` and Claude Code's reason.
 - Several prompts that you send during a turn reach the model one tool call apart, in order.
 - Limbase does not keep a subagent's messages. T3 Code may not show the model of a subagent that ran
   before the last install.
