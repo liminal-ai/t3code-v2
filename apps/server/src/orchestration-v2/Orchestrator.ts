@@ -70,6 +70,7 @@ import {
   isRuntimeModeAbove,
   resolveProviderInstanceEnabled,
   resolveProjectProviderInstanceEnabled,
+  ProviderDriverKind,
   type ProviderSessionId,
   RunId,
   RuntimeMode,
@@ -80,6 +81,7 @@ import {
   managedRuntimeModeCeilingMessage,
 } from "@t3tools/contracts";
 import * as KeyedLock from "@t3tools/shared/KeyedLock";
+import * as LimbaseMigration from "../fork/LimbaseMigration.ts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import { modelSwitchSince } from "./modelSwitch.ts";
 import { isPlaceholderThreadTitle } from "./placeholderThreadTitle.ts";
@@ -675,6 +677,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "checkpoint.rollback.fail":
     case "thread.background-work.settle":
     case "thread.interrupt.unresponsive":
+    case "thread.limbase.bind":
+    case "thread.limbase.unbind":
     case "thread.stop":
     case "provider.switch":
       return command.threadId;
@@ -1453,13 +1457,12 @@ function dispatchProviderThread(
 
 /** Threads with no started run (imported, or reserved by another queued run) never cross it. */
 function providerThreadPredatesBoundary(
-  providerThread: Pick<OrchestrationV2ProviderThread, "firstRunOrdinal">,
+  providerThread: Pick<OrchestrationV2ProviderThread, "firstRunOrdinal" | "nativeMetadata">,
   boundary: number,
 ): boolean {
-  return (
-    boundary > 0 &&
-    (providerThread.firstRunOrdinal === null || providerThread.firstRunOrdinal < boundary)
-  );
+  // A row bound to a migrated Limbase thread begins after the runs the migration copied.
+  const firstRunOrdinal = LimbaseMigration.historyStartOrdinal(providerThread);
+  return boundary > 0 && (firstRunOrdinal === null || firstRunOrdinal < boundary);
 }
 
 /** A provider that hosts one native thread per session keeps the old conversation alive otherwise. */
@@ -1515,6 +1518,17 @@ function isHandoffSourceRun(run: OrchestrationV2Run): boolean {
     run.status === "interrupted" ||
     // A queued request cancelled before it started never reached any provider.
     (run.status === "cancelled" && run.startedAt !== null)
+  );
+}
+
+/** The last run the provider thread already holds, delivered or copied in by a Limbase migration. */
+function providerThreadSeenThroughOrdinal(
+  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">,
+  providerThread: OrchestrationV2ProviderThread,
+): number {
+  return Math.max(
+    lastDeliveredRunForProviderThread(projection, providerThread.id)?.ordinal ?? 0,
+    LimbaseMigration.migratedThroughRunOrdinal(providerThread) ?? 0,
   );
 }
 
@@ -2740,7 +2754,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (run) =>
                 isHandoffSourceRun(run) &&
                 run.ordinal >= contextBoundary &&
-                run.ordinal > (targetLastCompletedRun?.ordinal ?? 0) &&
+                run.ordinal > providerThreadSeenThroughOrdinal(projection, queuedProviderThread) &&
                 run.ordinal <= latestHandoffRun.ordinal,
             );
       const needsFullContext = deliveryProviderThread.nativeThreadRef === null;
@@ -8552,7 +8566,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               isHandoffSourceRun(run) &&
               run.ordinal >= contextBoundary &&
               run.ordinal >
-                (requiresFullProviderSwitchContext ? 0 : (targetLastCompletedRun?.ordinal ?? 0)) &&
+                (requiresFullProviderSwitchContext || targetProviderThread === undefined
+                  ? 0
+                  : providerThreadSeenThroughOrdinal(projection, targetProviderThread)) &&
               run.ordinal <= latestHandoffRun.ordinal,
           );
     const providerSwitchNeedsFullContext =
@@ -12759,6 +12775,91 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  /** Migration records for a Limbase bind or unbind; the dispatch holds the thread's lock. */
+  const readMigrationProjection = (
+    command: Extract<
+      OrchestrationV2InternalCommand,
+      { readonly type: "thread.limbase.bind" | "thread.limbase.unbind" }
+    >,
+  ) =>
+    projectionStore
+      .getThreadRecords(command.threadId, ["runs", "runtimeRequests", "providerThreads"], {
+        turnItemTypes: [],
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+        ),
+      );
+
+  const migrationRefused = (command: OrchestrationV2ServerCommand) => (cause: string) =>
+    new OrchestratorDispatchError({
+      commandId: command.commandId,
+      commandType: command.type,
+      cause,
+    });
+
+  const dispatchLimbaseBind = Effect.fn("Orchestrator.dispatchLimbaseBind")(function* (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "thread.limbase.bind" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* readMigrationProjection(command);
+    const now = yield* DateTime.now;
+    const plan = yield* Effect.fromResult(
+      LimbaseMigration.planBind({
+        projection,
+        command,
+        providerThreadId: idAllocator.derive.providerThread({
+          driver: ProviderDriverKind.make("claudeAgent"),
+          nativeThreadId: command.sessionId,
+        }),
+        now,
+      }),
+    ).pipe(Effect.mapError(migrationRefused(command)));
+    const emitEvent = emit(events, command);
+    yield* emitEvent({
+      type: "provider-thread.updated",
+      threadId: command.threadId,
+      providerInstanceId: plan.providerThread.providerInstanceId,
+      occurredAt: now,
+      payload: plan.providerThread,
+    });
+    yield* emitEvent({
+      type:
+        projection.thread.providerInstanceId === plan.thread.providerInstanceId
+          ? "thread.model-selection-updated"
+          : "thread.provider-switched",
+      threadId: command.threadId,
+      providerInstanceId: plan.thread.providerInstanceId,
+      occurredAt: now,
+      payload: plan.thread,
+    });
+  });
+
+  const dispatchLimbaseUnbind = Effect.fn("Orchestrator.dispatchLimbaseUnbind")(function* (
+    command: Extract<OrchestrationV2InternalCommand, { readonly type: "thread.limbase.unbind" }>,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    const projection = yield* readMigrationProjection(command);
+    const now = yield* DateTime.now;
+    const { thread } = yield* Effect.fromResult(
+      LimbaseMigration.planUnbind({ projection, now }),
+    ).pipe(Effect.mapError(migrationRefused(command)));
+    yield* emit(
+      events,
+      command,
+    )({
+      type:
+        projection.thread.providerInstanceId === thread.providerInstanceId
+          ? "thread.model-selection-updated"
+          : "thread.provider-switched",
+      threadId: command.threadId,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: now,
+      payload: thread,
+    });
+  });
+
   const dispatchBackgroundWorkSettle = Effect.fn("Orchestrator.dispatchBackgroundWorkSettle")(
     function* (
       command: Extract<
@@ -15219,6 +15320,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.interrupt.unresponsive":
         yield* dispatchInterruptUnresponsive(command, events);
+        break;
+      case "thread.limbase.bind":
+        yield* dispatchLimbaseBind(command, events);
+        break;
+      case "thread.limbase.unbind":
+        yield* dispatchLimbaseUnbind(command, events);
         break;
       case "thread.fork":
         yield* dispatchThreadFork(command, events);
