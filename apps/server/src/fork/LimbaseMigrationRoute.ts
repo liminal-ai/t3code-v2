@@ -33,6 +33,7 @@ import {
 } from "effect/http";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import {
@@ -202,6 +203,39 @@ const exportManifest = Effect.fn("LimbaseMigration.exportManifest")(function* (t
   );
 });
 
+/**
+ * Why `sessionId` cannot start a bound row, or undefined when it is new. A provider row of any thread
+ * that holds it, or its file in the instance's Claude home, means the next turn would write into an
+ * existing session, such as the original one.
+ */
+const sessionInUse = Effect.fn("LimbaseMigration.sessionInUse")(function* (input: {
+  readonly sessionId: string;
+  readonly providerThreadId: string;
+  readonly providerInstanceId: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const owners = yield* sql<{ readonly thread_id: string | null }>`
+    SELECT thread_id FROM orchestration_v2_projection_provider_threads
+    WHERE provider_thread_id = ${input.providerThreadId}
+      OR json_extract(payload_json, '$.nativeThreadRef.nativeId') = ${input.sessionId}
+    UNION ALL
+    SELECT thread_id FROM orchestration_v2_projection_run_attempts
+    WHERE json_extract(payload_json, '$.nativeThreadId') = ${input.sessionId}
+    LIMIT 1
+  `;
+  const owner = owners[0];
+  if (owner !== undefined) {
+    return `Session ${input.sessionId} already belongs to thread ${owner.thread_id ?? "(none)"}. Pass a new session id.`;
+  }
+  const file = yield* findSessionFile(
+    yield* claudeConfigDir(input.providerInstanceId),
+    input.sessionId,
+  );
+  return file === null
+    ? undefined
+    : `Session ${input.sessionId} already has a file at ${file}. Pass a new session id.`;
+});
+
 /** The enabled Claude instances that run their threads on Limbase. */
 const limbaseInstances = Effect.fn("LimbaseMigration.limbaseInstances")(function* () {
   const settings = yield* ServerSettings.ServerSettingsService;
@@ -246,7 +280,7 @@ const dispatchBinding = Effect.fn("LimbaseMigration.dispatchBinding")(function* 
   });
 });
 
-const bind = Effect.fn("LimbaseMigration.bind")(function* (
+export const bind = Effect.fn("LimbaseMigration.bind")(function* (
   body: typeof LimbaseMigration.BindRequest.Type,
 ) {
   const instances = yield* limbaseInstances();
@@ -274,17 +308,25 @@ const bind = Effect.fn("LimbaseMigration.bind")(function* (
     limbaseThreadId: body.limbaseThreadId,
     sessionId: body.sessionId,
     ifLastRun: body.ifLastRun,
+    ifHistory: body.ifHistory,
   };
+  const providerThreadId = IdAllocator.derive.providerThread({
+    driver: CLAUDE_DRIVER,
+    nativeThreadId: body.sessionId,
+  });
   const plan = LimbaseMigration.planBind({
     projection: yield* readProjection(body.threadId),
     command,
-    providerThreadId: IdAllocator.derive.providerThread({
-      driver: CLAUDE_DRIVER,
-      nativeThreadId: body.sessionId,
-    }),
+    providerThreadId,
     now: yield* DateTime.now,
   });
   if (Result.isFailure(plan)) return refused(plan.failure);
+  const inUse = yield* sessionInUse({
+    sessionId: body.sessionId,
+    providerThreadId,
+    providerInstanceId,
+  });
+  if (inUse !== undefined) return refused(inUse);
   return yield* dispatchBinding(command);
 });
 

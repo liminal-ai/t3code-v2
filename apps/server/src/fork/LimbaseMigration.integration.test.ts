@@ -16,9 +16,14 @@ import {
 } from "@t3tools/contracts";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { checkpointWorkspace } from "@t3tools/provider-testing/replayWorkspace";
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import type { HttpServerResponse } from "effect/http";
+import * as Path from "effect/Path";
 import * as Layer from "effect/Layer";
 import * as PubSub from "effect/PubSub";
 import * as Ref from "effect/Ref";
@@ -31,6 +36,10 @@ import * as EventSink from "../orchestration-v2/EventSink.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProviderAdapterRegistry from "../orchestration-v2/ProviderAdapterRegistry.ts";
 import * as ProviderReplayHarness from "../orchestration-v2/testkit/ProviderReplayHarness.ts";
+import * as SqlitePersistence from "../persistence/Sqlite.ts";
+import * as ServerSettings from "../serverSettings.ts";
+import * as LimbaseMigration from "./LimbaseMigration.ts";
+import * as LimbaseMigrationRoute from "./LimbaseMigrationRoute.ts";
 
 const CLAUDE = ProviderDriverKind.make("claudeAgent");
 const CODEX = ProviderDriverKind.make("codex");
@@ -337,15 +346,20 @@ const scenario = Effect.fn("LimbaseMigrationTest.scenario")(function* (key: stri
       yield* worker.drain();
       yield* waitForIdle(threadId);
     });
+  /** Binds with the history the thread has now, as a fresh export would give. */
   const bind = (ifLastRun: number, sessionId = MIGRATED_SESSION) =>
-    orchestrator.dispatch({
-      type: "thread.limbase.bind",
-      commandId: CommandId.make(`command:${key}:bind:${ifLastRun}:${sessionId}`),
-      threadId,
-      providerInstanceId: LIMBASE,
-      limbaseThreadId: LIMBASE_THREAD,
-      sessionId,
-      ifLastRun,
+    Effect.gen(function* () {
+      const { runs } = yield* orchestrator.getThreadProjection(threadId);
+      return yield* orchestrator.dispatch({
+        type: "thread.limbase.bind",
+        commandId: CommandId.make(`command:${key}:bind:${ifLastRun}:${sessionId}`),
+        threadId,
+        providerInstanceId: LIMBASE,
+        limbaseThreadId: LIMBASE_THREAD,
+        sessionId,
+        ifLastRun,
+        ifHistory: LimbaseMigration.historyDigest(runs),
+      });
     });
   const unbind = (name: string) =>
     orchestrator.dispatch({
@@ -617,5 +631,87 @@ describe("Limbase migration bind", () => {
         yield* waitForIdle(thread.threadId);
       }).pipe(Effect.provide(env.layer));
     }),
+  );
+});
+
+const responseText = (response: HttpServerResponse.HttpServerResponse) =>
+  response.body._tag === "Uint8Array" ? new TextDecoder().decode(response.body.body) : "";
+
+describe("Limbase migration bind route", () => {
+  it.live("refuses a session id another row already holds, or whose file exists", () =>
+    Effect.gen(function* () {
+      const env = yield* setup("route");
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const claudeHome = yield* fileSystem.makeTempDirectoryScoped({ prefix: "lh336-claude-" });
+      const settings = ServerSettings.layerTest({
+        providerInstances: {
+          [LIMBASE]: {
+            driver: CLAUDE,
+            config: { limbaseHome: "/unused/limbase-home", homePath: claudeHome },
+          },
+        },
+      });
+      yield* Effect.gen(function* () {
+        const other = yield* scenario("route-other", env.cwd);
+        const thread = yield* scenario("route", env.cwd);
+        yield* other.send("one");
+        yield* thread.send("one");
+        const nativeOf = (projection: OrchestrationV2ThreadProjection) =>
+          projection.providerThreads[0]!.nativeThreadRef!.nativeId!;
+        const otherSession = nativeOf(yield* other.projection());
+        const before = yield* thread.projection();
+        const ownSession = nativeOf(before);
+        const bind = (sessionId: string) =>
+          LimbaseMigrationRoute.bind({
+            threadId: thread.threadId,
+            limbaseThreadId: LIMBASE_THREAD,
+            sessionId,
+            ifLastRun: 1,
+            ifHistory: LimbaseMigration.historyDigest(before.runs),
+          });
+
+        for (const [sessionId, reason] of [
+          [otherSession, `already belongs to thread ${other.threadId}`],
+          [ownSession, `already belongs to thread ${thread.threadId}`],
+        ] as const) {
+          const response = yield* bind(sessionId);
+          assert.equal(response.status, 409);
+          assert.include(responseText(response), reason);
+        }
+        const onDisk = "00000000-0000-4000-8000-00000000f11e";
+        yield* fileSystem.makeDirectory(path.join(claudeHome, "projects", "-work"), {
+          recursive: true,
+        });
+        yield* fileSystem.writeFileString(
+          path.join(claudeHome, "projects", "-work", `${onDisk}.jsonl`),
+          "{}\n",
+        );
+        const fileRefusal = yield* bind(onDisk);
+        assert.equal(fileRefusal.status, 409);
+        assert.include(responseText(fileRefusal), "already has a file");
+
+        const after = yield* thread.projection();
+        assert.deepEqual(after.thread, before.thread);
+        assert.deepEqual(after.providerThreads, before.providerThreads);
+        assert.deepEqual(
+          (yield* other.projection()).providerThreads[0]?.appThreadId,
+          other.threadId,
+        );
+
+        const bound = yield* bind(MIGRATED_SESSION);
+        assert.equal(bound.status, 200, responseText(bound));
+        const result = yield* thread.projection();
+        assert.equal(
+          result.providerThreads.find((row) => row.id === result.thread.activeProviderThreadId)
+            ?.nativeThreadRef?.nativeId,
+          MIGRATED_SESSION,
+        );
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(env.layer, SqlitePersistence.layerMemory, settings, NodeCrypto.layer),
+        ),
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

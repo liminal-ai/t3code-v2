@@ -138,7 +138,7 @@ const codexRow = providerThread("pt:codex", "codex-thread", {
   },
 });
 
-const bindCommand = (ifLastRun: number) => ({
+const bindCommand = (ifLastRun: number, ifHistory: string) => ({
   type: "thread.limbase.bind" as const,
   commandId: CommandId.make("command:bind"),
   threadId: THREAD_ID,
@@ -146,6 +146,7 @@ const bindCommand = (ifLastRun: number) => ({
   limbaseThreadId: "th_target",
   sessionId: "session-new",
   ifLastRun,
+  ifHistory,
 });
 const NEW_ROW = ProviderThreadId.make("pt:session-new");
 
@@ -259,11 +260,12 @@ describe("LimbaseMigration.planBind", () => {
     providerThreads: [sessionA],
     thread: appThread({ activeProviderThreadId: sessionA.id }),
   });
+  const idleHistory = LimbaseMigration.historyDigest(idle.runs);
 
   it("adds a Limbase row that holds the migrated runs and points the thread at it", () => {
     const plan = LimbaseMigration.planBind({
       projection: idle,
-      command: bindCommand(2),
+      command: bindCommand(2, idleHistory),
       providerThreadId: NEW_ROW,
       now: NOW,
     });
@@ -287,8 +289,29 @@ describe("LimbaseMigration.planBind", () => {
 
   it("refuses a thread that ran again after the export", () => {
     assert.include(
-      refusal({ projection: idle, command: bindCommand(1), providerThreadId: NEW_ROW, now: NOW }),
+      refusal({
+        projection: idle,
+        command: bindCommand(1, idleHistory),
+        providerThreadId: NEW_ROW,
+        now: NOW,
+      }),
       "not 1",
+    );
+  });
+
+  it("refuses an export taken before a rollback, though the last run is unchanged", () => {
+    const rolledBack = {
+      ...idle,
+      runs: [run(1, "pt:session-a"), run(2, "pt:session-a", { status: "rolled_back" })],
+    };
+    assert.include(
+      refusal({
+        projection: rolledBack,
+        command: bindCommand(2, idleHistory),
+        providerThreadId: NEW_ROW,
+        now: NOW,
+      }),
+      "changed after the export",
     );
   });
 
@@ -298,7 +321,7 @@ describe("LimbaseMigration.planBind", () => {
       assert.include(
         refusal({
           projection: { ...idle, runs: [...idle.runs, run(3, "pt:session-a", { status })] },
-          command: bindCommand(3),
+          command: bindCommand(3, idleHistory),
           providerThreadId: NEW_ROW,
           now: NOW,
         }),
@@ -323,7 +346,7 @@ describe("LimbaseMigration.planBind", () => {
           providerThreads: [sessionA, bound],
           thread: appThread({ activeProviderThreadId: bound.id }),
         },
-        command: bindCommand(2),
+        command: bindCommand(2, idleHistory),
         providerThreadId: NEW_ROW,
         now: NOW,
       }),
@@ -336,7 +359,7 @@ describe("LimbaseMigration.planBind", () => {
           providerThreads: [codexRow],
           thread: appThread({ activeProviderThreadId: codexRow.id }),
         },
-        command: bindCommand(2),
+        command: bindCommand(2, idleHistory),
         providerThreadId: NEW_ROW,
         now: NOW,
       }),
@@ -345,7 +368,7 @@ describe("LimbaseMigration.planBind", () => {
     assert.include(
       refusal({
         projection: idle,
-        command: bindCommand(2),
+        command: bindCommand(2, idleHistory),
         providerThreadId: sessionA.id,
         now: NOW,
       }),

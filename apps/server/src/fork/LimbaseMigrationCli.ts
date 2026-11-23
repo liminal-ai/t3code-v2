@@ -190,6 +190,11 @@ const limbaseBindCommand = Command.make("limbase-bind", {
       "The manifest's lastRunOrdinal. Refuses if the thread ran again since the export.",
     ),
   ),
+  ifHistory: Flag.String("if-history").pipe(
+    Flag.withDescription(
+      "The manifest's historyDigest. Refuses if a run was edited or rolled back since the export.",
+    ),
+  ),
   provider: Flag.String("provider").pipe(
     Flag.withDescription(
       "The Limbase instance to run on. Needed only when more than one Claude instance has a Limbase home.",
@@ -209,6 +214,7 @@ const limbaseBindCommand = Command.make("limbase-bind", {
         limbaseThreadId: flags.limbaseThreadId,
         sessionId: flags.sessionId,
         ifLastRun: flags.ifLastRun,
+        ifHistory: flags.ifHistory,
         ...(Option.isSome(flags.provider) ? { providerInstanceId: flags.provider.value } : {}),
       });
       yield* printBinding(text, flags.json, "Bound");

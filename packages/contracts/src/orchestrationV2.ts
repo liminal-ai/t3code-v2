@@ -3738,7 +3738,8 @@ const OrchestrationV2InternalCommand = Schema.Union([
   /**
    * Makes a new provider thread on a Limbase instance the thread's active one: its native session
    * is `sessionId`, its Limbase thread `limbaseThreadId`, which a migration filled with the thread's
-   * runs through `ifLastRun`. Refused unless the thread is idle and its last run is `ifLastRun`.
+   * runs through `ifLastRun`. Refused unless the thread is idle, its last run is `ifLastRun`, and
+   * its runs and their statuses still hash to `ifHistory`, so a rollback since the export refuses.
    */
   Schema.Struct({
     type: Schema.Literal("thread.limbase.bind"),
@@ -3748,6 +3749,7 @@ const OrchestrationV2InternalCommand = Schema.Union([
     limbaseThreadId: TrimmedNonEmptyString,
     sessionId: TrimmedNonEmptyString,
     ifLastRun: PositiveInt,
+    ifHistory: TrimmedNonEmptyString,
   }),
   /** Makes the provider thread a `thread.limbase.bind` replaced the active one again. */
   Schema.Struct({

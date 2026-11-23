@@ -35,6 +35,8 @@ export const BindRequest = Schema.Struct({
   limbaseThreadId: TrimmedNonEmptyString,
   sessionId: TrimmedNonEmptyString,
   ifLastRun: PositiveInt,
+  /** The manifest's `historyDigest`. */
+  ifHistory: TrimmedNonEmptyString,
   /** The Limbase instance; needed only when more than one qualifies. */
   providerInstanceId: Schema.optional(ProviderInstanceId),
 });
@@ -145,6 +147,11 @@ export const planBind = (input: {
   if (last !== command.ifLastRun) {
     return Result.fail(
       `Thread ${thread.id} has run ${last} as its last run, not ${command.ifLastRun}, so it changed after the export. Export and migrate it again.`,
+    );
+  }
+  if (historyDigest(projection.runs) !== command.ifHistory) {
+    return Result.fail(
+      `Thread ${thread.id}'s runs changed after the export, as an edit or rollback does. Export and migrate it again.`,
     );
   }
   const active = projection.providerThreads.find(
@@ -269,6 +276,8 @@ export interface ThreadManifest {
   readonly providerInstanceId: string;
   readonly activeProviderThreadId: string | null;
   readonly lastRunOrdinal: number;
+  /** Changes when a run is added or changes status, as a rollback does; bind compares it. */
+  readonly historyDigest: string;
   readonly sessions: ReadonlyArray<ManifestSession>;
   readonly handoffs: ReadonlyArray<ManifestHandoff>;
 }
@@ -282,6 +291,17 @@ const reachedProvider = (run: OrchestrationV2Run) =>
 
 export const sha256Hex = (text: string) =>
   NodeCrypto.createHash("sha256").update(text, "utf8").digest("hex");
+
+/** Every run's ordinal and status, hashed: a rollback flips runs to `rolled_back` without a new run. */
+export const historyDigest = (
+  runs: ReadonlyArray<Pick<OrchestrationV2Run, "ordinal" | "status">>,
+) =>
+  sha256Hex(
+    runs
+      .toSorted((left, right) => left.ordinal - right.ordinal)
+      .map((run) => `${run.ordinal}:${run.status}`)
+      .join(","),
+  );
 
 /**
  * The thread's native sessions in the order their runs began, with the runs each holds, and the
@@ -331,6 +351,7 @@ export const buildManifest = (input: {
     providerInstanceId: projection.thread.providerInstanceId,
     activeProviderThreadId: projection.thread.activeProviderThreadId,
     lastRunOrdinal: lastRunOrdinal(projection.runs),
+    historyDigest: historyDigest(projection.runs),
     sessions: [...sessions].map(([sessionId, { row, rowIds, runs: sessionRuns }]) => {
       const ordinals = sessionRuns.map((run) => run.ordinal);
       return {
