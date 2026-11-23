@@ -6,6 +6,10 @@ import {
   NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ContextHandoff,
+  type OrchestrationV2ProviderTurn,
+  type OrchestrationV2TurnItem,
+  ProviderTurnId,
+  TurnItemId,
   type OrchestrationV2ProviderThread,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
@@ -20,6 +24,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 
 import * as LimbaseMigration from "./LimbaseMigration.ts";
 
@@ -199,6 +204,8 @@ describe("LimbaseMigration.buildManifest", () => {
         }),
         attempts: [attempt],
         contextHandoffs: [handoff],
+        providerTurns: [],
+        turnItems: [],
       },
       cwd: "/work",
       pathOf: (session) =>
@@ -421,5 +428,210 @@ describe("LimbaseMigration.planUnbind", () => {
       now: NOW,
     });
     assert.isTrue(Result.isFailure(plan));
+  });
+});
+
+describe("LimbaseMigration.buildManifest runs", () => {
+  const attemptOf = (
+    ordinal: number,
+    attemptOrdinal: number,
+    overrides: Partial<OrchestrationV2RunAttempt> = {},
+  ): OrchestrationV2RunAttempt => ({
+    id: RunAttemptId.make(`attempt:${ordinal}:${attemptOrdinal}`),
+    runId: RunId.make(`run:${ordinal}`),
+    attemptOrdinal,
+    rootNodeId: NodeId.make(`node:${ordinal}:${attemptOrdinal}`),
+    providerInstanceId: PLAIN,
+    providerThreadId: ProviderThreadId.make("pt:session-a"),
+    providerTurnId: null,
+    reason: attemptOrdinal === 1 ? "initial" : "steering_restart",
+    status: "completed",
+    startedAt: NOW,
+    completedAt: NOW,
+    ...overrides,
+  });
+  const turnFor = (
+    attempt: OrchestrationV2RunAttempt,
+    nativeId: string,
+  ): OrchestrationV2ProviderTurn => ({
+    id: ProviderTurnId.make(`provider-turn:${attempt.id}`),
+    providerThreadId: attempt.providerThreadId,
+    nodeId: attempt.rootNodeId,
+    runAttemptId: attempt.id,
+    nativeTurnRef: { driver: CLAUDE, nativeId, strength: "weak" },
+    ordinal: 1,
+    status: "completed",
+    startedAt: NOW,
+    completedAt: NOW,
+  });
+  const LINE_1 = "11111111-1111-4111-8111-111111111111";
+  const LINE_2A = "22222222-2222-4222-8222-22222222222a";
+  const LINE_2B = "22222222-2222-4222-8222-22222222222b";
+
+  // Run 2 was restarted by a steer: its first attempt wrote a line, its second wrote another.
+  const retried = [
+    attemptOf(1, 1, { nativeThreadId: "session-a" }),
+    attemptOf(2, 1, { nativeThreadId: "session-a", status: "superseded" }),
+    attemptOf(2, 2, { nativeThreadId: "session-a" }),
+    // Stopped before any assistant line: the adapter's cursor is still its synthetic id.
+    attemptOf(3, 1, { nativeThreadId: "session-a", status: "cancelled" }),
+    attemptOf(4, 1, { nativeThreadId: "session-a", status: "failed" }),
+    attemptOf(5, 1, {
+      providerInstanceId: CODEX,
+      providerThreadId: codexRow.id,
+      nativeThreadId: "codex-thread",
+    }),
+  ];
+  const usageLimit: OrchestrationV2TurnItem = {
+    id: TurnItemId.make("item:4:error"),
+    threadId: THREAD_ID,
+    runId: RunId.make("run:4"),
+    nodeId: NodeId.make("node:4:1"),
+    providerThreadId: ProviderThreadId.make("pt:session-a"),
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: 1,
+    status: "failed",
+    title: null,
+    startedAt: NOW,
+    completedAt: NOW,
+    updatedAt: NOW,
+    type: "error",
+    failure: {
+      class: "usage_limit",
+      message: "You have hit your limit.",
+      code: "rate_limit",
+      retryable: true,
+      resetAt: null,
+    },
+  };
+  const manifest = LimbaseMigration.buildManifest({
+    projection: {
+      ...projection({
+        runs: [
+          run(1, "pt:session-a", { activeAttemptId: retried[0]!.id }),
+          run(2, "pt:session-a", { activeAttemptId: retried[2]!.id }),
+          run(3, "pt:session-a", { status: "cancelled", activeAttemptId: retried[3]!.id }),
+          run(4, "pt:session-a", {
+            status: "failed",
+            activeAttemptId: retried[4]!.id,
+            rootNodeId: NodeId.make("node:4:1"),
+          }),
+          run(5, "pt:codex", { providerInstanceId: CODEX, activeAttemptId: retried[5]!.id }),
+          // Cancelled while queued: it never started an attempt.
+          run(6, "pt:session-a", { status: "cancelled", startedAt: null }),
+        ],
+        providerThreads: [sessionA, codexRow],
+      }),
+      attempts: retried,
+      contextHandoffs: [],
+      providerTurns: [
+        turnFor(retried[0]!, LINE_1),
+        turnFor(retried[1]!, LINE_2A),
+        turnFor(retried[2]!, LINE_2B),
+        turnFor(retried[3]!, `turn:${retried[3]!.id}`),
+        turnFor(retried[5]!, "codex-turn-uuid"),
+      ],
+      turnItems: [usageLimit],
+    },
+    cwd: "/work",
+    pathOf: () => null,
+    userTextOf: () => undefined,
+  });
+  const runsByOrdinal = new Map((manifest.runs ?? []).map((entry) => [entry.ordinal, entry]));
+
+  it("gives each attempt of a retried run its own last assistant line", () => {
+    assert.deepEqual(runsByOrdinal.get(2), {
+      ordinal: 2,
+      status: "completed",
+      attempts: [
+        {
+          attemptOrdinal: 1,
+          status: "superseded",
+          sessionId: "session-a",
+          lastRootAssistantUuid: LINE_2A,
+        },
+        {
+          attemptOrdinal: 2,
+          status: "completed",
+          sessionId: "session-a",
+          lastRootAssistantUuid: LINE_2B,
+        },
+      ],
+    });
+    assert.equal(runsByOrdinal.get(1)?.attempts[0]?.lastRootAssistantUuid, LINE_1);
+  });
+
+  it("gives a cancelled run its status, and null for an attempt that wrote no assistant line", () => {
+    assert.deepEqual(runsByOrdinal.get(3), {
+      ordinal: 3,
+      status: "cancelled",
+      attempts: [
+        {
+          attemptOrdinal: 1,
+          status: "cancelled",
+          sessionId: "session-a",
+          lastRootAssistantUuid: null,
+        },
+      ],
+    });
+    assert.deepEqual(runsByOrdinal.get(6), { ordinal: 6, status: "cancelled", attempts: [] });
+  });
+
+  it("gives a failed run its failure's class and code", () => {
+    assert.deepEqual(runsByOrdinal.get(4), {
+      ordinal: 4,
+      status: "failed",
+      failureClass: "usage_limit",
+      failureCode: "rate_limit",
+      attempts: [
+        {
+          attemptOrdinal: 1,
+          status: "failed",
+          sessionId: "session-a",
+          lastRootAssistantUuid: null,
+        },
+      ],
+    });
+  });
+
+  it("names no assistant line for an attempt on another provider", () => {
+    assert.equal(runsByOrdinal.get(5)?.attempts[0]?.lastRootAssistantUuid, null);
+    assert.deepEqual(
+      (manifest.runs ?? []).map((entry) => entry.ordinal),
+      [1, 2, 3, 4, 5, 6],
+    );
+  });
+
+  it("decodes a manifest written before runs were added, and one written now", () => {
+    const decode = Schema.decodeUnknownSync(Schema.fromJsonString(LimbaseMigration.ThreadManifest));
+    const before = decode(
+      JSON.stringify({
+        formatVersion: 1,
+        threadId: "mcp:thread",
+        title: "Synthetic",
+        cwd: "/work",
+        modelSelection: { instanceId: "claudeAgent", model: "claude-haiku-5-5" },
+        providerInstanceId: "claudeAgent",
+        activeProviderThreadId: "pt:session-a",
+        lastRunOrdinal: 1,
+        historyDigest: "0".repeat(64),
+        sessions: [
+          {
+            sessionId: "session-a",
+            driver: "claudeAgent",
+            providerInstanceId: "claudeAgent",
+            providerThreadIds: ["pt:session-a"],
+            path: "/claude/projects/-work/session-a.jsonl",
+            runRange: { first: 1, last: 1 },
+            runOrdinals: [1],
+          },
+        ],
+        handoffs: [],
+      }),
+    );
+    assert.isUndefined(before.runs);
+    assert.deepEqual(decode(JSON.stringify(manifest)), manifest);
   });
 });

@@ -11,9 +11,12 @@ import {
   type OrchestrationV2ContextHandoff,
   type OrchestrationV2InternalCommand,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2ProviderTurn,
   type OrchestrationV2Run,
   type OrchestrationV2RunAttempt,
   type OrchestrationV2RuntimeRequest,
+  type OrchestrationV2TurnItem,
+  latestProviderTurnForAttempt,
   PositiveInt,
   ProviderDriverKind,
   ProviderInstanceId,
@@ -21,6 +24,7 @@ import {
   ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
+import { latestRootProviderFailure } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
@@ -243,44 +247,76 @@ export const planUnbind = (input: {
   });
 };
 
-export interface ManifestSession {
-  readonly sessionId: string;
-  readonly driver: string;
-  readonly providerInstanceId: string;
-  readonly providerThreadIds: ReadonlyArray<string>;
+const ManifestSession = Schema.Struct({
+  sessionId: Schema.String,
+  driver: Schema.String,
+  providerInstanceId: Schema.String,
+  providerThreadIds: Schema.Array(Schema.String),
   /** The session's file on disk; null when it was not found or is not a Claude session. */
-  readonly path: string | null;
-  readonly limbaseThreadId?: string;
-  readonly runRange: { readonly first: number; readonly last: number };
-  readonly runOrdinals: ReadonlyArray<number>;
+  path: Schema.NullOr(Schema.String),
+  limbaseThreadId: Schema.optional(Schema.String),
+  runRange: Schema.Struct({ first: Schema.Number, last: Schema.Number }),
+  runOrdinals: Schema.Array(Schema.Number),
   /** The session's first run started a new provider conversation. */
-  readonly freshContext?: true;
-}
+  freshContext: Schema.optional(Schema.Literal(true)),
+});
 
-export interface ManifestHandoff {
-  readonly runOrdinal: number;
-  readonly strategy: OrchestrationV2ContextHandoff["strategy"];
-  readonly status: OrchestrationV2ContextHandoff["status"];
-  readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
-  readonly deliveryStatus: "pending" | "injected" | "inline" | null;
+const ManifestHandoff = Schema.Struct({
+  runOrdinal: Schema.Number,
+  strategy: Schema.String,
+  status: Schema.String,
+  coveredRunOrdinals: Schema.Struct({ from: Schema.Number, to: Schema.Number }),
+  deliveryStatus: Schema.NullOr(Schema.String),
   /** SHA-256 of the user's own text in the run the handoff was delivered with. */
-  readonly cleanUserTextSha256: string | null;
-}
+  cleanUserTextSha256: Schema.NullOr(Schema.String),
+});
 
-export interface ThreadManifest {
-  readonly formatVersion: 1;
-  readonly threadId: string;
-  readonly title: string;
-  readonly cwd: string | null;
-  readonly modelSelection: OrchestrationV2AppThread["modelSelection"];
-  readonly providerInstanceId: string;
-  readonly activeProviderThreadId: string | null;
-  readonly lastRunOrdinal: number;
+/** One attempt of a run, in the order they started. A steering restart starts a second one. */
+const ManifestAttempt = Schema.Struct({
+  attemptOrdinal: Schema.Number,
+  status: Schema.String,
+  /** The native session the attempt's prompt went to; null when it never reached one. */
+  sessionId: Schema.NullOr(Schema.String),
+  /**
+   * The `uuid` of the last root (non-subagent) assistant line this attempt, not the run, wrote to
+   * `sessionId`'s file. Walking `parentUuid` back from it reaches the attempt's own prompt line.
+   * Null when the attempt wrote no assistant line, or is not on a Claude session.
+   */
+  lastRootAssistantUuid: Schema.NullOr(Schema.String),
+});
+
+const ManifestRun = Schema.Struct({
+  ordinal: Schema.Number,
+  /** completed, failed, interrupted, cancelled or rolled_back: an export needs every run settled. */
+  status: Schema.String,
+  /** On a failed run: the provider failure's class, such as `usage_limit`, and its code. */
+  failureClass: Schema.optional(Schema.String),
+  failureCode: Schema.optional(Schema.String),
+  attempts: Schema.Array(ManifestAttempt),
+});
+
+/** The manifest `t3 thread export-manifest` prints. Later fields are optional, so older ones read. */
+export const ThreadManifest = Schema.Struct({
+  formatVersion: Schema.Literal(1),
+  threadId: Schema.String,
+  title: Schema.String,
+  cwd: Schema.NullOr(Schema.String),
+  modelSelection: Schema.Struct({
+    instanceId: Schema.String,
+    model: Schema.String,
+    options: Schema.optional(Schema.Unknown),
+  }),
+  providerInstanceId: Schema.String,
+  activeProviderThreadId: Schema.NullOr(Schema.String),
+  lastRunOrdinal: Schema.Number,
   /** Changes when a run is added or changes status, as a rollback does; bind compares it. */
-  readonly historyDigest: string;
-  readonly sessions: ReadonlyArray<ManifestSession>;
-  readonly handoffs: ReadonlyArray<ManifestHandoff>;
-}
+  historyDigest: Schema.String,
+  sessions: Schema.Array(ManifestSession),
+  handoffs: Schema.Array(ManifestHandoff),
+  /** Every run in ordinal order, with how it ended and its attempts. */
+  runs: Schema.optional(Schema.Array(ManifestRun)),
+});
+export type ThreadManifest = typeof ThreadManifest.Type;
 
 /** A run whose prompt reached a provider and is still part of the thread's history. */
 const reachedProvider = (run: OrchestrationV2Run) =>
@@ -312,6 +348,9 @@ export const buildManifest = (input: {
   readonly projection: MigrationProjection & {
     readonly attempts: ReadonlyArray<OrchestrationV2RunAttempt>;
     readonly contextHandoffs: ReadonlyArray<OrchestrationV2ContextHandoff>;
+    readonly providerTurns: ReadonlyArray<OrchestrationV2ProviderTurn>;
+    /** The thread's `error` items, which hold each failed run's provider failure. */
+    readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
   };
   readonly cwd: string | null;
   readonly pathOf: (session: {
@@ -389,7 +428,44 @@ export const buildManifest = (input: {
         ];
       })
       .toSorted((left, right) => left.runOrdinal - right.runOrdinal),
+    runs: runs.map((run) => {
+      const failure = latestRootProviderFailure(run, projection.turnItems);
+      return {
+        ordinal: run.ordinal,
+        status: run.status,
+        ...(failure === null ? {} : { failureClass: failure.class }),
+        ...(failure?.code === null || failure?.code === undefined
+          ? {}
+          : { failureCode: failure.code }),
+        attempts: projection.attempts
+          .filter((attempt) => attempt.runId === run.id)
+          .toSorted((left, right) => left.attemptOrdinal - right.attemptOrdinal)
+          .map((attempt) => {
+            const row = providerThreads.get(attempt.providerThreadId);
+            const sessionId = attempt.nativeThreadId ?? row?.nativeThreadRef?.nativeId ?? null;
+            const cursor = latestProviderTurnForAttempt(projection.providerTurns, attempt.id)
+              ?.nativeTurnRef?.nativeId;
+            return {
+              attemptOrdinal: attempt.attemptOrdinal,
+              status: attempt.status,
+              sessionId,
+              // The adapter keeps `turn:<attempt>` until a root assistant line arrives.
+              lastRootAssistantUuid:
+                row !== undefined &&
+                isClaudeDriver(row.driver) &&
+                sessionId !== null &&
+                cursor !== undefined &&
+                cursor !== null &&
+                UUID.test(cursor)
+                  ? cursor
+                  : null,
+            };
+          }),
+      };
+    }),
   };
 };
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export const isClaudeDriver = (driver: string) => driver === CLAUDE_DRIVER;
