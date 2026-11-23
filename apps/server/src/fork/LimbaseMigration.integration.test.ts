@@ -394,7 +394,13 @@ const setup = (
         ...holdFor(PLAIN.instanceId),
       }),
       fakeAdapter({ instanceId: LIMBASE, driver: CLAUDE, turns, injected, ...holdFor(LIMBASE) }),
-      fakeAdapter({ instanceId: CODEX_SELECTION.instanceId, driver: CODEX, turns, injected }),
+      fakeAdapter({
+        instanceId: CODEX_SELECTION.instanceId,
+        driver: CODEX,
+        turns,
+        injected,
+        ...holdFor(CODEX_SELECTION.instanceId),
+      }),
     ];
     return { cwd, turns, injected, started, release, layer: harness(key, cwd, adapters) };
   });
@@ -585,6 +591,53 @@ describe("Limbase migration bind", () => {
           assert.deepEqual(
             toBound.map((handoff) => handoff.coveredRunOrdinals),
             [{ from: 4, to: 4 }],
+          );
+        }).pipe(Effect.provide(env.layer));
+      }),
+  );
+
+  it.live(
+    "hands each provider the runs it has not seen, through the queue and an immediate switch",
+    () =>
+      Effect.gen(function* () {
+        const env = yield* setup("handoff-floors", {
+          ordinal: 3,
+          instanceId: CODEX_SELECTION.instanceId,
+        });
+        yield* Effect.gen(function* () {
+          const thread = yield* scenario("handoff-floors", env.cwd);
+          yield* thread.send("one");
+          yield* thread.send("two", { modelSelection: CODEX_SELECTION });
+          // Run 3 holds on Codex, so run 4 on Claude starts through the queue.
+          yield* thread.send("three", { modelSelection: CODEX_SELECTION, wait: false });
+          yield* Deferred.await(env.started);
+          yield* thread.send("four", { modelSelection: PLAIN, wait: false });
+          assert.equal((yield* thread.projection()).runs.at(-1)?.status, "queued");
+          yield* Deferred.succeed(env.release, undefined);
+          yield* waitForIdle(thread.threadId);
+          // An immediate switch back to Codex, which has seen runs 2 and 3.
+          yield* thread.send("five", { modelSelection: CODEX_SELECTION });
+          const after = yield* thread.projection();
+          assert.deepEqual(
+            after.runs.map((run) => [run.ordinal, run.status, run.providerInstanceId]),
+            [
+              [1, "completed", PLAIN.instanceId],
+              [2, "completed", CODEX_SELECTION.instanceId],
+              [3, "completed", CODEX_SELECTION.instanceId],
+              [4, "completed", PLAIN.instanceId],
+              [5, "completed", CODEX_SELECTION.instanceId],
+            ],
+          );
+          const ordinalOf = new Map(after.runs.map((run) => [run.id, run.ordinal]));
+          assert.deepEqual(
+            after.contextHandoffs
+              .map((handoff) => [ordinalOf.get(handoff.targetRunId), handoff.coveredRunOrdinals])
+              .toSorted((left, right) => Number(left[0]) - Number(right[0])),
+            [
+              [2, { from: 1, to: 1 }],
+              [4, { from: 2, to: 3 }],
+              [5, { from: 4, to: 4 }],
+            ],
           );
         }).pipe(Effect.provide(env.layer));
       }),

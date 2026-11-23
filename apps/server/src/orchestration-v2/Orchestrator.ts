@@ -1521,13 +1521,13 @@ function isHandoffSourceRun(run: OrchestrationV2Run): boolean {
   );
 }
 
-/** The last run the provider thread already holds, delivered or copied in by a Limbase migration. */
+/** The last run the provider thread already holds: its last delivered run, or a Limbase migration's. */
 function providerThreadSeenThroughOrdinal(
-  projection: Pick<OrchestrationV2ThreadProjection, "runs" | "providerTurns">,
+  lastDeliveredRun: Pick<OrchestrationV2Run, "ordinal"> | undefined,
   providerThread: OrchestrationV2ProviderThread,
 ): number {
   return Math.max(
-    lastDeliveredRunForProviderThread(projection, providerThread.id)?.ordinal ?? 0,
+    lastDeliveredRun?.ordinal ?? 0,
     LimbaseMigration.migratedThroughRunOrdinal(providerThread) ?? 0,
   );
 }
@@ -2744,6 +2744,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         projection,
         queuedProviderThread.id,
       );
+      const seenThroughOrdinal = providerThreadSeenThroughOrdinal(
+        targetLastCompletedRun,
+        queuedProviderThread,
+      );
       const coveredRuns =
         freshContext ||
         canResumeAcrossInstances ||
@@ -2754,7 +2758,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               (run) =>
                 isHandoffSourceRun(run) &&
                 run.ordinal >= contextBoundary &&
-                run.ordinal > providerThreadSeenThroughOrdinal(projection, queuedProviderThread) &&
+                run.ordinal > seenThroughOrdinal &&
                 run.ordinal <= latestHandoffRun.ordinal,
             );
       const needsFullContext = deliveryProviderThread.nativeThreadRef === null;
@@ -8558,6 +8562,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       targetProviderThread === undefined
         ? undefined
         : lastDeliveredRunForProviderThread(projection, targetProviderThread.id);
+    const providerSwitchSeenThroughOrdinal =
+      requiresFullProviderSwitchContext || targetProviderThread === undefined
+        ? 0
+        : providerThreadSeenThroughOrdinal(targetLastCompletedRun, targetProviderThread);
     const providerSwitchCoveredRuns =
       !isProviderSwitch || canResumeAcrossInstances || latestHandoffRun === undefined
         ? []
@@ -8565,10 +8573,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             (run) =>
               isHandoffSourceRun(run) &&
               run.ordinal >= contextBoundary &&
-              run.ordinal >
-                (requiresFullProviderSwitchContext || targetProviderThread === undefined
-                  ? 0
-                  : providerThreadSeenThroughOrdinal(projection, targetProviderThread)) &&
+              run.ordinal > providerSwitchSeenThroughOrdinal &&
               run.ordinal <= latestHandoffRun.ordinal,
           );
     const providerSwitchNeedsFullContext =
