@@ -3106,6 +3106,8 @@ describe("ClaudeAdapterV2 native session identity", () => {
     providerTurnOrdinal: number,
     nativeThreadHasTurns?: boolean,
     importedNativeThreadId?: string,
+    /** A row bound to a migrated Limbase thread, whose session file the host writes later. */
+    migratedThrough?: number,
   ) =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -3115,7 +3117,7 @@ describe("ClaudeAdapterV2 native session identity", () => {
         const attachmentsDir = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-claude-v2-session-identity-",
         });
-        if (importedNativeThreadId !== undefined) {
+        if (importedNativeThreadId !== undefined && migratedThrough === undefined) {
           // An unreadable copy in another project must not hide the readable one.
           yield* fileSystem.makeDirectory(
             path.join(attachmentsDir, "projects", "-other", `${importedNativeThreadId}.jsonl`),
@@ -3211,7 +3213,13 @@ describe("ClaudeAdapterV2 native session identity", () => {
                   handoffIds: [],
                   forkedFrom: null,
                   contextUsage: null,
-                  nativeMetadata: null,
+                  nativeMetadata:
+                    migratedThrough === undefined
+                      ? null
+                      : {
+                          limbaseThreadId: "th_migrated",
+                          limbaseMigratedThroughRunOrdinal: migratedThrough,
+                        },
                   goal: null,
                   createdAt: now,
                   updatedAt: now,
@@ -3260,6 +3268,15 @@ describe("ClaudeAdapterV2 native session identity", () => {
       assert.equal(openedQueries[0]?.options.sessionId, "native-session-identity");
       assert.equal(openedQueries[0]?.options.resume, undefined);
       assert.equal(openedQueries[0]?.options.title, "Claude attachment test");
+    }),
+  );
+
+  it.effect("resumes a session bound to a migrated Limbase thread before its file exists", () =>
+    Effect.gen(function* () {
+      const openedQueries = yield* openTurnWithOrdinal(1, false, "migrated-native-session", 3);
+      assert.equal(openedQueries.length, 1);
+      assert.equal(openedQueries[0]?.options.resume, "migrated-native-session");
+      assert.equal(openedQueries[0]?.options.sessionId, undefined);
     }),
   );
 

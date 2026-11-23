@@ -24,6 +24,8 @@ import hostPackage from "@limbase/host-agent-sdk/package.json" with { type: "jso
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
+import * as LimbaseMigration from "./LimbaseMigration.ts";
+
 // zod is external to the CLI bundle; a single-executable loads it from disk only with require.
 const zod = NodeModule.createRequire(import.meta.url)("zod") as typeof import("zod");
 
@@ -258,6 +260,14 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
   };
   return hosted;
 });
+
+/**
+ * Whether the row's first query resumes its session though T3 has run no turn on it: a row bound to
+ * a migrated Limbase thread. Its session file does not exist yet, and only a resume makes the host
+ * write it from Limbase before the CLI starts; a new session would start without the history.
+ */
+export const resumesMigratedHistory = (providerThread: OrchestrationV2ProviderThread) =>
+  LimbaseMigration.migratedThroughRunOrdinal(providerThread) !== undefined;
 
 const REFUSALS = {
   fork: "Limbase does not fork threads yet",

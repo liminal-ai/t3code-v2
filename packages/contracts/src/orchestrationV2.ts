@@ -1097,6 +1097,13 @@ export const OrchestrationV2ProviderThreadNativeMetadata = Schema.Struct({
   itemIdentityVersion: Schema.optional(Schema.Literal(2)),
   forkHeadMessageId: Schema.optional(TrimmedNonEmptyString),
   limbaseThreadId: Schema.optional(TrimmedNonEmptyString),
+  /**
+   * The row was bound to a Limbase thread that a migration filled with this thread's runs up to
+   * and including this ordinal, so those runs already reach the provider through Limbase.
+   */
+  limbaseMigratedThroughRunOrdinal: Schema.optional(PositiveInt),
+  /** The provider thread this migrated row replaced, which an unbind makes active again. */
+  limbaseMigratedFromProviderThreadId: Schema.optional(ProviderThreadId),
   claudeAttachmentBudget: Schema.optional(
     Schema.Struct({ bytesUsed: NonNegativeInt, pagesUsed: NonNegativeInt }),
   ),
@@ -3727,6 +3734,28 @@ const OrchestrationV2InternalCommand = Schema.Union([
     commandId: CommandId,
     threadId: ThreadId,
     requestId: RuntimeRequestId,
+  }),
+  /**
+   * Makes a new provider thread on a Limbase instance the thread's active one: its native session
+   * is `sessionId`, its Limbase thread `limbaseThreadId`, which a migration filled with the thread's
+   * runs through `ifLastRun`. Refused unless the thread is idle, its last run is `ifLastRun`, and
+   * its runs and their statuses still hash to `ifHistory`, so a rollback since the export refuses.
+   */
+  Schema.Struct({
+    type: Schema.Literal("thread.limbase.bind"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    providerInstanceId: ProviderInstanceId,
+    limbaseThreadId: TrimmedNonEmptyString,
+    sessionId: TrimmedNonEmptyString,
+    ifLastRun: PositiveInt,
+    ifHistory: TrimmedNonEmptyString,
+  }),
+  /** Makes the provider thread a `thread.limbase.bind` replaced the active one again. */
+  Schema.Struct({
+    type: Schema.Literal("thread.limbase.unbind"),
+    commandId: CommandId,
+    threadId: ThreadId,
   }),
   /** The provider did not confirm a Stop of this turn in time. */
   Schema.Struct({
