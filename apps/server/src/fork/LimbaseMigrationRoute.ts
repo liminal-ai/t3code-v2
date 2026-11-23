@@ -97,8 +97,16 @@ const readProjection = Effect.fn("LimbaseMigration.readProjection")(function* (t
   const orchestrator = yield* OrchestratorV2;
   return yield* orchestrator.getThreadRecords(
     threadId,
-    ["runs", "attempts", "runtimeRequests", "providerThreads", "contextHandoffs"],
-    { turnItemTypes: [] },
+    [
+      "runs",
+      "attempts",
+      "runtimeRequests",
+      "providerThreads",
+      "contextHandoffs",
+      "providerTurns",
+      "turnItems",
+    ],
+    { turnItemTypes: ["error"] },
   );
 });
 
