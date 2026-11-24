@@ -262,6 +262,13 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
 });
 
 /**
+ * Whether the host writes the row's session file. It writes the file again from Limbase's view, so
+ * lines the live CLI never sent are no sign that someone changed the session outside T3.
+ */
+export const writesSessionFile = (providerThread: OrchestrationV2ProviderThread) =>
+  providerThread.nativeMetadata?.limbaseThreadId !== undefined;
+
+/**
  * Whether the row's first query resumes its session though T3 has run no turn on it: a row bound to
  * a migrated Limbase thread. Its session file does not exist yet, and only a resume makes the host
  * write it from Limbase before the CLI starts; a new session would start without the history.

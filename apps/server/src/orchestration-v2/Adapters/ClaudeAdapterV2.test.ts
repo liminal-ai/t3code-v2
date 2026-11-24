@@ -11581,6 +11581,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       readonly scheduledWakeup?: boolean;
       readonly wakeFiresDuringRead?: boolean;
       readonly pinnedHead?: string;
+      readonly limbaseThreadId?: string;
     }) {
       const fileSystem = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -11607,17 +11608,21 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ? Effect.provideService(FileSystem.FileSystem, heldFileSystem)
           : (effect) => effect,
       );
-      const providerThread =
-        input.pinnedHead === undefined
-          ? harness.providerThread
+      const providerThread = {
+        ...harness.providerThread,
+        ...(input.pinnedHead === undefined
+          ? {}
           : {
-              ...harness.providerThread,
               nativeConversationHeadRef: {
                 driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
                 nativeId: input.pinnedHead,
                 strength: "weak" as const,
               },
-            };
+            }),
+        ...(input.limbaseThreadId === undefined
+          ? {}
+          : { nativeMetadata: { limbaseThreadId: input.limbaseThreadId } }),
+      };
       const now = yield* DateTime.now;
       const turn = (ordinal: number) =>
         makeClaudeTestTurnInput({
@@ -11727,6 +11732,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         name: "a pinned head decides where to resume",
         transcript: (promptUuid: string) => t3Turn(promptUuid) + terminalExchange,
         pinnedHead: firstReply,
+      },
+      {
+        name: "the Limbase host writes its session file",
+        transcript: (promptUuid: string) => t3Turn(promptUuid) + terminalExchange,
+        limbaseThreadId: "th_limbase",
       },
       {
         name: "replacing it would end background work",

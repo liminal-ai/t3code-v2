@@ -13561,7 +13561,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             existing.queryPolicyKey === queryPolicyKey &&
             !existing.stopping &&
             // A pinned head already decides where a fresh process resumes.
-            resumeSessionAt === undefined
+            resumeSessionAt === undefined &&
+            !Limbase.writesSessionFile(turnInput.providerThread)
           ) {
             // Decided before the transcript read: with no pending wakeup then, none can fire during it.
             const keepsWork =
