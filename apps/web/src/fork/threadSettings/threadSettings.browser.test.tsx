@@ -232,7 +232,18 @@ it("shows what each empty field inherits, and what Limbase holds now", async () 
     .element(page.getByLabelText("Down to"))
     .toHaveAttribute("placeholder", "Default for 1M models: 120k");
   await expect.element(page.getByText("700k → 100k")).toBeVisible();
-  await expect.element(page.getByText(/^T3 owns this thread's Limbase policy\./)).toBeVisible();
+});
+
+it("says T3 puts its policy back once the policy it resolves changes, not at any setting change", async () => {
+  reset(limbaseThread());
+  await using _screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+  );
+  await expect
+    .element(page.getByText(/^T3 owns this thread's Limbase policy\./))
+    .toHaveTextContent(
+      "T3 owns this thread's Limbase policy. It puts its policy back over one set with limbase thread policy at the next query open, or at the next turn after its resolved policy changes, such as on another model or with a setting that resolves to different tokens.",
+    );
 });
 
 it("refuses a value a guard rejects, saves one it accepts, and shows Limbase's refusal", async () => {
