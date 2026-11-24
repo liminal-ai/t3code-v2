@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-copy -- fork copy stays English, so the catalogs stay upstream's */
 import type { ContextMenuItem } from "@t3tools/contracts";
 
 import type { ThreadActionMenuId } from "../components/threadActionMenu.logic";
