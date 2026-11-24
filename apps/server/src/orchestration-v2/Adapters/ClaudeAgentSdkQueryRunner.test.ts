@@ -572,6 +572,45 @@ it.effect("retries a fresh session once after MCP registration times out", () =>
   }).pipe(Effect.provide(realQueryRunner)),
 );
 
+it.effect("retries a Limbase thread's timed-out open through the same host query", () =>
+  Effect.gen(function* () {
+    const registrationStarted = Promise.withResolvers<void>();
+    const sdkQuery = vi.spyOn(ClaudeSdk, "query");
+    yield* Effect.addFinalizer(() => Effect.sync(() => sdkQuery.mockRestore()));
+    const hostQuery = vi.fn(() => {
+      const first = hostQuery.mock.calls.length === 1;
+      return {
+        initializationResult: async () => ({}),
+        setMcpServers: () => {
+          registrationStarted.resolve();
+          return first
+            ? new Promise<ClaudeSdk.McpSetServersResult>(() => {})
+            : Promise.resolve({ added: ["t3-code"], removed: [], errors: {} });
+        },
+        close: vi.fn(),
+        [Symbol.asyncDispose]: async () => {},
+      } as unknown as ClaudeSdk.Query;
+    });
+    const runner = yield* ClaudeAgentSdkQueryRunner;
+    const { resume, ...options } = resumedMcpQueryInput.options;
+    const opening = yield* runner
+      .open({
+        ...resumedMcpQueryInput,
+        query: hostQuery as unknown as typeof ClaudeSdk.query,
+        options: { ...options, sessionId: resume },
+      })
+      .pipe(Effect.result, Effect.forkChild);
+    yield* Effect.promise(() => registrationStarted.promise);
+    yield* TestClock.adjust("90 seconds");
+    const result = yield* Fiber.join(opening);
+
+    assert.equal(result._tag, "Success");
+    if (result._tag === "Success") yield* result.success.close;
+    assert.equal(hostQuery.mock.calls.length, 2);
+    assert.equal(sdkQuery.mock.calls.length, 0);
+  }).pipe(Effect.provide(realQueryRunner)),
+);
+
 it.effect.each([
   ["opens after a slow CLI boot", "120 seconds", true],
   ["times out a CLI that never boots", "5 minutes", false],
