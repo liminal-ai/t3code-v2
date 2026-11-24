@@ -71,7 +71,6 @@ function LimbaseInstanceCompactionRows(props: {
   return (
     <div data-testid="instance-limbase-compaction">
       <LimbaseCompactionFields
-        key={JSON.stringify(compaction.value)}
         idPrefix={`provider-instance-${props.instanceId}-limbase-compaction`}
         value={compaction.value}
         placeholders={instancePlaceholders(compaction.defaults)}

@@ -52,8 +52,6 @@ export function ThreadSettingsCard(props: {
     >
       <div className="flex flex-col gap-2 px-2.5">
         <LimbaseCompactionGroup
-          // A new value from the server starts the fields over.
-          key={JSON.stringify(compaction.value)}
           threadId={props.threadId}
           view={compaction}
           disabled={!canOperate}

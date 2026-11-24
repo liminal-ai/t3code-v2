@@ -37,6 +37,13 @@ export function LimbaseCompactionFields(props: {
   const [drafts, setDrafts] = useState<Partial<Record<CompactionField, string>>>({});
   const [refusal, setRefusal] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // A new value from the server replaces the drafts, without remounting the inputs and their focus.
+  const [seen, setSeen] = useState(props.value);
+  if (JSON.stringify(seen) !== JSON.stringify(props.value)) {
+    setSeen(props.value);
+    setDrafts({});
+    setRefusal(null);
+  }
 
   const commit = async (field: CompactionField, text: string) => {
     const shown = props.value[field] === undefined ? "" : formatTokenAmount(props.value[field]);
@@ -46,6 +53,7 @@ export function LimbaseCompactionFields(props: {
     }
     const amount = text.trim() === "" ? undefined : parseTokenAmount(text);
     setDrafts((current) => ({ ...current, [field]: text }));
+    if (saving) return;
     if (text.trim() !== "" && amount === undefined) {
       setRefusal(UNREADABLE);
       return;
@@ -84,7 +92,7 @@ export function LimbaseCompactionFields(props: {
               className="w-full min-w-0"
               value={drafts[field] ?? (own === undefined ? "" : formatTokenAmount(own))}
               placeholder={props.placeholders[field]}
-              disabled={props.disabled || saving}
+              disabled={props.disabled}
               aria-invalid={(refusal !== null && drafts[field] !== undefined) || undefined}
               onCommit={(next) => void commit(field, next)}
               spellCheck={false}
