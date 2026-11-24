@@ -1,8 +1,3 @@
-/**
- * The fork's own settings for a thread or a provider instance, so they can be tuned without a
- * release. One table holds them, which this module creates beside upstream's tables and outside its
- * numbered migrations, so a sync never collides with it. Each row holds every group of one owner.
- */
 import {
   ClaudeSettings,
   FORK_SETTINGS_WS_METHODS,
@@ -32,7 +27,6 @@ export class ForkSettingsStore extends Context.Service<
   ForkSettingsStore,
   {
     readonly read: (owner: Owner) => Effect.Effect<ForkSettingsGroups, ForkSettingsError>;
-    /** Replaces each group `groups` names; an empty group goes back to inheriting. */
     readonly write: (
       owner: Owner,
       groups: ForkSettingsGroups,
@@ -43,7 +37,6 @@ export class ForkSettingsStore extends Context.Service<
 const CLAUDE_DRIVER = ProviderDriverKind.make("claudeAgent");
 const decodeClaudeSettings = Schema.decodeUnknownOption(ClaudeSettings);
 
-/** An instance's Claude settings, or undefined for an instance of another driver. */
 export const claudeSettingsOf = (settings: ServerSettings, instanceId: ProviderInstanceId) => {
   const entry = settings.providerInstances[instanceId];
   return entry?.driver === CLAUDE_DRIVER
@@ -100,7 +93,6 @@ const make = Effect.gen(function* () {
     sql
       .withTransaction(
         Effect.gen(function* () {
-          // Groups this build does not know stay as they were.
           const stored: Record<string, unknown> = { ...(yield* storedJson(owner)) };
           const encoded: Record<string, unknown> = yield* encodeGroups(groups);
           for (const [key, value] of Object.entries(encoded)) {
@@ -115,8 +107,20 @@ const make = Effect.gen(function* () {
       )
       .pipe(Effect.mapError(storeError));
 
-  // The table's first creation is the one moment that tells an instance from before compaction was
-  // a setting from one created since, so that is when the instances of that time keep 700k/100k.
+  const keepFixedCompactionOnInstancesThatPredateSettings = Effect.fn(
+    "ForkSettings.keepFixedCompactionOnInstancesThatPredateSettings",
+  )(function* () {
+    const settings = yield* serverSettings.getSettings;
+    for (const id of Object.keys(settings.providerInstances) as ProviderInstanceId[]) {
+      if (!hasLimbaseHome(claudeSettingsOf(settings, id))) continue;
+      const kept: Record<string, unknown> = yield* encodeGroups({
+        limbaseCompaction: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS,
+      });
+      yield* upsert({ scope: "instance", id }, kept);
+      yield* Effect.logInfo("fork-settings.seeded", { instanceId: id, ...kept });
+    }
+  });
+
   yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -133,15 +137,7 @@ const make = Effect.gen(function* () {
             PRIMARY KEY (scope, owner_id)
           )
         `;
-        const settings = yield* serverSettings.getSettings;
-        for (const id of Object.keys(settings.providerInstances) as ProviderInstanceId[]) {
-          if (!hasLimbaseHome(claudeSettingsOf(settings, id))) continue;
-          const seeded: Record<string, unknown> = yield* encodeGroups({
-            limbaseCompaction: Limbase.SEEDED_INSTANCE_COMPACTION,
-          });
-          yield* upsert({ scope: "instance", id }, seeded);
-          yield* Effect.logInfo("fork-settings.seeded", { instanceId: id, ...seeded });
-        }
+        yield* keepFixedCompactionOnInstancesThatPredateSettings();
       }),
     )
     .pipe(
@@ -166,22 +162,19 @@ const make = Effect.gen(function* () {
 
 export const layer = Layer.effect(ForkSettingsStore, make);
 
-/** The Limbase compaction a thread's query opens with: its own, and its instance's. */
 export const compaction = (
   store: Option.Option<ForkSettingsStore["Service"]>,
   input: {
     readonly threadId: ThreadId;
     readonly instanceId: ProviderInstanceId;
     readonly model: string;
-    readonly contextWindow: () => number | null;
+    readonly claudeContextWindow: () => number | null;
   },
-): Limbase.Compaction => ({
-  settings: Option.match(store, {
-    // With no store, nothing can say what the user set, so the thread's policy is left alone.
-    onNone: () =>
-      Effect.fail(new ForkSettingsError({ message: "The settings store is not running." })),
-    onSome: (settings) =>
-      Effect.all({
+): Limbase.Compaction | undefined =>
+  Option.match(store, {
+    onNone: () => undefined,
+    onSome: (settings) => ({
+      settings: Effect.all({
         thread: settings.read({ scope: "thread", id: input.threadId }),
         instance: settings.read({ scope: "instance", id: input.instanceId }),
       }).pipe(
@@ -190,12 +183,11 @@ export const compaction = (
           instance: instance.limbaseCompaction ?? {},
         })),
       ),
-  }),
-  model: input.model,
-  contextWindow: input.contextWindow,
-});
+      model: input.model,
+      claudeContextWindow: input.claudeContextWindow,
+    }),
+  });
 
-/** Each RPC's trace aggregate. */
 export const RPC_AGGREGATES = {
   [FORK_SETTINGS_WS_METHODS.getThread]: "forkSettings",
   [FORK_SETTINGS_WS_METHODS.setThread]: "forkSettings",

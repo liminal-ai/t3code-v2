@@ -1,4 +1,3 @@
-/** The WS handlers of the fork's settings RPCs: each group's view, its guards, and its writes. */
 import {
   blockingProblems,
   type ClaudeSettings,
@@ -37,7 +36,6 @@ const handlersFor = Effect.fnUntraced(function* (
   const serverSettings = yield* ServerSettingsService.ServerSettingsService;
   const readSettings = serverSettings.getSettings.pipe(Effect.mapError(storeError));
 
-  /** The model's window from the catalog the Claude adapter reads, or null for an unlisted model. */
   const catalogWindow = Effect.fn("ForkSettings.catalogWindow")(function* (
     claude: ClaudeSettings | undefined,
     modelSelection: ModelSelection,
@@ -49,7 +47,6 @@ const handlersFor = Effect.fnUntraced(function* (
     return resolveClaudeCatalogContextWindowTokens(catalog, modelSelection) ?? null;
   });
 
-  /** What a thread's Limbase compaction depends on, or undefined when the group does not apply. */
   const limbaseThread = Effect.fn("ForkSettings.limbaseThread")(function* (threadId: ThreadId) {
     const { thread, providerThreads } = yield* orchestrator
       .getThreadRecords(threadId, ["providerThreads"], { turnItemTypes: [] })
@@ -91,7 +88,6 @@ const handlersFor = Effect.fnUntraced(function* (
     };
   });
 
-  /** Refuses a thread value a guard rejects, then gives Limbase the policy so it can refuse too. */
   const applyThreadCompaction = Effect.fn("ForkSettings.applyThreadCompaction")(function* (
     threadId: ThreadId,
     value: LimbaseCompaction,
@@ -182,7 +178,6 @@ const handlersFor = Effect.fnUntraced(function* (
 
 const unavailable = () => Effect.fail(refusal("Thread settings are not available on this server."));
 
-/** The WS handlers of the fork's settings RPCs. A server built without the store refuses them. */
 export const wsHandlers = Effect.gen(function* () {
   const store = yield* Effect.serviceOption(ForkSettingsStore);
   const catalogs = yield* Effect.serviceOption(ModelCatalog.ModelCatalog);

@@ -1,14 +1,11 @@
 import {
   EnvironmentId,
-  ForkSettingsError,
   type LimbaseCompaction,
   type LimbaseCompactionThreadView,
   ProviderInstanceId,
   ThreadId,
   type ThreadSettingsView,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/reactivity";
 import { useSyncExternalStore } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -44,14 +41,19 @@ vi.mock(import("~/state/session"), async (importOriginal) => ({
   ...(await importOriginal()),
   useEnvironmentScope: (() => true) as never,
 }));
-vi.mock(import("~/state/use-atom-command"), () => ({
-  useAtomCommand: (() => async (value: unknown) => {
-    state.saved.push(value);
-    return state.refuse === null
-      ? AsyncResult.success(state.view)
-      : AsyncResult.failure(Cause.fail(new ForkSettingsError({ message: state.refuse })));
-  }) as never,
-}));
+vi.mock(import("~/state/use-atom-command"), async () => {
+  const { AsyncResult } = await import("effect/reactivity");
+  const Cause = await import("effect/Cause");
+  const { ForkSettingsError } = await import("@t3tools/contracts");
+  return {
+    useAtomCommand: (() => async (value: unknown) => {
+      state.saved.push(value);
+      return state.refuse === null
+        ? AsyncResult.success(state.view)
+        : AsyncResult.failure(Cause.fail(new ForkSettingsError({ message: state.refuse })));
+    }) as never,
+  };
+});
 
 import { LimbaseInstanceCompaction } from "./LimbaseInstanceCompaction";
 import { ThreadSettingsCard } from "./ThreadSettingsCard";

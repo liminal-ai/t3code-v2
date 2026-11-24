@@ -1,8 +1,3 @@
-/**
- * Fork-owned settings that tune a thread, or every thread of a provider instance, without a release.
- * Each group belongs to one feature. A thread's value wins over its instance's, and a field left
- * empty inherits. The server resolves and applies them; the web shows the view the server builds.
- */
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
@@ -15,7 +10,6 @@ import {
 import { PositiveInt, ThreadId } from "../baseSchemas.ts";
 import { ProviderInstanceId } from "../providerInstance.ts";
 
-/** A token budget: absolute tokens, or a share of the model's context window. */
 export const TokenAmount = Schema.Union([
   Schema.Struct({ tokens: PositiveInt }),
   Schema.Struct({
@@ -24,7 +18,6 @@ export const TokenAmount = Schema.Union([
 ]);
 export type TokenAmount = typeof TokenAmount.Type;
 
-/** Where Limbase compacts a thread, and down to how much. A field left out inherits. */
 export const LimbaseCompaction = Schema.Struct({
   compactAt: Schema.optionalKey(TokenAmount),
   downTo: Schema.optionalKey(TokenAmount),
@@ -44,7 +37,6 @@ export type LimbaseCompactPolicy = typeof LimbaseCompactPolicy.Type;
 export const LimbaseProfileName = Schema.Literals(["haiku", "standard", "1m"]);
 export type LimbaseProfileName = typeof LimbaseProfileName.Type;
 
-/** Limbase's own defaults, as the vendored host exports them. */
 export const LimbaseCompactionDefaults = Schema.Struct({
   profiles: Schema.Struct({
     haiku: LimbaseCompactPolicy,
@@ -78,7 +70,6 @@ export const LimbaseCompactionInstanceView = Schema.Struct({
 });
 export type LimbaseCompactionInstanceView = typeof LimbaseCompactionInstanceView.Type;
 
-/** The groups that apply to a thread. A group that does not apply is left out. */
 export const ThreadSettingsView = Schema.Struct({
   limbaseCompaction: Schema.optionalKey(LimbaseCompactionThreadView),
 });
@@ -89,7 +80,6 @@ export const InstanceSettingsView = Schema.Struct({
 });
 export type InstanceSettingsView = typeof InstanceSettingsView.Type;
 
-/** A write the server refused: a guard, a group that does not apply, or Limbase's own reason. */
 export class ForkSettingsError extends Schema.TaggedError<ForkSettingsError>()(
   "ForkSettingsError",
   { message: Schema.String },
@@ -102,7 +92,6 @@ export const FORK_SETTINGS_WS_METHODS = {
   setInstance: "forkSettings.setInstance",
 } as const;
 
-/** Editing an instance's settings needs the same scope as editing the instance. */
 export const FORK_SETTINGS_RPC_SCOPES = {
   [FORK_SETTINGS_WS_METHODS.getThread]: AuthOrchestrationReadScope,
   [FORK_SETTINGS_WS_METHODS.setThread]: AuthOrchestrationOperateScope,
@@ -140,7 +129,6 @@ const MIN_DOWN_TO_TOKENS = 24_000;
 
 const SUFFIXES = { k: 1_000, m: 1_000_000 } as const;
 
-/** Reads `700k`, `1.5m`, `700,000` or `70%`. Anything else is undefined. */
 export const parseTokenAmount = (text: string): TokenAmount | undefined => {
   const trimmed = text.trim().toLowerCase().replaceAll(",", "").replaceAll("_", "");
   const percent = /^(\d+(?:\.\d+)?)\s*%$/.exec(trimmed);
@@ -178,14 +166,12 @@ export type CompactionSource = "thread" | "instance" | "default";
 export interface ResolvedAmount {
   readonly amount: TokenAmount;
   readonly source: CompactionSource;
-  /** In tokens for the model's window; null while a share's window is unknown. */
   readonly tokens: number | null;
 }
 
 export type CompactionField = keyof LimbaseCompaction;
 
 export interface CompactionProblem {
-  /** The fields the problem is about; a fix changes one of them. */
   readonly fields: ReadonlyArray<CompactionField>;
   readonly severity: "error" | "warning";
   readonly message: string;
@@ -194,12 +180,10 @@ export interface CompactionProblem {
 export interface ResolvedCompaction {
   readonly compactAt: ResolvedAmount | undefined;
   readonly downTo: ResolvedAmount | undefined;
-  /** The policy to give Limbase: set only when both fields are known in tokens and no guard fails. */
   readonly policy: LimbaseCompactPolicy | undefined;
   readonly problems: ReadonlyArray<CompactionProblem>;
 }
 
-/** Whether `low` is at or above `high`, when the two can be compared without the window. */
 const notBelow = (low: ResolvedAmount, high: ResolvedAmount) =>
   low.tokens !== null && high.tokens !== null
     ? low.tokens >= high.tokens
@@ -207,12 +191,6 @@ const notBelow = (low: ResolvedAmount, high: ResolvedAmount) =>
       ? low.amount.percent >= high.amount.percent
       : false;
 
-/**
- * Each field is the thread's value, else the instance's, else Limbase's default for the model.
- * A share becomes tokens with the model's window. The guards: "down to" is at least 24k and below
- * "compact at", a "compact at" set on the thread fits the window, and a target at Limbase's cold
- * size or above warns that cold return goes off.
- */
 export const resolveLimbaseCompaction = (input: {
   readonly thread: LimbaseCompaction;
   readonly instance: LimbaseCompaction;
@@ -282,7 +260,6 @@ export const resolveLimbaseCompaction = (input: {
   return { compactAt, downTo, policy, problems };
 };
 
-/** The errors a write at `level` must fix: those about a field that level sets. */
 export const blockingProblems = (resolved: ResolvedCompaction, level: CompactionSource) =>
   resolved.problems.filter(
     (problem) =>

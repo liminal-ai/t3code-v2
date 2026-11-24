@@ -11,11 +11,6 @@ const INSTANCE = "claudeLimbase";
 
 const sqlString = (value) => `'${value.replaceAll("'", "''")}'`;
 
-/**
- * Needs the `claudeLimbase` instance of `features/thread-settings.md` on both sides, on a Limbase
- * lane. Leaves the Limbase thread open with its details panel, and every compaction field at what a
- * fresh instance from before this feature holds.
- */
 export async function seed({ page, t3v, checkout }) {
   const cli = (...args) =>
     execFile(process.execPath, ["apps/server/src/bin.ts", ...args, "--base-dir", ".t3"], {
@@ -46,7 +41,14 @@ export async function seed({ page, t3v, checkout }) {
   }
   const origin = new URL(page.url()).origin;
   await page.goto(`${origin}/settings/providers`);
-  await page.getByRole("button", { name: "Select Claude Limbase", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Select Claude Limbase", exact: true })
+    .click({ timeout: 15_000 })
+    .catch(() => {
+      throw new Error(
+        `the demo needs the ${INSTANCE} instance of features/thread-settings.md on ${checkout}`,
+      );
+    });
   await clearTo(page, "Limbase: compact at", "700k");
   await clearTo(page, "Limbase: down to", "100k");
   if (
@@ -68,7 +70,11 @@ export async function seed({ page, t3v, checkout }) {
       "--model",
       "claude-haiku-5-5",
       "--wait",
-    );
+    ).catch((error) => {
+      throw new Error(
+        `the demo's Limbase turn failed; is the Limbase lane up? ${error.stderr ?? error.message}`,
+      );
+    });
   }
   await page.goto(`${origin}/`);
 
@@ -81,7 +87,6 @@ export async function seed({ page, t3v, checkout }) {
   await clearTo(page, "Down to", "");
 }
 
-/** Sets a compaction field when this side has it, as a user does: type, then Enter. */
 async function clearTo(page, label, value) {
   const field = page.getByRole("textbox", { name: label, exact: true });
   if ((await field.count()) === 0) return;

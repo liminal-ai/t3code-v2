@@ -6047,7 +6047,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       threadId,
       instanceId: adapterOptions.instanceId,
       model: modelSelection.model,
-      contextWindow: () => claudeContextWindow(modelSelection),
+      claudeContextWindow: () => claudeContextWindow(modelSelection),
     });
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,

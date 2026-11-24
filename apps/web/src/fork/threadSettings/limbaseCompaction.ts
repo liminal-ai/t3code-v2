@@ -23,7 +23,6 @@ const PROFILE_LABELS: Record<LimbaseProfileName, string> = {
   "1m": "1M models",
 };
 
-/** `value` with `field` set to `amount`, or left out to inherit. */
 export const withField = (
   value: LimbaseCompaction,
   field: CompactionField,
@@ -35,7 +34,6 @@ export const withField = (
   return next;
 };
 
-/** A thread's compaction as it would be with `value` as its own settings. */
 export const resolveThreadCompaction = (
   view: LimbaseCompactionThreadView,
   value: LimbaseCompaction,
@@ -62,7 +60,6 @@ export const resolveInstanceCompaction = (
     coldReturnSize: defaults.coldReturnSize,
   });
 
-/** What a field left empty on the thread would get, for its placeholder. */
 const inheritedLabel = (
   inherited: ResolvedAmount | undefined,
   profile: LimbaseProfileName | null,

@@ -29,7 +29,6 @@ const limbaseHomeOf = (config: unknown) =>
     ? String(config.limbaseHome).trim()
     : "";
 
-/** The instance-level Limbase compaction, which every thread on the instance inherits. */
 export function LimbaseInstanceCompaction(props: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;

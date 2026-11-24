@@ -19,7 +19,6 @@ import {
   threadPlaceholders,
 } from "./limbaseCompaction";
 
-/** The fork's per-thread settings. Only the groups that apply to the thread show. */
 export function ThreadSettingsCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;

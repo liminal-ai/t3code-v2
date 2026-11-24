@@ -14,7 +14,6 @@ const PLAIN = ProviderInstanceId.make("claudeAgent");
 const LATER = ProviderInstanceId.make("claudeLimbaseLater");
 const THREAD = ThreadId.make("thread-settings-test");
 
-/** A server start: the store comes up over the database with the instances `settings` names. */
 const started = (instances: Record<string, { readonly limbaseHome?: string }>) =>
   ForkSettings.layer.pipe(
     Layer.provide(

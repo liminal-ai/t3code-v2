@@ -33,7 +33,6 @@ export const setInstanceSettings = createEnvironmentRpcCommand(connectionAtomRun
   tag: FORK_SETTINGS_WS_METHODS.setInstance,
 });
 
-/** What a refused save says, or null for a save that went through or was cancelled. */
 export const refusalOf = (result: AtomCommandResult<unknown, unknown>) => {
   if (result._tag === "Success" || isAtomCommandInterrupted(result)) return null;
   const failure = squashAtomCommandFailure(result);

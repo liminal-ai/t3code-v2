@@ -25,7 +25,6 @@ import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapt
 import * as Limbase from "./Limbase.ts";
 
 const created: unknown[] = [];
-/** The policy the fake service holds for each Limbase thread, and each `SetCompactPolicy` it took. */
 const held = new Map<string, { readonly trigger: number; readonly target: number }>();
 const policiesSet: Array<{
   readonly threadId: string;
@@ -175,7 +174,6 @@ const setsOn = (threadId: string) =>
     .filter((set) => set.threadId === threadId)
     .map(({ trigger, target }) => ({ trigger, target }));
 
-/** A thread's compaction with no settings of its own, on a 1M model unless told otherwise. */
 const compaction = (
   overrides: Partial<{
     thread: LimbaseCompaction;
@@ -186,7 +184,7 @@ const compaction = (
 ): Limbase.Compaction => ({
   settings: Effect.succeed({ thread: overrides.thread ?? {}, instance: overrides.instance ?? {} }),
   model: overrides.model ?? "claude-opus-4-6",
-  contextWindow: overrides.contextWindow ?? (() => 1_000_000),
+  claudeContextWindow: overrides.contextWindow ?? (() => 1_000_000),
 });
 
 it.layer(NodeServices.layer)("Limbase", (it) => {
@@ -213,7 +211,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     Effect.gen(function* () {
       const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
       const before = created.length;
-      const seeded = compaction({ instance: Limbase.SEEDED_INSTANCE_COMPACTION });
+      const seeded = compaction({ instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS });
       const first = yield* Limbase.ensureThread({
         settings,
         existing: providerThread(),
@@ -534,7 +532,6 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         cwd: "/work/app",
       });
       assert.equal(created.length, before + 1);
-      // The reset row's first query open gives it its policy.
       assert.deepEqual(created.at(-1), { cwd: "/work/app" });
       assert.notEqual(reset.nativeMetadata?.limbaseThreadId, "th_1");
       assert.isDefined(reset.nativeMetadata?.limbaseThreadId);
@@ -598,7 +595,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
           );
           yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
         });
-      const seeded = { instance: Limbase.SEEDED_INSTANCE_COMPACTION };
+      const seeded = { instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS };
       yield* open(compaction(seeded));
       yield* open(compaction(seeded));
       assert.deepEqual(setsOn("th_policy"), [{ trigger: 700_000, target: 100_000 }]);

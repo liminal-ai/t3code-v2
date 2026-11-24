@@ -13,10 +13,18 @@ import { COMPACTION_FIELDS, withField } from "./limbaseCompaction";
 
 const UNREADABLE = "Write tokens, like 700k, or a share of the window, like 70%.";
 
-/**
- * "Compact at" and "Down to", each tokens or a share of the window. An empty field inherits, and
- * its placeholder says what it inherits. A refused write keeps the text and shows why.
- */
+function useDraftsUntilValueChanges(value: LimbaseCompaction) {
+  const [drafts, setDrafts] = useState<Partial<Record<CompactionField, string>>>({});
+  const [refusal, setRefusal] = useState<string | null>(null);
+  const [seen, setSeen] = useState(value);
+  if (JSON.stringify(seen) !== JSON.stringify(value)) {
+    setSeen(value);
+    setDrafts({});
+    setRefusal(null);
+  }
+  return { drafts, setDrafts, refusal, setRefusal };
+}
+
 export function LimbaseCompactionFields(props: {
   readonly idPrefix: string;
   readonly value: LimbaseCompaction;
@@ -24,7 +32,6 @@ export function LimbaseCompactionFields(props: {
   readonly warnings: ReadonlyArray<CompactionProblem>;
   readonly disabled: boolean;
   readonly blockingMessages: (next: LimbaseCompaction) => ReadonlyArray<string>;
-  /** Resolves to the server's refusal, or null once saved. */
   readonly onSave: (next: LimbaseCompaction) => Promise<string | null>;
   readonly messagesClassName?: string;
   readonly renderRow: (row: {
@@ -34,16 +41,8 @@ export function LimbaseCompactionFields(props: {
     readonly input: React.ReactNode;
   }) => React.ReactNode;
 }) {
-  const [drafts, setDrafts] = useState<Partial<Record<CompactionField, string>>>({});
-  const [refusal, setRefusal] = useState<string | null>(null);
+  const { drafts, setDrafts, refusal, setRefusal } = useDraftsUntilValueChanges(props.value);
   const [saving, setSaving] = useState(false);
-  // A new value from the server replaces the drafts, without remounting the inputs and their focus.
-  const [seen, setSeen] = useState(props.value);
-  if (JSON.stringify(seen) !== JSON.stringify(props.value)) {
-    setSeen(props.value);
-    setDrafts({});
-    setRefusal(null);
-  }
 
   const commit = async (field: CompactionField, text: string) => {
     const shown = props.value[field] === undefined ? "" : formatTokenAmount(props.value[field]);
@@ -67,7 +66,6 @@ export function LimbaseCompactionFields(props: {
     setSaving(true);
     const refused = await props.onSave(next);
     setSaving(false);
-    // A saved draft stays until the server's new value replaces these fields.
     setRefusal(refused);
   };
 
