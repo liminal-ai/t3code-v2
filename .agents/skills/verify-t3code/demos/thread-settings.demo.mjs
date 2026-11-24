@@ -97,6 +97,7 @@ async function clearTo(page, label, value) {
 }
 
 async function initRepository(folder) {
+  if (NodeFS.existsSync(NodePath.join(folder, ".git"))) return;
   NodeFS.mkdirSync(folder, { recursive: true });
   NodeFS.writeFileSync(NodePath.join(folder, "NOTES.md"), "# Release notes\n");
   const git = (...args) => execFile("git", args, { cwd: folder });
