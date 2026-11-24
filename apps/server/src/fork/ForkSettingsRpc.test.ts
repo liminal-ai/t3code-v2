@@ -56,10 +56,35 @@ const LIMBASE = ProviderInstanceId.make("claudeLimbase");
 const PLAIN = ProviderInstanceId.make("claudeAgent");
 const ON_LIMBASE = ThreadId.make("thread-on-limbase");
 const PLAIN_THREAD = ThreadId.make("thread-plain");
+const WIDE = ThreadId.make("thread-wide");
+const SWITCHED = ThreadId.make("thread-switched");
 
+const reported = (model: string, maxTokens: number) => ({ model, maxTokens });
 const threads = {
-  [ON_LIMBASE]: { instance: LIMBASE, limbaseThreadId: "th_rpc" },
-  [PLAIN_THREAD]: { instance: PLAIN, limbaseThreadId: undefined },
+  [ON_LIMBASE]: {
+    instance: LIMBASE,
+    limbaseThreadId: "th_rpc",
+    model: "claude-sonnet-4-5",
+    turns: [reported("claude-sonnet-4-5", 200_000)],
+  },
+  [PLAIN_THREAD]: {
+    instance: PLAIN,
+    limbaseThreadId: undefined,
+    model: "claude-sonnet-4-5",
+    turns: [],
+  },
+  [WIDE]: {
+    instance: LIMBASE,
+    limbaseThreadId: "th_wide",
+    model: "claude-haiku-5-5[1m]",
+    turns: [reported("claude-haiku-5-5", 200_000), reported("claude-haiku-5-5", 1_000_000)],
+  },
+  [SWITCHED]: {
+    instance: LIMBASE,
+    limbaseThreadId: "th_switched",
+    model: "gateway-model",
+    turns: [reported("claude-haiku-5-5", 1_000_000)],
+  },
 };
 
 const orchestrator = Layer.succeed(OrchestratorV2, {
@@ -70,19 +95,24 @@ const orchestrator = Layer.succeed(OrchestratorV2, {
       thread: {
         id: threadId,
         providerInstanceId: thread.instance,
-        modelSelection: { instanceId: thread.instance, model: "claude-sonnet-4-5" },
+        modelSelection: { instanceId: thread.instance, model: thread.model },
         activeProviderThreadId: row,
       },
       providerThreads: [
         {
           id: row,
-          contextUsage: { usedTokens: 1, maxTokens: 200_000 },
+          contextUsage: null,
           nativeMetadata:
             thread.limbaseThreadId === undefined
               ? null
               : { limbaseThreadId: thread.limbaseThreadId },
         },
       ],
+      providerTurns: thread.turns.map((turn) => ({
+        providerThreadId: row,
+        model: turn.model,
+        tokenUsage: { usedTokens: 1, maxTokens: turn.maxTokens },
+      })),
     });
   },
 } as unknown as OrchestratorV2["Service"]);
@@ -141,6 +171,18 @@ it.layer(Layer.mergeAll(NodeServices.layer, SqlitePersistence.layerMemory))(
           yield* rpc[FORK_SETTINGS_WS_METHODS.getInstance]({ instanceId: PLAIN }),
           {},
         );
+      }),
+    );
+
+    it.effect("gives the card the window Claude reported for its model at the last turn", () =>
+      Effect.gen(function* () {
+        const rpc = yield* handlers;
+        const windowOf = (threadId: ThreadId) =>
+          rpc[FORK_SETTINGS_WS_METHODS.getThread]({ threadId }).pipe(
+            Effect.map((view) => view.limbaseCompaction?.contextWindow),
+          );
+        assert.equal(yield* windowOf(WIDE), 1_000_000);
+        assert.isNull(yield* windowOf(SWITCHED), "a turn on another model gives no window");
       }),
     );
 

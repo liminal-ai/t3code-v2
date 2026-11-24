@@ -21,6 +21,7 @@ import {
   resolveClaudeCatalogContextWindowTokens,
   resolveClaudeModelCatalog,
   scopeClaudeModelCatalog,
+  stripClaudeContextWindowSuffix,
 } from "../provider/ClaudeModelCatalog.ts";
 import * as ServerSettingsService from "../serverSettings.ts";
 import { claudeSettingsOf, ForkSettingsStore, hasLimbaseHome, storeError } from "./ForkSettings.ts";
@@ -48,10 +49,18 @@ const handlersFor = Effect.fnUntraced(function* (
   });
 
   const limbaseThread = Effect.fn("ForkSettings.limbaseThread")(function* (threadId: ThreadId) {
-    const { thread, providerThreads } = yield* orchestrator
-      .getThreadRecords(threadId, ["providerThreads"], { turnItemTypes: [] })
+    const { thread, providerThreads, providerTurns } = yield* orchestrator
+      .getThreadRecords(threadId, ["providerThreads", "providerTurns"], { turnItemTypes: [] })
       .pipe(Effect.mapError(() => refusal(`No thread ${threadId}.`)));
     const active = providerThreads.find((row) => row.id === thread.activeProviderThreadId);
+    const model = stripClaudeContextWindowSuffix(thread.modelSelection.model);
+    const reportedWindow = providerTurns.findLast(
+      (turn) =>
+        turn.providerThreadId === active?.id &&
+        turn.model !== undefined &&
+        stripClaudeContextWindowSuffix(turn.model) === model &&
+        (turn.tokenUsage?.maxTokens ?? 0) > 0,
+    )?.tokenUsage?.maxTokens;
     const claude = claudeSettingsOf(yield* readSettings, thread.providerInstanceId);
     const limbaseThreadId = active?.nativeMetadata?.limbaseThreadId;
     if (limbaseThreadId === undefined && !hasLimbaseHome(claude)) return undefined;
@@ -65,6 +74,7 @@ const handlersFor = Effect.fnUntraced(function* (
       model: thread.modelSelection.model,
       contextWindow:
         (yield* catalogWindow(claude, thread.modelSelection)) ??
+        reportedWindow ??
         active?.contextUsage?.maxTokens ??
         null,
     };
