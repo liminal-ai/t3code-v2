@@ -12,24 +12,20 @@ import { ThreadDetailsSection } from "../../components/chat/ThreadDetailsSection
 import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { refusalOf, setThreadSettings, threadSettingsQuery } from "./forkSettingsState";
+import { refusalOf, setThreadSettings, threadSettingsQuery, useReload } from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
-import {
-  resolveThreadCompaction,
-  threadBlockingMessages,
-  threadPlaceholders,
-} from "./limbaseCompaction";
+import { threadBlockingMessages, threadNotices, threadPlaceholders } from "./limbaseCompaction";
 
 export function ThreadSettingsCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
-  const query = useEnvironmentQuery(
-    threadSettingsQuery({
-      environmentId: props.environmentId,
-      input: { threadId: props.threadId },
-    }),
-  );
+  const atom = threadSettingsQuery({
+    environmentId: props.environmentId,
+    input: { threadId: props.threadId },
+  });
+  const query = useEnvironmentQuery(atom);
+  const reload = useReload(atom);
   const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const save = useAtomCommand(setThreadSettings, { reportFailure: false });
   const compaction = query.data?.limbaseCompaction;
@@ -40,7 +36,7 @@ export function ThreadSettingsCard(props: {
       environmentId: props.environmentId,
       input: { threadId: props.threadId, settings: { limbaseCompaction: next } },
     });
-    if (result._tag === "Success") query.refresh();
+    if (result._tag === "Success") await reload();
     return refusalOf(result);
   };
 
@@ -69,9 +65,6 @@ function LimbaseCompactionGroup(props: {
   readonly onSave: (next: LimbaseCompaction) => Promise<string | null>;
 }) {
   const { view } = props;
-  const warnings = resolveThreadCompaction(view, view.value).problems.filter(
-    (problem) => problem.severity === "warning",
-  );
   return (
     <div className="flex flex-col gap-1.5" data-testid="thread-settings-limbase-compaction">
       <div className="flex min-w-0 items-baseline justify-between gap-2">
@@ -86,7 +79,7 @@ function LimbaseCompactionGroup(props: {
         idPrefix={`thread-settings-${props.threadId}`}
         value={view.value}
         placeholders={threadPlaceholders(view)}
-        warnings={warnings}
+        notices={threadNotices(view)}
         disabled={props.disabled}
         blockingMessages={(next) => threadBlockingMessages(view, next)}
         onSave={props.onSave}
@@ -97,15 +90,11 @@ function LimbaseCompactionGroup(props: {
           </label>
         )}
       />
-      {view.contextWindow === null ? (
-        <p className="text-2xs leading-snug text-muted-foreground">
-          Shares and defaults resolve once the model reports its context window.
-        </p>
-      ) : (
-        <p className="text-2xs leading-snug text-muted-foreground">
-          {view.model}, {formatTokens(view.contextWindow)} window.
-        </p>
-      )}
+      <p className="text-2xs leading-snug text-muted-foreground">
+        {view.contextWindow === null
+          ? "Shares and defaults resolve once the model reports its context window."
+          : `${view.model}, ${formatTokens(view.contextWindow)} window.`}
+      </p>
     </div>
   );
 }

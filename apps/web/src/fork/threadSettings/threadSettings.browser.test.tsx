@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   view: {} as ThreadSettingsView,
   saved: [] as unknown[],
   refuse: null as string | null,
+  reload: async () => {},
   listeners: new Set<() => void>(),
 }));
 
@@ -54,6 +55,11 @@ vi.mock(import("~/state/use-atom-command"), async () => {
     }) as never,
   };
 });
+
+vi.mock(import("./forkSettingsState"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useReload: (() => () => state.reload()) as never,
+}));
 
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { threadSettingsSignal } from "./forkSettingsState";
@@ -97,6 +103,7 @@ const savedCompaction = () =>
 const reset = (view: ThreadSettingsView) => {
   state.saved = [];
   state.refuse = null;
+  state.reload = async () => {};
   publish(view);
 };
 
@@ -195,6 +202,77 @@ it("edits the instance's compaction only on an instance with a Limbase home", as
   await userEvent.fill(compactAt, "");
   await userEvent.keyboard("{Enter}");
   expect(savedCompaction()).toEqual([{}]);
+});
+
+it("holds both fields while a save and its refresh are in flight, and keeps each saved edit", async () => {
+  reset(limbaseThread());
+  let finishReload = () => {};
+  state.reload = () =>
+    new Promise<void>((resolve) => {
+      finishReload = () => {
+        publish(limbaseThread({ value: { compactAt: { tokens: 650_000 } } }));
+        resolve();
+      };
+    });
+  await using _screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+  );
+  const compactAt = page.getByLabelText("Compact at");
+  const downTo = page.getByLabelText("Down to");
+  await userEvent.fill(compactAt, "650k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("status")).toHaveTextContent("Saving…");
+  await expect.element(downTo).toHaveAttribute("readonly");
+  await expect.element(compactAt).toHaveAttribute("readonly");
+
+  finishReload();
+  await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+  await expect.element(compactAt).toHaveValue("650k");
+  await userEvent.fill(downTo, "90k");
+  await userEvent.keyboard("{Enter}");
+  expect(savedCompaction()).toEqual([
+    { compactAt: { tokens: 650_000 } },
+    { compactAt: { tokens: 650_000 }, downTo: { tokens: 90_000 } },
+  ]);
+});
+
+it("clears a field's alert when the field goes back to its saved value", async () => {
+  reset(limbaseThread({ value: { compactAt: { tokens: 500_000 } } }));
+  await using _screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+  );
+  const compactAt = page.getByLabelText("Compact at");
+  await userEvent.fill(compactAt, "2M");
+  await userEvent.keyboard("{Enter}");
+  await expect
+    .element(page.getByRole("alert"))
+    .toHaveTextContent("Compact at (2M) must fit the model's 1M window.");
+  await userEvent.fill(compactAt, "500k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  await expect.element(compactAt).toHaveValue("500k");
+  expect(state.saved).toEqual([]);
+});
+
+it("says what to change, and what Limbase keeps, when the model no longer fits a saved value", async () => {
+  reset(
+    limbaseThread({
+      value: { compactAt: { tokens: 500_000 } },
+      model: "claude-sonnet-4-6",
+      contextWindow: 200_000,
+      hardLimit: 184_000,
+      profile: "standard",
+      applied: { trigger: 500_000, target: 150_000 },
+    }),
+  );
+  await using _screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+  );
+  await expect
+    .element(page.getByRole("alert"))
+    .toHaveTextContent(
+      "Compact at (500k) must fit the model's 200k window. Limbase keeps 500k → 150k until you change it.",
+    );
 });
 
 it("refreshes the card when its thread switches model or ends a turn, not when it is renamed", () => {

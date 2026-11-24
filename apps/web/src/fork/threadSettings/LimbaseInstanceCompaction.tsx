@@ -10,12 +10,18 @@ import { SettingsRow } from "../../components/settings/settingsLayout";
 import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { instanceSettingsQuery, refusalOf, setInstanceSettings } from "./forkSettingsState";
+import {
+  instanceSettingsQuery,
+  refusalOf,
+  setInstanceSettings,
+  useReload,
+} from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import {
   instanceBlockingMessages,
   instancePlaceholders,
   resolveInstanceCompaction,
+  warningNotices,
 } from "./limbaseCompaction";
 
 const DESCRIPTIONS = {
@@ -48,12 +54,12 @@ function LimbaseInstanceCompactionRows(props: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
 }) {
-  const query = useEnvironmentQuery(
-    instanceSettingsQuery({
-      environmentId: props.environmentId,
-      input: { instanceId: props.instanceId },
-    }),
-  );
+  const atom = instanceSettingsQuery({
+    environmentId: props.environmentId,
+    input: { instanceId: props.instanceId },
+  });
+  const query = useEnvironmentQuery(atom);
+  const reload = useReload(atom);
   const canManage = useEnvironmentScope(props.environmentId, AuthProvidersManageScope);
   const save = useAtomCommand(setInstanceSettings, { reportFailure: false });
   const compaction = query.data?.limbaseCompaction;
@@ -64,7 +70,7 @@ function LimbaseInstanceCompactionRows(props: {
       environmentId: props.environmentId,
       input: { instanceId: props.instanceId, settings: { limbaseCompaction: next } },
     });
-    if (result._tag === "Success") query.refresh();
+    if (result._tag === "Success") await reload();
     return refusalOf(result);
   };
 
@@ -74,9 +80,7 @@ function LimbaseInstanceCompactionRows(props: {
         idPrefix={`provider-instance-${props.instanceId}-limbase-compaction`}
         value={compaction.value}
         placeholders={instancePlaceholders(compaction.defaults)}
-        warnings={resolveInstanceCompaction(compaction.defaults, compaction.value).problems.filter(
-          (problem) => problem.severity === "warning",
-        )}
+        notices={warningNotices(resolveInstanceCompaction(compaction.defaults, compaction.value))}
         disabled={!canManage}
         blockingMessages={(next) => instanceBlockingMessages(compaction.defaults, next)}
         onSave={onSave}

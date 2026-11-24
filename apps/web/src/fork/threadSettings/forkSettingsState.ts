@@ -1,3 +1,4 @@
+import { RegistryContext } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import { FORK_SETTINGS_WS_METHODS } from "@t3tools/contracts";
@@ -8,10 +9,12 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { Atom } from "effect/reactivity";
+import { type AsyncResult, Atom } from "effect/reactivity";
+import { useContext } from "react";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { environmentThreadShells } from "../../state/threads";
+import { waitForAtomValue } from "../../state/waitForAtomValue";
 
 /** Changes when the thread's view can: a new instance, model or provider thread, or a turn's end. */
 export const threadSettingsSignal = (shell: EnvironmentThreadShell | null) => {
@@ -55,6 +58,21 @@ export const setInstanceSettings = createEnvironmentRpcCommand(connectionAtomRun
   label: "environment-data:fork-settings:set-instance",
   tag: FORK_SETTINGS_WS_METHODS.setInstance,
 });
+
+/** Refreshes a settings query and resolves once its next answer lands. */
+export function useReload(atom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>) {
+  const registry = useContext(RegistryContext);
+  return async () => {
+    const before = registry.get(atom);
+    registry.refresh(atom);
+    await waitForAtomValue({
+      registry,
+      atom,
+      predicate: (result) => result !== before && !result.waiting,
+      timeoutMs: 15_000,
+    });
+  };
+}
 
 export const refusalOf = (result: AtomCommandResult<unknown, unknown>) => {
   if (result._tag === "Success" || isAtomCommandInterrupted(result)) return null;

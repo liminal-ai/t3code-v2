@@ -10,8 +10,14 @@ import {
   type LimbaseProfileName,
   resolveLimbaseCompaction,
   type ResolvedAmount,
+  type ResolvedCompaction,
   type TokenAmount,
 } from "@t3tools/contracts";
+
+export interface CompactionNotice {
+  readonly tone: "error" | "warning";
+  readonly text: string;
+}
 
 export const COMPACTION_FIELDS = [
   { field: "compactAt", label: "Compact at" },
@@ -35,10 +41,7 @@ export const withField = (
   return next;
 };
 
-export const resolveThreadCompaction = (
-  view: LimbaseCompactionThreadView,
-  value: LimbaseCompaction,
-) =>
+const resolveThreadCompaction = (view: LimbaseCompactionThreadView, value: LimbaseCompaction) =>
   resolveLimbaseCompaction({
     thread: value,
     instance: view.instance,
@@ -104,3 +107,25 @@ export const instanceBlockingMessages = (
   blockingProblems(resolveInstanceCompaction(defaults, value), "instance").map(
     ({ message }) => message,
   );
+
+export const warningNotices = (resolved: ResolvedCompaction): ReadonlyArray<CompactionNotice> =>
+  resolved.problems
+    .filter((problem) => problem.severity === "warning")
+    .map(({ message }) => ({ tone: "warning", text: message }));
+
+/** A saved value the current model refuses leaves Limbase on its old policy, so the card says which. */
+export const threadNotices = (
+  view: LimbaseCompactionThreadView,
+): ReadonlyArray<CompactionNotice> => {
+  const standing = threadBlockingMessages(view, view.value);
+  const kept =
+    view.applied === null
+      ? "Limbase uses its own default"
+      : `Limbase keeps ${formatTokens(view.applied.trigger)} → ${formatTokens(view.applied.target)}`;
+  return [
+    ...(standing.length === 0
+      ? []
+      : [{ tone: "error" as const, text: `${standing.join(" ")} ${kept} until you change it.` }]),
+    ...warningNotices(resolveThreadCompaction(view, view.value)),
+  ];
+};
