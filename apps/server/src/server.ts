@@ -807,8 +807,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // One gate for the server, below hydration so the Claude adapter sees it: layers memoize by
   // reference, so the runtime layer shares it.
   Layer.provideMerge(ProviderInstallationGate.layer),
-  // The fork's settings store, below hydration so the Claude adapter reads it too.
-  Layer.provideMerge(ForkSettings.layer.pipe(Layer.provide(SqlitePersistence.layerConfig))),
   // Provider hydration builds the Claude runner, which reports agents to the same scanner the
   // terminal and preview layers share.
   Layer.provideMerge(layerPortScanner),
@@ -823,6 +821,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+  // The fork's settings store, below hydration so the Claude adapter reads it too.
+  Layer.provideMerge(ForkSettings.layer.pipe(Layer.provide(SqlitePersistence.layerConfig))),
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(
