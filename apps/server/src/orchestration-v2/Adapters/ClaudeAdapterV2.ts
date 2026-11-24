@@ -213,6 +213,7 @@ import {
   resolveClaudeModelSlug,
   resolveClaudeReportedModelSlug,
   scopeClaudeModelCatalog,
+  stripClaudeContextWindowSuffix,
 } from "../../provider/ClaudeModelCatalog.ts";
 import {
   boundProviderEventForLogging,
@@ -6036,12 +6037,16 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   let modelCatalog = yield* loadModelCatalog;
   // Results report the window Claude Code compacts against; outside the catalog it is the only source.
   const reportedContextWindows = new Map<string, number>();
-  const claudeContextWindow = (modelSelection: ModelSelection): number | null =>
-    resolveClaudeCatalogContextWindowTokens(modelCatalog, modelSelection) ??
-    reportedContextWindows.get(
-      compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId,
-    ) ??
-    null;
+  const claudeContextWindow = (modelSelection: ModelSelection): number | null => {
+    const apiModelId = compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId;
+    return (
+      resolveClaudeCatalogContextWindowTokens(modelCatalog, modelSelection) ??
+      reportedContextWindows.get(apiModelId) ??
+      // The CLI reports a `[1m]` model's window under its bare id.
+      reportedContextWindows.get(stripClaudeContextWindowSuffix(apiModelId)) ??
+      null
+    );
+  };
   const limbaseCompaction = (threadId: ThreadId, modelSelection: ModelSelection) =>
     ForkSettings.compaction(adapterOptions.forkSettings, {
       threadId,

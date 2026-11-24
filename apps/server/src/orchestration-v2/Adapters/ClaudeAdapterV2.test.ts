@@ -7787,19 +7787,24 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  const makeLimbaseHome = Effect.gen(function* () {
+    const fileSystem = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const limbaseHome = yield* fileSystem.makeTempDirectoryScoped({
+      prefix: "t3-claude-limbase-",
+    });
+    yield* fileSystem.makeDirectory(path.join(limbaseHome, "config"));
+    yield* fileSystem.writeFileString(
+      path.join(limbaseHome, "config", "membase.json"),
+      JSON.stringify({ socketPath: path.join(limbaseHome, "limbase.sock") }),
+    );
+    return limbaseHome;
+  });
+
   it.effect("re-resolves a Limbase thread's compaction at each turn of its live session", () =>
     Effect.scoped(
       Effect.gen(function* () {
-        const fileSystem = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const limbaseHome = yield* fileSystem.makeTempDirectoryScoped({
-          prefix: "t3-claude-limbase-",
-        });
-        yield* fileSystem.makeDirectory(path.join(limbaseHome, "config"));
-        yield* fileSystem.writeFileString(
-          path.join(limbaseHome, "config", "membase.json"),
-          JSON.stringify({ socketPath: path.join(limbaseHome, "limbase.sock") }),
-        );
+        const limbaseHome = yield* makeLimbaseHome;
         let instance: LimbaseCompaction = {
           compactAt: { tokens: 700_000 },
           downTo: { tokens: 100_000 },
@@ -7847,6 +7852,79 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.lengthOf(harness.processQueues, 1);
         assert.deepEqual(harness.liveSelectionChanges[0], { model: "claude-sonnet-4-6" });
         assert.lengthOf(limbasePolicies.get(limbaseThreadId) ?? [], 3);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("applies a thread's compaction once Claude reports a [1m] model's window", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const modelSelection = {
+          instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
+          model: "claude-haiku-5-5[1m]",
+        } satisfies ModelSelection;
+        const harness = yield* makeWakeHarnessWithOptions({
+          settings: decodeClaudeSettings({ limbaseHome: yield* makeLimbaseHome }),
+          forkSettings: {
+            read: (owner) =>
+              Effect.succeed(
+                owner.scope === "thread"
+                  ? { limbaseCompaction: { compactAt: { percent: 50 }, downTo: { percent: 15 } } }
+                  : {},
+              ),
+            write: () => Effect.void,
+          },
+        });
+        const limbaseThreadId = harness.providerThread.nativeMetadata?.limbaseThreadId ?? "";
+        const now = yield* DateTime.now;
+        const turn = Effect.fnUntraced(function* (ordinal: number) {
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make(`attempt-limbase-1m:${ordinal}`),
+              text: `Request ${ordinal}`,
+              attachments: [],
+              providerTurnOrdinal: ordinal,
+              modelSelection,
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: `00000000-0000-4000-8000-00000000d00${ordinal}`,
+              result: "Done.",
+              modelUsage: {
+                "claude-haiku-5-5": {
+                  inputTokens: 1,
+                  outputTokens: 1,
+                  cacheReadInputTokens: 0,
+                  cacheCreationInputTokens: 0,
+                  webSearchRequests: 0,
+                  costUSD: 0,
+                  contextWindow: 1_000_000,
+                  maxOutputTokens: 128_000,
+                },
+              },
+            }),
+          );
+          yield* Queue.take(harness.terminalReceipts);
+          return limbasePolicies.get(limbaseThreadId)?.at(-1);
+        });
+
+        const createdWith = limbasePolicies.get(limbaseThreadId)?.at(-1);
+        assert.deepEqual(yield* turn(1), createdWith, "the window is unknown until a result");
+        assert.deepEqual(yield* turn(2), { trigger: 500_000, target: 150_000 });
+        assert.strictEqual(harness.runtime.getModelContextWindow?.(modelSelection), 1_000_000);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(
