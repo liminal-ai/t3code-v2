@@ -8,7 +8,7 @@ import {
 import { SettingsRow } from "../../components/settings/settingsLayout";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { instanceSettingsQuery, setInstanceSettings } from "./forkSettingsState";
+import { instanceSettingsQuery, limbaseHomeOf, setInstanceSettings } from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import {
   instanceBlockingMessages,
@@ -24,11 +24,6 @@ const DESCRIPTIONS = {
   downTo:
     "How large a view a compaction leaves, at least 24k and below compact at. Empty uses Limbase's default for the model.",
 } as const;
-
-const limbaseHomeOf = (config: unknown) =>
-  typeof config === "object" && config !== null && "limbaseHome" in config
-    ? String(config.limbaseHome).trim()
-    : "";
 
 export function LimbaseInstanceCompaction(props: {
   readonly environmentId: EnvironmentId;

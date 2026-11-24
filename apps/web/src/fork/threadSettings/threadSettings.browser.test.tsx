@@ -6,6 +6,7 @@ import {
   ThreadId,
   type ThreadSettingsView,
 } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import { useSyncExternalStore } from "react";
 import { expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -19,10 +20,12 @@ const state = vi.hoisted(() => ({
   server: new Map<string, unknown>(),
   published: new Map<string, unknown>(),
   owners: new Map<unknown, string>(),
+  queried: [] as string[],
   saved: [] as Array<{ owner: string; patch: unknown }>,
   refuse: null as string | null,
   reload: async (): Promise<boolean> => true,
   listeners: new Set<() => void>(),
+  limbaseHomes: new Set<string>(["claudeLimbase"]),
 }));
 
 const notify = () => {
@@ -45,6 +48,7 @@ vi.mock(import("~/state/query"), async (importOriginal) => ({
   ...(await importOriginal()),
   useEnvironmentQuery: ((atom: unknown) => {
     const owner = state.owners.get(atom) ?? "thread";
+    state.queried.push(owner);
     const data = useSyncExternalStore(
       (listener) => {
         state.listeners.add(listener);
@@ -97,6 +101,42 @@ vi.mock(import("./forkSettingsState"), async (importOriginal) => ({
   ...(await importOriginal()),
   useRefreshAndWait: (() => () => state.reload()) as never,
 }));
+vi.mock(import("~/state/server"), async (importOriginal) => {
+  const original = await importOriginal();
+  const config = Atom.make(() => ({
+    settings: {
+      providerInstances: Object.fromEntries(
+        ["claudeLimbase", "claudeAgent"].map((id) => [
+          id,
+          {
+            driver: "claudeAgent",
+            config: state.limbaseHomes.has(id) ? { limbaseHome: "~/limbase" } : {},
+          },
+        ]),
+      ),
+    },
+  }));
+  return {
+    ...original,
+    serverEnvironment: { ...original.serverEnvironment, configValueAtom: (() => config) as never },
+  };
+});
+vi.mock(import("~/state/threads"), async (importOriginal) => {
+  const original = await importOriginal();
+  const shells = Atom.family((threadId: string) =>
+    Atom.make({
+      providerInstanceId: threadId.startsWith("plain") ? "claudeAgent" : "claudeLimbase",
+    }),
+  );
+  return {
+    ...original,
+    environmentThreadShells: {
+      ...original.environmentThreadShells,
+      threadShellAtom: ((ref: { threadId: string }) => shells(ref.threadId)) as never,
+    },
+  };
+});
+
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   instanceSettingsQuery,
@@ -146,6 +186,7 @@ const savedCompaction = (owner = "thread") =>
 const reset = (view: View, owner = "thread") => {
   state.server.clear();
   state.published.clear();
+  state.queried = [];
   state.saved = [];
   state.refuse = null;
   state.reload = reloadAll;
@@ -169,12 +210,13 @@ const holdReloads = () => {
 const serverValue = (owner = "thread") =>
   (state.server.get(owner) as View | undefined)?.limbaseCompaction?.value;
 
-it("shows nothing for a thread that is not on Limbase", async () => {
-  reset({});
+it("asks for nothing and shows nothing on a thread whose instance has no Limbase home", async () => {
+  reset({}, "plain-thread");
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <ThreadSettingsCard environmentId={environmentId} threadId={ownThread("plain-thread")} />,
   );
   await expect.element(page.getByText("Thread settings")).not.toBeInTheDocument();
+  expect(state.queried).toEqual([]);
 });
 
 it("shows what each empty field inherits, and what Limbase holds now", async () => {

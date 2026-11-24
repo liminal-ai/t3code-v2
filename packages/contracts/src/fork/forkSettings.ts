@@ -128,7 +128,11 @@ const rpcError = Schema.Union([ForkSettingsError, EnvironmentAuthorizationError]
 
 export const FORK_SETTINGS_RPCS = [
   Rpc.make(FORK_SETTINGS_WS_METHODS.getThread, {
-    payload: Schema.Struct({ threadId: ThreadId }),
+    payload: Schema.Struct({
+      threadId: ThreadId,
+      /** The model of the view the card shows. Without it, or on another model, the server reads Limbase. */
+      shownModel: Schema.optionalKey(Schema.String),
+    }),
     success: ThreadSettingsView,
     error: rpcError,
   }),

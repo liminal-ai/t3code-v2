@@ -24,6 +24,7 @@ import * as ForkSettingsRpc from "./ForkSettingsRpc.ts";
 const limbase = vi.hoisted(() => ({
   held: new Map<string, { trigger: number; target: number }>(),
   refuse: undefined as string | undefined,
+  reads: [] as string[],
 }));
 
 vi.mock("@limbase/host-agent-sdk", async (original) => ({
@@ -31,11 +32,14 @@ vi.mock("@limbase/host-agent-sdk", async (original) => ({
   connectLimbase: async () => ({
     call: async (rpc: (client: unknown) => unknown) =>
       rpc({
-        GetThread: ({ threadId }: { threadId: string }) => ({
-          threadId,
-          createdAt: 0,
-          ...(limbase.held.has(threadId) ? { compactPolicy: limbase.held.get(threadId) } : {}),
-        }),
+        GetThread: ({ threadId }: { threadId: string }) => {
+          limbase.reads.push(threadId);
+          return {
+            threadId,
+            createdAt: 0,
+            ...(limbase.held.has(threadId) ? { compactPolicy: limbase.held.get(threadId) } : {}),
+          };
+        },
         SetCompactPolicy: ({
           threadId,
           compactPolicy,
@@ -88,10 +92,22 @@ const threads = {
   },
 };
 
+const recordReads: Array<{ readonly fields: ReadonlyArray<string>; readonly filter: unknown }> = [];
+
 const orchestrator = Layer.succeed(OrchestratorV2, {
-  getThreadRecords: (threadId: ThreadId) => {
+  getThreadRecords: (
+    threadId: ThreadId,
+    fields: ReadonlyArray<string>,
+    filter?: { readonly latestProviderTurnUsageOnly?: true },
+  ) => {
+    recordReads.push({ fields, filter });
     const thread = threads[threadId as keyof typeof threads]!;
     const row = ProviderThreadId.make(`provider-thread:${threadId}`);
+    const providerTurns = thread.turns.map((turn) => ({
+      providerThreadId: row,
+      model: turn.model,
+      tokenUsage: { usedTokens: 1, maxTokens: turn.maxTokens },
+    }));
     return Effect.succeed({
       thread: {
         id: threadId,
@@ -99,24 +115,42 @@ const orchestrator = Layer.succeed(OrchestratorV2, {
         modelSelection: { instanceId: thread.instance, model: thread.model },
         activeProviderThreadId: row,
       },
-      providerThreads: [
-        {
-          id: row,
-          contextUsage: null,
-          nativeMetadata:
-            thread.limbaseThreadId === undefined
-              ? null
-              : { limbaseThreadId: thread.limbaseThreadId },
-        },
-      ],
-      providerTurns: thread.turns.map((turn) => ({
-        providerThreadId: row,
-        model: turn.model,
-        tokenUsage: { usedTokens: 1, maxTokens: turn.maxTokens },
-      })),
+      ...(fields.includes("providerThreads")
+        ? {
+            providerThreads: [
+              {
+                id: row,
+                contextUsage: null,
+                nativeMetadata:
+                  thread.limbaseThreadId === undefined
+                    ? null
+                    : { limbaseThreadId: thread.limbaseThreadId },
+              },
+            ],
+          }
+        : {}),
+      ...(fields.includes("providerTurns")
+        ? {
+            providerTurns: filter?.latestProviderTurnUsageOnly
+              ? providerTurns.slice(-1)
+              : providerTurns,
+          }
+        : {}),
     });
   },
 } as unknown as OrchestratorV2["Service"]);
+
+const takeReads = () => {
+  const reads = {
+    records: recordReads.map(({ fields, filter }) =>
+      fields.includes("providerTurns") ? { fields, filter } : { fields },
+    ),
+    limbase: [...limbase.reads],
+  };
+  recordReads.length = 0;
+  limbase.reads.length = 0;
+  return reads;
+};
 
 const bundledCatalog = Layer.succeed(ModelCatalog.ModelCatalog, {
   current: () => Effect.undefined,
@@ -155,9 +189,15 @@ it.layer(Layer.mergeAll(NodeServices.layer, SqlitePersistence.layerMemory))(
       Effect.gen(function* () {
         const rpc = yield* handlers;
         limbase.held.set("th_rpc", { trigger: 700_000, target: 100_000 });
+        takeReads();
         assert.deepEqual(
           yield* rpc[FORK_SETTINGS_WS_METHODS.getThread]({ threadId: PLAIN_THREAD }),
           {},
+        );
+        assert.deepEqual(
+          takeReads(),
+          { records: [{ fields: [] }], limbase: [] },
+          "a thread off Limbase reads only its own row",
         );
         const view = (yield* rpc[FORK_SETTINGS_WS_METHODS.getThread]({ threadId: ON_LIMBASE }))
           .limbaseCompaction;
@@ -168,6 +208,11 @@ it.layer(Layer.mergeAll(NodeServices.layer, SqlitePersistence.layerMemory))(
           profile: "standard",
           applied: { trigger: 700_000, target: 100_000 },
         });
+        assert.deepEqual(
+          takeReads().records,
+          [{ fields: [] }, { fields: ["providerThreads"] }],
+          "a model the catalog knows reads no provider turns",
+        );
         assert.deepEqual(
           yield* rpc[FORK_SETTINGS_WS_METHODS.getInstance]({ instanceId: PLAIN }),
           {},
@@ -182,9 +227,62 @@ it.layer(Layer.mergeAll(NodeServices.layer, SqlitePersistence.layerMemory))(
           rpc[FORK_SETTINGS_WS_METHODS.getThread]({ threadId }).pipe(
             Effect.map((view) => view.limbaseCompaction?.contextWindow),
           );
+        takeReads();
         assert.equal(yield* windowOf(WIDE), 1_000_000);
+        assert.deepEqual(
+          takeReads().records,
+          [
+            { fields: [] },
+            { fields: ["providerThreads"] },
+            {
+              fields: ["providerTurns"],
+              filter: {
+                providerTurnThreadIds: [`provider-thread:${WIDE}`],
+                latestProviderTurnUsageOnly: true,
+              },
+            },
+          ],
+          "a model outside the catalog reads only the latest provider turn",
+        );
         assert.isNull(yield* windowOf(SWITCHED), "a turn on another model gives no window");
       }),
+    );
+
+    it.effect(
+      "reads the policy Limbase holds when the card first shows a thread or a new model, and not at a turn that changes neither",
+      () =>
+        Effect.gen(function* () {
+          const rpc = yield* handlers;
+          const view = (shownModel?: string) =>
+            rpc[FORK_SETTINGS_WS_METHODS.getThread]({
+              threadId: ON_LIMBASE,
+              ...(shownModel === undefined ? {} : { shownModel }),
+            }).pipe(Effect.map((settings) => settings.limbaseCompaction?.applied));
+          limbase.held.set("th_rpc", { trigger: 700_000, target: 100_000 });
+          takeReads();
+          assert.deepEqual(yield* view(), { trigger: 700_000, target: 100_000 });
+          assert.deepEqual(takeReads().limbase, ["th_rpc"], "a first view reads Limbase");
+
+          limbase.held.set("th_rpc", { trigger: 490_000, target: 140_000 });
+          assert.deepEqual(yield* view("claude-sonnet-4-6"), { trigger: 700_000, target: 100_000 });
+          assert.deepEqual(takeReads().limbase, [], "a refresh on the same model reads nothing");
+
+          assert.deepEqual(yield* view("claude-haiku-5-5"), { trigger: 490_000, target: 140_000 });
+          assert.deepEqual(takeReads().limbase, ["th_rpc"], "a view of a new model reads Limbase");
+
+          const saved = yield* rpc[FORK_SETTINGS_WS_METHODS.setThread]({
+            threadId: ON_LIMBASE,
+            settings: { limbaseCompaction: { downTo: { tokens: 60_000 } } },
+          });
+          assert.deepEqual(saved.limbaseCompaction?.applied, { trigger: 700_000, target: 60_000 });
+          assert.deepEqual(
+            takeReads().limbase,
+            ["th_rpc"],
+            "a save reads Limbase once, to compare before it sets",
+          );
+          assert.deepEqual(yield* view("claude-sonnet-4-6"), { trigger: 700_000, target: 60_000 });
+          assert.deepEqual(takeReads().limbase, [], "the card knows what T3 set");
+        }),
     );
 
     it.effect(

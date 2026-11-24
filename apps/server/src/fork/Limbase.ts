@@ -194,6 +194,8 @@ const isExactly = (held: HeldPolicy | undefined, policy: LimbaseCompactPolicy) =
   held?.trigger === policy.trigger && held.target === policy.target && held.cold === undefined;
 
 const seenPolicies = new Map<string, LimbaseCompactPolicy>();
+/** What each Limbase thread holds as T3 last read or set it, hand edits included, for the card. */
+const heldPolicies = new Map<string, LimbaseCompactPolicy | null>();
 
 const seenKey = (home: string, limbaseThreadId: string) => `${home}\n${limbaseThreadId}`;
 
@@ -208,6 +210,7 @@ const setPolicy = (home: string, limbaseThreadId: string, policy: LimbaseCompact
             await connection.call((c) => c.SetCompactPolicy({ threadId, compactPolicy: policy }));
           }
           seenPolicies.set(seenKey(home, limbaseThreadId), policy);
+          heldPolicies.set(seenKey(home, limbaseThreadId), policy);
         },
         catch: (cause) =>
           new LimbaseThreadError({
@@ -255,9 +258,12 @@ export const applyTurnPolicy = Effect.fn("Limbase.applyTurnPolicy")(function* (
 });
 
 const heldPolicy = Effect.fn("Limbase.heldPolicy")(
-  function* (settings: ClaudeSettings | undefined, limbaseThreadId: string) {
+  function* (settings: ClaudeSettings | undefined, limbaseThreadId: string, read: boolean) {
     const home = yield* homeOf(settings);
     if (home === undefined) return null;
+    const key = seenKey(home, limbaseThreadId);
+    const known = heldPolicies.get(key);
+    if (!read && known !== undefined) return known;
     const connection = yield* connect(home);
     const threadId = limbaseThreadId as LimbaseThreadId;
     const held = yield* Effect.tryPromise({
@@ -265,7 +271,9 @@ const heldPolicy = Effect.fn("Limbase.heldPolicy")(
       catch: (cause) =>
         new LimbaseThreadError({ detail: "the service did not read the thread", cause }),
     }).pipe(Effect.map((thread) => thread.compactPolicy));
-    return held === undefined ? null : policyOf(held);
+    const policy = held === undefined ? null : policyOf(held);
+    heldPolicies.set(key, policy);
+    return policy;
   },
   Effect.orElseSucceed(() => null),
 );
@@ -277,6 +285,8 @@ export const threadCompactionView = Effect.fn("Limbase.threadCompactionView")(fu
   readonly instance: LimbaseCompaction;
   readonly model: string;
   readonly contextWindow: number | null;
+  /** Reads Limbase even when T3 knows what it holds, to show a hand edit. */
+  readonly readHeld: boolean;
 }) {
   return {
     value: input.value,
@@ -289,7 +299,7 @@ export const threadCompactionView = Effect.fn("Limbase.threadCompactionView")(fu
     applied:
       input.limbaseThreadId === undefined
         ? null
-        : yield* heldPolicy(input.settings, input.limbaseThreadId),
+        : yield* heldPolicy(input.settings, input.limbaseThreadId, input.readHeld),
   };
 });
 

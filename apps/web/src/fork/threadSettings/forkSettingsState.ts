@@ -1,7 +1,14 @@
-import { RegistryContext } from "@effect/atom-react";
+import { RegistryContext, useAtomValue } from "@effect/atom-react";
 import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { request } from "@t3tools/client-runtime/rpc";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { FORK_SETTINGS_WS_METHODS } from "@t3tools/contracts";
+import {
+  type EnvironmentId,
+  FORK_SETTINGS_WS_METHODS,
+  type ProviderInstanceId,
+  type ServerSettings,
+  type ThreadId,
+} from "@t3tools/contracts";
 import {
   type AtomCommandResult,
   createEnvironmentRpcCommand,
@@ -9,10 +16,12 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
+import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { useContext } from "react";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
+import { serverEnvironment } from "../../state/server";
 import { environmentThreadShells } from "../../state/threads";
 import { waitForAtomValue } from "../../state/waitForAtomValue";
 
@@ -39,6 +48,13 @@ export const threadSettingsQuery = createEnvironmentRpcQueryAtomFamily(connectio
     );
     return Atom.make((get) => threadSettingsSignal(get(shell)));
   },
+  execute: (input, _emit, previous) => {
+    const shownModel = Option.getOrUndefined(previous)?.limbaseCompaction?.model;
+    return request(
+      FORK_SETTINGS_WS_METHODS.getThread,
+      typeof shownModel === "string" ? { ...input, shownModel } : input,
+    );
+  },
 });
 
 export const setThreadSettings = createEnvironmentRpcCommand(connectionAtomRuntime, {
@@ -57,6 +73,30 @@ export const setInstanceSettings = createEnvironmentRpcCommand(connectionAtomRun
   label: "environment-data:fork-settings:set-instance",
   tag: FORK_SETTINGS_WS_METHODS.setInstance,
 });
+
+export const limbaseHomeOf = (config: unknown) =>
+  typeof config === "object" && config !== null && "limbaseHome" in config
+    ? String(config.limbaseHome).trim()
+    : "";
+
+export const hasLimbaseHome = (
+  settings: Pick<ServerSettings, "providerInstances"> | undefined,
+  instanceId: ProviderInstanceId | null,
+) => {
+  const entry = instanceId === null ? undefined : settings?.providerInstances[instanceId];
+  return entry?.driver === "claudeAgent" && limbaseHomeOf(entry.config) !== "";
+};
+
+const instanceOf = (shell: EnvironmentThreadShell | null) => shell?.providerInstanceId ?? null;
+
+export function useThreadOnLimbase(environmentId: EnvironmentId, threadId: ThreadId) {
+  const instanceId = useAtomValue(
+    environmentThreadShells.threadShellAtom(scopeThreadRef(environmentId, threadId)),
+    instanceOf,
+  );
+  const config = useAtomValue(serverEnvironment.configValueAtom(environmentId));
+  return hasLimbaseHome(config?.settings, instanceId);
+}
 
 /** Resolves true once the query holds a fresh answer, false when it failed or timed out. */
 export function useRefreshAndWait(atom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>) {

@@ -11,7 +11,7 @@ import {
 import { ThreadDetailsSection } from "../../components/chat/ThreadDetailsSection";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { setThreadSettings, threadSettingsQuery } from "./forkSettingsState";
+import { setThreadSettings, threadSettingsQuery, useThreadOnLimbase } from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import { threadBlockingMessages, threadNotices, threadPlaceholders } from "./limbaseCompaction";
 import { useAcknowledgedWrites, type WriteStatus } from "./useAcknowledgedWrites";
@@ -20,6 +20,8 @@ export function ThreadSettingsCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  const onLimbase = useThreadOnLimbase(props.environmentId, props.threadId);
+  if (!onLimbase) return null;
   return (
     <OwnedThreadSettingsCard
       key={`${props.environmentId}\n${props.threadId}`}

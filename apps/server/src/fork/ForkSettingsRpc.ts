@@ -10,6 +10,7 @@ import {
   patchLimbaseCompaction,
   ProviderDriverKind,
   type ProviderInstanceId,
+  type ProviderThreadId,
   type ThreadId,
   type ThreadSettingsView,
 } from "@t3tools/contracts";
@@ -18,6 +19,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 
 import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
+import type {
+  ProjectionRecordField,
+  ProjectionRecordFilter,
+} from "../orchestration-v2/ProjectionStore.ts";
 import {
   resolveClaudeCatalogContextWindowTokens,
   resolveClaudeModelCatalog,
@@ -49,41 +54,67 @@ const handlersFor = Effect.fnUntraced(function* (
     return resolveClaudeCatalogContextWindowTokens(catalog, modelSelection) ?? null;
   });
 
-  const limbaseThread = Effect.fn("ForkSettings.limbaseThread")(function* (threadId: ThreadId) {
-    const { thread, providerThreads, providerTurns } = yield* orchestrator
-      .getThreadRecords(threadId, ["providerThreads", "providerTurns"], { turnItemTypes: [] })
+  const records = <K extends ProjectionRecordField>(
+    threadId: ThreadId,
+    fields: ReadonlyArray<K>,
+    filter?: ProjectionRecordFilter,
+  ) =>
+    orchestrator
+      .getThreadRecords(threadId, fields, filter)
       .pipe(Effect.mapError(() => refusal(`No thread ${threadId}.`)));
-    const active = providerThreads.find((row) => row.id === thread.activeProviderThreadId);
-    const model = stripClaudeContextWindowSuffix(thread.modelSelection.model);
-    const reportedWindow = providerTurns.findLast(
-      (turn) =>
-        turn.providerThreadId === active?.id &&
-        turn.model !== undefined &&
-        stripClaudeContextWindowSuffix(turn.model) === model &&
-        (turn.tokenUsage?.maxTokens ?? 0) > 0,
-    )?.tokenUsage?.maxTokens;
+
+  const reportedWindow = Effect.fn("ForkSettings.reportedWindow")(function* (
+    threadId: ThreadId,
+    providerThreadId: ProviderThreadId,
+    model: string,
+  ) {
+    const { providerTurns } = yield* records(threadId, ["providerTurns"], {
+      providerTurnThreadIds: [providerThreadId],
+      latestProviderTurnUsageOnly: true,
+    });
+    const [turn] = providerTurns;
+    const maxTokens = turn?.tokenUsage?.maxTokens ?? 0;
+    return turn?.model !== undefined &&
+      stripClaudeContextWindowSuffix(turn.model) === stripClaudeContextWindowSuffix(model) &&
+      maxTokens > 0
+      ? maxTokens
+      : null;
+  });
+
+  const limbaseThread = Effect.fn("ForkSettings.limbaseThread")(function* (threadId: ThreadId) {
+    const { thread } = yield* records(threadId, []);
     const claude = claudeSettingsOf(yield* readSettings, thread.providerInstanceId);
-    const limbaseThreadId = active?.nativeMetadata?.limbaseThreadId;
-    if (limbaseThreadId === undefined && !hasLimbaseHome(claude)) return undefined;
+    if (!hasLimbaseHome(claude)) return undefined;
+    const activeId = thread.activeProviderThreadId;
+    const active =
+      activeId === null
+        ? undefined
+        : (yield* records(threadId, ["providerThreads"], {
+            providerThreadIds: [activeId],
+          })).providerThreads[0];
     const instance =
       (yield* store.read({ scope: "instance", id: thread.providerInstanceId })).limbaseCompaction ??
       {};
+    const contextWindow =
+      (yield* catalogWindow(claude, thread.modelSelection)) ??
+      (activeId === null
+        ? null
+        : yield* reportedWindow(threadId, activeId, thread.modelSelection.model)) ??
+      active?.contextUsage?.maxTokens ??
+      null;
     return {
       claude,
-      limbaseThreadId,
+      limbaseThreadId: active?.nativeMetadata?.limbaseThreadId,
       instance,
       stored: (yield* store.read({ scope: "thread", id: threadId })).limbaseCompaction ?? {},
       model: thread.modelSelection.model,
-      contextWindow:
-        (yield* catalogWindow(claude, thread.modelSelection)) ??
-        reportedWindow ??
-        active?.contextUsage?.maxTokens ??
-        null,
+      contextWindow,
     };
   });
 
   const threadView = Effect.fn("ForkSettings.threadView")(function* (
     threadId: ThreadId,
+    readHeld: (model: string) => boolean,
   ): Effect.fn.Return<ThreadSettingsView, ForkSettingsError> {
     const limbase = yield* limbaseThread(threadId);
     if (limbase === undefined) return {};
@@ -95,6 +126,7 @@ const handlersFor = Effect.fnUntraced(function* (
         instance: limbase.instance,
         model: limbase.model,
         contextWindow: limbase.contextWindow,
+        readHeld: readHeld(limbase.model),
       }),
     };
   });
@@ -164,8 +196,10 @@ const handlersFor = Effect.fnUntraced(function* (
   });
 
   return {
-    [FORK_SETTINGS_WS_METHODS.getThread]: (input: { readonly threadId: ThreadId }) =>
-      threadView(input.threadId),
+    [FORK_SETTINGS_WS_METHODS.getThread]: (input: {
+      readonly threadId: ThreadId;
+      readonly shownModel?: string;
+    }) => threadView(input.threadId, (model) => model !== input.shownModel),
     [FORK_SETTINGS_WS_METHODS.setThread]: Effect.fn("ForkSettings.setThread")(function* (input: {
       readonly threadId: ThreadId;
       readonly settings: ForkSettingsPatch;
@@ -177,7 +211,7 @@ const handlersFor = Effect.fnUntraced(function* (
           { limbaseCompaction: yield* applyThreadCompaction(input.threadId, limbaseCompaction) },
         );
       }
-      return yield* threadView(input.threadId);
+      return yield* threadView(input.threadId, () => false);
     }),
     [FORK_SETTINGS_WS_METHODS.getInstance]: (input: { readonly instanceId: ProviderInstanceId }) =>
       instanceView(input.instanceId),
