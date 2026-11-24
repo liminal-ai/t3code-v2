@@ -55,6 +55,8 @@ vi.mock(import("~/state/use-atom-command"), async () => {
   };
 });
 
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { threadSettingsSignal } from "./forkSettingsState";
 import { LimbaseInstanceCompaction } from "./LimbaseInstanceCompaction";
 import { ThreadSettingsCard } from "./ThreadSettingsCard";
 
@@ -193,4 +195,33 @@ it("edits the instance's compaction only on an instance with a Limbase home", as
   await userEvent.fill(compactAt, "");
   await userEvent.keyboard("{Enter}");
   expect(savedCompaction()).toEqual([{}]);
+});
+
+it("refreshes the card when its thread switches model or ends a turn, not when it is renamed", () => {
+  const shell = (overrides: Partial<EnvironmentThreadShell> = {}) =>
+    ({
+      title: "Thread",
+      providerInstanceId: ProviderInstanceId.make("claudeLimbase"),
+      modelSelection: { instanceId: ProviderInstanceId.make("claudeLimbase"), model: "a" },
+      activeProviderThreadId: null,
+      latestRun: null,
+      ...overrides,
+    }) as EnvironmentThreadShell;
+  const run = (ended: boolean) =>
+    ({
+      runId: "run-1",
+      status: ended ? "completed" : "running",
+      completedAt: ended ? "2026-11-24T00:00:00.000Z" : null,
+    }) as never;
+  const before = threadSettingsSignal(shell({ latestRun: run(false) }));
+  expect(threadSettingsSignal(shell({ latestRun: run(false), title: "Renamed" }))).toBe(before);
+  expect(threadSettingsSignal(shell({ latestRun: run(true) }))).not.toBe(before);
+  expect(
+    threadSettingsSignal(
+      shell({
+        latestRun: run(false),
+        modelSelection: { instanceId: ProviderInstanceId.make("claudeLimbase"), model: "b" },
+      }),
+    ),
+  ).not.toBe(before);
 });
