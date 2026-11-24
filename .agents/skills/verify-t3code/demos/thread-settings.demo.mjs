@@ -152,13 +152,16 @@ export default {
     },
     {
       id: "guard",
-      say: "A value the guards refuse never leaves the card.",
+      say: "A value the guards refuse never leaves the card. Its alert goes once the field is back to its saved value.",
       caption: "Guards refuse bad values",
       ready: DOWN_TO,
       highlight: [DOWN_TO],
       steps: [
         { atMs: 200, action: "click", target: DOWN_TO },
         ...typeKeys(700, ["8", "0", "0", "k", "Enter"]),
+        { atMs: 3000, action: "click", target: DOWN_TO },
+        { atMs: 3300, action: "press", key: "Control+A" },
+        ...typeKeys(3600, ["Backspace", "Enter"]),
       ],
       tailMs: 1800,
     },
