@@ -2535,6 +2535,9 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
         // Once a turn opens Codex may answer without its servers, so only a thread still
         // starting counts its MCP servers.
         const appThreadByNativeThread = new Map<string, ThreadId>();
+        // Codex keeps a thread's config only while the thread stays loaded, so a resume that loads
+        // it again for MCP sends the TMPDIR it was last loaded with.
+        const projectTmpDirByNativeThread = new Map<string, string | undefined>();
         const startingMcpServers = new Map<string, Set<string>>();
         const resumingThreads = new Set<ThreadId>();
         let reportedStartupPhase:
@@ -8179,6 +8182,7 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       threadId: providerThread.appThreadId,
                       mcpSession,
                       stdioMcpServers,
+                      projectTmpDir: projectTmpDirByNativeThread.get(threadId),
                     }),
                   }),
                 ),
@@ -8372,6 +8376,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               ),
               Effect.tap((response) => {
                 appThreadByNativeThread.set(response.thread.id, threadInput.threadId);
+                projectTmpDirByNativeThread.set(
+                  response.thread.id,
+                  threadInput.runtimePolicy.projectTmpDir,
+                );
                 return reportStartupPhase();
               }),
               Effect.map((response): OrchestrationV2ProviderThread =>
@@ -8400,6 +8408,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
               const nativeThreadId = yield* getNativeThreadId(threadInput.providerThread);
               const appThreadId = threadInput.threadId ?? threadInput.providerThread.appThreadId;
               if (appThreadId != null) appThreadByNativeThread.set(nativeThreadId, appThreadId);
+              projectTmpDirByNativeThread.set(
+                nativeThreadId,
+                threadInput.runtimePolicy?.projectTmpDir,
+              );
               const resume = resumeNativeThread(nativeThreadId, {
                 excludeTurns: true,
                 ...codexThreadRuntimeParams({
@@ -9498,6 +9510,10 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
                       cause,
                     }),
                 ),
+              );
+              projectTmpDirByNativeThread.set(
+                response.thread.id,
+                threadInput.runtimePolicy?.projectTmpDir,
               );
               let forkedThread = response.thread;
               if (boundary.rollbackTurnCount > 0) {

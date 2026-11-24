@@ -11545,6 +11545,103 @@ describe("CodexAdapterV2 post-settle continuation", () => {
     ),
   );
 
+  it.effect("reloads an unloaded thread for MCP with the TMPDIR it was last loaded with", () =>
+    Effect.gen(function* () {
+      const nativeThreadId = "tmpdir-mcp-thread";
+      const projectA = {
+        ...CODEX_TEST_RUNTIME_POLICY,
+        cwd: "/project-a",
+        projectTmpDir: "/project-a/.pstack/tmp",
+      };
+      const resumeWithTmpDir = (id: number) => ({
+        type: "expect_outbound" as const,
+        label: "thread/resume with project A's TMPDIR",
+        frame: {
+          id,
+          method: "thread/resume",
+          params: {
+            threadId: nativeThreadId,
+            excludeTurns: true,
+            config: {
+              ...CodexAdapterV2.CODEX_THREAD_CONFIG,
+              "shell_environment_policy.set.TMPDIR": projectA.projectTmpDir,
+            },
+          },
+        },
+      });
+      const resumed = (id: number) => ({
+        type: "emit_inbound" as const,
+        label: "thread resumed",
+        frame: { id, result: { thread: { id: nativeThreadId, updatedAt: 1782622450 } } },
+      });
+      const resourceRead = (id: number) => ({
+        type: "expect_outbound" as const,
+        label: "MCP resource read",
+        frame: {
+          id,
+          method: "mcpServer/resource/read",
+          params: { threadId: nativeThreadId, server: "weather", uri: MCP_APP_RESOURCE },
+        },
+      });
+      const transcript = makeCodexReplayTranscript({
+        scenario: "codex-mcp-reload-tmpdir",
+        entries: [
+          ...codexReplayPreamble({
+            nativeThreadId,
+            nativeTurnId: "unused-turn",
+            prompt: "unused-prompt",
+          }).slice(0, 5),
+          resumeWithTmpDir(3),
+          resumed(3),
+          resourceRead(4),
+          {
+            type: "emit_inbound",
+            label: "native thread is unloaded",
+            frame: {
+              id: 4,
+              error: { code: -32600, message: `thread not found: ${nativeThreadId}` },
+            },
+          },
+          resumeWithTmpDir(5),
+          resumed(5),
+          resourceRead(6),
+          {
+            type: "emit_inbound",
+            label: "MCP resource read succeeds",
+            frame: { id: 6, result: { contents: [] } },
+          },
+        ],
+      });
+      const harness = yield* makeCodexReplayHarness(transcript);
+      const providerThread = harness.providerThread;
+
+      yield* harness.runtime.resumeThread({
+        providerThread,
+        modelSelection: CODEX_TEST_MODEL_SELECTION,
+        runtimePolicy: projectA,
+      });
+      const mcpApps = harness.runtime.mcpApps;
+      assert.ok(mcpApps, "Codex runtime should expose MCP apps");
+      const result = yield* mcpApps.readResource({
+        providerThread,
+        server: "weather",
+        uri: MCP_APP_RESOURCE,
+      });
+
+      assert.deepEqual(result, { contents: [] });
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   it.effect("fails honestly when rolling back a legacy Codex thread", () =>
     Effect.gen(function* () {
       const nativeThreadId = "legacy-rollback-thread";
