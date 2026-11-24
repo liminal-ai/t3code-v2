@@ -20,6 +20,20 @@ export function ThreadSettingsCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
+  return (
+    <OwnedThreadSettingsCard
+      key={`${props.environmentId}\n${props.threadId}`}
+      environmentId={props.environmentId}
+      threadId={props.threadId}
+    />
+  );
+}
+
+/** Keyed by its thread, so drafts, alerts and a save in flight never reach another thread. */
+function OwnedThreadSettingsCard(props: {
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+}) {
   const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const save = useAtomCommand(setThreadSettings, { reportFailure: false });
   const { data, status, write } = useAcknowledgedWrites(

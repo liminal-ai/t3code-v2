@@ -38,6 +38,7 @@ export function LimbaseInstanceCompaction(props: {
   if (limbaseHomeOf(props.config) === "") return null;
   return (
     <LimbaseInstanceCompactionRows
+      key={`${props.environmentId}\n${props.instanceId}`}
       environmentId={props.environmentId}
       instanceId={props.instanceId}
     />

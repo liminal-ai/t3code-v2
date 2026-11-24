@@ -347,6 +347,64 @@ it("keeps the saved value and the lock when the refresh fails, retries, and then
   });
 });
 
+it("drops a refused draft and its alert on a move to another thread, and saves only to the thread it was typed on", async () => {
+  reset(limbaseThread());
+  const wide = ownThread("thread");
+  const narrow = ownThread("thread-200k");
+  publish(
+    "thread-200k",
+    limbaseThread({
+      model: "claude-sonnet-4-6",
+      contextWindow: 200_000,
+      hardLimit: 184_000,
+      profile: "standard",
+      applied: { trigger: 140_000, target: 70_000 },
+    }),
+  );
+  await using screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={wide} />,
+  );
+  await userEvent.fill(page.getByLabelText("Compact at"), "2M");
+  await userEvent.keyboard("{Enter}");
+  await expect
+    .element(page.getByRole("alert"))
+    .toHaveTextContent("Compact at (2M) must fit the model's 1M window.");
+
+  await screen.rerender(<ThreadSettingsCard environmentId={environmentId} threadId={narrow} />);
+  await expect.element(page.getByText("claude-sonnet-4-6, 200k window.")).toBeVisible();
+  await expect.element(page.getByLabelText("Compact at")).toHaveValue("");
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+
+  await userEvent.fill(page.getByLabelText("Compact at"), "150k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+  expect(state.saved).toEqual([
+    { owner: "thread-200k", patch: { compactAt: { tokens: 150_000 } } },
+  ]);
+});
+
+it("leaves a save in flight with its thread when the card moves to another", async () => {
+  reset(limbaseThread());
+  const first = ownThread("thread");
+  const second = ownThread("thread-second");
+  publish("thread-second", limbaseThread());
+  const finishReload = holdReloads();
+  await using screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={first} />,
+  );
+  await userEvent.fill(page.getByLabelText("Compact at"), "650k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("status")).toHaveTextContent("Saving…");
+
+  await screen.rerender(<ThreadSettingsCard environmentId={environmentId} threadId={second} />);
+  await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+  await expect.element(page.getByLabelText("Compact at")).not.toHaveAttribute("readonly");
+  await expect.element(page.getByLabelText("Compact at")).toHaveValue("");
+  await finishReload();
+  expect(serverValue("thread")).toEqual({ compactAt: { tokens: 650_000 } });
+  expect(serverValue("thread-second")).toEqual({});
+});
+
 it("clears a field's alert when the field goes back to its saved value", async () => {
   reset(limbaseThread({ value: { compactAt: { tokens: 500_000 } } }));
   await using _screen = await render(
