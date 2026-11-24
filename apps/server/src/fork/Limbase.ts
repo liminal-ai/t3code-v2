@@ -190,43 +190,76 @@ type LimbaseThreadId = Parameters<Parameters<Connection["call"]>[0]>[0] extends 
   ? Id
   : never;
 
-const setPolicy = (
-  connection: Connection,
-  limbaseThreadId: string,
-  policy: LimbaseCompactPolicy,
-) => {
+const samePolicy = (held: LimbaseCompactPolicy | undefined, policy: LimbaseCompactPolicy) =>
+  held?.trigger === policy.trigger && held.target === policy.target;
+
+/** The policy T3 last read or set on each Limbase thread, by home and thread. */
+const seenPolicies = new Map<string, LimbaseCompactPolicy>();
+
+const seenKey = (home: string, limbaseThreadId: string) => `${home}\n${limbaseThreadId}`;
+
+const setPolicy = (home: string, limbaseThreadId: string, policy: LimbaseCompactPolicy) => {
   const threadId = limbaseThreadId as LimbaseThreadId;
-  return Effect.tryPromise({
-    try: async () => {
-      const held = (await connection.call((c) => c.GetThread({ threadId }))).compactPolicy;
-      if (held?.trigger === policy.trigger && held.target === policy.target) return;
-      await connection.call((c) => c.SetCompactPolicy({ threadId, compactPolicy: policy }));
-    },
-    catch: (cause) =>
-      new LimbaseThreadError({
-        detail: `the service refused the compaction policy (${(cause as Error).message})`,
-        cause,
+  return connect(home).pipe(
+    Effect.flatMap((connection) =>
+      Effect.tryPromise({
+        try: async () => {
+          const held = (await connection.call((c) => c.GetThread({ threadId }))).compactPolicy;
+          if (!samePolicy(held, policy)) {
+            await connection.call((c) => c.SetCompactPolicy({ threadId, compactPolicy: policy }));
+          }
+          seenPolicies.set(seenKey(home, limbaseThreadId), policy);
+        },
+        catch: (cause) =>
+          new LimbaseThreadError({
+            detail: `the service refused the compaction policy (${(cause as Error).message})`,
+            cause,
+          }),
       }),
-  });
+    ),
+  );
 };
 
+/** Sets the thread's resolved policy unless it is `known`. A refusal or a failure only logs. */
 const reconcileCompaction = (
-  connection: Connection,
+  home: string,
   limbaseThreadId: string,
   compaction: Compaction,
+  known: LimbaseCompactPolicy | undefined,
 ) =>
   decidePolicy(compaction).pipe(
     Effect.flatMap((decision) =>
-      decision._tag === "Apply"
-        ? setPolicy(connection, limbaseThreadId, decision.policy)
-        : decision._tag === "Refused"
-          ? Effect.logWarning("limbase.compaction-refused", { problems: decision.problems })
-          : Effect.void,
+      decision._tag === "Refused"
+        ? Effect.logWarning("limbase.compaction-refused", { problems: decision.problems })
+        : decision._tag === "AwaitWindow" || samePolicy(known, decision.policy)
+          ? Effect.void
+          : setPolicy(home, limbaseThreadId, decision.policy),
     ),
     Effect.catchCause((cause) =>
       Effect.logWarning("limbase.compaction-not-applied", { limbaseThreadId, cause }),
     ),
   );
+
+/**
+ * Re-resolves a Limbase thread's policy as a turn starts, for the turn's model, so an instance edit
+ * or a model switch reaches a live session. It calls the service only when the policy T3 last saw
+ * the thread hold differs.
+ */
+export const applyTurnPolicy = Effect.fn("Limbase.applyTurnPolicy")(function* (
+  settings: ClaudeSettings | undefined,
+  providerThread: OrchestrationV2ProviderThread,
+  compaction: Compaction | undefined,
+) {
+  const home = yield* homeOf(settings);
+  const limbaseThreadId = providerThread.nativeMetadata?.limbaseThreadId;
+  if (home === undefined || limbaseThreadId === undefined || compaction === undefined) return;
+  yield* reconcileCompaction(
+    home,
+    limbaseThreadId,
+    compaction,
+    seenPolicies.get(seenKey(home, limbaseThreadId)),
+  );
+});
 
 const heldPolicy = Effect.fn("Limbase.heldPolicy")(
   function* (settings: ClaudeSettings | undefined, limbaseThreadId: string) {
@@ -274,7 +307,7 @@ export const applyPolicy = Effect.fn("Limbase.applyPolicy")(function* (
 ) {
   const home = yield* homeOf(settings);
   if (home === undefined) return;
-  yield* setPolicy(yield* connect(home), limbaseThreadId, policy);
+  yield* setPolicy(home, limbaseThreadId, policy);
 });
 
 /**
@@ -400,7 +433,7 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
   const reconcile =
     compaction === undefined
       ? Effect.void
-      : reconcileCompaction(connection, limbaseThreadId, compaction);
+      : reconcileCompaction(home, limbaseThreadId, compaction, undefined);
   let awaitingWindow = compaction !== undefined && compaction.claudeContextWindow() === null;
   if (!awaitingWindow) yield* reconcile;
   const hosted: typeof query = ({ prompt, options }) => {

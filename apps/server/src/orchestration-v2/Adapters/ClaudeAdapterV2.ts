@@ -14135,6 +14135,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       Effect.provideService(Path.Path, path),
                     );
             const querySession = yield* openQuery(turnInput, nativeThreadId, queryPolicy);
+            yield* Limbase.applyTurnPolicy(
+              adapterOptions.settings,
+              turnInput.providerThread,
+              limbaseCompaction(turnInput.threadId, turnInput.modelSelection),
+            );
             yield* applySessionTitle(querySession.query, nativeThreadId, turnInput.appThread.title);
             const autoCompactWindow = yield* resolveAutoCompactWindow(
               querySession.settingsCwd,

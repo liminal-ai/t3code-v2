@@ -36,6 +36,8 @@ import {
   CheckpointId,
   ClaudeSettings,
   EnvironmentId,
+  type LimbaseCompaction,
+  type LimbaseCompactPolicy,
   MessageId,
   type ModelSelection,
   NodeId,
@@ -122,6 +124,7 @@ import {
   makeProviderFailure,
   PROVIDER_RETRY_BUDGET_MS,
 } from "@t3tools/provider-core/server/failure";
+import * as ForkSettings from "../../fork/ForkSettings.ts";
 import * as ClaudeAdapterV2 from "./ClaudeAdapterV2.ts";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderInstallationGate from "../../provider/ProviderInstallationGate.ts";
@@ -143,6 +146,38 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => ({
   resolveSettings: vi.fn(),
 }));
 
+const limbasePolicies = new Map<string, Array<LimbaseCompactPolicy>>();
+
+vi.mock("@limbase/host-agent-sdk", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@limbase/host-agent-sdk")>()),
+  connectLimbase: async () => ({
+    call: async (rpc: (client: unknown) => unknown) =>
+      rpc({
+        CreateThread: (input: { compactPolicy?: LimbaseCompactPolicy }) => {
+          const threadId = `th_${limbasePolicies.size + 1}`;
+          limbasePolicies.set(
+            threadId,
+            input.compactPolicy === undefined ? [] : [input.compactPolicy],
+          );
+          return { threadId, createdAt: 0 };
+        },
+        GetThread: ({ threadId }: { threadId: string }) => ({
+          threadId,
+          createdAt: 0,
+          compactPolicy: limbasePolicies.get(threadId)?.at(-1),
+        }),
+        SetCompactPolicy: (input: { threadId: string; compactPolicy: LimbaseCompactPolicy }) => {
+          limbasePolicies.set(input.threadId, [
+            ...(limbasePolicies.get(input.threadId) ?? []),
+            input.compactPolicy,
+          ]);
+          return { threadId: input.threadId, createdAt: 0, compactPolicy: input.compactPolicy };
+        },
+      }),
+    close: async () => {},
+  }),
+}));
+
 beforeEach(() => {
   vi.mocked(ClaudeSdk.resolveSettings).mockReset().mockResolvedValue({
     effective: {},
@@ -151,6 +186,7 @@ beforeEach(() => {
   });
 });
 
+const decodeClaudeSettings = Schema.decodeSync(ClaudeSettings);
 const DEFAULT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({});
 const AUTO_COMPACT_CLAUDE_SETTINGS = Schema.decodeSync(ClaudeSettings)({
   autoCompactWindow: "300000",
@@ -7733,6 +7769,80 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.take(harness.terminalReceipts);
         yield* harness.runtime.startTurn(turn(5, "claude-haiku-6"));
         assert.deepEqual(openedPins(), [undefined, undefined]);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+            NodeServices.layer,
+            NodeCrypto.layer,
+          ),
+        ),
+      ),
+    ),
+  );
+
+  it.effect("re-resolves a Limbase thread's compaction at each turn of its live session", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const fileSystem = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const limbaseHome = yield* fileSystem.makeTempDirectoryScoped({
+          prefix: "t3-claude-limbase-",
+        });
+        yield* fileSystem.makeDirectory(path.join(limbaseHome, "config"));
+        yield* fileSystem.writeFileString(
+          path.join(limbaseHome, "config", "membase.json"),
+          JSON.stringify({ socketPath: path.join(limbaseHome, "limbase.sock") }),
+        );
+        let instance: LimbaseCompaction = {
+          compactAt: { tokens: 700_000 },
+          downTo: { tokens: 100_000 },
+        };
+        const harness = yield* makeWakeHarnessWithOptions({
+          settings: decodeClaudeSettings({ limbaseHome }),
+        }).pipe(
+          Effect.provideService(ForkSettings.ForkSettingsStore, {
+            read: (owner) =>
+              Effect.succeed(owner.scope === "instance" ? { limbaseCompaction: instance } : {}),
+            write: () => Effect.void,
+          }),
+        );
+        const limbaseThreadId = harness.providerThread.nativeMetadata?.limbaseThreadId ?? "";
+        const now = yield* DateTime.now;
+        const turn = Effect.fnUntraced(function* (ordinal: number, model: string) {
+          yield* harness.runtime.startTurn(
+            makeClaudeTestTurnInput({
+              threadId: harness.threadId,
+              providerThread: harness.providerThread,
+              now,
+              attemptId: RunAttemptId.make(`attempt-limbase-policy:${ordinal}`),
+              text: `Request ${ordinal}`,
+              attachments: [],
+              providerTurnOrdinal: ordinal,
+              modelSelection: { instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID, model },
+            }),
+          );
+          yield* harness.offerAndWait(
+            makeResultFrame({
+              uuid: `00000000-0000-4000-8000-00000000c00${ordinal}`,
+              result: "Done.",
+            }),
+          );
+          yield* Queue.take(harness.terminalReceipts);
+          return limbasePolicies.get(limbaseThreadId)?.at(-1);
+        });
+
+        assert.deepEqual(yield* turn(1, "claude-opus-4-6"), { trigger: 700_000, target: 100_000 });
+        instance = { compactAt: { percent: 60 }, downTo: { tokens: 100_000 } };
+        assert.deepEqual(yield* turn(2, "claude-opus-4-6"), { trigger: 600_000, target: 100_000 });
+        assert.deepEqual(yield* turn(3, "claude-sonnet-4-6"), {
+          trigger: 120_000,
+          target: 100_000,
+        });
+        assert.lengthOf(harness.processQueues, 1);
+        assert.deepEqual(harness.liveSelectionChanges[0], { model: "claude-sonnet-4-6" });
+        assert.lengthOf(limbasePolicies.get(limbaseThreadId) ?? [], 3);
       }).pipe(
         Effect.provide(
           Layer.mergeAll(

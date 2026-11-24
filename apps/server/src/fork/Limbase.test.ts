@@ -31,6 +31,7 @@ const policiesSet: Array<{
   readonly trigger: number;
   readonly target: number;
 }> = [];
+const threadsRead: string[] = [];
 /** The host entry of each rollback the fake service made. */
 const rolledBack: unknown[] = [];
 
@@ -70,11 +71,14 @@ vi.mock("@limbase/host-agent-sdk", async (original) => {
             created.push(payload);
             return { threadId: `th_${created.length}`, createdAt: 0 };
           },
-          GetThread: ({ threadId }: { threadId: string }) => ({
-            threadId,
-            createdAt: 0,
-            ...(held.has(threadId) ? { compactPolicy: held.get(threadId) } : {}),
-          }),
+          GetThread: ({ threadId }: { threadId: string }) => {
+            threadsRead.push(threadId);
+            return {
+              threadId,
+              createdAt: 0,
+              ...(held.has(threadId) ? { compactPolicy: held.get(threadId) } : {}),
+            };
+          },
           SetCompactPolicy: ({
             threadId,
             compactPolicy,
@@ -633,6 +637,45 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     }),
   );
 
+  it.effect("sets a live session's policy at a turn, and calls Limbase only when it changed", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      const thread = providerThread({ limbaseThreadId: "th_turns" });
+      const turn = (resolveFrom: Limbase.Compaction) =>
+        Limbase.applyTurnPolicy(settings, thread, resolveFrom);
+      const seeded = { instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS };
+      held.set("th_turns", { trigger: 700_000, target: 100_000 });
+      const reads = () => threadsRead.filter((threadId) => threadId === "th_turns").length;
+
+      yield* turn(compaction(seeded));
+      yield* turn(compaction(seeded));
+      assert.equal(reads(), 1, "only the first turn T3 sees reads Limbase");
+      assert.deepEqual(setsOn("th_turns"), []);
+
+      yield* turn(
+        compaction({ instance: { compactAt: { percent: 60 }, downTo: { tokens: 100_000 } } }),
+      );
+      assert.deepEqual(setsOn("th_turns"), [{ trigger: 600_000, target: 100_000 }]);
+
+      yield* Limbase.applyPolicy(settings, "th_turns", { trigger: 600_000, target: 150_000 });
+      const readsAfterSave = reads();
+      yield* turn(
+        compaction({
+          instance: { compactAt: { percent: 60 } },
+          thread: { downTo: { tokens: 150_000 } },
+        }),
+      );
+      assert.equal(reads(), readsAfterSave, "a turn after a thread's save has nothing to send");
+
+      yield* turn(compaction({ ...seeded, contextWindow: () => null }));
+      assert.equal(reads(), readsAfterSave, "a turn with an unknown window waits");
+      assert.deepEqual(setsOn("th_turns"), [
+        { trigger: 600_000, target: 100_000 },
+        { trigger: 600_000, target: 150_000 },
+      ]);
+    }),
+  );
+
   it.effect(
     "leaves the policy Limbase holds when a guard refuses the settings or they cannot be read",
     () =>
@@ -649,16 +692,23 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
             );
             return yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
           });
-        const refused = yield* open(
-          compaction({
-            instance: { compactAt: { tokens: 140_000 } },
-            thread: { downTo: { tokens: 150_000 } },
-          }),
-        );
-        const unreadable = yield* open({
+        const refusedSettings = compaction({
+          instance: { compactAt: { tokens: 140_000 } },
+          thread: { downTo: { tokens: 150_000 } },
+        });
+        const unreadableSettings = {
           ...compaction(),
           settings: Effect.fail(new ForkSettingsError({ message: "the store is down" })),
-        });
+        };
+        const refused = yield* open(refusedSettings);
+        const unreadable = yield* open(unreadableSettings);
+        for (const resolveFrom of [refusedSettings, unreadableSettings]) {
+          yield* Limbase.applyTurnPolicy(
+            settings,
+            providerThread({ limbaseThreadId: "th_kept" }),
+            resolveFrom,
+          );
+        }
         assert.lengthOf(refused, 1);
         assert.lengthOf(unreadable, 1);
         assert.deepEqual(setsOn("th_kept"), []);
