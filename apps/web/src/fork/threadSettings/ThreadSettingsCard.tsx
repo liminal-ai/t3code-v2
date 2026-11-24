@@ -31,7 +31,6 @@ export function ThreadSettingsCard(props: {
   );
 }
 
-/** Keyed by its thread, so drafts, alerts and a save in flight never reach another thread. */
 function OwnedThreadSettingsCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;

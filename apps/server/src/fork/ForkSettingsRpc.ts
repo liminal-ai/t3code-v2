@@ -114,7 +114,7 @@ const handlersFor = Effect.fnUntraced(function* (
 
   const threadView = Effect.fn("ForkSettings.threadView")(function* (
     threadId: ThreadId,
-    readHeld: (model: string) => boolean,
+    rereadHeld: (model: string) => boolean,
   ): Effect.fn.Return<ThreadSettingsView, ForkSettingsError> {
     const limbase = yield* limbaseThread(threadId);
     if (limbase === undefined) return {};
@@ -126,7 +126,7 @@ const handlersFor = Effect.fnUntraced(function* (
         instance: limbase.instance,
         model: limbase.model,
         contextWindow: limbase.contextWindow,
-        readHeld: readHeld(limbase.model),
+        rereadHeld: rereadHeld(limbase.model),
       }),
     };
   });

@@ -10,10 +10,6 @@ const REFRESH_RETRY_MS = 2_000;
 
 export type WriteStatus = "saving" | "retrying" | null;
 
-/**
- * Shows the view the server acknowledged a save with until the query has a fresh one, so an edit
- * never builds on what the card showed before the save. The card stays locked until then.
- */
 export function useAcknowledgedWrites<View>(
   atom: Atom.Atom<AsyncResult.AsyncResult<View, unknown>>,
   save: (patch: ForkSettingsPatch) => Promise<AtomCommandResult<View, unknown>>,
@@ -39,7 +35,7 @@ export function useAcknowledgedWrites<View>(
       return refusalOf(result);
     }
     setAcknowledged(result.value);
-    while (!(await refreshAndWait()) && mounted.current) {
+    while ((await refreshAndWait()) === "stale" && mounted.current) {
       setStatus("retrying");
       await new Promise((resolve) => setTimeout(resolve, REFRESH_RETRY_MS));
     }

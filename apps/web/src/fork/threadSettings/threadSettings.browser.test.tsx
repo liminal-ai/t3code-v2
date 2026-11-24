@@ -16,14 +16,13 @@ import { render } from "../../../test/render";
 type View = ThreadSettingsView;
 
 const state = vi.hoisted(() => ({
-  /** What the server holds, by owner; a reload publishes it to the card. */
-  server: new Map<string, unknown>(),
-  published: new Map<string, unknown>(),
+  serverHolds: new Map<string, unknown>(),
+  cardSees: new Map<string, unknown>(),
   owners: new Map<unknown, string>(),
   queried: [] as string[],
   saved: [] as Array<{ owner: string; patch: unknown }>,
   refuse: null as string | null,
-  reload: async (): Promise<boolean> => true,
+  reload: async (): Promise<"fresh" | "stale"> => "fresh",
   listeners: new Set<() => void>(),
   limbaseHomes: new Set<string>(["claudeLimbase"]),
 }));
@@ -33,15 +32,15 @@ const notify = () => {
 };
 
 const publish = (owner: string, view: unknown) => {
-  state.server.set(owner, view);
-  state.published.set(owner, view);
+  state.serverHolds.set(owner, view);
+  state.cardSees.set(owner, view);
   notify();
 };
 
 const reloadAll = async () => {
-  for (const [owner, view] of state.server) state.published.set(owner, view);
+  for (const [owner, view] of state.serverHolds) state.cardSees.set(owner, view);
   notify();
-  return true;
+  return "fresh" as const;
 };
 
 vi.mock(import("~/state/query"), async (importOriginal) => ({
@@ -54,7 +53,7 @@ vi.mock(import("~/state/query"), async (importOriginal) => ({
         state.listeners.add(listener);
         return () => state.listeners.delete(listener);
       },
-      () => state.published.get(owner) ?? null,
+      () => state.cardSees.get(owner) ?? null,
     );
     return { data, refresh: () => {} };
   }) as never,
@@ -79,7 +78,7 @@ vi.mock(import("~/state/use-atom-command"), async () => {
         if (state.refuse !== null) {
           return AsyncResult.failure(Cause.fail(new ForkSettingsError({ message: state.refuse })));
         }
-        const current = state.server.get(owner) as {
+        const current = state.serverHolds.get(owner) as {
           limbaseCompaction: { value: Record<string, unknown> };
         };
         const next = {
@@ -91,7 +90,7 @@ vi.mock(import("~/state/use-atom-command"), async () => {
             ),
           },
         };
-        state.server.set(owner, next);
+        state.serverHolds.set(owner, next);
         return AsyncResult.success(next);
       }) as never,
   };
@@ -184,8 +183,8 @@ const savedCompaction = (owner = "thread") =>
   state.saved.filter((save) => save.owner === owner).map(({ patch }) => patch);
 
 const reset = (view: View, owner = "thread") => {
-  state.server.clear();
-  state.published.clear();
+  state.serverHolds.clear();
+  state.cardSees.clear();
   state.queried = [];
   state.saved = [];
   state.refuse = null;
@@ -194,11 +193,10 @@ const reset = (view: View, owner = "thread") => {
   publish(owner, view);
 };
 
-/** Holds each reload until the test releases it, oldest first. */
 const holdReloads = () => {
   const held: Array<() => void> = [];
   state.reload = () =>
-    new Promise<boolean>((resolve) => {
+    new Promise<"fresh" | "stale">((resolve) => {
       held.push(() => resolve(reloadAll()));
     });
   return async () => {
@@ -208,7 +206,7 @@ const holdReloads = () => {
 };
 
 const serverValue = (owner = "thread") =>
-  (state.server.get(owner) as View | undefined)?.limbaseCompaction?.value;
+  (state.serverHolds.get(owner) as View | undefined)?.limbaseCompaction?.value;
 
 it("asks for nothing and shows nothing on a thread whose instance has no Limbase home", async () => {
   reset({}, "plain-thread");
@@ -364,7 +362,7 @@ it("keeps the saved value and the lock when the refresh fails, retries, and then
     await new Promise<void>((resolve) => {
       failFirstReload = resolve;
     });
-    return false;
+    return "stale";
   };
   await using _screen = await render(
     <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,

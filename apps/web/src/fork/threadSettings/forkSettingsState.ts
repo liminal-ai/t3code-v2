@@ -98,7 +98,6 @@ export function useThreadOnLimbase(environmentId: EnvironmentId, threadId: Threa
   return hasLimbaseHome(config?.settings, instanceId);
 }
 
-/** Resolves true once the query holds a fresh answer, false when it failed or timed out. */
 export function useRefreshAndWait(atom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>) {
   const registry = useContext(RegistryContext);
   return async () => {
@@ -110,7 +109,7 @@ export function useRefreshAndWait(atom: Atom.Atom<AsyncResult.AsyncResult<unknow
       predicate: (result) => result !== before && !result.waiting,
       timeoutMs: 15_000,
     });
-    return settled && AsyncResult.isSuccess(registry.get(atom));
+    return settled && AsyncResult.isSuccess(registry.get(atom)) ? "fresh" : "stale";
   };
 }
 
