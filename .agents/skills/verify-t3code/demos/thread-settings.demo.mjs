@@ -178,7 +178,7 @@ export default {
     },
     {
       id: "instance",
-      say: "A Limbase instance carries the same two fields, and its threads inherit them. Instances from before keep 700k and 100k.",
+      say: "A Limbase instance carries the same two fields for its threads to inherit. A change here reaches each running thread at its next turn, with no restart.",
       caption: "Defaults for every thread",
       ready: SETTINGS,
       highlight: INSTANCE_FIELDS,
@@ -187,6 +187,9 @@ export default {
         { atMs: 1400, action: "click", target: PROVIDERS },
         { atMs: 2800, action: "click", target: INSTANCE_ROW },
         { atMs: 4000, action: "scroll", dy: 520, target: SETTINGS_CONTENT },
+        { atMs: 5200, action: "click", target: INSTANCE_FIELDS[0] },
+        { atMs: 5500, action: "press", key: "Control+A" },
+        ...typeKeys(5800, ["6", "0", "%", "Enter"]),
       ],
       tailMs: 2000,
     },
