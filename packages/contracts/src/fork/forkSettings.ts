@@ -124,8 +124,7 @@ export const FORK_SETTINGS_RPCS = [
   }),
 ] as const;
 
-/** Limbase's views need room for their overlays, so nothing compacts below this. */
-const MIN_DOWN_TO_TOKENS = 24_000;
+const LIMBASE_MIN_OVERLAY_TARGET = 24_000;
 
 const SUFFIXES = { k: 1_000, m: 1_000_000 } as const;
 
@@ -217,11 +216,11 @@ export const resolveLimbaseCompaction = (input: {
   const problems: CompactionProblem[] = [];
   const trigger = compactAt?.tokens ?? null;
   const target = downTo?.tokens ?? null;
-  if (target !== null && target < MIN_DOWN_TO_TOKENS) {
+  if (target !== null && target < LIMBASE_MIN_OVERLAY_TARGET) {
     problems.push({
       fields: ["downTo"],
       severity: "error",
-      message: `Down to must be at least ${formatTokens(MIN_DOWN_TO_TOKENS)}.`,
+      message: `Down to must be at least ${formatTokens(LIMBASE_MIN_OVERLAY_TARGET)}.`,
     });
   }
   if (compactAt !== undefined && downTo !== undefined && notBelow(downTo, compactAt)) {

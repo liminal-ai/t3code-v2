@@ -193,7 +193,6 @@ type LimbaseThreadId = Parameters<Parameters<Connection["call"]>[0]>[0] extends 
 const samePolicy = (held: LimbaseCompactPolicy | undefined, policy: LimbaseCompactPolicy) =>
   held?.trigger === policy.trigger && held.target === policy.target;
 
-/** The policy T3 last read or set on each Limbase thread, by home and thread. */
 const seenPolicies = new Map<string, LimbaseCompactPolicy>();
 
 const seenKey = (home: string, limbaseThreadId: string) => `${home}\n${limbaseThreadId}`;
@@ -220,18 +219,17 @@ const setPolicy = (home: string, limbaseThreadId: string, policy: LimbaseCompact
   );
 };
 
-/** Sets the thread's resolved policy unless it is `known`. A refusal or a failure only logs. */
 const reconcileCompaction = (
   home: string,
   limbaseThreadId: string,
   compaction: Compaction,
-  known: LimbaseCompactPolicy | undefined,
+  lastSeen: LimbaseCompactPolicy | undefined,
 ) =>
   decidePolicy(compaction).pipe(
     Effect.flatMap((decision) =>
       decision._tag === "Refused"
         ? Effect.logWarning("limbase.compaction-refused", { problems: decision.problems })
-        : decision._tag === "AwaitWindow" || samePolicy(known, decision.policy)
+        : decision._tag === "AwaitWindow" || samePolicy(lastSeen, decision.policy)
           ? Effect.void
           : setPolicy(home, limbaseThreadId, decision.policy),
     ),
@@ -240,11 +238,6 @@ const reconcileCompaction = (
     ),
   );
 
-/**
- * Re-resolves a Limbase thread's policy as a turn starts, for the turn's model, so an instance edit
- * or a model switch reaches a live session. It calls the service only when the policy T3 last saw
- * the thread hold differs.
- */
 export const applyTurnPolicy = Effect.fn("Limbase.applyTurnPolicy")(function* (
   settings: ClaudeSettings | undefined,
   providerThread: OrchestrationV2ProviderThread,

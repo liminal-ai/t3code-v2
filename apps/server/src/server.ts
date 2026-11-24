@@ -821,7 +821,6 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
-  // The fork's settings store, below hydration so the Claude adapter reads it too.
   Layer.provideMerge(ForkSettings.layer.pipe(Layer.provide(SqlitePersistence.layerConfig))),
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
