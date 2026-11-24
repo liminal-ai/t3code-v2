@@ -400,23 +400,33 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
       }),
   );
 
-  it.effect("warns when the CLI is not the version the host is tested on", () => {
+  it.effect("warns only when the CLI is not the one the server's Agent SDK ships", () => {
     const warnings: unknown[] = [];
     const logger = Logger.make(({ message, logLevel }) => {
       if (logLevel === "Warn") warnings.push(message);
     });
     return Effect.gen(function* () {
-      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
-      const { sdk } = fakeSdk([init("2.0.0")]);
-      const hosted = yield* Limbase.queryFor(
-        settings,
-        providerThread({ limbaseThreadId: "th_1" }),
-        sdk,
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const sdkEntry = yield* path.fromFileUrl(
+        new URL(import.meta.resolve("@anthropic-ai/claude-agent-sdk")),
       );
-      yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
+      const { claudeCodeVersion: shipped } = JSON.parse(
+        yield* fileSystem.readFileString(path.join(path.dirname(sdkEntry), "package.json")),
+      ) as { readonly claudeCodeVersion: string };
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      for (const running of [shipped, "2.0.0"]) {
+        const { sdk } = fakeSdk([init(running)]);
+        const hosted = yield* Limbase.queryFor(
+          settings,
+          providerThread({ limbaseThreadId: "th_1" }),
+          sdk,
+        );
+        yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
+      }
       yield* Effect.yieldNow;
       assert.deepEqual(warnings, [
-        ["limbase.claude-code-version", { running: "2.0.0", tested: Limbase.TESTED_CLAUDE_CODE }],
+        ["limbase.claude-code-version", { running: "2.0.0", tested: shipped }],
       ]);
     }).pipe(Effect.provide(Logger.layer([logger], { mergeWithExisting: false })));
   });
