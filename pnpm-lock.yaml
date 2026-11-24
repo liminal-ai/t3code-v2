@@ -5056,7 +5056,7 @@ packages:
     os: [win32]
 
   '@limbase/host-agent-sdk@file:vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz':
-    resolution: {integrity: sha512-IOvY+Hc1mEnBOklrH5B0RGTMcpxo4vUarZTkn6O8dHaWqwgbe6hE9iPcFGAzqUavqFh+TkEtBR7csmOic95a0g==, tarball: file:vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz}
+    resolution: {integrity: sha512-0Por46sRQZ2kgrMAxHhhv/AFCjKYi8l591WGQVcKwj7fTt3UTn8Hby9RYjVnd/LOoIYaiI04E3UrmcntIoDKmQ==, tarball: file:vendor/limbase/limbase-host-agent-sdk-0.1.0.tgz}
     version: 0.1.0
     peerDependencies:
       '@anthropic-ai/claude-agent-sdk': ^0.3.322
