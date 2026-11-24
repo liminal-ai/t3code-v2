@@ -41,8 +41,7 @@ export function LimbaseCompactionFields(props: {
   readonly notices: ReadonlyArray<CompactionNotice>;
   readonly disabled: boolean;
   readonly blockingMessages: (next: LimbaseCompaction) => ReadonlyArray<string>;
-  /** Resolves with Limbase's or the server's refusal, else null once the saved value shows. */
-  readonly onSave: (next: LimbaseCompaction) => Promise<string | null>;
+  readonly saveAndRefresh: (next: LimbaseCompaction) => Promise<string | null>;
   readonly messagesClassName?: string;
   readonly renderRow: (row: {
     readonly field: CompactionField;
@@ -71,7 +70,7 @@ export function LimbaseCompactionFields(props: {
     const blocking = props.blockingMessages(next);
     if (blocking.length > 0) return refuse(blocking.join(" "));
     setSaving(true);
-    const refused = await props.onSave(next);
+    const refused = await props.saveAndRefresh(next);
     setSaving(false);
     if (refused === null) draft(null);
     refuse(refused);

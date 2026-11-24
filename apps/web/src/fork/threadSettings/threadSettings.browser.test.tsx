@@ -58,7 +58,7 @@ vi.mock(import("~/state/use-atom-command"), async () => {
 
 vi.mock(import("./forkSettingsState"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useReload: (() => () => state.reload()) as never,
+  useRefreshAndWait: (() => () => state.reload()) as never,
 }));
 
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";

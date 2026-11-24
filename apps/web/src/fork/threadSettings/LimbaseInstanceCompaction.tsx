@@ -14,7 +14,7 @@ import {
   instanceSettingsQuery,
   refusalOf,
   setInstanceSettings,
-  useReload,
+  useRefreshAndWait,
 } from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import {
@@ -59,18 +59,18 @@ function LimbaseInstanceCompactionRows(props: {
     input: { instanceId: props.instanceId },
   });
   const query = useEnvironmentQuery(atom);
-  const reload = useReload(atom);
+  const refreshAndWait = useRefreshAndWait(atom);
   const canManage = useEnvironmentScope(props.environmentId, AuthProvidersManageScope);
   const save = useAtomCommand(setInstanceSettings, { reportFailure: false });
   const compaction = query.data?.limbaseCompaction;
   if (compaction === undefined) return null;
 
-  const onSave = async (next: LimbaseCompaction) => {
+  const saveAndRefresh = async (next: LimbaseCompaction) => {
     const result = await save({
       environmentId: props.environmentId,
       input: { instanceId: props.instanceId, settings: { limbaseCompaction: next } },
     });
-    if (result._tag === "Success") await reload();
+    if (result._tag === "Success") await refreshAndWait();
     return refusalOf(result);
   };
 
@@ -83,7 +83,7 @@ function LimbaseInstanceCompactionRows(props: {
         notices={warningNotices(resolveInstanceCompaction(compaction.defaults, compaction.value))}
         disabled={!canManage}
         blockingMessages={(next) => instanceBlockingMessages(compaction.defaults, next)}
-        onSave={onSave}
+        saveAndRefresh={saveAndRefresh}
         messagesClassName="px-4 pb-3 sm:px-5"
         renderRow={({ field, label, inputId, input }) => (
           <SettingsRow

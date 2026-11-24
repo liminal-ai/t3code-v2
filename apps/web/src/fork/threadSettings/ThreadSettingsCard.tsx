@@ -12,7 +12,12 @@ import { ThreadDetailsSection } from "../../components/chat/ThreadDetailsSection
 import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import { refusalOf, setThreadSettings, threadSettingsQuery, useReload } from "./forkSettingsState";
+import {
+  refusalOf,
+  setThreadSettings,
+  threadSettingsQuery,
+  useRefreshAndWait,
+} from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import { threadBlockingMessages, threadNotices, threadPlaceholders } from "./limbaseCompaction";
 
@@ -25,18 +30,18 @@ export function ThreadSettingsCard(props: {
     input: { threadId: props.threadId },
   });
   const query = useEnvironmentQuery(atom);
-  const reload = useReload(atom);
+  const refreshAndWait = useRefreshAndWait(atom);
   const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const save = useAtomCommand(setThreadSettings, { reportFailure: false });
   const compaction = query.data?.limbaseCompaction;
   if (compaction === undefined) return null;
 
-  const saveCompaction = async (next: LimbaseCompaction) => {
+  const saveAndRefresh = async (next: LimbaseCompaction) => {
     const result = await save({
       environmentId: props.environmentId,
       input: { threadId: props.threadId, settings: { limbaseCompaction: next } },
     });
-    if (result._tag === "Success") await reload();
+    if (result._tag === "Success") await refreshAndWait();
     return refusalOf(result);
   };
 
@@ -51,7 +56,7 @@ export function ThreadSettingsCard(props: {
           threadId={props.threadId}
           view={compaction}
           disabled={!canOperate}
-          onSave={saveCompaction}
+          saveAndRefresh={saveAndRefresh}
         />
       </div>
     </ThreadDetailsSection>
@@ -62,7 +67,7 @@ function LimbaseCompactionGroup(props: {
   readonly threadId: ThreadId;
   readonly view: LimbaseCompactionThreadView;
   readonly disabled: boolean;
-  readonly onSave: (next: LimbaseCompaction) => Promise<string | null>;
+  readonly saveAndRefresh: (next: LimbaseCompaction) => Promise<string | null>;
 }) {
   const { view } = props;
   return (
@@ -82,7 +87,7 @@ function LimbaseCompactionGroup(props: {
         notices={threadNotices(view)}
         disabled={props.disabled}
         blockingMessages={(next) => threadBlockingMessages(view, next)}
-        onSave={props.onSave}
+        saveAndRefresh={props.saveAndRefresh}
         renderRow={({ field, label, inputId, input }) => (
           <label key={field} htmlFor={inputId} className="grid min-w-0 gap-1">
             <span className="text-2xs text-muted-foreground">{label}</span>

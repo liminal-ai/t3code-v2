@@ -184,17 +184,14 @@ const decidePolicy = Effect.fn("Limbase.decidePolicy")(function* (
     : { _tag: "Apply", policy: resolved.policy };
 });
 
-type LimbaseThreadId = Parameters<Parameters<Connection["call"]>[0]>[0] extends {
-  readonly GetThread: (input: { readonly threadId: infer Id }) => unknown;
-}
-  ? Id
-  : never;
+type LimbaseRpcs = Parameters<Parameters<Connection["call"]>[0]>[0];
+type LimbaseThreadId = Parameters<LimbaseRpcs["GetThread"]>[0]["threadId"];
+type HeldPolicy = NonNullable<
+  Effect.Success<ReturnType<LimbaseRpcs["GetThread"]>>["compactPolicy"]
+>;
 
-/** T3 never sends `cold`, so a held policy that has one was set some other way. */
-const samePolicy = (
-  held: (LimbaseCompactPolicy & { readonly cold?: unknown }) | undefined,
-  policy: LimbaseCompactPolicy,
-) => held?.trigger === policy.trigger && held.target === policy.target && held.cold === undefined;
+const isExactly = (held: HeldPolicy | undefined, policy: LimbaseCompactPolicy) =>
+  held?.trigger === policy.trigger && held.target === policy.target && held.cold === undefined;
 
 const seenPolicies = new Map<string, LimbaseCompactPolicy>();
 
@@ -207,7 +204,7 @@ const setPolicy = (home: string, limbaseThreadId: string, policy: LimbaseCompact
       Effect.tryPromise({
         try: async () => {
           const held = (await connection.call((c) => c.GetThread({ threadId }))).compactPolicy;
-          if (!samePolicy(held, policy)) {
+          if (!isExactly(held, policy)) {
             await connection.call((c) => c.SetCompactPolicy({ threadId, compactPolicy: policy }));
           }
           seenPolicies.set(seenKey(home, limbaseThreadId), policy);
@@ -232,7 +229,7 @@ const reconcileCompaction = (
     Effect.flatMap((decision) =>
       decision._tag === "Refused"
         ? Effect.logWarning("limbase.compaction-refused", { problems: decision.problems })
-        : decision._tag === "AwaitWindow" || samePolicy(lastSeen, decision.policy)
+        : decision._tag === "AwaitWindow" || isExactly(lastSeen, decision.policy)
           ? Effect.void
           : setPolicy(home, limbaseThreadId, decision.policy),
     ),

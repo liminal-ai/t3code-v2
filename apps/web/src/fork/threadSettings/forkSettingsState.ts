@@ -16,7 +16,6 @@ import { connectionAtomRuntime } from "../../connection/runtime";
 import { environmentThreadShells } from "../../state/threads";
 import { waitForAtomValue } from "../../state/waitForAtomValue";
 
-/** Changes when the thread's view can: a new instance, model or provider thread, or a turn's end. */
 export const threadSettingsSignal = (shell: EnvironmentThreadShell | null) => {
   if (shell === null) return null;
   const run = shell.latestRun;
@@ -59,8 +58,7 @@ export const setInstanceSettings = createEnvironmentRpcCommand(connectionAtomRun
   tag: FORK_SETTINGS_WS_METHODS.setInstance,
 });
 
-/** Refreshes a settings query and resolves once its next answer lands. */
-export function useReload(atom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>) {
+export function useRefreshAndWait(atom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>) {
   const registry = useContext(RegistryContext);
   return async () => {
     const before = registry.get(atom);
