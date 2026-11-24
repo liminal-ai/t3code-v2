@@ -94,7 +94,7 @@ const WORK_AROUND =
 export const approvalNote = (reason: string | undefined) => {
   const quoted = clip(reason, REASON_MAX);
   return [
-    `No human is available to answer this permission prompt, so T3 declined it after waiting ${minutes} minutes.`,
+    `Nobody approved this within ${minutes} minutes. No human is watching this delegated task and an agent cannot approve it, so T3 declined it on the user's behalf.`,
     ...(quoted === undefined ? [] : [`The reason it asked: "${quoted}"`]),
     WORK_AROUND,
   ].join(" ");
