@@ -190,8 +190,11 @@ type LimbaseThreadId = Parameters<Parameters<Connection["call"]>[0]>[0] extends 
   ? Id
   : never;
 
-const samePolicy = (held: LimbaseCompactPolicy | undefined, policy: LimbaseCompactPolicy) =>
-  held?.trigger === policy.trigger && held.target === policy.target;
+/** T3 never sends `cold`, so a held policy that has one was set some other way. */
+const samePolicy = (
+  held: (LimbaseCompactPolicy & { readonly cold?: unknown }) | undefined,
+  policy: LimbaseCompactPolicy,
+) => held?.trigger === policy.trigger && held.target === policy.target && held.cold === undefined;
 
 const seenPolicies = new Map<string, LimbaseCompactPolicy>();
 

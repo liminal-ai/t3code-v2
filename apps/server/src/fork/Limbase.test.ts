@@ -25,7 +25,10 @@ import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapt
 import * as Limbase from "./Limbase.ts";
 
 const created: unknown[] = [];
-const held = new Map<string, { readonly trigger: number; readonly target: number }>();
+const held = new Map<
+  string,
+  { readonly trigger: number; readonly target: number; readonly cold?: "off" }
+>();
 const policiesSet: Array<{
   readonly threadId: string;
   readonly trigger: number;
@@ -608,6 +611,22 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         { trigger: 700_000, target: 100_000 },
         { trigger: 700_000, target: 150_000 },
       ]);
+    }),
+  );
+
+  it.effect("replaces a held policy whose tokens match but whose cold return was changed", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      held.set("th_cold", { trigger: 700_000, target: 100_000, cold: "off" });
+      const hosted = yield* Limbase.queryFor(
+        settings,
+        providerThread({ limbaseThreadId: "th_cold" }),
+        compaction({ instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS }),
+        fakeSdk([]).sdk,
+      );
+      yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
+      assert.deepEqual(setsOn("th_cold"), [{ trigger: 700_000, target: 100_000 }]);
+      assert.deepEqual(held.get("th_cold"), { trigger: 700_000, target: 100_000 });
     }),
   );
 
