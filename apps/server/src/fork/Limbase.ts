@@ -261,11 +261,7 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
   return hosted;
 });
 
-/**
- * Whether the host writes the row's session file. It writes the file again from Limbase's view, so
- * lines the live CLI never sent are no sign that someone changed the session outside T3.
- */
-export const writesSessionFile = (providerThread: OrchestrationV2ProviderThread) =>
+export const sessionFileHoldsUnsentLines = (providerThread: OrchestrationV2ProviderThread) =>
   providerThread.nativeMetadata?.limbaseThreadId !== undefined;
 
 /**

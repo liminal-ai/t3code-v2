@@ -271,8 +271,7 @@ const drain = Effect.flatMap(EffectWorker.OrchestrationEffectWorkerV2, (worker) 
 
 const scan = Effect.flatMap(HeldQueueResumer, (resumer) => resumer.scan);
 
-/** Core starts a queued run on its own fiber once the turn before it has its checkpoint. */
-const runsNext = (runId: RunId) =>
+const startsAfterCapture = (runId: RunId) =>
   Effect.map(
     Effect.all([runStatus(runId, "starting"), runStatus(runId, "running")]),
     ([starting, running]) =>
@@ -428,8 +427,7 @@ const finishContinuation = (threadId: ThreadId, sourceId: RunId, started: Array<
     yield* drain;
   });
 
-/** The run's turn ends while a native subagent it awaits still runs. */
-const settleBehindAwaitedWork = (
+const endTurnWithSubagentRunning = (
   threadId: ThreadId,
   run: OrchestrationV2Run,
   started: Array<StartedTurn>,
@@ -711,7 +709,7 @@ it.effect.each(["while its effect is pending", "after its effect settled"] as co
             `thread:wake-${timing === "while its effect is pending" ? "pending" : "settled"}`,
           );
           const { active, queued } = yield* busyThread({ threadId, cwd });
-          yield* settleBehindAwaitedWork(threadId, active, started);
+          yield* endTurnWithSubagentRunning(threadId, active, started);
           yield* restartOneSecondLater;
           const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
           assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
@@ -1402,12 +1400,12 @@ it.effect(
         for (const run of (yield* runsOf(threadId)).filter((run) => order.includes(run.id)))
           assert.deepEqual([run.status, run.queueHeld === true], ["queued", false]);
 
-        const firstRuns = yield* runsNext(order[0]!);
+        const firstRuns = yield* startsAfterCapture(order[0]!);
         yield* finishContinuation(threadId, active.id, started);
         for (const [index, runId] of order.entries()) {
           if (index === 0) yield* firstRuns;
           const nextRuns =
-            index + 1 < order.length ? yield* runsNext(order[index + 1]!) : undefined;
+            index + 1 < order.length ? yield* startsAfterCapture(order[index + 1]!) : undefined;
           const completed = yield* runStatus(runId, "completed");
           yield* finishTurn(started.find((entry) => entry.turn.runId === runId)!);
           yield* Fiber.join(completed);

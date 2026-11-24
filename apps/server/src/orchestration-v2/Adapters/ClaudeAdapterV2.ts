@@ -13562,7 +13562,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             !existing.stopping &&
             // A pinned head already decides where a fresh process resumes.
             resumeSessionAt === undefined &&
-            !Limbase.writesSessionFile(turnInput.providerThread)
+            !Limbase.sessionFileHoldsUnsentLines(turnInput.providerThread)
           ) {
             // Decided before the transcript read: with no pending wakeup then, none can fire during it.
             const keepsWork =

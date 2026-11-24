@@ -30,7 +30,6 @@ import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
-import { isBufferedProviderNotification } from "../orchestration-v2/NotificationMailbox.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -436,19 +435,12 @@ const make = Effect.gen(function* () {
     const message = (yield* projections.getMessagesById(threadId, [head.userMessageId])).get(
       head.userMessageId,
     );
-    // Upstream's queuedRunModelSelection: a delegated result, a message queued without a model of
-    // its own, or an unbuffered monitor notice starts on the thread's current provider, not the one
-    // stored on the run.
-    const followsThread =
-      message !== undefined &&
-      (message.delegatedCompletion !== undefined ||
-        message.followsThreadSelection === true ||
-        (message.notification?.source.kind === "monitor" &&
-          !isBufferedProviderNotification(message)));
     const resetMs = yield* usageLimitResetAhead(
       threadId,
       runs,
-      followsThread ? shell.modelSelection.instanceId : head.providerInstanceId,
+      Orchestrator.followsCurrentConversation(message)
+        ? shell.modelSelection.instanceId
+        : head.providerInstanceId,
     );
     if (resetMs !== undefined) return { limitedUntilMs: resetMs };
     yield* orchestrator.dispatch({

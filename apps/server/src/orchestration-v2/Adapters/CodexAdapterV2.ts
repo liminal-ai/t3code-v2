@@ -938,7 +938,7 @@ export const buildCodexTurnStartParams = Effect.fn("CodexAdapterV2.buildCodexTur
         ? runtimeModeDefaults.sandboxPolicy
         : yield* decodeTurnSandboxPolicy(input.runtimePolicy.sandboxPolicy);
     // Codex's sandbox lets commands write its own process's TMPDIR, not the one a thread's shell
-    // policy sets, and a worktree thread's project folder sits outside its cwd.
+    // policy sets.
     const projectTmpDir = input.runtimePolicy.projectTmpDir;
     const extraRoots = [
       ...(input.runtimePolicy.workspace?.extraRoots ?? []),

@@ -1054,7 +1054,7 @@ function nextQueuedRun(
 
 // Delegated completions, monitor notifications and queued messages that name no model never choose a
 // model, so a queued one runs on the thread's current pick rather than the one frozen at queue time.
-function followsCurrentConversation(
+export function followsCurrentConversation(
   message:
     | Pick<
         OrchestrationV2ConversationMessage,
