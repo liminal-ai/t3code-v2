@@ -19,7 +19,7 @@ import {
 
 const DESCRIPTIONS = {
   compactAt:
-    "Limbase compacts a thread once it passes this many tokens (700k) or this share of the model's window (70%). A thread's own setting wins, and a change reaches each thread at its next turn. Empty uses Limbase's default for the model.",
+    "Limbase compacts a thread once it passes this many tokens (700k) or this share of the model's window (70%). A thread's own setting wins, and a change reaches a thread when it next starts a Claude session. Empty uses Limbase's default for the model.",
   downTo:
     "How large a view a compaction leaves, at least 24k and below compact at. Empty uses Limbase's default for the model.",
 } as const;

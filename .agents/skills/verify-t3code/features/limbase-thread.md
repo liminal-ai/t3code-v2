@@ -56,6 +56,6 @@ Preconditions:
 
 - The Limbase service's socket path comes from `<home>/config/membase.json`, read at each open. A home whose path is long keeps its socket under `/tmp`.
 - `thread send --json` exits 1 for a turn that Limbase stopped and prints the failure on its last line, not JSON.
-- T3 gives a Limbase thread its policy at each query open from **Thread settings**, so a `limbase thread policy` change lasts only until the next turn opens a query. Change the bounds in the card instead.
+- T3 gives a Limbase thread its policy at each query open from **Thread settings**, so a `limbase thread policy` change lasts only until the thread's next query open. Change the bounds in the card instead.
 - A view folds only turns that have closed. When only the open turn has passed a lowered trigger, no install comes until a later prompt.
 - `GetTurns` ids are Limbase's own turn chunks, not T3 runs: one long T3 turn can span several.

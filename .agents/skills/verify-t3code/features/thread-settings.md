@@ -8,7 +8,7 @@ The thread details panel shows a **Thread settings** card with the fork's own pe
 - `settings-guard` refuses a value before it is sent: **Down to** under 24k, **Down to** not below **Compact at**, and a **Compact at** past the model's window. A value it cannot read asks for tokens or a share.
 - `settings-save` saves a value, gives the Limbase thread its new policy at once, and shows Limbase's own refusal when the service refuses it.
 - `settings-warning` warns that **Down to** at 300k or more turns Limbase's cold return off, and that an inherited **Compact at** past the window makes Limbase compact at its hard limit.
-- `settings-instance` edits **Limbase: compact at** and **Limbase: down to** on a Claude instance with a Limbase home, and a thread gets the change at its next turn with no restart.
+- `settings-instance` edits **Limbase: compact at** and **Limbase: down to** on a Claude instance with a Limbase home, and a thread gets the change at its next query open with no restart. A live session is reused across turns, so a thread in use gets it once its session has been idle for 30 minutes or is replaced.
 - `settings-seed` keeps 700k and 100k on each Claude instance that had a Limbase home when the server first started with this build, and on no instance made later.
 
 ## How to get to it (user POV)
@@ -30,7 +30,7 @@ Preconditions:
 - **Guard.** `node $T3V browser fill --role textbox --name "Down to" --value "800k"`, then `browser press Enter`. The card shows `Down to (800k) must be below compact at (700k).` and `POLICY` does not change. `20k` shows `Down to must be at least 24k.`, and `abc` shows `Write tokens, like 700k, or a share of the window, like 70%.`
 - **Save.** Fill **Down to** with `15%` and press Enter. The card shows `700k → 150k` on a 1M window, `POLICY` prints `trigger 700000 target 150000` before any turn runs, and `fork_settings` has the thread's row with `{"downTo":{"percent":15}}`.
 - **Clear.** Fill **Down to** with an empty value and press Enter. The field shows its placeholder again, and the thread's row is gone from `fork_settings`.
-- **Instance.** `node $T3V browser goto /settings/providers`, `browser click --role button --name "Select Claude Limbase"`, and `browser wait --text "Limbase: compact at"`. The two fields show `700k` and `100k`. Fill **Limbase: compact at** with `60%` and press Enter. `POLICY` does not change yet. Run a turn with `thread send --base-dir <worktree>/.t3 --wait --json <TH> "Say ok."` and `POLICY` prints `trigger 600000`, with the thread's own **Down to** kept.
+- **Instance.** `node $T3V browser goto /settings/providers`, `browser click --role button --name "Select Claude Limbase"`, and `browser wait --text "Limbase: compact at"`. The two fields show `700k` and `100k`. Fill **Limbase: compact at** with `60%` and press Enter. `POLICY` does not change yet. Release the thread's live session with `node $T3V down` and `node $T3V up`, then run a turn with `thread send --base-dir <worktree>/.t3 --wait --json <TH> "Say ok."` and `POLICY` prints `trigger 600000`, with the thread's own **Down to** kept.
 - **Plain.** A thread on a Claude instance with no Limbase home shows no **Thread settings** card, and its instance has no Limbase rows.
 
 ## Gotchas
