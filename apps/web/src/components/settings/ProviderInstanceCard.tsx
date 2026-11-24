@@ -78,6 +78,7 @@ import {
   settleCustomModelSave,
 } from "./customModelSaves.logic";
 import { getProviderRestartNotice } from "../ProviderUpdateLaunchNotification.logic";
+import { LimbaseInstanceCompaction } from "../../fork/threadSettings/LimbaseInstanceCompaction";
 import {
   getProviderVersionAdvisoryPresentation,
   PROVIDER_STATUS_STYLES,
@@ -1330,15 +1331,24 @@ export function ProviderInstanceCard({
   );
 
   const runtimeFields = driverOption ? (
-    <ProviderSettingsForm
-      definition={driverOption}
-      value={instance.config}
-      idPrefix={`provider-instance-${instanceId}`}
-      variant="settings"
-      onChange={updateConfig}
-      managed={instanceLocks && { keys: instanceLocks.configKeys, reason: instanceLocks.reason }}
-      environmentId={environmentId}
-    />
+    <>
+      <ProviderSettingsForm
+        definition={driverOption}
+        value={instance.config}
+        idPrefix={`provider-instance-${instanceId}`}
+        variant="settings"
+        onChange={updateConfig}
+        managed={instanceLocks && { keys: instanceLocks.configKeys, reason: instanceLocks.reason }}
+        environmentId={environmentId}
+      />
+      {environmentId !== undefined ? (
+        <LimbaseInstanceCompaction
+          environmentId={environmentId}
+          instanceId={instanceId}
+          config={instance.config}
+        />
+      ) : null}
+    </>
   ) : (
     <SettingsRow
       title={gt("Driver")}

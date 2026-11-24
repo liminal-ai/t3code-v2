@@ -44,6 +44,7 @@ import { cn } from "../../lib/utils";
 import { SlidersHorizontalIcon } from "lucide-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
 import { ThreadAgentRow } from "../../fork/ThreadAgentRow";
+import { ThreadSettingsCard } from "../../fork/threadSettings/ThreadSettingsCard";
 import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_LABEL_CLASS,
@@ -257,6 +258,10 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               ) : null}
 
               <ThreadAgentRow environmentId={props.environmentId} threadId={props.threadId} />
+
+              {!props.draftId ? (
+                <ThreadSettingsCard environmentId={props.environmentId} threadId={props.threadId} />
+              ) : null}
 
               {show.branch || show.pullRequests || show.git || show.repositories ? (
                 <ThreadDetailsSection

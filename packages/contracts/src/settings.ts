@@ -879,8 +879,8 @@ export const ClaudeSettings = makeProviderSettingsSchema(
       "homePath",
       "autoCompactWindow",
       "idleCompaction",
-      "limbaseHome",
       "launchArgs",
+      "limbaseHome",
     ],
   },
 );
