@@ -1,3 +1,4 @@
+/* oxlint-disable t3code/no-untranslated-copy -- fork copy stays English, so the catalogs stay upstream's */
 import {
   AuthProvidersManageScope,
   type EnvironmentId,
