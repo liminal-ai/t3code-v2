@@ -15,11 +15,27 @@ import {
   type SDKMessage,
   type Settings,
 } from "@anthropic-ai/claude-agent-sdk";
-import type { ClaudeSettings, OrchestrationV2ProviderThread } from "@t3tools/contracts";
+import {
+  type ClaudeSettings,
+  type ForkSettingsError,
+  type LimbaseCompaction,
+  type LimbaseCompactionDefaults,
+  type LimbaseCompactPolicy,
+  type OrchestrationV2ProviderThread,
+  resolveLimbaseCompaction,
+} from "@t3tools/contracts";
 import { expandHomePath } from "@t3tools/provider-core/server/pathExpansion";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostProcess from "@t3tools/shared/HostProcess";
-import { connectLimbase, createAgentSdkHost, threadCalls } from "@limbase/host-agent-sdk";
+import {
+  COLD_RETURN,
+  connectLimbase,
+  createAgentSdkHost,
+  hardLimitOf,
+  PROFILES,
+  profileFor,
+  threadCalls,
+} from "@limbase/host-agent-sdk";
 import hostPackage from "@limbase/host-agent-sdk/package.json" with { type: "json" };
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -28,9 +44,6 @@ import * as LimbaseMigration from "./LimbaseMigration.ts";
 
 // zod is external to the CLI bundle; a single-executable loads it from disk only with require.
 const zod = NodeModule.createRequire(import.meta.url)("zod") as typeof import("zod");
-
-/** Limbase compacts a thread at the trigger, down to a view of about the target, in tokens. */
-const COMPACT_POLICY = { trigger: 700_000, target: 100_000 } as const;
 
 /** The Claude Code version whose session-file format the vendored host writes. */
 export const TESTED_CLAUDE_CODE = hostPackage.limbase.claudeCode;
@@ -96,21 +109,196 @@ const connect = (home: string) => {
   );
 };
 
+const policyOf = ({ trigger, target }: LimbaseCompactPolicy): LimbaseCompactPolicy => ({
+  trigger,
+  target,
+});
+
+/** Limbase's own defaults, from the vendored host. */
+export const COMPACTION_DEFAULTS: LimbaseCompactionDefaults = {
+  profiles: {
+    haiku: policyOf(PROFILES.haiku),
+    standard: policyOf(PROFILES.standard),
+    "1m": policyOf(PROFILES["1m"]),
+  },
+  coldReturnSize: COLD_RETURN.size,
+};
+
+/**
+ * The policy every Limbase thread got before compaction was a setting. The fork settings store
+ * writes it once onto each instance that had a Limbase home then, so those instances keep it.
+ */
+export const SEEDED_INSTANCE_COMPACTION: LimbaseCompaction = {
+  compactAt: { tokens: 700_000 },
+  downTo: { tokens: 100_000 },
+};
+
+/** Limbase's profile for a model, once its window is known. */
+const profileNameFor = (model: string, contextWindow: number | null) =>
+  contextWindow === null ? null : profileFor(model, contextWindow).name;
+
+export const resolveCompaction = (input: {
+  readonly thread: LimbaseCompaction;
+  readonly instance: LimbaseCompaction;
+  readonly model: string;
+  readonly contextWindow: number | null;
+}) =>
+  resolveLimbaseCompaction({
+    thread: input.thread,
+    instance: input.instance,
+    defaults:
+      input.contextWindow === null
+        ? undefined
+        : policyOf(profileFor(input.model, input.contextWindow)),
+    contextWindow: input.contextWindow,
+    hardLimit: input.contextWindow === null ? null : hardLimitOf(input.contextWindow),
+    coldReturnSize: COLD_RETURN.size,
+  });
+
+/** What a thread's compaction resolves from. The adapter builds it; it is read at each query open. */
+export interface Compaction {
+  readonly settings: Effect.Effect<
+    { readonly thread: LimbaseCompaction; readonly instance: LimbaseCompaction },
+    ForkSettingsError
+  >;
+  readonly model: string;
+  /** The catalog's window for the model, else the one the CLI reported, else null. */
+  readonly contextWindow: () => number | null;
+}
+
+/** The policy to give Limbase for the thread now, or undefined to leave its stored one alone. */
+const policyNow = Effect.fn("Limbase.policyNow")(function* (compaction: Compaction) {
+  const contextWindow = compaction.contextWindow();
+  if (contextWindow === null) return undefined;
+  const settings = yield* compaction.settings;
+  const resolved = resolveCompaction({ ...settings, model: compaction.model, contextWindow });
+  if (resolved.policy === undefined) {
+    yield* Effect.logWarning("limbase.compaction-refused", {
+      problems: resolved.problems.filter((problem) => problem.severity === "error"),
+    });
+  }
+  return resolved.policy;
+});
+
+type LimbaseThreadId = Parameters<Parameters<Connection["call"]>[0]>[0] extends {
+  readonly GetThread: (input: { readonly threadId: infer Id }) => unknown;
+}
+  ? Id
+  : never;
+
+/** Gives Limbase the policy when the thread holds another one. */
+const setPolicy = (
+  connection: Connection,
+  limbaseThreadId: string,
+  policy: LimbaseCompactPolicy,
+) => {
+  const threadId = limbaseThreadId as LimbaseThreadId;
+  return Effect.tryPromise({
+    try: async () => {
+      const held = (await connection.call((c) => c.GetThread({ threadId }))).compactPolicy;
+      if (held?.trigger === policy.trigger && held.target === policy.target) return;
+      await connection.call((c) => c.SetCompactPolicy({ threadId, compactPolicy: policy }));
+    },
+    catch: (cause) =>
+      new LimbaseThreadError({
+        detail: `the service refused the compaction policy (${(cause as Error).message})`,
+        cause,
+      }),
+  });
+};
+
+/** Brings the Limbase thread's policy in line with its settings. A failure leaves it as it was. */
+const reconcileCompaction = (
+  connection: Connection,
+  limbaseThreadId: string,
+  compaction: Compaction,
+) =>
+  policyNow(compaction).pipe(
+    Effect.flatMap((policy) =>
+      policy === undefined ? Effect.void : setPolicy(connection, limbaseThreadId, policy),
+    ),
+    Effect.catchCause((cause) =>
+      Effect.logWarning("limbase.compaction-not-applied", { limbaseThreadId, cause }),
+    ),
+  );
+
+/** The policy Limbase holds for a thread, or null when it holds none or cannot be reached. */
+const heldPolicy = Effect.fn("Limbase.heldPolicy")(
+  function* (settings: ClaudeSettings | undefined, limbaseThreadId: string) {
+    const home = yield* homeOf(settings);
+    if (home === undefined) return null;
+    const connection = yield* connect(home);
+    const threadId = limbaseThreadId as LimbaseThreadId;
+    const held = yield* Effect.tryPromise({
+      try: () => connection.call((c) => c.GetThread({ threadId })),
+      catch: (cause) =>
+        new LimbaseThreadError({ detail: "the service did not read the thread", cause }),
+    }).pipe(Effect.map((thread) => thread.compactPolicy));
+    return held === undefined ? null : policyOf(held);
+  },
+  Effect.orElseSucceed(() => null),
+);
+
+/** The compaction group of a thread's settings card, with what Limbase holds for it now. */
+export const threadCompactionView = Effect.fn("Limbase.threadCompactionView")(function* (input: {
+  readonly settings: ClaudeSettings | undefined;
+  readonly limbaseThreadId: string | undefined;
+  readonly value: LimbaseCompaction;
+  readonly instance: LimbaseCompaction;
+  readonly model: string;
+  readonly contextWindow: number | null;
+}) {
+  return {
+    value: input.value,
+    instance: input.instance,
+    model: input.model,
+    contextWindow: input.contextWindow,
+    hardLimit: input.contextWindow === null ? null : hardLimitOf(input.contextWindow),
+    profile: profileNameFor(input.model, input.contextWindow),
+    defaults: COMPACTION_DEFAULTS,
+    applied:
+      input.limbaseThreadId === undefined
+        ? null
+        : yield* heldPolicy(input.settings, input.limbaseThreadId),
+  };
+});
+
+/** Gives a Limbase thread a policy now, failing with the service's own reason when it refuses. */
+export const applyPolicy = Effect.fn("Limbase.applyPolicy")(function* (
+  settings: ClaudeSettings | undefined,
+  limbaseThreadId: string,
+  policy: LimbaseCompactPolicy,
+) {
+  const home = yield* homeOf(settings);
+  if (home === undefined) return;
+  yield* setPolicy(yield* connect(home), limbaseThreadId, policy);
+});
+
 /**
  * The native metadata a new provider thread starts with: on a Limbase instance, a Limbase thread.
  * A row that already has one keeps it, so a fresh native session continues the same history.
+ * The new thread gets its resolved policy, or Limbase's own until a query open can resolve one.
  */
 export const ensureThread = Effect.fn("Limbase.ensureThread")(function* (input: {
   readonly settings: ClaudeSettings | undefined;
   readonly existing: OrchestrationV2ProviderThread | undefined;
   readonly title: string | undefined;
   readonly cwd: string | null;
+  readonly compaction: Compaction | undefined;
 }) {
   const home = yield* homeOf(input.settings);
   if (home === undefined) return {};
   const kept = input.existing?.nativeMetadata?.limbaseThreadId;
   if (kept !== undefined) return { nativeMetadata: { limbaseThreadId: kept } };
   const connection = yield* connect(home);
+  const compactPolicy =
+    input.compaction === undefined
+      ? undefined
+      : yield* policyNow(input.compaction).pipe(
+          Effect.catchCause((cause) =>
+            Effect.as(Effect.logWarning("limbase.compaction-not-read", { cause }), undefined),
+          ),
+        );
   const thread = yield* Effect.tryPromise({
     try: () =>
       connection.call((c) =>
@@ -119,7 +307,7 @@ export const ensureThread = Effect.fn("Limbase.ensureThread")(function* (input: 
             ? {}
             : { title: input.title.replace(/\s+/g, " ").slice(0, 200) }),
           ...(input.cwd === null ? {} : { cwd: input.cwd }),
-          compactPolicy: COMPACT_POLICY,
+          ...(compactPolicy === undefined ? {} : { compactPolicy }),
         }),
       ),
     catch: (cause) =>
@@ -187,16 +375,20 @@ export const threadAfterReset = Effect.fn("Limbase.threadAfterReset")(function* 
     existing: undefined,
     title: undefined,
     cwd: input.cwd,
+    compaction: undefined,
   });
 });
 
 /**
  * The SDK `query` for a thread on a Limbase instance, or undefined for a plain one. A thread that
- * began before the instance had a Limbase home has no Limbase thread and stays plain.
+ * began before the instance had a Limbase home has no Limbase thread and stays plain. Each open
+ * gives the Limbase thread its compaction policy when that changed; with the model's window not
+ * known yet, it does so once the CLI has reported one.
  */
 export const queryFor = Effect.fn("Limbase.queryFor")(function* (
   settings: ClaudeSettings | undefined,
   providerThread: OrchestrationV2ProviderThread,
+  compaction: Compaction,
   sdk: Sdk = { query, createSdkMcpServer },
 ) {
   const home = yield* homeOf(settings);
@@ -204,6 +396,9 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
   if (home === undefined || limbaseThreadId === undefined) return undefined;
   const connection = yield* connect(home);
   const runFork = Effect.runForkWith(yield* Effect.context<never>());
+  const reconcile = reconcileCompaction(connection, limbaseThreadId, compaction);
+  let awaitingWindow = compaction.contextWindow() === null;
+  if (!awaitingWindow) yield* reconcile;
   const hosted: typeof query = ({ prompt, options }) => {
     const { settings, ...rest } = options ?? {};
     if (typeof prompt === "string" || typeof settings === "string") {
@@ -233,6 +428,10 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
       get: (target, property) =>
         property === "next"
           ? async (...args: []) => {
+              if (awaitingWindow && compaction.contextWindow() !== null) {
+                awaitingWindow = false;
+                runFork(reconcile);
+              }
               const result = await next(...args);
               if (result.done === true) return result;
               const message = asFailedStep(result.value, failedStep, placed);

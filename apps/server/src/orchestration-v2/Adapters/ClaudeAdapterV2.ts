@@ -190,6 +190,7 @@ import {
   type CompiledClaudeModelSelection,
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
+import * as ForkSettings from "../../fork/ForkSettings.ts";
 import * as Limbase from "../../fork/Limbase.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProcessRunner from "../../processRunner.ts";
@@ -6024,6 +6025,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const forkSettings = yield* Effect.serviceOption(ForkSettings.ForkSettingsStore);
   const { attachmentsDir, fileSystem, path, random, idAllocator, queryRunner } = adapterOptions;
   const loadModelCatalog = (
     adapterOptions.modelCatalog ?? Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG)
@@ -6040,6 +6042,13 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId,
     ) ??
     null;
+  const limbaseCompaction = (threadId: ThreadId, modelSelection: ModelSelection) =>
+    ForkSettings.compaction(forkSettings, {
+      threadId,
+      instanceId: adapterOptions.instanceId,
+      model: modelSelection.model,
+      contextWindow: () => claudeContextWindow(modelSelection),
+    });
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
   };
@@ -13774,6 +13783,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const limbaseQuery = yield* Limbase.queryFor(
             adapterOptions.settings,
             turnInput.providerThread,
+            limbaseCompaction(turnInput.threadId, turnInput.modelSelection),
           );
           // Read right before opening so an update during startup counts too.
           const openQueryRuntime = readProgram.pipe(
@@ -14938,6 +14948,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   existing: threadInput.existingProviderThread,
                   title: threadInput.title,
                   cwd: threadInput.runtimePolicy.cwd,
+                  compaction: limbaseCompaction(threadInput.threadId, threadInput.modelSelection),
                 })),
               });
               yield* rememberProviderThread(providerThread);

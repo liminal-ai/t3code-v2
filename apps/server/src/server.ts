@@ -9,6 +9,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as ForkSettings from "./fork/ForkSettings.ts";
 import * as HeldQueueResumer from "./fork/HeldQueueResumer.ts";
 import * as DelegatedRequestTimeout from "./fork/DelegatedRequestTimeout.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
@@ -806,6 +807,8 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   // One gate for the server, below hydration so the Claude adapter sees it: layers memoize by
   // reference, so the runtime layer shares it.
   Layer.provideMerge(ProviderInstallationGate.layer),
+  // The fork's settings store, below hydration so the Claude adapter reads it too.
+  Layer.provideMerge(ForkSettings.layer.pipe(Layer.provide(SqlitePersistence.layerConfig))),
   // Provider hydration builds the Claude runner, which reports agents to the same scanner the
   // terminal and preview layers share.
   Layer.provideMerge(layerPortScanner),
