@@ -291,11 +291,13 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  const pendingContinuation = (threadId: ThreadId) =>
+  // Core treats a run that completed before its checkpoint capture committed as still waiting,
+  // and starts no queued run behind it until the capture does.
+  const pendingWork = (threadId: ThreadId) =>
     sql<{ readonly effect_id: string }>`
       SELECT effect_id FROM orchestration_v2_effect_outbox
       WHERE thread_id = ${threadId}
-        AND effect_type = 'provider-runtime.continue'
+        AND effect_type IN ('provider-runtime.continue', 'checkpoint.capture')
         AND status IN ('pending', 'running')
       LIMIT 1
     `.pipe(
@@ -306,7 +308,7 @@ const make = Effect.gen(function* () {
   const quiet = Effect.fn("heldQueueResumer.quiet")(function* (threadId: ThreadId) {
     while (true) {
       const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
-      const pending = yield* pendingContinuation(threadId);
+      const pending = yield* pendingWork(threadId);
       if (pending !== undefined) {
         yield* outbox.awaitSettled(pending);
         continue;
