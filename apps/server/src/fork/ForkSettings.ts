@@ -163,7 +163,7 @@ const make = Effect.gen(function* () {
 export const layer = Layer.effect(ForkSettingsStore, make);
 
 export const compaction = (
-  store: Option.Option<ForkSettingsStore["Service"]>,
+  store: ForkSettingsStore["Service"] | undefined,
   input: {
     readonly threadId: ThreadId;
     readonly instanceId: ProviderInstanceId;
@@ -171,22 +171,21 @@ export const compaction = (
     readonly claudeContextWindow: () => number | null;
   },
 ): Limbase.Compaction | undefined =>
-  Option.match(store, {
-    onNone: () => undefined,
-    onSome: (settings) => ({
-      settings: Effect.all({
-        thread: settings.read({ scope: "thread", id: input.threadId }),
-        instance: settings.read({ scope: "instance", id: input.instanceId }),
-      }).pipe(
-        Effect.map(({ thread, instance }) => ({
-          thread: thread.limbaseCompaction ?? {},
-          instance: instance.limbaseCompaction ?? {},
-        })),
-      ),
-      model: input.model,
-      claudeContextWindow: input.claudeContextWindow,
-    }),
-  });
+  store === undefined
+    ? undefined
+    : {
+        settings: Effect.all({
+          thread: store.read({ scope: "thread", id: input.threadId }),
+          instance: store.read({ scope: "instance", id: input.instanceId }),
+        }).pipe(
+          Effect.map(({ thread, instance }) => ({
+            thread: thread.limbaseCompaction ?? {},
+            instance: instance.limbaseCompaction ?? {},
+          })),
+        ),
+        model: input.model,
+        claudeContextWindow: input.claudeContextWindow,
+      };
 
 export const RPC_AGGREGATES = {
   [FORK_SETTINGS_WS_METHODS.getThread]: "forkSettings",

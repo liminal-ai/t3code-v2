@@ -6017,6 +6017,7 @@ export interface ClaudeAdapterV2Options {
     ) => Effect.Effect<void>;
   };
   readonly installationGate?: ProviderInstallationGate.ProviderInstallationGate["Service"];
+  readonly forkSettings?: ForkSettings.ForkSettingsStore["Service"];
 }
 
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
@@ -6025,7 +6026,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
-  const forkSettings = yield* Effect.serviceOption(ForkSettings.ForkSettingsStore);
   const { attachmentsDir, fileSystem, path, random, idAllocator, queryRunner } = adapterOptions;
   const loadModelCatalog = (
     adapterOptions.modelCatalog ?? Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG)
@@ -6043,7 +6043,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
     ) ??
     null;
   const limbaseCompaction = (threadId: ThreadId, modelSelection: ModelSelection) =>
-    ForkSettings.compaction(forkSettings, {
+    ForkSettings.compaction(adapterOptions.forkSettings, {
       threadId,
       instanceId: adapterOptions.instanceId,
       model: modelSelection.model,
@@ -15606,7 +15606,8 @@ export type ClaudeAdapterV2DriverEnv =
   | McpProviderSessions.McpProviderSessions
   | Path.Path
   | ProviderInstallationGate.ProviderInstallationGate
-  | ServerConfig.ServerConfig;
+  | ServerConfig.ServerConfig
+  | ForkSettings.ForkSettingsStore;
 
 export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
   function* (
@@ -15624,6 +15625,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const serverConfig = yield* ServerConfig.ServerConfig;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const installationGate = yield* ProviderInstallationGate.ProviderInstallationGate;
+    const forkSettings = yield* ForkSettings.ForkSettingsStore;
     const baseEnvironment = yield* mergeClaudeProcessEnvironment(
       config,
       environment,
@@ -15648,6 +15650,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       queryRunner,
       continuationRequests,
       installationGate,
+      forkSettings,
       ...hooks,
     });
   },

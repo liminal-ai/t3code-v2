@@ -70,6 +70,7 @@ import * as ProviderInstallationGate from "./ProviderInstallationGate.ts";
 import * as ProviderInstanceRegistryHydration from "./ProviderInstanceRegistryHydration.ts";
 import * as PortScanner from "../preview/PortScanner.ts";
 import * as ServerConfig from "../config.ts";
+import * as ForkSettings from "../fork/ForkSettings.ts";
 import * as ServerSettingsModule from "../serverSettings.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import {
@@ -4388,6 +4389,7 @@ it.layer(
                   PortScanner.layerTest,
                   ProviderInstallationGate.layer,
                   SqlitePersistence.layerMemory,
+                  Layer.mock(ForkSettings.ForkSettingsStore)({}),
                 ),
               ),
             ),
@@ -4514,6 +4516,7 @@ it.layer(
                   PortScanner.layerTest,
                   ProviderInstallationGate.layer,
                   SqlitePersistence.layerMemory,
+                  Layer.mock(ForkSettings.ForkSettingsStore)({}),
                 ),
               ),
             ),
@@ -4657,6 +4660,7 @@ it.layer(
               PortScanner.layerTest,
               ProviderInstallationGate.layer,
               SqlitePersistence.layerMemory,
+              Layer.mock(ForkSettings.ForkSettingsStore)({}),
             ),
           ),
         ),

@@ -2036,9 +2036,12 @@ const captureSdkExecutablePaths = Effect.fn("captureSdkExecutablePaths")(functio
     {},
   ).pipe(
     Effect.provide(
-      ServerConfig.layerTest(process.cwd(), {
-        prefix: "t3-claude-binary-path-",
-      }),
+      Layer.merge(
+        ServerConfig.layerTest(process.cwd(), {
+          prefix: "t3-claude-binary-path-",
+        }),
+        Layer.mock(ForkSettings.ForkSettingsStore)({}),
+      ),
     ),
     Effect.provideService(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner, {
       allocateSessionId: Effect.succeed("native-thread-claude-binary-path"),
@@ -3958,6 +3961,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly offer?: (message: SDKUserMessage) => Effect.Effect<void>;
     readonly promptSuggestions?: boolean;
     readonly routeModelCatalog?: ClaudeAdapterV2.ClaudeAdapterV2Options["routeModelCatalog"];
+    readonly forkSettings?: ClaudeAdapterV2.ClaudeAdapterV2Options["forkSettings"];
   }) =>
     Effect.gen(function* () {
       const fileSystem = yield* FileSystem.FileSystem;
@@ -4024,6 +4028,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         idAllocator,
         ...(options?.onSessionInit ? { onSessionInit: options.onSessionInit } : {}),
         ...(options?.routeModelCatalog ? { routeModelCatalog: options.routeModelCatalog } : {}),
+        ...(options?.forkSettings ? { forkSettings: options.forkSettings } : {}),
         continuationRequests: {
           offer: (request) =>
             Effect.sync(() => {
@@ -7801,13 +7806,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         };
         const harness = yield* makeWakeHarnessWithOptions({
           settings: decodeClaudeSettings({ limbaseHome }),
-        }).pipe(
-          Effect.provideService(ForkSettings.ForkSettingsStore, {
+          forkSettings: {
             read: (owner) =>
               Effect.succeed(owner.scope === "instance" ? { limbaseCompaction: instance } : {}),
             write: () => Effect.void,
-          }),
-        );
+          },
+        });
         const limbaseThreadId = harness.providerThread.nativeMetadata?.limbaseThreadId ?? "";
         const now = yield* DateTime.now;
         const turn = Effect.fnUntraced(function* (ordinal: number, model: string) {
