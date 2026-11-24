@@ -128,6 +128,7 @@ it("shows what each empty field inherits, and what Limbase holds now", async () 
     .element(page.getByLabelText("Down to"))
     .toHaveAttribute("placeholder", "Default for 1M models: 120k");
   await expect.element(page.getByText("700k → 100k")).toBeVisible();
+  await expect.element(page.getByText(/^T3 owns this thread's Limbase policy\./)).toBeVisible();
 });
 
 it("refuses a value a guard rejects, saves one it accepts, and shows Limbase's refusal", async () => {

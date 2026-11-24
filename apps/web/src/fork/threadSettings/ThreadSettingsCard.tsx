@@ -95,6 +95,10 @@ function LimbaseCompactionGroup(props: {
           ? "Shares and defaults resolve once the model reports its context window."
           : `${view.model}, ${formatTokens(view.contextWindow)} window.`}
       </p>
+      <p className="text-2xs leading-snug text-muted-foreground">
+        T3 owns this thread's Limbase policy. One set with <code>limbase thread policy</code> lasts
+        until the session reopens, the model changes or a setting changes.
+      </p>
     </div>
   );
 }
