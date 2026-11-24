@@ -127,7 +127,11 @@ const make = Effect.gen(function* () {
     hasOtherLiveOwner,
     register: (pid: number) => {
       const provider = identity(pid);
-      if (provider === undefined || provider.ppid !== process.pid) {
+      // On Linux the ProcessLauncher, a child of this server, spawns for it.
+      const spawnedHere =
+        provider !== undefined &&
+        (provider.ppid === process.pid || identity(provider.ppid)?.ppid === process.pid);
+      if (provider === undefined || !spawnedHere) {
         throw new Error("Cannot identify spawned provider");
       }
       // A rename keeps startup from seeing a partial write. The child is gated

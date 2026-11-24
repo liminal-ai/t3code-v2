@@ -55,7 +55,52 @@ const ownedProcess = Effect.gen(function* () {
   };
 });
 
+// A stand-in for the ProcessLauncher: a child of the server that spawns the CLI.
+const launchedProcess = Effect.gen(function* () {
+  const launched = yield* Deferred.make<number>();
+  const exited = yield* Deferred.make<void>();
+  yield* Effect.acquireRelease(
+    Effect.sync(() => {
+      const launcher = NodeChildProcess.spawn(
+        process.execPath,
+        [
+          "-e",
+          `const cli = require("node:child_process").spawn(process.execPath, ["-e", "process.stdin.resume()"]);
+           process.send(cli.pid); process.on("disconnect", () => { cli.kill("SIGKILL"); process.exit(); });`,
+        ],
+        { stdio: ["pipe", "ignore", "ignore", "ipc"] },
+      );
+      launcher.once("message", (pid) => Deferred.doneUnsafe(launched, Effect.succeed(Number(pid))));
+      launcher.once("error", (error) => Deferred.doneUnsafe(launched, Effect.die(error)));
+      launcher.once("exit", () => Deferred.doneUnsafe(exited, Effect.void));
+      return launcher;
+    }),
+    (launcher) =>
+      Effect.sync(() => launcher.disconnect()).pipe(Effect.andThen(Deferred.await(exited))),
+  );
+  return yield* Deferred.await(launched);
+});
+
 describe.runIf(HostProcess.Platform.defaultValue() === "linux")("ProviderProcesses", () => {
+  it.live("registers a CLI the server's process launcher spawned, and no stranger's", () =>
+    Effect.gen(function* () {
+      const cliPid = yield* launchedProcess;
+      const context = yield* Layer.build(ProviderProcesses.layer);
+      const { register } = Context.get(context, ProviderProcesses.ProviderProcesses);
+      assert(register !== undefined);
+      register(cliPid)();
+      expect(() => register(process.ppid)).toThrow("Cannot identify spawned provider");
+    }).pipe(
+      Effect.scoped,
+      Effect.provideService(HostProcess.Platform, "linux"),
+      Effect.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "t3-launched-provider-" }).pipe(
+          Layer.provideMerge(NodeServices.layer),
+        ),
+      ),
+    ),
+  );
+
   it.live("reaps only recorded CLIs of dead servers before startup completes", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;
