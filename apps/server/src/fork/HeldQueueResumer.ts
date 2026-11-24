@@ -436,8 +436,8 @@ const make = Effect.gen(function* () {
     const message = (yield* projections.getMessagesById(threadId, [head.userMessageId])).get(
       head.userMessageId,
     );
-    // Upstream's queuedRunModelSelection: a delegated result, a scheduled delivery that picked no
-    // model, or an unbuffered monitor notice starts on the thread's current provider, not the one
+    // Upstream's queuedRunModelSelection: a delegated result, a message queued without a model of
+    // its own, or an unbuffered monitor notice starts on the thread's current provider, not the one
     // stored on the run.
     const followsThread =
       message !== undefined &&
