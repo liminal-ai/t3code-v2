@@ -3,47 +3,35 @@ import {
   AuthOrchestrationOperateScope,
   type EnvironmentId,
   formatTokens,
-  type LimbaseCompaction,
+  type LimbaseCompactionPatch,
   type LimbaseCompactionThreadView,
   type ThreadId,
 } from "@t3tools/contracts";
 
 import { ThreadDetailsSection } from "../../components/chat/ThreadDetailsSection";
-import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import {
-  refusalOf,
-  setThreadSettings,
-  threadSettingsQuery,
-  useRefreshAndWait,
-} from "./forkSettingsState";
+import { setThreadSettings, threadSettingsQuery } from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import { threadBlockingMessages, threadNotices, threadPlaceholders } from "./limbaseCompaction";
+import { useAcknowledgedWrites, type WriteStatus } from "./useAcknowledgedWrites";
 
 export function ThreadSettingsCard(props: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
 }) {
-  const atom = threadSettingsQuery({
-    environmentId: props.environmentId,
-    input: { threadId: props.threadId },
-  });
-  const query = useEnvironmentQuery(atom);
-  const refreshAndWait = useRefreshAndWait(atom);
   const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const save = useAtomCommand(setThreadSettings, { reportFailure: false });
-  const compaction = query.data?.limbaseCompaction;
-  if (compaction === undefined) return null;
-
-  const saveAndRefresh = async (next: LimbaseCompaction) => {
-    const result = await save({
+  const { data, status, write } = useAcknowledgedWrites(
+    threadSettingsQuery({
       environmentId: props.environmentId,
-      input: { threadId: props.threadId, settings: { limbaseCompaction: next } },
-    });
-    if (result._tag === "Success") await refreshAndWait();
-    return refusalOf(result);
-  };
+      input: { threadId: props.threadId },
+    }),
+    (settings) =>
+      save({ environmentId: props.environmentId, input: { threadId: props.threadId, settings } }),
+  );
+  const compaction = data?.limbaseCompaction;
+  if (compaction === undefined) return null;
 
   return (
     <ThreadDetailsSection
@@ -56,7 +44,8 @@ export function ThreadSettingsCard(props: {
           threadId={props.threadId}
           view={compaction}
           disabled={!canOperate}
-          saveAndRefresh={saveAndRefresh}
+          status={status}
+          write={(limbaseCompaction) => write({ limbaseCompaction })}
         />
       </div>
     </ThreadDetailsSection>
@@ -67,7 +56,8 @@ function LimbaseCompactionGroup(props: {
   readonly threadId: ThreadId;
   readonly view: LimbaseCompactionThreadView;
   readonly disabled: boolean;
-  readonly saveAndRefresh: (next: LimbaseCompaction) => Promise<string | null>;
+  readonly status: WriteStatus;
+  readonly write: (patch: LimbaseCompactionPatch) => Promise<string | null>;
 }) {
   const { view } = props;
   return (
@@ -87,7 +77,8 @@ function LimbaseCompactionGroup(props: {
         notices={threadNotices(view)}
         disabled={props.disabled}
         blockingMessages={(next) => threadBlockingMessages(view, next)}
-        saveAndRefresh={props.saveAndRefresh}
+        status={props.status}
+        write={props.write}
         renderRow={({ field, label, inputId, input }) => (
           <label key={field} htmlFor={inputId} className="grid min-w-0 gap-1">
             <span className="text-2xs text-muted-foreground">{label}</span>

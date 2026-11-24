@@ -9,7 +9,7 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { type AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useContext } from "react";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
@@ -58,17 +58,19 @@ export const setInstanceSettings = createEnvironmentRpcCommand(connectionAtomRun
   tag: FORK_SETTINGS_WS_METHODS.setInstance,
 });
 
+/** Resolves true once the query holds a fresh answer, false when it failed or timed out. */
 export function useRefreshAndWait(atom: Atom.Atom<AsyncResult.AsyncResult<unknown, unknown>>) {
   const registry = useContext(RegistryContext);
   return async () => {
     const before = registry.get(atom);
     registry.refresh(atom);
-    await waitForAtomValue({
+    const settled = await waitForAtomValue({
       registry,
       atom,
       predicate: (result) => result !== before && !result.waiting,
       timeoutMs: 15_000,
     });
+    return settled && AsyncResult.isSuccess(registry.get(atom));
   };
 }
 

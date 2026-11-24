@@ -30,6 +30,31 @@ export const ForkSettingsGroups = Schema.Struct({
 });
 export type ForkSettingsGroups = typeof ForkSettingsGroups.Type;
 
+/** A field it names takes the amount, or inherits again at null. A field it leaves out keeps its value. */
+export const LimbaseCompactionPatch = Schema.Struct({
+  compactAt: Schema.optionalKey(Schema.NullOr(TokenAmount)),
+  downTo: Schema.optionalKey(Schema.NullOr(TokenAmount)),
+});
+export type LimbaseCompactionPatch = typeof LimbaseCompactionPatch.Type;
+
+export const ForkSettingsPatch = Schema.Struct({
+  limbaseCompaction: Schema.optionalKey(LimbaseCompactionPatch),
+});
+export type ForkSettingsPatch = typeof ForkSettingsPatch.Type;
+
+export const patchLimbaseCompaction = (
+  value: LimbaseCompaction,
+  patch: LimbaseCompactionPatch,
+): LimbaseCompaction => {
+  const next: { -readonly [K in keyof LimbaseCompaction]: LimbaseCompaction[K] } = { ...value };
+  for (const field of ["compactAt", "downTo"] as const) {
+    const amount = patch[field];
+    if (amount === null) delete next[field];
+    else if (amount !== undefined) next[field] = amount;
+  }
+  return next;
+};
+
 /** What Limbase stores for a thread, in tokens. */
 export const LimbaseCompactPolicy = Schema.Struct({ trigger: PositiveInt, target: PositiveInt });
 export type LimbaseCompactPolicy = typeof LimbaseCompactPolicy.Type;
@@ -108,7 +133,7 @@ export const FORK_SETTINGS_RPCS = [
     error: rpcError,
   }),
   Rpc.make(FORK_SETTINGS_WS_METHODS.setThread, {
-    payload: Schema.Struct({ threadId: ThreadId, settings: ForkSettingsGroups }),
+    payload: Schema.Struct({ threadId: ThreadId, settings: ForkSettingsPatch }),
     success: ThreadSettingsView,
     error: rpcError,
   }),
@@ -118,7 +143,7 @@ export const FORK_SETTINGS_RPCS = [
     error: rpcError,
   }),
   Rpc.make(FORK_SETTINGS_WS_METHODS.setInstance, {
-    payload: Schema.Struct({ instanceId: ProviderInstanceId, settings: ForkSettingsGroups }),
+    payload: Schema.Struct({ instanceId: ProviderInstanceId, settings: ForkSettingsPatch }),
     success: InstanceSettingsView,
     error: rpcError,
   }),

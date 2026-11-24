@@ -11,7 +11,6 @@ import {
   resolveLimbaseCompaction,
   type ResolvedAmount,
   type ResolvedCompaction,
-  type TokenAmount,
 } from "@t3tools/contracts";
 
 export interface CompactionNotice {
@@ -28,17 +27,6 @@ const PROFILE_LABELS: Record<LimbaseProfileName, string> = {
   haiku: "Haiku models",
   standard: "200k models",
   "1m": "1M models",
-};
-
-export const withField = (
-  value: LimbaseCompaction,
-  field: CompactionField,
-  amount: TokenAmount | undefined,
-): LimbaseCompaction => {
-  const next: { -readonly [K in CompactionField]?: TokenAmount } = { ...value };
-  if (amount === undefined) delete next[field];
-  else next[field] = amount;
-  return next;
 };
 
 const resolveThreadCompaction = (view: LimbaseCompactionThreadView, value: LimbaseCompaction) =>

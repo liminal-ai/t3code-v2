@@ -2,20 +2,13 @@
 import {
   AuthProvidersManageScope,
   type EnvironmentId,
-  type LimbaseCompaction,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 
 import { SettingsRow } from "../../components/settings/settingsLayout";
-import { useEnvironmentQuery } from "../../state/query";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
-import {
-  instanceSettingsQuery,
-  refusalOf,
-  setInstanceSettings,
-  useRefreshAndWait,
-} from "./forkSettingsState";
+import { instanceSettingsQuery, setInstanceSettings } from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import {
   instanceBlockingMessages,
@@ -23,6 +16,7 @@ import {
   resolveInstanceCompaction,
   warningNotices,
 } from "./limbaseCompaction";
+import { useAcknowledgedWrites } from "./useAcknowledgedWrites";
 
 const DESCRIPTIONS = {
   compactAt:
@@ -54,25 +48,21 @@ function LimbaseInstanceCompactionRows(props: {
   readonly environmentId: EnvironmentId;
   readonly instanceId: ProviderInstanceId;
 }) {
-  const atom = instanceSettingsQuery({
-    environmentId: props.environmentId,
-    input: { instanceId: props.instanceId },
-  });
-  const query = useEnvironmentQuery(atom);
-  const refreshAndWait = useRefreshAndWait(atom);
   const canManage = useEnvironmentScope(props.environmentId, AuthProvidersManageScope);
   const save = useAtomCommand(setInstanceSettings, { reportFailure: false });
-  const compaction = query.data?.limbaseCompaction;
-  if (compaction === undefined) return null;
-
-  const saveAndRefresh = async (next: LimbaseCompaction) => {
-    const result = await save({
+  const { data, status, write } = useAcknowledgedWrites(
+    instanceSettingsQuery({
       environmentId: props.environmentId,
-      input: { instanceId: props.instanceId, settings: { limbaseCompaction: next } },
-    });
-    if (result._tag === "Success") await refreshAndWait();
-    return refusalOf(result);
-  };
+      input: { instanceId: props.instanceId },
+    }),
+    (settings) =>
+      save({
+        environmentId: props.environmentId,
+        input: { instanceId: props.instanceId, settings },
+      }),
+  );
+  const compaction = data?.limbaseCompaction;
+  if (compaction === undefined) return null;
 
   return (
     <div data-testid="instance-limbase-compaction">
@@ -83,7 +73,8 @@ function LimbaseInstanceCompactionRows(props: {
         notices={warningNotices(resolveInstanceCompaction(compaction.defaults, compaction.value))}
         disabled={!canManage}
         blockingMessages={(next) => instanceBlockingMessages(compaction.defaults, next)}
-        saveAndRefresh={saveAndRefresh}
+        status={status}
+        write={(limbaseCompaction) => write({ limbaseCompaction })}
         messagesClassName="px-4 pb-3 sm:px-5"
         renderRow={({ field, label, inputId, input }) => (
           <SettingsRow

@@ -3,10 +3,11 @@ import {
   type ClaudeSettings,
   FORK_SETTINGS_WS_METHODS,
   ForkSettingsError,
-  type ForkSettingsGroups,
+  type ForkSettingsPatch,
   type InstanceSettingsView,
-  type LimbaseCompaction,
+  type LimbaseCompactionPatch,
   type ModelSelection,
+  patchLimbaseCompaction,
   ProviderDriverKind,
   type ProviderInstanceId,
   type ThreadId,
@@ -71,6 +72,7 @@ const handlersFor = Effect.fnUntraced(function* (
       claude,
       limbaseThreadId,
       instance,
+      stored: (yield* store.read({ scope: "thread", id: threadId })).limbaseCompaction ?? {},
       model: thread.modelSelection.model,
       contextWindow:
         (yield* catalogWindow(claude, thread.modelSelection)) ??
@@ -85,12 +87,11 @@ const handlersFor = Effect.fnUntraced(function* (
   ): Effect.fn.Return<ThreadSettingsView, ForkSettingsError> {
     const limbase = yield* limbaseThread(threadId);
     if (limbase === undefined) return {};
-    const value = (yield* store.read({ scope: "thread", id: threadId })).limbaseCompaction ?? {};
     return {
       limbaseCompaction: yield* Limbase.threadCompactionView({
         settings: limbase.claude,
         limbaseThreadId: limbase.limbaseThreadId,
-        value,
+        value: limbase.stored,
         instance: limbase.instance,
         model: limbase.model,
         contextWindow: limbase.contextWindow,
@@ -100,12 +101,13 @@ const handlersFor = Effect.fnUntraced(function* (
 
   const applyThreadCompaction = Effect.fn("ForkSettings.applyThreadCompaction")(function* (
     threadId: ThreadId,
-    value: LimbaseCompaction,
+    patch: LimbaseCompactionPatch,
   ) {
     const limbase = yield* limbaseThread(threadId);
     if (limbase === undefined) {
       return yield* refusal("Limbase compaction applies only to a thread on a Limbase instance.");
     }
+    const value = patchLimbaseCompaction(limbase.stored, patch);
     const resolved = Limbase.resolveCompaction({
       thread: value,
       instance: limbase.instance,
@@ -116,10 +118,12 @@ const handlersFor = Effect.fnUntraced(function* (
     if (blocking.length > 0) {
       return yield* refusal(blocking.map((problem) => problem.message).join(" "));
     }
-    if (limbase.limbaseThreadId === undefined || resolved.policy === undefined) return;
-    yield* Limbase.applyPolicy(limbase.claude, limbase.limbaseThreadId, resolved.policy).pipe(
-      Effect.mapError((error) => refusal(`Limbase: ${error.detail}`)),
-    );
+    if (limbase.limbaseThreadId !== undefined && resolved.policy !== undefined) {
+      yield* Limbase.applyPolicy(limbase.claude, limbase.limbaseThreadId, resolved.policy).pipe(
+        Effect.mapError((error) => refusal(`Limbase: ${error.detail}`)),
+      );
+    }
+    return value;
   });
 
   const instanceView = Effect.fn("ForkSettings.instanceView")(function* (
@@ -137,13 +141,15 @@ const handlersFor = Effect.fnUntraced(function* (
 
   const checkInstanceCompaction = Effect.fn("ForkSettings.checkInstanceCompaction")(function* (
     instanceId: ProviderInstanceId,
-    value: LimbaseCompaction,
+    patch: LimbaseCompactionPatch,
   ) {
     if (!hasLimbaseHome(claudeSettingsOf(yield* readSettings, instanceId))) {
       return yield* refusal(
         "Limbase compaction applies only to a Claude instance with a Limbase home.",
       );
     }
+    const stored = yield* store.read({ scope: "instance", id: instanceId });
+    const value = patchLimbaseCompaction(stored.limbaseCompaction ?? {}, patch);
     const resolved = Limbase.resolveCompaction({
       thread: {},
       instance: value,
@@ -154,6 +160,7 @@ const handlersFor = Effect.fnUntraced(function* (
     if (blocking.length > 0) {
       return yield* refusal(blocking.map((problem) => problem.message).join(" "));
     }
+    return value;
   });
 
   return {
@@ -161,12 +168,15 @@ const handlersFor = Effect.fnUntraced(function* (
       threadView(input.threadId),
     [FORK_SETTINGS_WS_METHODS.setThread]: Effect.fn("ForkSettings.setThread")(function* (input: {
       readonly threadId: ThreadId;
-      readonly settings: ForkSettingsGroups;
+      readonly settings: ForkSettingsPatch;
     }) {
-      if (input.settings.limbaseCompaction !== undefined) {
-        yield* applyThreadCompaction(input.threadId, input.settings.limbaseCompaction);
+      const { limbaseCompaction } = input.settings;
+      if (limbaseCompaction !== undefined) {
+        yield* store.write(
+          { scope: "thread", id: input.threadId },
+          { limbaseCompaction: yield* applyThreadCompaction(input.threadId, limbaseCompaction) },
+        );
       }
-      yield* store.write({ scope: "thread", id: input.threadId }, input.settings);
       return yield* threadView(input.threadId);
     }),
     [FORK_SETTINGS_WS_METHODS.getInstance]: (input: { readonly instanceId: ProviderInstanceId }) =>
@@ -174,12 +184,20 @@ const handlersFor = Effect.fnUntraced(function* (
     [FORK_SETTINGS_WS_METHODS.setInstance]: Effect.fn("ForkSettings.setInstance")(
       function* (input: {
         readonly instanceId: ProviderInstanceId;
-        readonly settings: ForkSettingsGroups;
+        readonly settings: ForkSettingsPatch;
       }) {
-        if (input.settings.limbaseCompaction !== undefined) {
-          yield* checkInstanceCompaction(input.instanceId, input.settings.limbaseCompaction);
+        const { limbaseCompaction } = input.settings;
+        if (limbaseCompaction !== undefined) {
+          yield* store.write(
+            { scope: "instance", id: input.instanceId },
+            {
+              limbaseCompaction: yield* checkInstanceCompaction(
+                input.instanceId,
+                limbaseCompaction,
+              ),
+            },
+          );
         }
-        yield* store.write({ scope: "instance", id: input.instanceId }, input.settings);
         return yield* instanceView(input.instanceId);
       },
     ),

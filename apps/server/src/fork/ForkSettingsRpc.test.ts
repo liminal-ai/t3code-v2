@@ -2,6 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   FORK_SETTINGS_WS_METHODS,
+  type LimbaseCompactionPatch,
   ProviderDriverKind,
   ProviderInstanceId,
   ProviderThreadId,
@@ -64,8 +65,8 @@ const threads = {
   [ON_LIMBASE]: {
     instance: LIMBASE,
     limbaseThreadId: "th_rpc",
-    model: "claude-sonnet-4-5",
-    turns: [reported("claude-sonnet-4-5", 200_000)],
+    model: "claude-sonnet-4-6",
+    turns: [reported("claude-sonnet-4-6", 200_000)],
   },
   [PLAIN_THREAD]: {
     instance: PLAIN,
@@ -186,43 +187,67 @@ it.layer(Layer.mergeAll(NodeServices.layer, SqlitePersistence.layerMemory))(
       }),
     );
 
-    it.effect("applies a thread value at once, and returns a guard's or Limbase's refusal", () =>
-      Effect.gen(function* () {
-        const rpc = yield* handlers;
-        const set = (downTo: number) =>
-          rpc[FORK_SETTINGS_WS_METHODS.setThread]({
-            threadId: ON_LIMBASE,
-            settings: {
-              limbaseCompaction: { compactAt: { percent: 75 }, downTo: { tokens: downTo } },
-            },
+    it.effect(
+      "saves only the fields a write names, and returns a guard's or Limbase's refusal",
+      () =>
+        Effect.gen(function* () {
+          const rpc = yield* handlers;
+          const set = (limbaseCompaction: LimbaseCompactionPatch) =>
+            rpc[FORK_SETTINGS_WS_METHODS.setThread]({
+              threadId: ON_LIMBASE,
+              settings: { limbaseCompaction },
+            });
+          yield* set({ compactAt: null, downTo: null });
+          const saved = yield* set({ compactAt: { percent: 75 } });
+          assert.deepEqual(saved.limbaseCompaction?.applied, { trigger: 150_000, target: 100_000 });
+          const both = yield* set({ downTo: { tokens: 60_000 } });
+          assert.deepEqual(both.limbaseCompaction?.value, {
+            compactAt: { percent: 75 },
+            downTo: { tokens: 60_000 },
           });
-        const saved = yield* set(60_000);
-        assert.deepEqual(saved.limbaseCompaction?.applied, { trigger: 150_000, target: 60_000 });
-        const guard = yield* Effect.flip(set(160_000));
-        assert.equal(guard.message, "Down to (160k) must be below compact at (75%).");
-        limbase.refuse = "limbase call failed: StoreUnavailable";
-        const refused = yield* Effect.flip(set(50_000));
-        limbase.refuse = undefined;
-        assert.equal(
-          refused.message,
-          "Limbase: the service refused the compaction policy (limbase call failed: StoreUnavailable)",
-        );
-        const after = yield* rpc[FORK_SETTINGS_WS_METHODS.getThread]({ threadId: ON_LIMBASE });
-        assert.deepEqual(after.limbaseCompaction?.value, {
-          compactAt: { percent: 75 },
-          downTo: { tokens: 60_000 },
-        });
-        const plain = yield* Effect.flip(
-          rpc[FORK_SETTINGS_WS_METHODS.setThread]({
-            threadId: PLAIN_THREAD,
-            settings: { limbaseCompaction: {} },
-          }),
-        );
-        assert.equal(
-          plain.message,
-          "Limbase compaction applies only to a thread on a Limbase instance.",
-        );
-      }),
+          assert.deepEqual(both.limbaseCompaction?.applied, { trigger: 150_000, target: 60_000 });
+          const guard = yield* Effect.flip(set({ downTo: { tokens: 160_000 } }));
+          assert.equal(guard.message, "Down to (160k) must be below compact at (75%).");
+          limbase.refuse = "limbase call failed: StoreUnavailable";
+          const refused = yield* Effect.flip(set({ downTo: { tokens: 50_000 } }));
+          limbase.refuse = undefined;
+          assert.equal(
+            refused.message,
+            "Limbase: the service refused the compaction policy (limbase call failed: StoreUnavailable)",
+          );
+          const after = yield* rpc[FORK_SETTINGS_WS_METHODS.getThread]({ threadId: ON_LIMBASE });
+          assert.deepEqual(after.limbaseCompaction?.value, {
+            compactAt: { percent: 75 },
+            downTo: { tokens: 60_000 },
+          });
+          const cleared = yield* set({ compactAt: null });
+          assert.deepEqual(cleared.limbaseCompaction?.value, { downTo: { tokens: 60_000 } });
+
+          const instance = (limbaseCompaction: LimbaseCompactionPatch) =>
+            rpc[FORK_SETTINGS_WS_METHODS.setInstance]({
+              instanceId: LIMBASE,
+              settings: { limbaseCompaction },
+            }).pipe(Effect.map((view) => view.limbaseCompaction?.value));
+          assert.deepEqual(yield* instance({ compactAt: { tokens: 640_000 } }), {
+            compactAt: { tokens: 640_000 },
+            downTo: { tokens: 100_000 },
+          });
+          assert.deepEqual(yield* instance({ downTo: { tokens: 95_000 } }), {
+            compactAt: { tokens: 640_000 },
+            downTo: { tokens: 95_000 },
+          });
+
+          const plain = yield* Effect.flip(
+            rpc[FORK_SETTINGS_WS_METHODS.setThread]({
+              threadId: PLAIN_THREAD,
+              settings: { limbaseCompaction: {} },
+            }),
+          );
+          assert.equal(
+            plain.message,
+            "Limbase compaction applies only to a thread on a Limbase instance.",
+          );
+        }),
     );
   },
 );

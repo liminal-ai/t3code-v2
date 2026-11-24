@@ -1,6 +1,6 @@
 import {
   EnvironmentId,
-  type LimbaseCompaction,
+  type ForkSettingsPatch,
   type LimbaseCompactionThreadView,
   ProviderInstanceId,
   ThreadId,
@@ -12,28 +12,45 @@ import { page, userEvent } from "vite-plus/test/browser";
 
 import { render } from "../../../test/render";
 
+type View = ThreadSettingsView;
+
 const state = vi.hoisted(() => ({
-  view: {} as ThreadSettingsView,
-  saved: [] as unknown[],
+  /** What the server holds, by owner; a reload publishes it to the card. */
+  server: new Map<string, unknown>(),
+  published: new Map<string, unknown>(),
+  owners: new Map<unknown, string>(),
+  saved: [] as Array<{ owner: string; patch: unknown }>,
   refuse: null as string | null,
-  reload: async () => {},
+  reload: async (): Promise<boolean> => true,
   listeners: new Set<() => void>(),
 }));
 
-const publish = (view: ThreadSettingsView) => {
-  state.view = view;
+const notify = () => {
   for (const listener of state.listeners) listener();
+};
+
+const publish = (owner: string, view: unknown) => {
+  state.server.set(owner, view);
+  state.published.set(owner, view);
+  notify();
+};
+
+const reloadAll = async () => {
+  for (const [owner, view] of state.server) state.published.set(owner, view);
+  notify();
+  return true;
 };
 
 vi.mock(import("~/state/query"), async (importOriginal) => ({
   ...(await importOriginal()),
-  useEnvironmentQuery: (() => {
+  useEnvironmentQuery: ((atom: unknown) => {
+    const owner = state.owners.get(atom) ?? "thread";
     const data = useSyncExternalStore(
       (listener) => {
         state.listeners.add(listener);
         return () => state.listeners.delete(listener);
       },
-      () => state.view,
+      () => state.published.get(owner) ?? null,
     );
     return { data, refresh: () => {} };
   }) as never,
@@ -45,14 +62,34 @@ vi.mock(import("~/state/session"), async (importOriginal) => ({
 vi.mock(import("~/state/use-atom-command"), async () => {
   const { AsyncResult } = await import("effect/reactivity");
   const Cause = await import("effect/Cause");
-  const { ForkSettingsError } = await import("@t3tools/contracts");
+  const { ForkSettingsError, patchLimbaseCompaction } = await import("@t3tools/contracts");
   return {
-    useAtomCommand: (() => async (value: unknown) => {
-      state.saved.push(value);
-      return state.refuse === null
-        ? AsyncResult.success(state.view)
-        : AsyncResult.failure(Cause.fail(new ForkSettingsError({ message: state.refuse })));
-    }) as never,
+    useAtomCommand: (() =>
+      async ({
+        input,
+      }: {
+        input: { threadId?: string; instanceId?: string; settings: ForkSettingsPatch };
+      }) => {
+        const owner = input.threadId ?? input.instanceId ?? "";
+        state.saved.push({ owner, patch: input.settings.limbaseCompaction });
+        if (state.refuse !== null) {
+          return AsyncResult.failure(Cause.fail(new ForkSettingsError({ message: state.refuse })));
+        }
+        const current = state.server.get(owner) as {
+          limbaseCompaction: { value: Record<string, unknown> };
+        };
+        const next = {
+          limbaseCompaction: {
+            ...current.limbaseCompaction,
+            value: patchLimbaseCompaction(
+              current.limbaseCompaction.value,
+              input.settings.limbaseCompaction ?? {},
+            ),
+          },
+        };
+        state.server.set(owner, next);
+        return AsyncResult.success(next);
+      }) as never,
   };
 });
 
@@ -60,14 +97,18 @@ vi.mock(import("./forkSettingsState"), async (importOriginal) => ({
   ...(await importOriginal()),
   useRefreshAndWait: (() => () => state.reload()) as never,
 }));
-
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import { threadSettingsSignal } from "./forkSettingsState";
+import {
+  instanceSettingsQuery,
+  threadSettingsSignal,
+  threadSettingsQuery,
+} from "./forkSettingsState";
 import { LimbaseInstanceCompaction } from "./LimbaseInstanceCompaction";
 import { ThreadSettingsCard } from "./ThreadSettingsCard";
 
 const environmentId = EnvironmentId.make("environment");
 const threadId = ThreadId.make("thread");
+const instanceId = ProviderInstanceId.make("claudeLimbase");
 const DEFAULTS = {
   profiles: {
     haiku: { trigger: 85_000, target: 42_000 },
@@ -93,19 +134,40 @@ const limbaseThread = (
   },
 });
 
-const savedCompaction = () =>
-  state.saved.map(
-    (value) =>
-      (value as { input: { settings: { limbaseCompaction: LimbaseCompaction } } }).input.settings
-        .limbaseCompaction,
-  );
+const ownThread = (id: string) => {
+  const threadId = ThreadId.make(id);
+  state.owners.set(threadSettingsQuery({ environmentId, input: { threadId } }), id);
+  return threadId;
+};
 
-const reset = (view: ThreadSettingsView) => {
+const savedCompaction = (owner = "thread") =>
+  state.saved.filter((save) => save.owner === owner).map(({ patch }) => patch);
+
+const reset = (view: View, owner = "thread") => {
+  state.server.clear();
+  state.published.clear();
   state.saved = [];
   state.refuse = null;
-  state.reload = async () => {};
-  publish(view);
+  state.reload = reloadAll;
+  ownThread(owner);
+  publish(owner, view);
 };
+
+/** Holds each reload until the test releases it, oldest first. */
+const holdReloads = () => {
+  const held: Array<() => void> = [];
+  state.reload = () =>
+    new Promise<boolean>((resolve) => {
+      held.push(() => resolve(reloadAll()));
+    });
+  return async () => {
+    await expect.poll(() => held.length).toBeGreaterThan(0);
+    held.shift()!();
+  };
+};
+
+const serverValue = (owner = "thread") =>
+  (state.server.get(owner) as View | undefined)?.limbaseCompaction?.value;
 
 it("shows nothing for a thread that is not on Limbase", async () => {
   reset({});
@@ -176,10 +238,13 @@ it("warns that a down to of 300k or more turns cold return off", async () => {
 
 it("edits the instance's compaction only on an instance with a Limbase home", async () => {
   reset({});
-  state.view = {
+  state.owners.set(
+    instanceSettingsQuery({ environmentId, input: { instanceId } }),
+    "claudeLimbase",
+  );
+  publish("claudeLimbase", {
     limbaseCompaction: { value: { compactAt: { tokens: 700_000 } }, defaults: DEFAULTS },
-  } as never;
-  const instanceId = ProviderInstanceId.make("claudeLimbase");
+  });
   await using screen = await render(
     <>
       <LimbaseInstanceCompaction
@@ -202,19 +267,12 @@ it("edits the instance's compaction only on an instance with a Limbase home", as
     .toHaveAttribute("placeholder", "Default: 120k on 1M, 70k on 200k");
   await userEvent.fill(compactAt, "");
   await userEvent.keyboard("{Enter}");
-  expect(savedCompaction()).toEqual([{}]);
+  expect(savedCompaction("claudeLimbase")).toEqual([{ compactAt: null }]);
 });
 
-it("holds both fields while a save and its refresh are in flight, and keeps each saved edit", async () => {
+it("holds both fields while a save and its refresh are in flight, and sends only the field each edit changed", async () => {
   reset(limbaseThread());
-  let finishReload = () => {};
-  state.reload = () =>
-    new Promise<void>((resolve) => {
-      finishReload = () => {
-        publish(limbaseThread({ value: { compactAt: { tokens: 650_000 } } }));
-        resolve();
-      };
-    });
+  const finishReload = holdReloads();
   await using _screen = await render(
     <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
   );
@@ -226,15 +284,67 @@ it("holds both fields while a save and its refresh are in flight, and keeps each
   await expect.element(downTo).toHaveAttribute("readonly");
   await expect.element(compactAt).toHaveAttribute("readonly");
 
-  finishReload();
+  await finishReload();
   await expect.element(page.getByRole("status")).not.toBeInTheDocument();
   await expect.element(compactAt).toHaveValue("650k");
   await userEvent.fill(downTo, "90k");
   await userEvent.keyboard("{Enter}");
+  await finishReload();
+  await expect.element(page.getByRole("status")).not.toBeInTheDocument();
   expect(savedCompaction()).toEqual([
     { compactAt: { tokens: 650_000 } },
-    { compactAt: { tokens: 650_000 }, downTo: { tokens: 90_000 } },
+    { downTo: { tokens: 90_000 } },
   ]);
+  expect(serverValue()).toEqual({
+    compactAt: { tokens: 650_000 },
+    downTo: { tokens: 90_000 },
+  });
+});
+
+it("keeps the saved value and the lock when the refresh fails, retries, and then builds on the save", async () => {
+  reset(limbaseThread({ value: { compactAt: { tokens: 625_000 } } }));
+  const attempts: string[] = [];
+  let failFirstReload = () => {};
+  state.reload = async () => {
+    attempts.push("reload");
+    if (attempts.length > 1) return reloadAll();
+    await new Promise<void>((resolve) => {
+      failFirstReload = resolve;
+    });
+    return false;
+  };
+  await using _screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+  );
+  const compactAt = page.getByLabelText("Compact at");
+  const downTo = page.getByLabelText("Down to");
+  await userEvent.fill(compactAt, "640k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("status")).toHaveTextContent("Saving…");
+  await expect.element(compactAt).toHaveValue("640k");
+  await expect.poll(() => attempts.length).toBe(1);
+  failFirstReload();
+  await expect
+    .element(page.getByRole("status"))
+    .toHaveTextContent("Saved. The card could not reload its settings and is trying again.");
+  await expect.element(compactAt).toHaveValue("640k");
+  await expect.element(downTo).toHaveAttribute("readonly");
+  await expect.element(compactAt).toHaveAttribute("readonly");
+
+  await expect.element(page.getByRole("status"), { timeout: 5_000 }).not.toBeInTheDocument();
+  expect(attempts).toEqual(["reload", "reload"]);
+  await expect.element(compactAt).toHaveValue("640k");
+  await userEvent.fill(downTo, "95k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+  expect(savedCompaction()).toEqual([
+    { compactAt: { tokens: 640_000 } },
+    { downTo: { tokens: 95_000 } },
+  ]);
+  expect(serverValue()).toEqual({
+    compactAt: { tokens: 640_000 },
+    downTo: { tokens: 95_000 },
+  });
 });
 
 it("clears a field's alert when the field goes back to its saved value", async () => {

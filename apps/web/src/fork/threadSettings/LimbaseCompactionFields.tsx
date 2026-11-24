@@ -1,17 +1,24 @@
-/* oxlint-disable t3code/no-untranslated-copy -- fork copy stays English, so the catalogs stay upstream's */
 import {
   type CompactionField,
   formatTokenAmount,
   type LimbaseCompaction,
+  type LimbaseCompactionPatch,
   parseTokenAmount,
+  patchLimbaseCompaction,
 } from "@t3tools/contracts";
 import { useState } from "react";
 
 import { cn } from "../../lib/utils";
 import { DraftInput } from "../../components/ui/draft-input";
-import { COMPACTION_FIELDS, type CompactionNotice, withField } from "./limbaseCompaction";
+import { COMPACTION_FIELDS, type CompactionNotice } from "./limbaseCompaction";
+import type { WriteStatus } from "./useAcknowledgedWrites";
 
 const UNREADABLE = "Write tokens, like 700k, or a share of the window, like 70%.";
+
+const STATUS_TEXT = {
+  saving: "Saving…",
+  retrying: "Saved. The card could not reload its settings and is trying again.",
+} as const satisfies Record<NonNullable<WriteStatus>, string>;
 
 type ByField = Partial<Record<CompactionField, string>>;
 
@@ -41,7 +48,8 @@ export function LimbaseCompactionFields(props: {
   readonly notices: ReadonlyArray<CompactionNotice>;
   readonly disabled: boolean;
   readonly blockingMessages: (next: LimbaseCompaction) => ReadonlyArray<string>;
-  readonly saveAndRefresh: (next: LimbaseCompaction) => Promise<string | null>;
+  readonly status: WriteStatus;
+  readonly write: (patch: LimbaseCompactionPatch) => Promise<string | null>;
   readonly messagesClassName?: string;
   readonly renderRow: (row: {
     readonly field: CompactionField;
@@ -51,7 +59,6 @@ export function LimbaseCompactionFields(props: {
   }) => React.ReactNode;
 }) {
   const { drafts, setDrafts, refusals, setRefusals } = useDraftsUntilValueChanges(props.value);
-  const [saving, setSaving] = useState(false);
 
   const commit = async (field: CompactionField, text: string) => {
     const draft = (next: string | null) => setDrafts((current) => withEntry(current, field, next));
@@ -66,12 +73,10 @@ export function LimbaseCompactionFields(props: {
     draft(text);
     const amount = text.trim() === "" ? undefined : parseTokenAmount(text);
     if (text.trim() !== "" && amount === undefined) return refuse(UNREADABLE);
-    const next = withField(props.value, field, amount);
-    const blocking = props.blockingMessages(next);
+    const patch = { [field]: amount ?? null };
+    const blocking = props.blockingMessages(patchLimbaseCompaction(props.value, patch));
     if (blocking.length > 0) return refuse(blocking.join(" "));
-    setSaving(true);
-    const refused = await props.saveAndRefresh(next);
-    setSaving(false);
+    const refused = await props.write(patch);
     if (refused === null) draft(null);
     refuse(refused);
   };
@@ -101,7 +106,7 @@ export function LimbaseCompactionFields(props: {
               value={drafts[field] ?? (own === undefined ? "" : formatTokenAmount(own))}
               placeholder={props.placeholders[field]}
               disabled={props.disabled}
-              readOnly={saving}
+              readOnly={props.status !== null}
               aria-invalid={refusals[field] !== undefined || undefined}
               onCommit={(next) => void commit(field, next)}
               spellCheck={false}
@@ -109,11 +114,11 @@ export function LimbaseCompactionFields(props: {
           ),
         });
       })}
-      {messages.length > 0 || saving ? (
+      {messages.length > 0 || props.status !== null ? (
         <div className={cn("flex flex-col gap-1", props.messagesClassName)}>
-          {saving ? (
+          {props.status !== null ? (
             <p role="status" className="text-2xs leading-snug text-muted-foreground">
-              Saving…
+              {STATUS_TEXT[props.status]}
             </p>
           ) : null}
           {messages.map((message) => (
