@@ -103,7 +103,7 @@ function LimbaseCompactionGroup(props: {
       />
       <p className="text-2xs leading-snug text-muted-foreground">
         {view.contextWindow === null
-          ? "Shares and defaults resolve once the model reports its context window."
+          ? `${view.model}, window unknown until Claude reports it. Nothing you save reaches Limbase until then.`
           : `${view.model}, ${formatTokens(view.contextWindow)} window.`}
       </p>
       <p className="text-2xs leading-snug text-muted-foreground">

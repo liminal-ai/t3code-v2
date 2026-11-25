@@ -99,9 +99,7 @@ const handlersFor = Effect.fnUntraced(function* (
       (yield* catalogWindow(claude, thread.modelSelection)) ??
       (activeId === null
         ? null
-        : yield* reportedWindow(threadId, activeId, thread.modelSelection.model)) ??
-      active?.contextUsage?.maxTokens ??
-      null;
+        : yield* reportedWindow(threadId, activeId, thread.modelSelection.model));
     return {
       claude,
       limbaseThreadId: active?.nativeMetadata?.limbaseThreadId,
@@ -150,7 +148,11 @@ const handlersFor = Effect.fnUntraced(function* (
     if (blocking.length > 0) {
       return yield* refusal(blocking.map((problem) => problem.message).join(" "));
     }
-    if (limbase.limbaseThreadId !== undefined && resolved.policy !== undefined) {
+    if (
+      limbase.limbaseThreadId !== undefined &&
+      limbase.contextWindow !== null &&
+      resolved.policy !== undefined
+    ) {
       yield* Limbase.applyPolicy(limbase.claude, limbase.limbaseThreadId, resolved.policy).pipe(
         Effect.mapError((error) => refusal(`Limbase: ${error.detail}`)),
       );

@@ -63,9 +63,19 @@ const ON_LIMBASE = ThreadId.make("thread-on-limbase");
 const PLAIN_THREAD = ThreadId.make("thread-plain");
 const WIDE = ThreadId.make("thread-wide");
 const SWITCHED = ThreadId.make("thread-switched");
+const UNREPORTED = ThreadId.make("thread-unreported");
 
 const reported = (model: string, maxTokens: number) => ({ model, maxTokens });
-const threads = {
+const threads: Record<
+  ThreadId,
+  {
+    readonly instance: ProviderInstanceId;
+    readonly limbaseThreadId: string | undefined;
+    readonly model: string;
+    readonly turns: Array<ReturnType<typeof reported>>;
+    readonly rowWindow?: number;
+  }
+> = {
   [ON_LIMBASE]: {
     instance: LIMBASE,
     limbaseThreadId: "th_rpc",
@@ -90,6 +100,13 @@ const threads = {
     model: "gateway-model",
     turns: [reported("claude-haiku-5-5", 1_000_000)],
   },
+  [UNREPORTED]: {
+    instance: LIMBASE,
+    limbaseThreadId: "th_unreported",
+    model: "gateway-sonnet[1m]",
+    turns: [reported("claude-haiku-5-5", 1_000_000)],
+    rowWindow: 1_000_000,
+  },
 };
 
 const recordReads: Array<{ readonly fields: ReadonlyArray<string>; readonly filter: unknown }> = [];
@@ -101,7 +118,7 @@ const orchestrator = Layer.succeed(OrchestratorV2, {
     filter?: { readonly latestProviderTurnUsageOnly?: true },
   ) => {
     recordReads.push({ fields, filter });
-    const thread = threads[threadId as keyof typeof threads]!;
+    const thread = threads[threadId]!;
     const row = ProviderThreadId.make(`provider-thread:${threadId}`);
     const providerTurns = thread.turns.map((turn) => ({
       providerThreadId: row,
@@ -120,7 +137,10 @@ const orchestrator = Layer.succeed(OrchestratorV2, {
             providerThreads: [
               {
                 id: row,
-                contextUsage: null,
+                contextUsage:
+                  thread.rowWindow === undefined
+                    ? null
+                    : { usedTokens: 1, maxTokens: thread.rowWindow },
                 nativeMetadata:
                   thread.limbaseThreadId === undefined
                     ? null
@@ -246,6 +266,48 @@ it.layer(Layer.mergeAll(NodeServices.layer, SqlitePersistence.layerMemory))(
         );
         assert.isNull(yield* windowOf(SWITCHED), "a turn on another model gives no window");
       }),
+    );
+
+    it.effect(
+      "sends Limbase nothing for a model that has reported no window, then applies once it reports one",
+      () =>
+        Effect.gen(function* () {
+          const rpc = yield* handlers;
+          const set = (limbaseCompaction: LimbaseCompactionPatch) =>
+            rpc[FORK_SETTINGS_WS_METHODS.setThread]({
+              threadId: UNREPORTED,
+              settings: { limbaseCompaction },
+            }).pipe(Effect.map((view) => view.limbaseCompaction));
+          limbase.held.set("th_unreported", { trigger: 640_000, target: 95_000 });
+
+          const waiting = yield* set({ compactAt: { tokens: 640_000 }, downTo: { percent: 15 } });
+          assert.deepEqual(
+            limbase.held.get("th_unreported"),
+            { trigger: 640_000, target: 95_000 },
+            "a window the provider row or a turn reported for another model is not this model's",
+          );
+          assert.isNull(waiting?.contextWindow);
+          assert.deepEqual(waiting?.value, {
+            compactAt: { tokens: 640_000 },
+            downTo: { percent: 15 },
+          });
+
+          yield* set({ downTo: { tokens: 150_000 } });
+          assert.deepEqual(
+            limbase.held.get("th_unreported"),
+            { trigger: 640_000, target: 95_000 },
+            "tokens wait for the window too, since nothing can check them against it",
+          );
+
+          yield* set({ downTo: { percent: 15 } });
+          threads[UNREPORTED]!.turns.push(reported("gateway-sonnet", 1_000_000));
+          const applied = yield* set({});
+          assert.equal(applied?.contextWindow, 1_000_000);
+          assert.deepEqual(limbase.held.get("th_unreported"), {
+            trigger: 640_000,
+            target: 150_000,
+          });
+        }),
     );
 
     it.effect(

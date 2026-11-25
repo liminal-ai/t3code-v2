@@ -276,6 +276,33 @@ it("refuses a value a guard rejects, saves one it accepts, and shows Limbase's r
   await expect.element(page.getByRole("alert")).toHaveTextContent(state.refuse);
 });
 
+it("saves a share on a model whose window is unknown, and says nothing reaches Limbase yet", async () => {
+  reset(
+    limbaseThread({
+      model: "gateway-sonnet[1m]",
+      contextWindow: null,
+      hardLimit: null,
+      profile: null,
+      applied: { trigger: 640_000, target: 95_000 },
+    }),
+  );
+  await using _screen = await render(
+    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+  );
+  await expect
+    .element(
+      page.getByText(
+        "gateway-sonnet[1m], window unknown until Claude reports it. Nothing you save reaches Limbase until then.",
+      ),
+    )
+    .toBeVisible();
+  await userEvent.fill(page.getByLabelText("Down to"), "15%");
+  await userEvent.keyboard("{Enter}");
+  await expect.poll(() => savedCompaction()).toEqual([{ downTo: { percent: 15 } }]);
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  await expect.element(page.getByText("640k → 95k")).toBeVisible();
+});
+
 it("warns that a down to of 300k or more turns cold return off", async () => {
   reset(limbaseThread({ value: { downTo: { tokens: 300_000 } } }));
   await using _screen = await render(
