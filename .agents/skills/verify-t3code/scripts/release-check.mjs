@@ -241,6 +241,12 @@ function run(command, args, options = {}) {
   });
 }
 
+async function runAuth(what, command, args, options) {
+  const { code, stdout } = await run(command, args, options);
+  if (code !== 0) throw new Error(`${what} exited ${code}; output withheld, it can hold a token`);
+  return stdout;
+}
+
 async function must(command, args, options) {
   const result = await run(command, args, options);
   if (result.code !== 0) {
@@ -411,6 +417,7 @@ export function stageScratch(
     codexRoot,
     NodePath.join(userdata, "secrets"),
     NodePath.join(userdata, "providers"),
+    NodePath.join(userdata, "settings.json"),
   ];
   teardown.push(() => {
     for (const path of scrub) NodeFS.rmSync(path, { recursive: true, force: true });
@@ -426,19 +433,24 @@ export function stageScratch(
     `${JSON.stringify(settings, null, 2)}\n`,
     { mode: 0o600 },
   );
+  const unstaged = new Map();
   for (const { instanceId: id, driver } of expected) {
-    if (driver === "codex") {
-      const scratch = { home: codexHome(id), shadowHome: codexShadowHome(id) };
-      for (const seed of codexSeeds(prod.providerInstances?.[id]?.config, scratch, home)) {
-        if (!seed.optional || NodeFS.existsSync(seed.from)) copySecret(seed.from, seed.to);
+    try {
+      if (driver === "codex") {
+        const scratch = { home: codexHome(id), shadowHome: codexShadowHome(id) };
+        for (const seed of codexSeeds(prod.providerInstances?.[id]?.config, scratch, home)) {
+          if (!seed.optional || NodeFS.existsSync(seed.from)) copySecret(seed.from, seed.to);
+        }
       }
-    }
-    for (const file of DRIVERS[driver]?.credentials?.(id) ?? []) {
-      if (NodeFS.existsSync(NodePath.join(prodUserdata, file)))
-        copySecret(NodePath.join(prodUserdata, file), NodePath.join(userdata, file));
+      for (const file of DRIVERS[driver]?.credentials?.(id) ?? []) {
+        if (NodeFS.existsSync(NodePath.join(prodUserdata, file)))
+          copySecret(NodePath.join(prodUserdata, file), NodePath.join(userdata, file));
+      }
+    } catch (error) {
+      unstaged.set(id, `could not stage its credentials: ${error.message}`);
     }
   }
-  return { settings, codexHome };
+  return { settings, codexHome, unstaged };
 }
 
 async function startLimbaseLane(dir, releaseName, teardown) {
@@ -543,6 +555,40 @@ async function stopServer(pid, cwd) {
   log(`stopped server group ${pid}`);
 }
 
+export async function startServer({ t3, args, cwd, env, logFile, origin }, teardown) {
+  const logFd = NodeFS.openSync(logFile, "w", 0o600);
+  const server = NodeChildProcess.spawn(t3, args, {
+    cwd,
+    env,
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+  });
+  NodeFS.closeSync(logFd);
+  let spawnError;
+  server.on("error", (error) => {
+    spawnError = error;
+  });
+  server.unref();
+  if (server.pid) {
+    teardown.push(() => stopServer(server.pid, cwd));
+    log(`started ${NodePath.basename(NodePath.dirname(t3))} as pid ${server.pid}`);
+  }
+  await waitFor(
+    async () => {
+      if (spawnError)
+        throw new Error(`could not start ${t3}: ${spawnError.code ?? spawnError.message}`);
+      if (server.exitCode !== null || server.signalCode !== null)
+        throw new Error(
+          `server exited (${server.exitCode ?? server.signalCode}) before it listened; see ${logFile}`,
+        );
+      return (await fetch(origin).catch(() => undefined))?.status === 200;
+    },
+    `${origin} to answer 200`,
+    120_000,
+  );
+  return server.pid;
+}
+
 const INSTALL_DONE = new Set(["succeeded", "failed", "cancelled"]);
 
 async function installManagedRuntime(origin, token, instanceId) {
@@ -566,7 +612,33 @@ async function installManagedRuntime(origin, token, instanceId) {
     `${instanceId} to report its runtime installed`,
     120_000,
   );
-  return `${instanceId}: blank binaryPath, so the release installed its managed runtime ${done.installedVersion} with provider.install.start`;
+  return done.installedVersion;
+}
+
+async function managedAntigravity(origin, token, { instanceId, installed }) {
+  const state = await rpc(
+    origin,
+    token,
+    "provider.install.subscribe",
+    { instanceId },
+    { until: () => true },
+  );
+  if (state.installedVersion) return { binaryPath: `managed ${state.installedVersion}` };
+  if (installed)
+    return {
+      binaryPath: "agy on PATH",
+      error:
+        "prod's blank binaryPath means the managed runtime, but the release has none active and resolved agy from PATH",
+    };
+  try {
+    const version = await installManagedRuntime(origin, token, instanceId);
+    return {
+      binaryPath: `managed ${version}`,
+      fact: `${instanceId}: blank binaryPath, so the release installed its managed runtime ${version} with provider.install.start`,
+    };
+  } catch (error) {
+    return { binaryPath: "none", error: `managed runtime install failed: ${error.message}` };
+  }
 }
 
 function hostEntry(host) {
@@ -581,14 +653,16 @@ function hostEntry(host) {
   return { label: entry.label, url: entry.url, t3: onHost(entry.t3), base: onHost(entry.base) };
 }
 
-async function withHostSession(host, use) {
+export async function withHostSession(host, rows, use) {
   const entry = hostEntry(host);
   const sh = (command) => must(LIM_THREAD, [entry.label, "sh", command]);
   let session;
   try {
-    const issued = await sh(
+    const issued = await runAuth(`auth session issue on ${entry.label}`, LIM_THREAD, [
+      entry.label,
+      "sh",
       `${entry.t3} auth session issue --base-dir ${entry.base} ${SCOPES} --label release-check --json`,
-    );
+    ]);
     try {
       session = JSON.parse(issued);
     } catch {
@@ -597,12 +671,16 @@ async function withHostSession(host, use) {
     const { providers } = await rpc(entry.url, session.token, "server.getConfig", {});
     return await use({ ...entry, sh, token: session.token, providers });
   } finally {
-    if (session?.sessionId)
-      await run(LIM_THREAD, [
+    if (session?.sessionId) {
+      await runAuth(`auth session revoke ${session.sessionId} on ${entry.label}`, LIM_THREAD, [
         entry.label,
         "sh",
         `${entry.t3} auth session revoke --base-dir ${entry.base} ${session.sessionId}`,
-      ]);
+      ]).catch((error) => {
+        rows.push({ instance: "(teardown)", error: error.message });
+        log(`teardown: ${error.message}`);
+      });
+    }
   }
 }
 
@@ -634,7 +712,7 @@ async function pre(options) {
     `Settings copied from \`${prodSettingsPath}\` with every provider instance kept, codex homes and shadow homes moved to scratch, Limbase homes moved to a throwaway lane`,
   ];
   try {
-    const expected = await withHostSession(undefined, ({ label, providers }) => {
+    const expected = await withHostSession(undefined, rows, ({ label, providers }) => {
       facts.push(`Enabled on prod (\`${label}\` server.getConfig): ${enabledIds(providers)}`);
       return providers.filter((p) => p.enabled);
     });
@@ -645,7 +723,7 @@ async function pre(options) {
     NodeFS.mkdirSync(project, { recursive: true });
     if (!NodeFS.existsSync(NodePath.join(project, ".git")))
       await must("git", ["init", "-q", project]);
-    const { settings, codexHome } = stageScratch(
+    const { settings, codexHome, unstaged } = stageScratch(
       {
         prod,
         expected,
@@ -672,39 +750,31 @@ async function pre(options) {
     const origin = `http://127.0.0.1:${port}`;
     const env = serverEnv(base, codexHome("codex"));
     const logFile = NodePath.join(work, "serve.log");
-    const logFd = NodeFS.openSync(logFile, "w", 0o600);
-    const server = NodeChildProcess.spawn(
-      t3,
-      ["serve", "--host", "127.0.0.1", "--port", String(port), "--base-dir", base, "--no-browser"],
+    const pid = await startServer(
       {
+        t3,
+        args: [
+          ..."serve --host 127.0.0.1 --port".split(" "),
+          String(port),
+          "--base-dir",
+          base,
+          "--no-browser",
+        ],
         cwd: project,
         env,
-        detached: true,
-        stdio: ["ignore", logFd, logFd],
+        logFile,
+        origin,
       },
-    );
-    NodeFS.closeSync(logFd);
-    server.unref();
-    teardown.push(() => stopServer(server.pid, project));
-    log(`started ${name} as pid ${server.pid} on port ${port}`);
-    await waitFor(
-      async () => {
-        if (server.exitCode !== null || server.signalCode !== null)
-          throw new Error(
-            `server exited (${server.exitCode ?? server.signalCode}) before it listened; see ${logFile}`,
-          );
-        return (await fetch(origin).catch(() => undefined))?.status === 200;
-      },
-      `${origin} to answer 200`,
-      120_000,
+      teardown,
     );
     const listener = await must("ss", ["-H", "-ltnp", `sport = :${port}`]);
-    if (!listener.includes(`pid=${server.pid},`))
-      throw new Error(`port ${port} is not held by pid ${server.pid}: ${listener.trim()}`);
-    facts.push(`Server pid ${server.pid} on 127.0.0.1:${port}, log \`${logFile}\``);
+    if (!listener.includes(`pid=${pid},`))
+      throw new Error(`port ${port} is not held by pid ${pid}: ${listener.trim()}`);
+    facts.push(`Server pid ${pid} on 127.0.0.1:${port}, log \`${logFile}\``);
 
     const t3Run = (args, extra) => run(t3, args, { cwd: project, env, ...extra });
-    const issued = await must(
+    const issued = await runAuth(
+      "auth session issue on the scratch server",
       t3,
       [
         ..."auth session issue --token-only --label release-check".split(" "),
@@ -721,13 +791,16 @@ async function pre(options) {
     for (const row of rows) {
       if (laneError && isLimbase(settings.providerInstances?.[row.instance] ?? {}))
         row.error = laneError;
+      row.error ??= unstaged.get(row.instance);
       if (row.error || row.driver !== "antigravity" || row.binaryPath !== "(managed)") continue;
-      if (providers.find((p) => p.instanceId === row.instance)?.installed) continue;
-      try {
-        facts.push(await installManagedRuntime(origin, token, row.instance));
-      } catch (error) {
-        row.error = `managed runtime install failed: ${error.message}`;
-      }
+      const runtime = await managedAntigravity(
+        origin,
+        token,
+        providers.find((p) => p.instanceId === row.instance),
+      );
+      row.binaryPath = runtime.binaryPath;
+      if (runtime.error) row.error = runtime.error;
+      if (runtime.fact) facts.push(runtime.fact);
     }
     await must(t3, ["project", "add", "--base-dir", base, project], { cwd: project, env });
     await runTurns(rows, (row) =>
@@ -795,7 +868,7 @@ async function smoke(host, options) {
   const rows = [];
   const facts = [];
   try {
-    await withHostSession(host, async ({ label, url, t3, base, sh, token, providers }) => {
+    await withHostSession(host, rows, async ({ label, url, t3, base, sh, token, providers }) => {
       facts.push(
         `Host \`${label}\` at ${url}`,
         `Version \`${(await sh(`${t3} --version`)).trim()}\``,
@@ -874,10 +947,19 @@ async function main(argv) {
       providers: { type: "string" },
     },
   });
-  const [command, host] = positionals;
-  if (command === "pre") return pre(values);
-  if (command === "smoke") return smoke(host, values);
-  throw new UsageError(`unknown command ${command ?? "(none)"}`);
+  const [command, host, ...extra] = positionals;
+  const modes = {
+    pre: { flags: ["release", "run", "prod-settings", "model"], hosts: 0 },
+    smoke: { flags: ["run", "providers", "model"], hosts: 1 },
+  };
+  const mode = modes[command];
+  if (!mode) throw new UsageError(`unknown command ${command ?? "(none)"}`);
+  const foreign = Object.keys(values).filter((flag) => !mode.flags.includes(flag));
+  if (foreign.length > 0)
+    throw new UsageError(`${command} does not take ${foreign.map((f) => `--${f}`).join(", ")}`);
+  if (extra.length > 0 || (mode.hosts === 0 && host !== undefined))
+    throw new UsageError(`${command} got an extra argument`);
+  return command === "pre" ? pre(values) : smoke(host, values);
 }
 
 if (import.meta.main) {

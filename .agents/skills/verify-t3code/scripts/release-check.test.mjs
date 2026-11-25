@@ -21,7 +21,10 @@ import {
   SAFETY_SETTINGS,
   serverEnv,
   stageScratch,
+  startServer,
 } from "./release-check.mjs";
+
+const SCRIPT = NodePath.join(import.meta.dirname, "release-check.mjs");
 
 const prod = {
   sidebarAutoSettleAfterDays: 3,
@@ -142,7 +145,7 @@ NodeTest.test(
 );
 
 NodeTest.test(
-  "a setup failure partway through credential copies leaves no copy behind",
+  "one codex account that cannot be staged fails only itself, and teardown leaves no copy or settings behind",
   async () => {
     const dir = tempDir();
     const home = NodePath.join(dir, "home");
@@ -153,31 +156,30 @@ NodeTest.test(
     const userdata = NodePath.join(work, "base/userdata");
     NodeFS.mkdirSync(userdata, { recursive: true });
     const teardown = [];
-    NodeAssert.throws(
-      () =>
-        stageScratch(
-          {
-            prod: {
-              providerInstances: {
-                codex: { driver: "codex", config: {} },
-                second: { driver: "codex", config: { homePath: "~/missing" } },
-              },
-            },
-            expected: [provider("codex", "codex"), provider("second", "codex")],
-            work,
-            userdata,
-            prodUserdata: NodePath.join(dir, "prod-userdata"),
-            home,
+    const { unstaged } = stageScratch(
+      {
+        prod: {
+          providerInstances: {
+            second: { driver: "codex", config: { homePath: "~/missing" } },
+            codex: { driver: "codex", config: {} },
           },
-          teardown,
-        ),
-      /ENOENT/,
+        },
+        expected: [provider("second", "codex"), provider("codex", "codex")],
+        work,
+        userdata,
+        prodUserdata: NodePath.join(dir, "prod-userdata"),
+        home,
+      },
+      teardown,
     );
+    NodeAssert.deepEqual([...unstaged.keys()], ["second"]);
+    NodeAssert.match(unstaged.get("second"), /could not stage its credentials: ENOENT/);
     NodeAssert.ok(NodeFS.existsSync(NodePath.join(work, "codex-home/codex/auth.json")));
+    NodeAssert.ok(NodeFS.existsSync(NodePath.join(userdata, "settings.json")));
     for (const step of teardown.reverse()) await step();
     const left = NodeFS.readdirSync(work, { recursive: true });
     NodeAssert.deepEqual(
-      left.filter((f) => /auth\.json|config\.toml/.test(f)),
+      left.filter((f) => /auth\.json|config\.toml|settings\.json/.test(f)),
       [],
     );
     NodeFS.rmSync(dir, { recursive: true });
@@ -204,6 +206,44 @@ NodeTest.test("only expected codex instances get a seeded home", async () => {
   NodeAssert.ok(!NodeFS.existsSync(NodePath.join(work, "codex-home")));
   for (const step of teardown.reverse()) await step();
   NodeFS.rmSync(dir, { recursive: true });
+});
+
+NodeTest.test("a t3 that cannot spawn rejects startup instead of crashing", async () => {
+  const dir = tempDir();
+  const t3 = NodePath.join(dir, "t3");
+  NodeFS.writeFileSync(t3, "#!/bin/sh\nexit 0\n", { mode: 0o644 });
+  const teardown = [];
+  await NodeAssert.rejects(
+    startServer(
+      {
+        t3,
+        args: ["serve"],
+        cwd: dir,
+        env: {},
+        logFile: NodePath.join(dir, "serve.log"),
+        origin: "http://127.0.0.1:1",
+      },
+      teardown,
+    ),
+    /could not start .*t3: EACCES/,
+  );
+  NodeAssert.deepEqual(teardown, []);
+  NodeFS.rmSync(dir, { recursive: true });
+});
+
+NodeTest.test("a flag from the other mode, or an extra argument, is bad usage", () => {
+  for (const args of [
+    ["pre", "--release", "/r", "--run", "/x", "--providers", "codex"],
+    ["smoke", "box", "--run", "/x", "--release", "/r"],
+    ["smoke", "box", "other", "--run", "/x"],
+    ["pre", "box", "--release", "/r", "--run", "/x"],
+  ]) {
+    const result = NodeChildProcess.spawnSync(process.execPath, [SCRIPT, ...args], {
+      encoding: "utf8",
+    });
+    NodeAssert.equal(result.status, 2, args.join(" "));
+    NodeAssert.match(result.stderr, /usage:/);
+  }
 });
 
 NodeTest.test("prod env files cannot set T3CODE_ keys on the scratch server", () => {
