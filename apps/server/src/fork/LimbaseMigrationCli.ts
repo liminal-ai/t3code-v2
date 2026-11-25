@@ -90,7 +90,14 @@ const sendAsOwner = Effect.fn("LimbaseMigrationCli.send")(function* (
           }),
       ),
     );
-    const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
+    const text = yield* response.text.pipe(
+      Effect.mapError(
+        (cause) =>
+          new LimbaseMigrationCliError({
+            detail: `The server answered ${response.status}, but its answer was cut off. ${cause.message}`,
+          }),
+      ),
+    );
     return { status: response.status, text };
   }).pipe(
     Effect.scoped,

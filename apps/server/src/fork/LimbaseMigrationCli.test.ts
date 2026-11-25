@@ -298,3 +298,17 @@ showCase(
     yield* expectShow(port, failure(output.limbase.error));
   }),
 );
+
+showCase(
+  "show takes a 404 whose answer was cut off as a failed lookup, not an older server",
+  Effect.gen(function* () {
+    const { port } = yield* idsServer((response) => {
+      response.writeHead(404, { "content-type": "application/json", "content-length": 28 });
+      response.write('{"error":"interrupted', () => response.destroy());
+    });
+    const asJson = yield* show(port, true);
+    const output = JSON.parse(asJson.stdout[0]!);
+    assert.match(output.limbase.error, /^The server answered 404, but its answer was cut off\./);
+    yield* expectShow(port, failure(output.limbase.error));
+  }),
+);
