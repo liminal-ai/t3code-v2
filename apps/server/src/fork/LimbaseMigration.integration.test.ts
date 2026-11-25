@@ -752,6 +752,12 @@ describe("Limbase migration bind route", () => {
           other.threadId,
         );
 
+        const ids = () =>
+          LimbaseMigrationRoute.readLimbaseIds({ threadId: thread.threadId }).pipe(
+            Effect.map((response) => JSON.parse(responseText(response))),
+          );
+        assert.isNull(yield* ids());
+
         const bound = yield* bind(MIGRATED_SESSION);
         assert.equal(bound.status, 200, responseText(bound));
         const result = yield* thread.projection();
@@ -760,6 +766,13 @@ describe("Limbase migration bind route", () => {
             ?.nativeThreadRef?.nativeId,
           MIGRATED_SESSION,
         );
+        assert.deepEqual(yield* ids(), {
+          providerThreadId: result.thread.activeProviderThreadId,
+          limbaseThreadId: LIMBASE_THREAD,
+        });
+
+        yield* thread.unbind("route");
+        assert.isNull(yield* ids());
       }).pipe(
         Effect.provide(
           Layer.mergeAll(env.layer, SqlitePersistence.layerMemory, settings, NodeCrypto.layer),

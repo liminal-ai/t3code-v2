@@ -1,6 +1,7 @@
 /**
- * `t3 thread export-manifest`, `limbase-bind` and `limbase-unbind` (LH-336). Each signs in to the
- * running server as its owner, for one request, and posts to the route in `LimbaseMigrationRoute`.
+ * `t3 thread export-manifest`, `limbase-bind` and `limbase-unbind` (LH-336), and the Limbase ids
+ * `t3 thread show` prints. Each signs in to the running server as its owner, for one request, and
+ * posts to the route in `LimbaseMigrationRoute`.
  * The server does the reading and the writing; nothing here opens its database.
  */
 import { AuthEnvironmentMaintainScope, AuthOrchestrationReadScope } from "@t3tools/contracts";
@@ -20,7 +21,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "../cli/config.ts";
 import * as ServerConfig from "../config.ts";
 import { readLiveServerRuntimeState } from "../serverRuntimeState.ts";
-import { BindingResult, LIMBASE_MIGRATION_ROUTE_PREFIX } from "./LimbaseMigration.ts";
+import { BindingResult, LIMBASE_MIGRATION_ROUTE_PREFIX, LimbaseIds } from "./LimbaseMigration.ts";
 
 export class LimbaseMigrationCliError extends Schema.TaggedError<LimbaseMigrationCliError>()(
   "LimbaseMigrationCliError",
@@ -48,15 +49,17 @@ const decodeBindingResult = Schema.decodeUnknownEffect(Schema.fromJsonString(Bin
 
 /**
  * Posts `body` to the route as the server's owner: a session that holds `environment:maintain`,
- * issued for this request and revoked after it. Answers the response's text.
+ * issued for this request and revoked after it. Answers the response's status and text.
  */
-const postAsOwner = Effect.fn("LimbaseMigrationCli.post")(function* (
+const sendAsOwner = Effect.fn("LimbaseMigrationCli.send")(function* (
   flags: { readonly baseDir: Option.Option<string> },
-  name: "manifest" | "bind" | "unbind",
+  name: "manifest" | "bind" | "unbind" | "ids",
   body: Readonly<Record<string, unknown>>,
+  quietLogs = false,
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
-  const config = yield* resolveCliAuthConfig(flags, logLevel);
+  const config = yield* resolveCliAuthConfig(flags, logLevel, { quietLogs });
+  const minimumLogLevel = quietLogs ? "Error" : config.logLevel;
   return yield* Effect.gen(function* () {
     const runtimeState = yield* readLiveServerRuntimeState(config.serverRuntimeStatePath);
     if (Option.isNone(runtimeState)) {
@@ -89,23 +92,62 @@ const postAsOwner = Effect.fn("LimbaseMigrationCli.post")(function* (
       ),
     );
     const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
-    if (response.status >= 200 && response.status < 300) return text;
-    return yield* fail(
-      Option.match(decodeErrorBody(text), {
-        onSome: (error) => error.error,
-        onNone: () => `The server answered ${response.status}: ${text.slice(0, 500)}`,
-      }),
-    );
+    return { status: response.status, text };
   }).pipe(
     Effect.scoped,
+    Effect.provideService(References.MinimumLogLevel, minimumLogLevel),
     Effect.provide(
       Layer.mergeAll(
         EnvironmentAuth.layerRuntime.pipe(
           Layer.provide(ServerConfig.layer(config)),
-          Layer.provide(Layer.succeed(References.MinimumLogLevel, config.logLevel)),
+          Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
         ),
         FetchHttpClient.layer,
       ),
+    ),
+  );
+});
+
+const refusal = (status: number, text: string) =>
+  fail(
+    Option.match(decodeErrorBody(text), {
+      onSome: (error) => error.error,
+      onNone: () => `The server answered ${status}: ${text.slice(0, 500)}`,
+    }),
+  );
+
+const isOk = (status: number) => status >= 200 && status < 300;
+
+const postAsOwner = (
+  flags: { readonly baseDir: Option.Option<string> },
+  name: "manifest" | "bind" | "unbind",
+  body: Readonly<Record<string, unknown>>,
+) =>
+  sendAsOwner(flags, name, body).pipe(
+    Effect.flatMap(({ status, text }) =>
+      isOk(status) ? Effect.succeed(text) : refusal(status, text),
+    ),
+  );
+
+const decodeLimbaseIds = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.NullOr(LimbaseIds)),
+);
+
+/** The thread's Limbase ids for `t3 thread show`, or null when it does not run on Limbase. */
+export const readLimbaseIds = Effect.fn("LimbaseMigrationCli.readLimbaseIds")(function* (
+  flags: { readonly baseDir: Option.Option<string>; readonly json: boolean },
+  threadId: string,
+) {
+  const { status, text } = yield* sendAsOwner(flags, "ids", { threadId }, flags.json);
+  // A server older than the CLI has no such route, and its router answers 404 with no error body.
+  if (status === 404 && Option.isNone(decodeErrorBody(text))) return null;
+  if (!isOk(status)) return yield* refusal(status, text);
+  return yield* decodeLimbaseIds(text).pipe(
+    Effect.mapError(
+      () =>
+        new LimbaseMigrationCliError({
+          detail: "The server sent an unexpected answer. Update the t3 CLI to match the server.",
+        }),
     ),
   );
 });

@@ -55,6 +55,31 @@ export const BindingResult = Schema.Struct({
   limbaseRuns: Schema.optional(Schema.Struct({ from: PositiveInt, to: PositiveInt })),
 });
 
+export const LimbaseIdsRequest = Schema.Struct({ threadId: ThreadId });
+
+/** The thread's active provider thread and the Limbase thread it runs on. */
+export const LimbaseIds = Schema.Struct({
+  providerThreadId: Schema.String,
+  limbaseThreadId: Schema.String,
+});
+export type LimbaseIds = typeof LimbaseIds.Type;
+
+/** The ids `t3 thread show` prints, or null when the active provider thread is not on Limbase. */
+export const limbaseIds = (projection: {
+  readonly thread: Pick<OrchestrationV2AppThread, "activeProviderThreadId">;
+  readonly providerThreads: ReadonlyArray<
+    Pick<OrchestrationV2ProviderThread, "id" | "nativeMetadata">
+  >;
+}): LimbaseIds | null => {
+  const active = projection.providerThreads.find(
+    (row) => row.id === projection.thread.activeProviderThreadId,
+  );
+  const limbaseThreadId = active?.nativeMetadata?.limbaseThreadId;
+  return active === undefined || limbaseThreadId === undefined
+    ? null
+    : { providerThreadId: active.id, limbaseThreadId };
+};
+
 type MigrationMetadata = Pick<OrchestrationV2ProviderThread, "nativeMetadata">;
 
 /** The last run a migration copied into this row's Limbase thread, or undefined for any other row. */

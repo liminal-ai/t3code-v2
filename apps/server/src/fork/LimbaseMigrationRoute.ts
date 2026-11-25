@@ -1,7 +1,8 @@
 /**
- * The owner's route behind `t3 thread export-manifest`, `limbase-bind` and `limbase-unbind`. It
- * needs `environment:maintain`, which no MCP client session holds. Bind and unbind dispatch under
- * the thread's lock; the route checks first, so a refusal it can see records nothing.
+ * The owner's route behind `t3 thread export-manifest`, `limbase-bind`, `limbase-unbind` and the
+ * Limbase ids in `t3 thread show`. It needs `environment:maintain`, which no MCP client session
+ * holds. Bind and unbind dispatch under the thread's lock; the route checks first, so a refusal it
+ * can see records nothing.
  */
 import {
   AuthEnvironmentMaintainScope,
@@ -356,6 +357,16 @@ const unbind = Effect.fn("LimbaseMigration.unbind")(function* (
   );
 });
 
+export const readLimbaseIds = Effect.fn("LimbaseMigration.readLimbaseIds")(function* (
+  body: typeof LimbaseMigration.LimbaseIdsRequest.Type,
+) {
+  const orchestrator = yield* OrchestratorV2;
+  const projection = yield* orchestrator.getThreadRecords(body.threadId, ["providerThreads"], {
+    turnItemTypes: [],
+  });
+  return ok(LimbaseMigration.limbaseIds(projection));
+});
+
 const isThreadNotFound = (error: unknown) =>
   typeof error === "object" &&
   error !== null &&
@@ -406,4 +417,14 @@ const unbindRoute = HttpRouter.add(
   ),
 );
 
-export const layer = Layer.mergeAll(manifestRoute, bindRoute, unbindRoute);
+const idsRoute = HttpRouter.add(
+  "POST",
+  `${LimbaseMigration.LIMBASE_MIGRATION_ROUTE_PREFIX}/ids`,
+  authenticateOwner().pipe(
+    Effect.andThen(readBody(LimbaseMigration.LimbaseIdsRequest)),
+    Effect.flatMap(readLimbaseIds),
+    Effect.catch(failureResponse),
+  ),
+);
+
+export const layer = Layer.mergeAll(manifestRoute, bindRoute, unbindRoute, idsRoute);

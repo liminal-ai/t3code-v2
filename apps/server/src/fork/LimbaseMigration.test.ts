@@ -155,6 +155,29 @@ const bindCommand = (ifLastRun: number, ifHistory: string) => ({
 });
 const NEW_ROW = ProviderThreadId.make("pt:session-new");
 
+describe("LimbaseMigration.limbaseIds", () => {
+  it("names the active row and its Limbase thread, and nothing for a row not on Limbase", () => {
+    const limbaseRow = providerThread("pt:limbase", "session-l", {
+      providerInstanceId: LIMBASE,
+      nativeMetadata: { limbaseThreadId: "th_native" },
+    });
+    const onLimbase = appThread({ activeProviderThreadId: limbaseRow.id });
+    assert.deepStrictEqual(
+      LimbaseMigration.limbaseIds({ thread: onLimbase, providerThreads: [sessionA, limbaseRow] }),
+      { providerThreadId: "pt:limbase", limbaseThreadId: "th_native" },
+    );
+    assert.isNull(
+      LimbaseMigration.limbaseIds({ thread: appThread(), providerThreads: [sessionB, limbaseRow] }),
+    );
+    assert.isNull(
+      LimbaseMigration.limbaseIds({
+        thread: appThread({ activeProviderThreadId: null }),
+        providerThreads: [limbaseRow],
+      }),
+    );
+  });
+});
+
 describe("LimbaseMigration.buildManifest", () => {
   it("lists each native session in run order with the runs it holds", () => {
     const handoff: OrchestrationV2ContextHandoff = {

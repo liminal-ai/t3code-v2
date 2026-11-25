@@ -30,7 +30,7 @@ import { Argument, Command, Flag, GlobalFlag } from "effect/cli";
 
 import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import * as ServerConfig from "../config.ts";
-import { limbaseMigrationCommands } from "../fork/LimbaseMigrationCli.ts";
+import { limbaseMigrationCommands, readLimbaseIds } from "../fork/LimbaseMigrationCli.ts";
 import { mcpToolSession, type McpToolSession } from "../mcp/AcpMcpStdioBridge.ts";
 import { expandHomePath } from "../os-jank.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -1082,8 +1082,14 @@ const threadShowCommand = Command.make("show", {
             ),
           );
           const error = yield* latestRunError(tools, thread);
+          const limbase = yield* readLimbaseIds(flags, threadId);
           if (flags.json) {
-            return yield* printJson({ thread, messages, error });
+            return yield* printJson({
+              thread,
+              messages,
+              error,
+              ...(limbase === null ? {} : { limbase }),
+            });
           }
           yield* Console.log(thread.title);
           yield* Console.log(
@@ -1093,6 +1099,11 @@ const threadShowCommand = Command.make("show", {
           );
           if (thread.worktreePath !== null) {
             yield* Console.log(`${thread.branch ?? "(no branch)"}  ${thread.worktreePath}`);
+          }
+          if (limbase !== null) {
+            yield* Console.log(
+              `Limbase ${limbase.limbaseThreadId}  provider thread ${limbase.providerThreadId}`,
+            );
           }
           if (thread.pendingRequestCount > 0) {
             yield* Console.log(`Waiting for ${thread.pendingRequestCount} answer(s).`);
