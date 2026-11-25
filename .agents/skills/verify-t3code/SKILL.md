@@ -109,7 +109,9 @@ Two kinds of check prove a feature:
 
 A PR that changes what a user sees or does in the web or desktop UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). The shared `narrated-demo` skill at `~/.agents/skills/narrated-demo/` makes it. Its `SKILL.md` lists the prerequisites, and its `references/demo-video.md` covers scene files, the pacing grammar, the sync probe, the privacy check, publishing and the running log. Read both before your first video.
 
-**Install.** The video needs the shared skill. `~/lim-v2/bin/lim-setup` installs it with the rest of lim-v2's skills. It copies them from the `~/lim-v2` checkout and does not pull that checkout, so pull first:
+**Install.** The video needs the shared skill at `~/.agents/skills/narrated-demo/`. `~/lim-v2/bin/lim-setup` installs it with the rest of lim-v2's skills. It copies them from the `~/lim-v2` checkout and does not pull that checkout. Every box other than lim-builder gets `~/lim-v2` only from lim-builder: `~/lim-v2/bin/lim-fleet` pushes lim-builder's `main` to each box and runs `lim-setup` there. Never pull `~/lim-v2` on another box. When the skill is missing there, run `lim-fleet` on lim-builder, or ask Lee to.
+
+On lim-builder:
 
 ```bash
 git -C ~/lim-v2 pull --ff-only
@@ -117,14 +119,14 @@ git -C ~/lim-v2 pull --ff-only
 diff -rq -x node_modules ~/lim-v2/skills/narrated-demo ~/.agents/skills/narrated-demo
 ```
 
-The `diff` prints nothing when the install is current. On lim-builder, `~/lim-v2/bin/lim-fleet` pushes that checkout's `main` to every other box and runs `lim-setup` there.
+The `diff` prints nothing when the install matches the checkout.
 
 This repo keeps two parts of its own:
 
 - `scripts/demo-adapter.mjs` gives the engine the recorded checkout's Playwright from `apps/web`, its dev server's origin from `.t3/userdata/server-runtime.json`, and a `t3v(...args)` helper for each scene file's `seed`. The helper runs that checkout's `t3v.mjs` and resolves to its stdout.
 - `demos/` holds one scene file per feature. A scene file's `seed` gets `{ page, t3v, checkout }`.
 
-Start a dev server and its browser for each checkout you record, and print its CDP URL (see Isolation). Run this block in each checkout:
+Record the before side from a worktree at the PR's merge base, and the after side from the head worktree. Start a dev server and its browser for each, and print its CDP URL (see Isolation). Run this block from the root of each worktree:
 
 ```bash
 T3V=.agents/skills/verify-t3code/scripts/t3v.mjs
@@ -134,7 +136,7 @@ node $T3V doctor
 node $T3V browser info
 ```
 
-`browser info` prints `{"cdp": ..., "origin": ...}`. Pass that CDP URL to `--cdp` explicitly (see "The CDP URL" in the shared reference). Record the before side from a worktree at the PR's merge base. Then run these from the head worktree:
+`browser info` prints `{"cdp": ..., "origin": ...}`. Pass that CDP URL to `--cdp` explicitly (see "The CDP URL" in the shared reference). Then run these from the head worktree:
 
 ```bash
 DEMO=~/.agents/skills/narrated-demo/scripts/demo.mjs
