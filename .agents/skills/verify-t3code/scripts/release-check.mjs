@@ -638,6 +638,7 @@ async function pre(options) {
       facts.push(`Enabled on prod (\`${label}\` server.getConfig): ${enabledIds(providers)}`);
       return providers.filter((p) => p.enabled);
     });
+    if (NodeFS.existsSync(base)) await must("chmod", ["-R", "u+w", base]);
     NodeFS.rmSync(base, { recursive: true, force: true });
     NodeFS.rmSync(NodePath.join(work, "codex-home"), { recursive: true, force: true });
     NodeFS.mkdirSync(userdata, { recursive: true, mode: 0o700 });
