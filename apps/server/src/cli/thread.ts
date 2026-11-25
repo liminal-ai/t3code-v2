@@ -1102,7 +1102,9 @@ const threadShowCommand = Command.make("show", {
           }
           if (limbase !== null) {
             yield* Console.log(
-              `Limbase ${limbase.limbaseThreadId}  provider thread ${limbase.providerThreadId}`,
+              "error" in limbase
+                ? `Limbase lookup failed: ${limbase.error}`
+                : `Limbase ${limbase.limbaseThreadId}  provider thread ${limbase.providerThreadId}`,
             );
           }
           if (thread.pendingRequestCount > 0) {

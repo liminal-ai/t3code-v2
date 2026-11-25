@@ -134,19 +134,46 @@ const decodeLimbaseIds = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.NullOr(LimbaseIds)),
 );
 
+const lookupFailure = (status: number, text: string) => {
+  if (status === 401 || status === 403) {
+    return `The server answered ${status}. The Limbase lookup needs owner access.`;
+  }
+  const reason = Option.match(decodeErrorBody(text), {
+    onSome: (error) => error.error,
+    onNone: () => text.slice(0, 500),
+  });
+  return reason === ""
+    ? `The server answered ${status}.`
+    : `The server answered ${status}: ${reason}`;
+};
+
+/**
+ * The ids of the thread's active provider thread and its Limbase thread, or `null` when that row
+ * is not on Limbase or the server predates the route. A failed lookup comes back as `{ error }`,
+ * with a warning on stderr, and never fails `show`.
+ */
 export const readLimbaseIds = Effect.fn("LimbaseMigrationCli.readLimbaseIds")(function* (
   flags: { readonly baseDir: Option.Option<string>; readonly json: boolean },
   threadId: string,
 ) {
-  const { status, text } = yield* sendAsOwner(flags, "ids", { threadId }, flags.json);
-  if (isRouteMissingOnOlderServer(status, text)) return null;
-  if (!isOk(status)) return yield* refusal(status, text);
-  return yield* decodeLimbaseIds(text).pipe(
-    Effect.mapError(
-      () =>
-        new LimbaseMigrationCliError({
-          detail: "The server sent an unexpected answer. Update the t3 CLI to match the server.",
-        }),
+  return yield* sendAsOwner(flags, "ids", { threadId }, flags.json).pipe(
+    Effect.flatMap(({ status, text }) => {
+      if (isRouteMissingOnOlderServer(status, text)) return Effect.succeed(null);
+      if (!isOk(status)) return fail(lookupFailure(status, text));
+      return decodeLimbaseIds(text).pipe(
+        Effect.mapError(
+          () =>
+            new LimbaseMigrationCliError({
+              detail:
+                "The server sent an unexpected answer. Update the t3 CLI to match the server.",
+            }),
+        ),
+      );
+    }),
+    Effect.catch((error) =>
+      Console.error(`Warning: Limbase lookup failed: ${error.message}`).pipe(
+        Effect.as({ error: error.message }),
+      ),
     ),
   );
 });
