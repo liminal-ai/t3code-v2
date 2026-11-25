@@ -20,7 +20,7 @@ import * as EnvironmentAuth from "../auth/EnvironmentAuth.ts";
 import { projectLocationFlags, resolveCliAuthConfig } from "../cli/config.ts";
 import * as ServerConfig from "../config.ts";
 import { readLiveServerRuntimeState } from "../serverRuntimeState.ts";
-import { BindingResult, LIMBASE_MIGRATION_ROUTE_PREFIX } from "./LimbaseMigration.ts";
+import { BindingResult, LIMBASE_MIGRATION_ROUTE_PREFIX, LimbaseIds } from "./LimbaseMigration.ts";
 
 export class LimbaseMigrationCliError extends Schema.TaggedError<LimbaseMigrationCliError>()(
   "LimbaseMigrationCliError",
@@ -48,15 +48,17 @@ const decodeBindingResult = Schema.decodeUnknownEffect(Schema.fromJsonString(Bin
 
 /**
  * Posts `body` to the route as the server's owner: a session that holds `environment:maintain`,
- * issued for this request and revoked after it. Answers the response's text.
+ * issued for this request and revoked after it.
  */
-const postAsOwner = Effect.fn("LimbaseMigrationCli.post")(function* (
+const sendAsOwner = Effect.fn("LimbaseMigrationCli.send")(function* (
   flags: { readonly baseDir: Option.Option<string> },
-  name: "manifest" | "bind" | "unbind",
+  name: "manifest" | "bind" | "unbind" | "ids",
   body: Readonly<Record<string, unknown>>,
+  quietLogs = false,
 ) {
   const logLevel = yield* GlobalFlag.LogLevel;
-  const config = yield* resolveCliAuthConfig(flags, logLevel);
+  const config = yield* resolveCliAuthConfig(flags, logLevel, { quietLogs });
+  const minimumLogLevel = quietLogs ? "Error" : config.logLevel;
   return yield* Effect.gen(function* () {
     const runtimeState = yield* readLiveServerRuntimeState(config.serverRuntimeStatePath);
     if (Option.isNone(runtimeState)) {
@@ -88,23 +90,91 @@ const postAsOwner = Effect.fn("LimbaseMigrationCli.post")(function* (
           }),
       ),
     );
-    const text = yield* response.text.pipe(Effect.orElseSucceed(() => ""));
-    if (response.status >= 200 && response.status < 300) return text;
-    return yield* fail(
-      Option.match(decodeErrorBody(text), {
-        onSome: (error) => error.error,
-        onNone: () => `The server answered ${response.status}: ${text.slice(0, 500)}`,
-      }),
+    const text = yield* response.text.pipe(
+      Effect.mapError(
+        (cause) =>
+          new LimbaseMigrationCliError({
+            detail: `The server answered ${response.status}, but its answer was cut off. ${cause.message}`,
+          }),
+      ),
     );
+    return { status: response.status, text };
   }).pipe(
     Effect.scoped,
+    Effect.provideService(References.MinimumLogLevel, minimumLogLevel),
     Effect.provide(
       Layer.mergeAll(
         EnvironmentAuth.layerRuntime.pipe(
           Layer.provide(ServerConfig.layer(config)),
-          Layer.provide(Layer.succeed(References.MinimumLogLevel, config.logLevel)),
+          Layer.provide(Layer.succeed(References.MinimumLogLevel, minimumLogLevel)),
         ),
         FetchHttpClient.layer,
+      ),
+    ),
+  );
+});
+
+const refusal = (status: number, text: string) =>
+  fail(
+    Option.match(decodeErrorBody(text), {
+      onSome: (error) => error.error,
+      onNone: () => `The server answered ${status}: ${text.slice(0, 500)}`,
+    }),
+  );
+
+const isOk = (status: number) => status >= 200 && status < 300;
+
+const isRouteMissingOnOlderServer = (status: number, text: string) => status === 404 && text === "";
+
+const postAsOwner = (
+  flags: { readonly baseDir: Option.Option<string> },
+  name: "manifest" | "bind" | "unbind",
+  body: Readonly<Record<string, unknown>>,
+) =>
+  sendAsOwner(flags, name, body).pipe(
+    Effect.flatMap(({ status, text }) =>
+      isOk(status) ? Effect.succeed(text) : refusal(status, text),
+    ),
+  );
+
+const decodeLimbaseIds = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(Schema.NullOr(LimbaseIds)),
+);
+
+const lookupFailure = (status: number, text: string) => {
+  if (status === 401 || status === 403) {
+    return `The server answered ${status}. The Limbase lookup needs owner access.`;
+  }
+  const reason = Option.match(decodeErrorBody(text), {
+    onSome: (error) => error.error,
+    onNone: () => text.slice(0, 500),
+  });
+  return reason === ""
+    ? `The server answered ${status}.`
+    : `The server answered ${status}: ${reason}`;
+};
+
+export const readLimbaseIds = Effect.fn("LimbaseMigrationCli.readLimbaseIds")(function* (
+  flags: { readonly baseDir: Option.Option<string>; readonly json: boolean },
+  threadId: string,
+) {
+  return yield* sendAsOwner(flags, "ids", { threadId }, flags.json).pipe(
+    Effect.flatMap(({ status, text }) => {
+      if (isRouteMissingOnOlderServer(status, text)) return Effect.succeed(null);
+      if (!isOk(status)) return fail(lookupFailure(status, text));
+      return decodeLimbaseIds(text).pipe(
+        Effect.mapError(
+          () =>
+            new LimbaseMigrationCliError({
+              detail:
+                "The server sent an unexpected answer. Update the t3 CLI to match the server.",
+            }),
+        ),
+      );
+    }),
+    Effect.catch((error) =>
+      Console.error(`Warning: Limbase lookup failed: ${error.message}`).pipe(
+        Effect.as({ error: error.message }),
       ),
     ),
   );
