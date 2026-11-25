@@ -180,7 +180,7 @@ export default {
         { atMs: 3300, action: "press", key: "Control+A" },
         ...typeKeys(3600, ["Backspace", "Enter"]),
       ],
-      tailMs: 1800,
+      tailMs: 1400,
     },
     {
       id: "save",
@@ -207,7 +207,7 @@ export default {
         { atMs: 1800, action: "click", target: UNCATALOGED_OPTION },
         { atMs: 2800, action: "press", key: "Escape" },
       ],
-      tailMs: 2200,
+      tailMs: 1400,
     },
     {
       id: "instance",
@@ -224,7 +224,7 @@ export default {
         { atMs: 5500, action: "press", key: "Control+A" },
         ...typeKeys(5800, ["6", "0", "%", "Enter"]),
       ],
-      tailMs: 2000,
+      tailMs: 1600,
     },
   ],
 };
