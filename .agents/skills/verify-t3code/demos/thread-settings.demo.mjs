@@ -8,6 +8,8 @@ const execFile = NodeUtil.promisify(NodeChildProcess.execFile);
 const PROJECT = "release-notes";
 const THREAD = "Draft the release notes";
 const INSTANCE = "claudeLimbase";
+const MODEL = "Claude Haiku 5.5, Medium";
+const UNCATALOGED = "claude-sonnet-4-5-20250929";
 
 const sqlString = (value) => `'${value.replaceAll("'", "''")}'`;
 
@@ -46,7 +48,7 @@ export async function seed({ page, t3v, checkout }) {
     .click({ timeout: 15_000 })
     .catch(() => {
       throw new Error(
-        `the demo needs the ${INSTANCE} instance of features/thread-settings.md on ${checkout}`,
+        `the demo needs the ${INSTANCE} instance of features/thread-settings.md, with ${UNCATALOGED} in its custom models, on ${checkout}`,
       );
     });
   await clearTo(page, "Limbase: compact at", "700k");
@@ -83,6 +85,18 @@ export async function seed({ page, t3v, checkout }) {
   await sidebar.getByRole("button", { name: new RegExp(`^${RegExp.escape(THREAD)},`) }).click();
   const toggle = page.getByRole("button", { name: "Toggle thread details panel", exact: true });
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  const picker = page
+    .getByRole("button", { name: new RegExp(`^(${RegExp.escape(MODEL)}|claude-)`) })
+    .first();
+  await picker.waitFor();
+  if ((await page.getByRole("button", { name: MODEL, exact: true }).count()) === 0) {
+    await picker.click();
+    const haiku = page.getByRole("option", { name: /^Claude Haiku 5\.5 , Claude Limbase/ });
+    await haiku.waitFor();
+    await page.waitForTimeout(600);
+    await haiku.click({ force: true });
+    await page.getByRole("button", { name: MODEL, exact: true }).waitFor();
+  }
   await clearTo(page, "Compact at", "");
   await clearTo(page, "Down to", "");
 }
@@ -118,6 +132,9 @@ async function initRepository(folder) {
 const DETAILS = 'role=button[name="Toggle thread details panel"]';
 const CARD = 'role=region[name="Thread settings"]';
 const DOWN_TO = 'role=textbox[name="Down to"]';
+const PICKER = `role=button[name="${MODEL}"]`;
+const UNCATALOGED_OPTION = `role=option[name=/^${UNCATALOGED} ,/]`;
+const WINDOW_LINE = `${CARD} >> text=/window/`;
 const SETTINGS = 'role=button[name="Settings"]';
 const PROVIDERS = 'role=button[name="Providers"]';
 const INSTANCE_ROW = 'role=button[name="Select Claude Limbase"]';
@@ -178,6 +195,18 @@ export default {
       ],
       tailMs: 2000,
       key: true,
+    },
+    {
+      id: "unknown",
+      say: "Pick a model Claude has not reported a window for, and the card says so. Its fifteen percent waits, and Limbase keeps the policy it holds.",
+      caption: "Unknown window waits",
+      ready: PICKER,
+      highlight: [PICKER, WINDOW_LINE],
+      steps: [
+        { atMs: 300, action: "click", target: PICKER },
+        { atMs: 1800, action: "click", target: UNCATALOGED_OPTION },
+      ],
+      tailMs: 2200,
     },
     {
       id: "instance",
