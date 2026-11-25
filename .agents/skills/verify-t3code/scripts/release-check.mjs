@@ -698,7 +698,7 @@ async function smoke(host, options) {
   const facts = [`Host \`${host}\` at ${url}`];
   let session;
   try {
-    facts.push(`t3 ${(await sh(`${t3} --version`)).trim()}`);
+    facts.push(`Version \`${(await sh(`${t3} --version`)).trim()}\``);
     session = JSON.parse(
       await sh(
         `${t3} auth session issue --base-dir ${base} ${SCOPES} --ttl 30m --label release-smoke --json`,
