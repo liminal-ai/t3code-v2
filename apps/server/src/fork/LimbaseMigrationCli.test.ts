@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - The stub server cuts an answer off mid-body, which Effect's HTTP server cannot.
+// @effect-diagnostics nodeBuiltinImport:off
 import * as NodeHttp from "node:http";
 import type * as NodeNet from "node:net";
 
@@ -101,7 +101,6 @@ const json =
     response.end(JSON.stringify(body));
   };
 
-/** Serves the ids route as `respond` says, and counts its requests. */
 const idsServer = (respond: Respond) =>
   Effect.acquireRelease(
     Effect.promise(async () => {
@@ -137,7 +136,6 @@ const closedPort = Effect.promise(async () => {
   return port;
 });
 
-/** Runs `t3 thread show` against a server on `port`, and gives what it printed and how it ended. */
 const show = (port: number, json: boolean) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -182,7 +180,6 @@ const show = (port: number, json: boolean) =>
     };
   }).pipe(Effect.scoped);
 
-/** Shows the thread as JSON and as text, and checks both against what the base CLI prints. */
 const expectShow = (
   port: number,
   expected: { readonly limbase?: unknown; readonly line?: string; readonly warning?: string },

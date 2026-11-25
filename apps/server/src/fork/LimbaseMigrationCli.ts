@@ -154,11 +154,6 @@ const lookupFailure = (status: number, text: string) => {
     : `The server answered ${status}: ${reason}`;
 };
 
-/**
- * The ids of the thread's active provider thread and its Limbase thread, or `null` when that row
- * is not on Limbase or the server predates the route. A failed lookup comes back as `{ error }`,
- * with a warning on stderr, and never fails `show`.
- */
 export const readLimbaseIds = Effect.fn("LimbaseMigrationCli.readLimbaseIds")(function* (
   flags: { readonly baseDir: Option.Option<string>; readonly json: boolean },
   threadId: string,
