@@ -767,7 +767,7 @@ describe("Limbase migration bind route", () => {
           MIGRATED_SESSION,
         );
         assert.deepEqual(yield* ids(), {
-          providerThreadId: result.thread.activeProviderThreadId,
+          providerThreadId: JSON.parse(responseText(bound)).activeProviderThreadId,
           limbaseThreadId: LIMBASE_THREAD,
         });
 

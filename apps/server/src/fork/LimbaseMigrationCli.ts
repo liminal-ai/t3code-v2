@@ -117,8 +117,7 @@ const refusal = (status: number, text: string) =>
 
 const isOk = (status: number) => status >= 200 && status < 300;
 
-const isRouteMissingOnOlderServer = (status: number, text: string) =>
-  status === 404 && Option.isNone(decodeErrorBody(text));
+const isRouteMissingOnOlderServer = (status: number, text: string) => status === 404 && text === "";
 
 const postAsOwner = (
   flags: { readonly baseDir: Option.Option<string> },
