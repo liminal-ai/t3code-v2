@@ -109,14 +109,32 @@ Two kinds of check prove a feature:
 
 A PR that changes what a user sees or does in the web or desktop UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). The shared `narrated-demo` skill at `~/.agents/skills/narrated-demo/` makes it. Its `SKILL.md` lists the prerequisites, and its `references/demo-video.md` covers scene files, the pacing grammar, the sync probe, the privacy check, publishing and the running log. Read both before your first video.
 
-**Install.** The video needs the shared skill. `~/lim-v2/bin/lim-setup` installs it with the rest of lim-v2's skills. When `~/.agents/skills/narrated-demo/SKILL.md` is missing, run `~/lim-v2/bin/lim-setup`.
+**Install.** The video needs the shared skill. `~/lim-v2/bin/lim-setup` installs it with the rest of lim-v2's skills. It copies them from the `~/lim-v2` checkout and does not pull that checkout, so pull first:
+
+```bash
+git -C ~/lim-v2 pull --ff-only
+~/lim-v2/bin/lim-setup
+diff -rq -x node_modules ~/lim-v2/skills/narrated-demo ~/.agents/skills/narrated-demo
+```
+
+The `diff` prints nothing when the install is current. On lim-builder, `~/lim-v2/bin/lim-fleet` pushes that checkout's `main` to every other box and runs `lim-setup` there.
 
 This repo keeps two parts of its own:
 
 - `scripts/demo-adapter.mjs` gives the engine the recorded checkout's Playwright from `apps/web`, its dev server's origin from `.t3/userdata/server-runtime.json`, and a `t3v(...args)` helper for each scene file's `seed`. The helper runs that checkout's `t3v.mjs` and resolves to its stdout.
-- `demos/` holds one scene file per feature. A scene file's `seed` gets `{ page, t3v, checkout }`. Run `demos/sample.demo.mjs` with `--probe` to check the engine after a change.
+- `demos/` holds one scene file per feature. A scene file's `seed` gets `{ page, t3v, checkout }`.
 
-For each checkout you record, start its own dev server and browser with `node $T3V up`, `node $T3V browser open` and `node $T3V doctor` (see Isolation). Record the before side from a worktree at the PR's merge base. `node <checkout>/.agents/skills/verify-t3code/scripts/t3v.mjs browser info` prints that checkout's CDP URL. Pass it to `--cdp` explicitly, because t3v finds its checkout from its own path. Then run these from the head worktree:
+Start a dev server and its browser for each checkout you record, and print its CDP URL (see Isolation). Run this block in each checkout:
+
+```bash
+T3V=.agents/skills/verify-t3code/scripts/t3v.mjs
+node $T3V up
+node $T3V browser open
+node $T3V doctor
+node $T3V browser info
+```
+
+`browser info` prints `{"cdp": ..., "origin": ...}`. Pass that CDP URL to `--cdp` explicitly (see "The CDP URL" in the shared reference). Record the before side from a worktree at the PR's merge base. Then run these from the head worktree:
 
 ```bash
 DEMO=~/.agents/skills/narrated-demo/scripts/demo.mjs
@@ -134,7 +152,19 @@ node $DEMO publish $OUT --repo liminal-ai/t3code-v2 --pr <n> --dry-run
 node $DEMO publish $OUT --repo liminal-ai/t3code-v2 --pr <n>
 ```
 
-The first `mux` measures the probe's drift on the dry run. The second makes the video. `publish` keeps one PR comment that starts with `<!-- narrated-demo -->`, and rewrites an older `<!-- t3code-demo -->` comment to that marker. Lee accepts the video in a PR comment, and the merge waits for it. The merge then runs through the merge gate with `--method merge`.
+The first `mux` measures the probe's drift on the dry run. The second makes the video. `publish` keeps one PR comment that starts with `<!-- narrated-demo -->`. It rewrites an older `<!-- t3code-demo -->` comment to that marker. Lee accepts the video in a PR comment, and the merge waits for it.
+
+To check the engine after a change, record the sample against one dev server. `demos/sample.demo.mjs` exports one `{ scenes }` list, so its `record` takes no `--side` and writes `$OUT/run/`:
+
+```bash
+DEMO=~/.agents/skills/narrated-demo/scripts/demo.mjs
+ADAPTER=.agents/skills/verify-t3code/scripts/demo-adapter.mjs
+SAMPLE=.agents/skills/verify-t3code/demos/sample.demo.mjs
+OUT=<main checkout>/.pstack/runs/<run>/proof/<pr-id>/demo-sample
+node $DEMO tts --demo $SAMPLE --out $OUT
+node $DEMO record --demo $SAMPLE --adapter $ADAPTER --checkout . --cdp <cdp> --out $OUT --probe
+node $DEMO mux --out $OUT
+```
 
 ## Isolation
 
