@@ -1,7 +1,6 @@
 /**
- * `t3 thread export-manifest`, `limbase-bind` and `limbase-unbind` (LH-336), and the Limbase ids
- * `t3 thread show` prints. Each signs in to the running server as its owner, for one request, and
- * posts to the route in `LimbaseMigrationRoute`.
+ * `t3 thread export-manifest`, `limbase-bind` and `limbase-unbind` (LH-336). Each signs in to the
+ * running server as its owner, for one request, and posts to the route in `LimbaseMigrationRoute`.
  * The server does the reading and the writing; nothing here opens its database.
  */
 import { AuthEnvironmentMaintainScope, AuthOrchestrationReadScope } from "@t3tools/contracts";
@@ -49,7 +48,7 @@ const decodeBindingResult = Schema.decodeUnknownEffect(Schema.fromJsonString(Bin
 
 /**
  * Posts `body` to the route as the server's owner: a session that holds `environment:maintain`,
- * issued for this request and revoked after it. Answers the response's status and text.
+ * issued for this request and revoked after it.
  */
 const sendAsOwner = Effect.fn("LimbaseMigrationCli.send")(function* (
   flags: { readonly baseDir: Option.Option<string> },
@@ -118,6 +117,9 @@ const refusal = (status: number, text: string) =>
 
 const isOk = (status: number) => status >= 200 && status < 300;
 
+const isRouteMissingOnOlderServer = (status: number, text: string) =>
+  status === 404 && Option.isNone(decodeErrorBody(text));
+
 const postAsOwner = (
   flags: { readonly baseDir: Option.Option<string> },
   name: "manifest" | "bind" | "unbind",
@@ -133,14 +135,12 @@ const decodeLimbaseIds = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.NullOr(LimbaseIds)),
 );
 
-/** The thread's Limbase ids for `t3 thread show`, or null when it does not run on Limbase. */
 export const readLimbaseIds = Effect.fn("LimbaseMigrationCli.readLimbaseIds")(function* (
   flags: { readonly baseDir: Option.Option<string>; readonly json: boolean },
   threadId: string,
 ) {
   const { status, text } = yield* sendAsOwner(flags, "ids", { threadId }, flags.json);
-  // A server older than the CLI has no such route, and its router answers 404 with no error body.
-  if (status === 404 && Option.isNone(decodeErrorBody(text))) return null;
+  if (isRouteMissingOnOlderServer(status, text)) return null;
   if (!isOk(status)) return yield* refusal(status, text);
   return yield* decodeLimbaseIds(text).pipe(
     Effect.mapError(

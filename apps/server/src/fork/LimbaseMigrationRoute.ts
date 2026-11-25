@@ -1,8 +1,7 @@
 /**
- * The owner's route behind `t3 thread export-manifest`, `limbase-bind`, `limbase-unbind` and the
- * Limbase ids in `t3 thread show`. It needs `environment:maintain`, which no MCP client session
- * holds. Bind and unbind dispatch under the thread's lock; the route checks first, so a refusal it
- * can see records nothing.
+ * The owner's route behind `t3 thread export-manifest`, `limbase-bind` and `limbase-unbind`. It
+ * needs `environment:maintain`, which no MCP client session holds. Bind and unbind dispatch under
+ * the thread's lock; the route checks first, so a refusal it can see records nothing.
  */
 import {
   AuthEnvironmentMaintainScope,

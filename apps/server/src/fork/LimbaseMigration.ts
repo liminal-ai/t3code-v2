@@ -57,14 +57,12 @@ export const BindingResult = Schema.Struct({
 
 export const LimbaseIdsRequest = Schema.Struct({ threadId: ThreadId });
 
-/** The thread's active provider thread and the Limbase thread it runs on. */
 export const LimbaseIds = Schema.Struct({
   providerThreadId: Schema.String,
   limbaseThreadId: Schema.String,
 });
 export type LimbaseIds = typeof LimbaseIds.Type;
 
-/** The ids `t3 thread show` prints, or null when the active provider thread is not on Limbase. */
 export const limbaseIds = (projection: {
   readonly thread: Pick<OrchestrationV2AppThread, "activeProviderThreadId">;
   readonly providerThreads: ReadonlyArray<
