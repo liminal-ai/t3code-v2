@@ -1,5 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off - The stub server cuts an answer off mid-body, which Effect's HTTP server cannot.
-import * as NodeEvents from "node:events";
 import * as NodeHttp from "node:http";
 import type * as NodeNet from "node:net";
 
@@ -116,8 +115,7 @@ const idsServer = (respond: Respond) =>
         requests++;
         respond(response);
       });
-      server.listen(0, "127.0.0.1");
-      await NodeEvents.once(server, "listening");
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
       return {
         server,
         port: (server.address() as NodeNet.AddressInfo).port,
@@ -133,8 +131,7 @@ const idsServer = (respond: Respond) =>
 
 const closedPort = Effect.promise(async () => {
   const server = NodeHttp.createServer();
-  server.listen(0, "127.0.0.1");
-  await NodeEvents.once(server, "listening");
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address() as NodeNet.AddressInfo;
   await new Promise<void>((resolve) => server.close(() => resolve()));
   return port;
