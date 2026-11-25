@@ -119,11 +119,15 @@ An idle wait or a timing probe needs a server without the watcher. During one id
 
 ## Release check
 
-A dev server runs the worktree's source, so it cannot show a fault that only the packaged release has, such as a dependency the archive leaves out. Before anyone asks Lee for a cutover, three checks must pass in order: the seam tests in `FORK.md`, the feature drives `.agents/merge-brief.md` names, and `release-check.mjs pre` on the built release. Link the `pre` report, which lists every checked instance, in the cutover ask.
+A dev server runs the worktree's source, so it cannot show a fault that only the packaged release has, such as a dependency the archive leaves out. Before anyone asks Lee for a cutover, run these three checks in order. Do not start step 3 until steps 1 and 2 pass. Link the `pre` report, which lists every checked instance, in the cutover ask.
 
-1. **Provider matrix.** Run `node .agents/skills/verify-t3code/scripts/release-check.mjs pre --release <dir> --run <run folder>`. Optional flags are `--prod-settings <path>` and repeatable `--model <instance>=<slug>`. The script copies prod's `settings.json` with FORK.md's safety settings and keeps every instance's `binaryPath` and `enabled` verbatim. It moves Codex homes to scratch, starts a throwaway Limbase lane when needed, copies required credentials at mode 0600, and deletes those copies at teardown. It boots the release on a free port, runs one real `pong` turn on every instance the release reports enabled, and fails if any instance prod enables is missing or disabled. It archives every thread and writes the proof report to `<run folder>/proof/release-check-<release>.md`. It exits 0 only when every checked instance replied `pong` and every thread was archived. Exit 1 means a turn or archive failed, and exit 2 means bad usage.
-2. **Migration timing (optional).** To time the release's migrations against real data, boot a separate manual throwaway copy following FORK.md's safety list. Snapshot prod's database with `sqlite3 -readonly "file:<prod statev2.sqlite>?mode=ro" "VACUUM INTO '<copy>'"`, because `.backup` restarts on every prod write and never finishes. Run the safety list's SQL pass on the copy. Read every new migration first (`git diff --name-only <prod's release sha> <new sha> -- apps/server/src/persistence/Migrations/`). Boot the copy only when no new migration reads `orchestration_events` or rebuilds a projection, because a backfill restores wakes the SQL pass removed.
-3. **UI on the release.** `t3v.mjs` cannot attach to `t3 serve`. Open the pairing URL from the server log in T3's Browser panel with `preview_open` (`profileId: "incognito"`), as above.
+1. **Seam tests.** Run the seam tests in `FORK.md`.
+2. **Feature drives.** Run the feature drives `.agents/merge-brief.md` names.
+3. **Provider matrix.** Run `node .agents/skills/verify-t3code/scripts/release-check.mjs pre --release <dir> --run <run folder>`. Optional flags are `--prod-settings <path>` and repeatable `--model <instance>=<slug>`. The script reads prod's live enabled set from `server.getConfig` with a short session it revokes. It copies `settings.json` with `FORK.md`'s safety settings and keeps `binaryPath` and `enabled` verbatim. Codex homes and shadow homes move to scratch, and Limbase gets a throwaway lane. Credentials copy at mode 0600 and teardown deletes them. A blank Antigravity `binaryPath` runs `provider.install.start` over the network for the latest managed runtime. Each enabled instance runs a `pong` turn with a per-run title. Missing or disabled prod instances fail. The script archives only its own threads, notes others, and writes `<run folder>/proof/release-check-<release-dir-name>.md`. Exit 0 is pass, 1 is any failure, and 2 is bad usage.
+
+**Migration timing (optional).** Follow `FORK.md` "Test live without touching prod" for the snapshot, safety pass, and migration read. Boot the copy only when no new migration reads `orchestration_events` or rebuilds a projection.
+
+**UI on the release (optional).** `t3v.mjs` cannot attach to `t3 serve`, and `pre`'s server is gone by report time. If you need a release-only UI check, start a separate throwaway `t3 serve` from the release with its own base directory per `FORK.md` "Test live without touching prod". Open its pairing URL in T3's Browser panel with `preview_open` (`profileId: "incognito"`).
 
 **What a turn here cannot show.**
 
@@ -135,15 +139,16 @@ A dev server runs the worktree's source, so it cannot show a fault that only the
 
 ## After the cutover
 
-Roll out headless boxes first. After installing the release on each host per `~/lim-v2/docs/release.md`, run `node .agents/skills/verify-t3code/scripts/release-check.mjs smoke <host> --run <run folder>`. It runs three `pong` turns on the host (`claudeAgent`, `codex`, and `antigravity`, skipping any disabled there unless `--providers` names them), archives every thread, and writes `<run folder>/proof/smoke-<host>.md`. Each host gets this small smoke check, not the full provider matrix.
+Roll out headless boxes first. After you install the release on each host per `~/lim-v2/docs/release.md`, run `node .agents/skills/verify-t3code/scripts/release-check.mjs smoke <host> --run <run folder>`. It runs one `pong` turn per enabled instance in `claudeAgent`, `codex`, and `antigravity`, or the instances `--providers` names. Naming a disabled instance fails that row. Disabled providers do not run. The script archives only the threads this run started, notes others, and writes `<run folder>/proof/smoke-<host>.md`. Each host gets this small smoke check, not the full provider matrix. Link each host's `<run folder>/proof/smoke-<host>.md` in the fleet rollout report. Include one line per host with the checked instances and verdict.
 
-The M5 is always last. Before touching the M5, run `~/lim-v2/bin/t3-v2-install-mac-app --check-idle`. It prints `state=<idle|asleep|active|offline|unknown> hid_idle_s=<n|-> last_lee_msg_age_s=<n|->` using 900 s thresholds (`T3_V2_IDLE_AFTER`). See `~/lim-v2/machines/m5-macbook-pro.md` for threshold details.
+The M5 is always last. Before you touch the M5, run `~/lim-v2/bin/t3-v2-install-mac-app --check-idle`. It prints `state=<idle|asleep|active|offline|unknown> hid_idle_s=<n|-> last_lee_msg_age_s=<n|->` with 900 s thresholds (`T3_V2_IDLE_AFTER`). See `~/lim-v2/machines/m5-macbook-pro.md` for threshold details.
 
-- **Exit 0 (`idle` or `asleep`).** Update the M5 and run its smoke unattended.
-- **Exit 2 (`active`).** Finish every headless box first. Then end the turn with one plain message to Lee, not buried in orchestration chatter. State what is already rolled out, what will change on the M5, roughly how long the swap and smoke take, and his options: go now, wait until a time he picks, or run automatically once the M5 is idle. If he defers, set a T3 `schedule_task` wake for that time or a periodic `--check-idle` re-check, then finish the M5 and delete the schedule.
-- **Exit 3 (`offline` or `unknown`).** Finish every headless box and schedule a re-check.
+- **Exit 0 (`idle` or `asleep`).** Update the M5 and run its smoke check unattended.
+- **Exit 2 (`active`).** Finish every headless box first. Then end the turn with one plain message to Lee, not buried in orchestration chatter. State what is already rolled out, what will change on the M5, and roughly how long the swap and smoke take. Offer to go now, wait until a time he picks, or run automatically once the M5 is idle. If he defers to a time he picks, set a T3 `schedule_task` wake for that time. If he defers to once idle, have the wake rerun `--check-idle` and reschedule itself while it exits 2 or 3. Only after an exit 0 does the wake install the M5, run its smoke check, and delete the schedule.
+- **Exit 3 (`offline` or `unknown`).** Leave the M5 alone, finish every headless box, and schedule a `--check-idle` wake that reschedules itself while it exits 2 or 3.
+- **Exit 64 (usage error).** Fix the arguments and rerun. It is not idle, active, or offline.
 
-`--relaunch` refuses on exit 2 or 3 without `--force`. Pass `--force` only after Lee says go.
+`--relaunch` refuses on exit 2 or 3 without `--force`. On the M1, pass `--force`, because agents drive it and no person works at it, so its input is theirs, not Lee's. On the M5, pass `--force` only after Lee says go.
 
 ## Re-verification
 
