@@ -95,6 +95,8 @@ export async function seed({ page, t3v, checkout }) {
     await haiku.waitFor();
     await page.waitForTimeout(600);
     await haiku.click({ force: true });
+    await page.keyboard.press("Escape");
+    await haiku.waitFor({ state: "hidden" });
     await page.getByRole("button", { name: MODEL, exact: true }).waitFor();
   }
   await clearTo(page, "Compact at", "");
