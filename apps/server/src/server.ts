@@ -9,6 +9,7 @@ import * as StorageCleanup from "./storageCleanup.ts";
 import * as PullRequestSyncReactor from "./orchestration-v2/PullRequestSyncReactor.ts";
 import * as PullRequestWatchReactor from "./orchestration-v2/PullRequestWatchReactor.ts";
 import * as DelegatedTaskQuestionReactor from "./orchestration-v2/DelegatedTaskQuestionReactor.ts";
+import * as ForkSettings from "./fork/ForkSettings.ts";
 import * as HeldQueueResumer from "./fork/HeldQueueResumer.ts";
 import * as DelegatedRequestTimeout from "./fork/DelegatedRequestTimeout.ts";
 import * as MilestoneHub from "./milestones/MilestoneHub.ts";
@@ -820,6 +821,7 @@ const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
 );
 
 const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
+  Layer.provideMerge(ForkSettings.layer.pipe(Layer.provide(SqlitePersistence.layerConfig))),
   Layer.provideMerge(layerPtyAdapter),
   Layer.provideMerge(AcpRegistrySupport.layerFromHost.pipe(Layer.provide(ProviderHostLive.layer))),
   Layer.provideMerge(

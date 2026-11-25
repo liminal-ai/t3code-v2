@@ -7,6 +7,8 @@ import {
 import { assert, it } from "@effect/vitest";
 import {
   ClaudeSettings,
+  ForkSettingsError,
+  type LimbaseCompaction,
   type OrchestrationV2ProviderThread,
   ProviderInstanceId,
   ProviderThreadId,
@@ -23,6 +25,16 @@ import { makeClaudeQueryOptions } from "../orchestration-v2/Adapters/ClaudeAdapt
 import * as Limbase from "./Limbase.ts";
 
 const created: unknown[] = [];
+const held = new Map<
+  string,
+  { readonly trigger: number; readonly target: number; readonly cold?: "off" }
+>();
+const policiesSet: Array<{
+  readonly threadId: string;
+  readonly trigger: number;
+  readonly target: number;
+}> = [];
+const threadsRead: string[] = [];
 /** The host entry of each rollback the fake service made. */
 const rolledBack: unknown[] = [];
 
@@ -61,6 +73,25 @@ vi.mock("@limbase/host-agent-sdk", async (original) => {
           CreateThread: (payload: unknown) => {
             created.push(payload);
             return { threadId: `th_${created.length}`, createdAt: 0 };
+          },
+          GetThread: ({ threadId }: { threadId: string }) => {
+            threadsRead.push(threadId);
+            return {
+              threadId,
+              createdAt: 0,
+              ...(held.has(threadId) ? { compactPolicy: held.get(threadId) } : {}),
+            };
+          },
+          SetCompactPolicy: ({
+            threadId,
+            compactPolicy,
+          }: {
+            threadId: string;
+            compactPolicy: { trigger: number; target: number };
+          }) => {
+            held.set(threadId, compactPolicy);
+            policiesSet.push({ threadId, ...compactPolicy });
+            return { threadId, createdAt: 0, compactPolicy };
           },
         }),
       close: async () => {},
@@ -143,16 +174,42 @@ const drain = async (stream: AsyncIterable<SDKMessage>) => {
 
 const prompts = (async function* () {})();
 
+const done = { type: "result", subtype: "success", is_error: false, result: "Done." } as SDKMessage;
+
+const setsOn = (threadId: string) =>
+  policiesSet
+    .filter((set) => set.threadId === threadId)
+    .map(({ trigger, target }) => ({ trigger, target }));
+
+const compaction = (
+  overrides: Partial<{
+    thread: LimbaseCompaction;
+    instance: LimbaseCompaction;
+    model: string;
+    contextWindow: () => number | null;
+  }> = {},
+): Limbase.Compaction => ({
+  settings: Effect.succeed({ thread: overrides.thread ?? {}, instance: overrides.instance ?? {} }),
+  model: overrides.model ?? "claude-opus-4-6",
+  claudeContextWindow: overrides.contextWindow ?? (() => 1_000_000),
+});
+
 it.layer(NodeServices.layer)("Limbase", (it) => {
   it.effect("leaves a thread on a plain instance untouched", () =>
     Effect.gen(function* () {
       const settings = decodeSettings({});
       const before = created.length;
       assert.deepEqual(
-        yield* Limbase.ensureThread({ settings, existing: undefined, title: "t", cwd: "/w" }),
+        yield* Limbase.ensureThread({
+          settings,
+          existing: undefined,
+          title: "t",
+          cwd: "/w",
+          compaction: compaction(),
+        }),
         {},
       );
-      assert.equal(yield* Limbase.queryFor(settings, providerThread()), undefined);
+      assert.equal(yield* Limbase.queryFor(settings, providerThread(), compaction()), undefined);
       assert.equal(created.length, before);
     }),
   );
@@ -161,11 +218,13 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     Effect.gen(function* () {
       const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
       const before = created.length;
+      const seeded = compaction({ instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS });
       const first = yield* Limbase.ensureThread({
         settings,
         existing: providerThread(),
         title: "Fix the build",
         cwd: "/work/app",
+        compaction: seeded,
       });
       assert.equal(created.length, before + 1);
       assert.deepEqual(created.at(-1), {
@@ -181,6 +240,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         existing: providerThread(first.nativeMetadata),
         title: "Fix the build",
         cwd: "/work/app",
+        compaction: seeded,
       });
       assert.equal(again.nativeMetadata?.limbaseThreadId, limbaseThreadId);
       assert.equal(created.length, before + 1);
@@ -191,7 +251,13 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
     Effect.gen(function* () {
       const settings = decodeSettings({ limbaseHome: "/nonexistent/limbase-home" });
       const error = yield* Effect.flip(
-        Limbase.ensureThread({ settings, existing: undefined, title: undefined, cwd: null }),
+        Limbase.ensureThread({
+          settings,
+          existing: undefined,
+          title: undefined,
+          cwd: null,
+          compaction: compaction(),
+        }),
       );
       assert.equal(
         error.message,
@@ -209,6 +275,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         const hosted = yield* Limbase.queryFor(
           settings,
           providerThread({ limbaseThreadId: "th_1" }),
+          compaction(),
           sdk,
         );
         assert.isDefined(hosted);
@@ -264,6 +331,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         const hosted = yield* Limbase.queryFor(
           settings,
           providerThread({ limbaseThreadId: "th_1" }),
+          compaction(),
           sdk,
         );
         const options = makeClaudeQueryOptions({
@@ -304,6 +372,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
             const hosted = yield* Limbase.queryFor(
               settings,
               providerThread({ limbaseThreadId: "th_1" }),
+              compaction(),
               fakeSdk(messages).sdk,
             );
             return yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
@@ -361,6 +430,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
             const hosted = yield* Limbase.queryFor(
               settings,
               providerThread({ limbaseThreadId: "th_1" }),
+              compaction(),
               fakeSdk(ranFirst ? [done, "failOut", stopped(reason)] : [stopped(reason)]).sdk,
             );
             const seen = yield* Effect.promise(() =>
@@ -420,6 +490,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         const hosted = yield* Limbase.queryFor(
           settings,
           providerThread({ limbaseThreadId: "th_1" }),
+          compaction(),
           sdk,
         );
         yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
@@ -440,6 +511,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         const hosted = yield* Limbase.queryFor(
           settings,
           providerThread({ limbaseThreadId: "th_1" }),
+          compaction(),
           sdk,
         );
         const before = rolledBack.length;
@@ -467,10 +539,7 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
         cwd: "/work/app",
       });
       assert.equal(created.length, before + 1);
-      assert.deepEqual(created.at(-1), {
-        cwd: "/work/app",
-        compactPolicy: { trigger: 700_000, target: 100_000 },
-      });
+      assert.deepEqual(created.at(-1), { cwd: "/work/app" });
       assert.notEqual(reset.nativeMetadata?.limbaseThreadId, "th_1");
       assert.isDefined(reset.nativeMetadata?.limbaseThreadId);
       // A thread that began before its instance had a home stays plain.
@@ -480,6 +549,190 @@ it.layer(NodeServices.layer)("Limbase", (it) => {
       );
       assert.equal(created.length, before + 1);
     }),
+  );
+
+  it.effect("gives a new Limbase thread the policy its settings resolve to", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      const createdWith = (resolveFrom: Limbase.Compaction) =>
+        Effect.gen(function* () {
+          yield* Limbase.ensureThread({
+            settings,
+            existing: undefined,
+            title: undefined,
+            cwd: null,
+            compaction: resolveFrom,
+          });
+          return (created.at(-1) as { readonly compactPolicy?: unknown }).compactPolicy;
+        });
+      assert.deepEqual(yield* createdWith(compaction()), { trigger: 700_000, target: 120_000 });
+      assert.deepEqual(
+        yield* createdWith(
+          compaction({ model: "claude-sonnet-4-5", contextWindow: () => 200_000 }),
+        ),
+        { trigger: 140_000, target: 70_000 },
+      );
+      assert.deepEqual(
+        yield* createdWith(compaction({ model: "claude-haiku-4-5", contextWindow: () => 200_000 })),
+        { trigger: 85_000, target: 42_000 },
+      );
+      assert.deepEqual(
+        yield* createdWith(
+          compaction({
+            thread: { compactAt: { percent: 50 } },
+            instance: { compactAt: { tokens: 800_000 }, downTo: { tokens: 90_000 } },
+          }),
+        ),
+        { trigger: 500_000, target: 90_000 },
+      );
+      assert.isUndefined(yield* createdWith(compaction({ contextWindow: () => null })));
+    }),
+  );
+
+  it.effect("sets a Limbase thread's policy at query open only when it changed", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      const open = (resolveFrom: Limbase.Compaction) =>
+        Effect.gen(function* () {
+          const hosted = yield* Limbase.queryFor(
+            settings,
+            providerThread({ limbaseThreadId: "th_policy" }),
+            resolveFrom,
+            fakeSdk([]).sdk,
+          );
+          yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
+        });
+      const seeded = { instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS };
+      yield* open(compaction(seeded));
+      yield* open(compaction(seeded));
+      assert.deepEqual(setsOn("th_policy"), [{ trigger: 700_000, target: 100_000 }]);
+      yield* open(compaction({ ...seeded, thread: { downTo: { tokens: 150_000 } } }));
+      assert.deepEqual(setsOn("th_policy"), [
+        { trigger: 700_000, target: 100_000 },
+        { trigger: 700_000, target: 150_000 },
+      ]);
+    }),
+  );
+
+  it.effect("replaces a held policy whose tokens match but whose cold return was changed", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      held.set("th_cold", { trigger: 700_000, target: 100_000, cold: "off" });
+      const hosted = yield* Limbase.queryFor(
+        settings,
+        providerThread({ limbaseThreadId: "th_cold" }),
+        compaction({ instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS }),
+        fakeSdk([]).sdk,
+      );
+      yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
+      assert.deepEqual(setsOn("th_cold"), [{ trigger: 700_000, target: 100_000 }]);
+      assert.deepEqual(held.get("th_cold"), { trigger: 700_000, target: 100_000 });
+    }),
+  );
+
+  it.effect("waits for the CLI to report the model's window before it sets the policy", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      let reported: number | null = null;
+      const hosted = yield* Limbase.queryFor(
+        settings,
+        providerThread({ limbaseThreadId: "th_window" }),
+        compaction({ model: "claude-unlisted", contextWindow: () => reported }),
+        fakeSdk([done, done]).sdk,
+      );
+      const stream = hosted!({ prompt: prompts, options: {} });
+      const iterator = stream[Symbol.asyncIterator]();
+      yield* Effect.promise(() => iterator.next());
+      assert.deepEqual(setsOn("th_window"), []);
+      reported = 200_000;
+      yield* Effect.promise(async () => {
+        while (!(await iterator.next()).done);
+      });
+      yield* Effect.promise(() =>
+        vi.waitFor(() =>
+          assert.deepEqual(setsOn("th_window"), [{ trigger: 140_000, target: 70_000 }]),
+        ),
+      );
+    }),
+  );
+
+  it.effect("sets a live session's policy at a turn, and calls Limbase only when it changed", () =>
+    Effect.gen(function* () {
+      const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+      const thread = providerThread({ limbaseThreadId: "th_turns" });
+      const turn = (resolveFrom: Limbase.Compaction) =>
+        Limbase.applyTurnPolicy(settings, thread, resolveFrom);
+      const seeded = { instance: Limbase.FIXED_COMPACTION_BEFORE_SETTINGS };
+      held.set("th_turns", { trigger: 700_000, target: 100_000 });
+      const reads = () => threadsRead.filter((threadId) => threadId === "th_turns").length;
+
+      yield* turn(compaction(seeded));
+      yield* turn(compaction(seeded));
+      assert.equal(reads(), 1, "only the first turn T3 sees reads Limbase");
+      assert.deepEqual(setsOn("th_turns"), []);
+
+      yield* turn(
+        compaction({ instance: { compactAt: { percent: 60 }, downTo: { tokens: 100_000 } } }),
+      );
+      assert.deepEqual(setsOn("th_turns"), [{ trigger: 600_000, target: 100_000 }]);
+
+      yield* Limbase.applyPolicy(settings, "th_turns", { trigger: 600_000, target: 150_000 });
+      const readsAfterSave = reads();
+      yield* turn(
+        compaction({
+          instance: { compactAt: { percent: 60 } },
+          thread: { downTo: { tokens: 150_000 } },
+        }),
+      );
+      assert.equal(reads(), readsAfterSave, "a turn after a thread's save has nothing to send");
+
+      yield* turn(compaction({ ...seeded, contextWindow: () => null }));
+      assert.equal(reads(), readsAfterSave, "a turn with an unknown window waits");
+      assert.deepEqual(setsOn("th_turns"), [
+        { trigger: 600_000, target: 100_000 },
+        { trigger: 600_000, target: 150_000 },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "leaves the policy Limbase holds when a guard refuses the settings or they cannot be read",
+    () =>
+      Effect.gen(function* () {
+        const settings = decodeSettings({ limbaseHome: yield* limbaseHome });
+        held.set("th_kept", { trigger: 700_000, target: 100_000 });
+        const open = (resolveFrom: Limbase.Compaction) =>
+          Effect.gen(function* () {
+            const hosted = yield* Limbase.queryFor(
+              settings,
+              providerThread({ limbaseThreadId: "th_kept" }),
+              resolveFrom,
+              fakeSdk([init(Limbase.TESTED_CLAUDE_CODE)]).sdk,
+            );
+            return yield* Effect.promise(() => drain(hosted!({ prompt: prompts, options: {} })));
+          });
+        const refusedSettings = compaction({
+          instance: { compactAt: { tokens: 140_000 } },
+          thread: { downTo: { tokens: 150_000 } },
+        });
+        const unreadableSettings = {
+          ...compaction(),
+          settings: Effect.fail(new ForkSettingsError({ message: "the store is down" })),
+        };
+        const refused = yield* open(refusedSettings);
+        const unreadable = yield* open(unreadableSettings);
+        for (const resolveFrom of [refusedSettings, unreadableSettings]) {
+          yield* Limbase.applyTurnPolicy(
+            settings,
+            providerThread({ limbaseThreadId: "th_kept" }),
+            resolveFrom,
+          );
+        }
+        assert.lengthOf(refused, 1);
+        assert.lengthOf(unreadable, 1);
+        assert.deepEqual(setsOn("th_kept"), []);
+        assert.deepEqual(held.get("th_kept"), { trigger: 700_000, target: 100_000 });
+      }),
   );
 
   it("resumes a stopped Limbase thread with a prompt, and a plain one natively", () => {

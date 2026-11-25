@@ -6,6 +6,7 @@ import {
   OrchestrationV2SearchThreadsResult,
 } from "./orchestrationV2.ts";
 import { OrchestrationDispatchCommandError } from "./orchestrationDispatch.ts";
+import { FORK_SETTINGS_RPCS } from "./fork/forkSettings.ts";
 import {
   McpAppCallToolInput,
   McpAppCallToolResult,
@@ -2716,4 +2717,5 @@ export const WsRpcGroup = RpcGroup.make(
   WsOrchestrationV2SubscribeThreadRpc,
   WsOrchestrationV2SubscribeCommandOutputRpc,
   WsOrchestrationV2SubscribePromptSuggestionRpc,
+  ...FORK_SETTINGS_RPCS,
 ).middleware(RpcScopeAuthorization);

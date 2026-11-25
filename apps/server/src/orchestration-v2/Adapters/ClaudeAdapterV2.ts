@@ -190,6 +190,7 @@ import {
   type CompiledClaudeModelSelection,
 } from "../../claudeModelOptions.ts";
 import * as ServerConfig from "../../config.ts";
+import * as ForkSettings from "../../fork/ForkSettings.ts";
 import * as Limbase from "../../fork/Limbase.ts";
 import * as PortScanner from "../../preview/PortScanner.ts";
 import * as ProcessRunner from "../../processRunner.ts";
@@ -212,6 +213,7 @@ import {
   resolveClaudeModelSlug,
   resolveClaudeReportedModelSlug,
   scopeClaudeModelCatalog,
+  stripClaudeContextWindowSuffix,
 } from "../../provider/ClaudeModelCatalog.ts";
 import {
   boundProviderEventForLogging,
@@ -6016,6 +6018,7 @@ export interface ClaudeAdapterV2Options {
     ) => Effect.Effect<void>;
   };
   readonly installationGate?: ProviderInstallationGate.ProviderInstallationGate["Service"];
+  readonly forkSettings?: ForkSettings.ForkSettingsStore["Service"];
 }
 
 export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
@@ -6034,12 +6037,23 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   let modelCatalog = yield* loadModelCatalog;
   // Results report the window Claude Code compacts against; outside the catalog it is the only source.
   const reportedContextWindows = new Map<string, number>();
-  const claudeContextWindow = (modelSelection: ModelSelection): number | null =>
-    resolveClaudeCatalogContextWindowTokens(modelCatalog, modelSelection) ??
-    reportedContextWindows.get(
-      compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId,
-    ) ??
-    null;
+  const claudeContextWindow = (modelSelection: ModelSelection): number | null => {
+    const apiModelId = compileClaudeModelSelection(modelSelection, modelCatalog).apiModelId;
+    return (
+      resolveClaudeCatalogContextWindowTokens(modelCatalog, modelSelection) ??
+      reportedContextWindows.get(apiModelId) ??
+      // The CLI reports a `[1m]` model's window under its bare id.
+      reportedContextWindows.get(stripClaudeContextWindowSuffix(apiModelId)) ??
+      null
+    );
+  };
+  const limbaseCompaction = (threadId: ThreadId, modelSelection: ModelSelection) =>
+    ForkSettings.compaction(adapterOptions.forkSettings, {
+      threadId,
+      instanceId: adapterOptions.instanceId,
+      model: modelSelection.model,
+      claudeContextWindow: () => claudeContextWindow(modelSelection),
+    });
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
   };
@@ -13774,6 +13788,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           const limbaseQuery = yield* Limbase.queryFor(
             adapterOptions.settings,
             turnInput.providerThread,
+            limbaseCompaction(turnInput.threadId, turnInput.modelSelection),
           );
           // Read right before opening so an update during startup counts too.
           const openQueryRuntime = readProgram.pipe(
@@ -14125,6 +14140,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                       Effect.provideService(Path.Path, path),
                     );
             const querySession = yield* openQuery(turnInput, nativeThreadId, queryPolicy);
+            yield* Limbase.applyTurnPolicy(
+              adapterOptions.settings,
+              turnInput.providerThread,
+              limbaseCompaction(turnInput.threadId, turnInput.modelSelection),
+            );
             yield* applySessionTitle(querySession.query, nativeThreadId, turnInput.appThread.title);
             const autoCompactWindow = yield* resolveAutoCompactWindow(
               querySession.settingsCwd,
@@ -14938,6 +14958,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   existing: threadInput.existingProviderThread,
                   title: threadInput.title,
                   cwd: threadInput.runtimePolicy.cwd,
+                  compaction: limbaseCompaction(threadInput.threadId, threadInput.modelSelection),
                 })),
               });
               yield* rememberProviderThread(providerThread);
@@ -15590,7 +15611,8 @@ export type ClaudeAdapterV2DriverEnv =
   | McpProviderSessions.McpProviderSessions
   | Path.Path
   | ProviderInstallationGate.ProviderInstallationGate
-  | ServerConfig.ServerConfig;
+  | ServerConfig.ServerConfig
+  | ForkSettings.ForkSettingsStore;
 
 export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
   function* (
@@ -15608,6 +15630,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
     const serverConfig = yield* ServerConfig.ServerConfig;
     const continuationRequests = yield* ProviderContinuationRequests.ProviderContinuationRequests;
     const installationGate = yield* ProviderInstallationGate.ProviderInstallationGate;
+    const forkSettings = yield* ForkSettings.ForkSettingsStore;
     const baseEnvironment = yield* mergeClaudeProcessEnvironment(
       config,
       environment,
@@ -15632,6 +15655,7 @@ export const createClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2Driver.create")(
       queryRunner,
       continuationRequests,
       installationGate,
+      forkSettings,
       ...hooks,
     });
   },

@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import * as ServerConfig from "../../config.ts";
+import * as ForkSettings from "../../fork/ForkSettings.ts";
 import {
   isWindowsClaudeLauncherShimPath,
   resolveClaudeSdkExecutablePath,
@@ -1063,6 +1064,7 @@ function layerClaudeProviderAdapterRegistryReplay(
         layerClaudeAgentSdkReplay(transcript, options),
         IdAllocator.layer,
         ProviderInstallationGate.layer,
+        Layer.mock(ForkSettings.ForkSettingsStore)({}),
         NodeServices.layer,
         NodeCrypto.layer,
         layerServerConfig,

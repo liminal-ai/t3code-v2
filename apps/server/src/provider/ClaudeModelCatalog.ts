@@ -171,7 +171,7 @@ const CLAUDE_EFFORT_LABELS: Readonly<Record<string, string>> = {
   max: "Max",
 };
 
-function stripClaudeContextWindowSuffix(value: string): string {
+export function stripClaudeContextWindowSuffix(value: string): string {
   return value.replace(/\[[^\]]*\]$/, "").trim();
 }
 
