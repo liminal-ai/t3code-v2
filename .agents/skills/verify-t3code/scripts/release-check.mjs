@@ -291,7 +291,9 @@ async function rpc(origin, token, tag, payload, { until, timeoutMs = 30_000 } = 
         }
         if (frame._tag !== "Exit") return;
         clearTimeout(timer);
-        if (frame.exit._tag === "Success") resolve(frame.exit.value);
+        if (frame.exit._tag === "Success" && until)
+          reject(new Error(`${tag} ended before the state it waited for`));
+        else if (frame.exit._tag === "Success") resolve(frame.exit.value);
         else reject(new Error(`${tag} failed: ${JSON.stringify(frame.exit).slice(0, 400)}`));
       });
     });
