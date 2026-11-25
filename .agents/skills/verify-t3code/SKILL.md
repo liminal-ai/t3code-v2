@@ -114,7 +114,7 @@ A PR that changes what a user sees or does in the web or desktop UI carries a na
 This repo keeps two parts of its own:
 
 - `scripts/demo-adapter.mjs` gives the engine the recorded checkout's Playwright from `apps/web`, its dev server's origin from `.t3/userdata/server-runtime.json`, and a `t3v(...args)` helper for each scene file's `seed`. The helper runs that checkout's `t3v.mjs` and resolves to its stdout.
-- `demos/` holds one scene file per feature. Each `seed` takes `{ page, t3v, checkout }`. Run `demos/sample.demo.mjs` with `--probe` to check the engine after a change.
+- `demos/` holds one scene file per feature. A scene file's `seed` gets `{ page, t3v, checkout }`. Run `demos/sample.demo.mjs` with `--probe` to check the engine after a change.
 
 For each checkout you record, start its own dev server and browser with `node $T3V up`, `node $T3V browser open` and `node $T3V doctor` (see Isolation). Record the before side from a worktree at the PR's merge base. `node <checkout>/.agents/skills/verify-t3code/scripts/t3v.mjs browser info` prints that checkout's CDP URL. Pass it to `--cdp` explicitly, because t3v finds its checkout from its own path. Then run these from the head worktree:
 
