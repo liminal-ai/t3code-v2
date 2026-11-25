@@ -22,13 +22,18 @@ import { useContext } from "react";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { serverEnvironment } from "../../state/server";
-import { environmentThreadShells } from "../../state/threads";
+import { environmentThreadShells, threadEnvironment } from "../../state/threads";
 import { waitForAtomValue } from "../../state/waitForAtomValue";
 
-export const threadSettingsSignal = (shell: EnvironmentThreadShell | null) => {
+/**
+ * A model picked in the composer shows before the server has it, so a refresh at the pick reads
+ * the old model. `pending` changes again once the server has it, and that refresh reads the pick.
+ */
+export const threadSettingsSignal = (shell: EnvironmentThreadShell | null, pending: boolean) => {
   if (shell === null) return null;
   const run = shell.latestRun;
   return JSON.stringify([
+    pending,
     shell.providerInstanceId,
     shell.modelSelection,
     shell.activeProviderThreadId,
@@ -46,7 +51,8 @@ export const threadSettingsQuery = createEnvironmentRpcQueryAtomFamily(connectio
     const shell = environmentThreadShells.threadShellAtom(
       scopeThreadRef(environmentId, input.threadId),
     );
-    return Atom.make((get) => threadSettingsSignal(get(shell)));
+    const pending = threadEnvironment.pendingThreadIdsAtom(environmentId);
+    return Atom.make((get) => threadSettingsSignal(get(shell), get(pending).has(input.threadId)));
   },
   execute: (input, _emit, previous) => {
     const shownModel = Option.getOrUndefined(previous)?.limbaseCompaction?.model;

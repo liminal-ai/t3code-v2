@@ -538,15 +538,18 @@ it("refreshes the card when its thread switches model or ends a turn, not when i
       status: ended ? "completed" : "running",
       completedAt: ended ? "2026-11-24T00:00:00.000Z" : null,
     }) as never;
-  const before = threadSettingsSignal(shell({ latestRun: run(false) }));
-  expect(threadSettingsSignal(shell({ latestRun: run(false), title: "Renamed" }))).toBe(before);
-  expect(threadSettingsSignal(shell({ latestRun: run(true) }))).not.toBe(before);
+  const before = threadSettingsSignal(shell({ latestRun: run(false) }), false);
+  expect(threadSettingsSignal(shell({ latestRun: run(false), title: "Renamed" }), false)).toBe(
+    before,
+  );
+  expect(threadSettingsSignal(shell({ latestRun: run(true) }), false)).not.toBe(before);
+  const picked = shell({
+    latestRun: run(false),
+    modelSelection: { instanceId: ProviderInstanceId.make("claudeLimbase"), model: "b" },
+  });
+  expect(threadSettingsSignal(picked, true)).not.toBe(before);
   expect(
-    threadSettingsSignal(
-      shell({
-        latestRun: run(false),
-        modelSelection: { instanceId: ProviderInstanceId.make("claudeLimbase"), model: "b" },
-      }),
-    ),
-  ).not.toBe(before);
+    threadSettingsSignal(picked, false),
+    "a picked model refreshes the card again once the server has it",
+  ).not.toBe(threadSettingsSignal(picked, true));
 });
