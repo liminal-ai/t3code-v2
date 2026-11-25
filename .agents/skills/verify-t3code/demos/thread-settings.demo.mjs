@@ -205,6 +205,7 @@ export default {
       steps: [
         { atMs: 300, action: "click", target: PICKER },
         { atMs: 1800, action: "click", target: UNCATALOGED_OPTION },
+        { atMs: 2800, action: "press", key: "Escape" },
       ],
       tailMs: 2200,
     },
