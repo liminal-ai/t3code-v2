@@ -145,7 +145,7 @@ The M5 is always last. Before you touch the M5, run `~/lim-v2/bin/t3-v2-install-
 
 - **Exit 0 (`idle` or `asleep`).** Update the M5 and run its smoke check unattended.
 - **Exit 2 (`active`).** Finish every headless box first. Then end the turn with one plain message to Lee, not buried in orchestration chatter. State what is already rolled out, what will change on the M5, and roughly how long the swap and smoke take. Offer to go now, wait until a time he picks, or run automatically once the M5 is idle. If he defers to a time he picks, set a T3 `schedule_task` wake for that time. If he defers to once idle, have the wake rerun `--check-idle` and reschedule itself while it exits 2 or 3. Only after an exit 0 does the wake install the M5, run its smoke check, and delete the schedule.
-- **Exit 3 (`offline` or `unknown`).** Leave the M5 alone, finish every headless box, and schedule a `--check-idle` wake that reschedules itself while it exits 2 or 3.
+- **Exit 3 (`offline` or `unknown`).** Leave the M5 alone, finish every headless box, and schedule a `--check-idle` wake that reschedules itself while it exits 2 or 3. When the wake sees exit 0, it updates the M5, runs its smoke check, and deletes the schedule.
 - **Exit 64 (usage error).** Fix the arguments and rerun. It is not idle, active, or offline.
 
 `--relaunch` refuses on exit 2 or 3 without `--force`. On the M1, pass `--force`, because agents drive it and no person works at it, so its input is theirs, not Lee's. On the M5, pass `--force` only after Lee says go.
