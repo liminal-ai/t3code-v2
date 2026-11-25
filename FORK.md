@@ -90,6 +90,8 @@ The script never switches prod. It ends by printing the `t3-v2-cutover` command 
 
 ## Cut over
 
+**Open: how to test a release before it goes to prod.** The 11-25 cutover to nightly 5191 hit a problem: the release check tested only some providers, and Antigravity, which it skipped, broke on prod. Decisions are still needed on exactly how to test the fork before it goes to prod.
+
 Lee runs or approves every cutover.
 
 1. Run `~/lim-v2/bin/t3-v2-cutover <release-name> <sha256-of-t3>`. The restart ends every T3 thread on prod, including the one that starts it. So run it from a terminal, or from a T3 thread as a detached `systemd-run --user` job.
