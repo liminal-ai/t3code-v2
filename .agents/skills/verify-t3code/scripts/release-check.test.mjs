@@ -140,7 +140,7 @@ NodeTest.test("rows come from what the release enables, plus every instance prod
       ["codex", "gpt-6-astra", undefined],
       ["cursor", "grok-4.7", undefined],
       ["claudeLimbase", "claude-sonnet-5-5", undefined],
-      ["antigravity", "gemini-3.8-flash", "prod enables it, the release reports it disabled"],
+      ["antigravity", "gemini-4-neon", "settings enable it, the release reports it disabled"],
     ],
   );
   NodeAssert.equal(rows.find((r) => r.instance === "codex").binaryPath, "/bin/codex");
@@ -151,7 +151,7 @@ NodeTest.test("an instance the release drops, or one with no proof model, is a f
   const rows = planRows(prod, [provider("fx", "fx"), provider("claudeAgent", "claudeAgent")]);
   const byId = Object.fromEntries(rows.map((r) => [r.instance, r.error]));
   NodeAssert.equal(byId.fx, "no proof model for driver fx; pass --model fx=<slug>");
-  NodeAssert.equal(byId.cursor, "prod enables it, the release does not list it");
+  NodeAssert.equal(byId.cursor, "settings enable it, the release does not list it");
   NodeAssert.equal(byId.old, undefined);
 });
 

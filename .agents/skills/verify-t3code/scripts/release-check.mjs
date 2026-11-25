@@ -25,7 +25,7 @@ const RESERVED_PORTS = new Set([13977, 13987, 13995]);
 const PROMPT = "Reply with the single word pong. Do not call tools or change files.";
 const SMOKE_PROVIDERS = ["claudeAgent", "codex", "antigravity"];
 const TURN_TIMEOUT_MS = 240_000;
-const SCOPES = "--scope orchestration:read --scope orchestration:operate";
+const SCOPES = "--scope orchestration:read --scope orchestration:operate --ttl 30m";
 
 export const SAFETY_SETTINGS = {
   continueThreadsAfterServerUpdate: false,
@@ -49,7 +49,7 @@ export const DRIVERS = {
     credentials: (id) => [`secrets/provider-auth-${sha256(`6:cursor${id}`)}.bin`],
   },
   antigravity: {
-    model: "gemini-3.8-flash",
+    model: "gemini-4-neon",
     credentials: (id) => [
       `providers/antigravity/${sha256(id)}/antigravity-acp/antigravity-oauth-token`,
     ],
@@ -118,9 +118,9 @@ export function planRows(prod, providers, models = {}) {
       binaryPath: entry?.config?.binaryPath ?? "(managed)",
       model: models[instance] ?? DRIVERS[driver]?.model ?? "",
     };
-    if (!provider) return { ...row, error: "prod enables it, the release does not list it" };
+    if (!provider) return { ...row, error: "settings enable it, the release does not list it" };
     if (!provider.enabled)
-      return { ...row, error: "prod enables it, the release reports it disabled" };
+      return { ...row, error: "settings enable it, the release reports it disabled" };
     if (!row.model)
       return {
         ...row,
@@ -168,16 +168,7 @@ const cell = (value) =>
     .slice(0, 300);
 
 export function renderTable(rows) {
-  const head = [
-    "instance",
-    "driver",
-    "binaryPath",
-    "model",
-    "result",
-    "reply or error",
-    "thread",
-    "archived",
-  ];
+  const head = "instance|driver|binaryPath|model|result|reply or error|thread|archived".split("|");
   const lines = rows.map((r) =>
     [
       r.instance,
@@ -198,6 +189,12 @@ export function renderTable(rows) {
     ...lines.map((l) => `| ${l} |`),
   ].join("\n");
 }
+
+const enabledIds = (providers) =>
+  providers
+    .filter((p) => p.enabled)
+    .map((p) => p.instanceId)
+    .join(", ");
 
 export const passed = (rows) => rows.length > 0 && rows.every((r) => r.pass && r.archived);
 
@@ -275,17 +272,30 @@ async function rpc(origin, token, tag, payload) {
   }
 }
 
-const archive = (origin, token, threadId) =>
-  rpc(origin, token, "orchestration.dispatchCommand", {
-    type: "thread.archive",
-    commandId: `release-check-archive-${NodeCrypto.randomUUID()}`,
-    threadId,
-  });
+async function runTurns(rows, startTurn) {
+  const turnOn = async (row) => {
+    log(`turn on ${row.instance} with ${row.model}`);
+    const result = await startTurn(row);
+    const turn = lastJson(result.stdout);
+    row.threadId = turn?.threadId;
+    row.reply = turn?.reply;
+    row.pass = isPong(turn);
+    if (row.pass) return;
+    row.error = result.error?.killed
+      ? `no reply within ${TURN_TIMEOUT_MS / 1000} s`
+      : (turn?.error ??
+        turn?.reply ??
+        ((result.stderr || result.stdout).trim().slice(-300) || `exit ${result.code}`));
+  };
+  await Promise.all(rows.filter((r) => !r.error).map(turnOn));
+}
 
 async function archiveAll(rows, { origin, token, show, list }) {
-  const listed = (await list()).filter(
-    (t) => !t.archived && !rows.some((r) => r.threadId === t.threadId),
-  );
+  const all = await list().catch((error) => {
+    rows.push({ instance: "(thread list)", error: error.message });
+    return [];
+  });
+  const listed = all.filter((t) => !t.archived && !rows.some((r) => r.threadId === t.threadId));
   for (const thread of listed) {
     const row = rows.find((r) => !r.threadId && r.instance === thread.providerInstanceId);
     if (row) row.threadId = thread.threadId;
@@ -298,7 +308,11 @@ async function archiveAll(rows, { origin, token, show, list }) {
   }
   for (const row of rows.filter((r) => r.threadId)) {
     try {
-      await archive(origin, token, row.threadId);
+      await rpc(origin, token, "orchestration.dispatchCommand", {
+        type: "thread.archive",
+        commandId: `release-check-archive-${NodeCrypto.randomUUID()}`,
+        threadId: row.threadId,
+      });
       row.archived = (await show(row.threadId))?.thread?.archived === true;
       if (!row.archived) row.error = `${row.error ?? ""} (archive did not stick)`.trim();
     } catch (error) {
@@ -306,19 +320,6 @@ async function archiveAll(rows, { origin, token, show, list }) {
       row.error = `${row.error ?? row.reply ?? ""} (archive failed: ${error.message})`.trim();
     }
   }
-}
-
-function settleTurn(row, result) {
-  const turn = lastJson(result.stdout);
-  row.threadId = turn?.threadId;
-  row.reply = turn?.reply;
-  row.pass = isPong(turn);
-  if (row.pass) return;
-  row.error = result.error?.killed
-    ? `no reply within ${TURN_TIMEOUT_MS / 1000} s`
-    : (turn?.error ??
-      turn?.reply ??
-      ((result.stderr || result.stdout).trim().slice(-300) || `exit ${result.code}`));
 }
 
 function writeReport(file, title, facts, rows) {
@@ -336,15 +337,9 @@ function writeReport(file, title, facts, rows) {
 
 function serverEnv(base, codexHome) {
   const env = {};
-  for (const key of [
-    "HOME",
-    "USER",
-    "LOGNAME",
-    "SHELL",
-    "LANG",
-    "XDG_RUNTIME_DIR",
-    "DBUS_SESSION_BUS_ADDRESS",
-  ]) {
+  for (const key of "HOME USER LOGNAME SHELL LANG XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS".split(
+    " ",
+  )) {
     if (process.env[key]) env[key] = process.env[key];
   }
   for (const file of PROD_ENV_FILES) {
@@ -365,15 +360,6 @@ function copySecret(from, to) {
   NodeFS.mkdirSync(NodePath.dirname(to), { recursive: true, mode: 0o700 });
   NodeFS.copyFileSync(NodeFS.realpathSync(from), to);
   NodeFS.chmodSync(to, 0o600);
-}
-
-function seedCodexHome(source, dest, secrets) {
-  NodeFS.mkdirSync(dest, { recursive: true, mode: 0o700 });
-  copySecret(NodePath.join(source, "auth.json"), NodePath.join(dest, "auth.json"));
-  secrets.push(NodePath.join(dest, "auth.json"));
-  if (NodeFS.existsSync(NodePath.join(source, "config.toml"))) {
-    NodeFS.copyFileSync(NodePath.join(source, "config.toml"), NodePath.join(dest, "config.toml"));
-  }
 }
 
 async function startLimbaseLane(work, releaseName) {
@@ -506,13 +492,8 @@ async function pre(options) {
   const settings = copySettings(prod, { codexHome, limbaseHome: laneHome });
   const problems = copyProblems(prod, settings);
   if (problems.length > 0) throw new Error(`settings copy is not faithful: ${problems.join("; ")}`);
-  NodeFS.writeFileSync(
-    NodePath.join(userdata, "settings.json"),
-    `${JSON.stringify(settings, null, 2)}\n`,
-    {
-      mode: 0o600,
-    },
-  );
+  const settingsJson = `${JSON.stringify(settings, null, 2)}\n`;
+  NodeFS.writeFileSync(NodePath.join(userdata, "settings.json"), settingsJson, { mode: 0o600 });
 
   const secrets = [];
   const teardown = [];
@@ -527,11 +508,16 @@ async function pre(options) {
     for (const [id, instance] of Object.entries(prod.providerInstances ?? {}))
       if (instance.driver === "codex") codexIds.add(id);
     for (const id of codexIds) {
-      seedCodexHome(
-        prod.providerInstances?.[id]?.config?.homePath ?? NodePath.join(HOME, ".codex"),
-        codexHome(id),
-        secrets,
-      );
+      const source =
+        prod.providerInstances?.[id]?.config?.homePath ?? NodePath.join(HOME, ".codex");
+      copySecret(NodePath.join(source, "auth.json"), NodePath.join(codexHome(id), "auth.json"));
+      secrets.push(NodePath.join(codexHome(id), "auth.json"));
+      if (NodeFS.existsSync(NodePath.join(source, "config.toml"))) {
+        NodeFS.copyFileSync(
+          NodePath.join(source, "config.toml"),
+          NodePath.join(codexHome(id), "config.toml"),
+        );
+      }
     }
     const instances = {
       ...Object.fromEntries(Object.keys(DRIVERS).map((d) => [d, { driver: d }])),
@@ -592,58 +578,36 @@ async function pre(options) {
     const issued = await must(
       t3,
       [
-        "auth",
-        "session",
-        "issue",
+        ..."auth session issue --token-only --label release-check".split(" "),
+        ...SCOPES.split(" "),
         "--base-dir",
         base,
-        ...SCOPES.split(" "),
-        "--ttl",
-        "30m",
-        "--label",
-        "release-check",
-        "--token-only",
       ],
       { env },
     );
     const token = issued.trim();
     const { providers } = await rpc(origin, token, "server.getConfig", {});
-    facts.push(
-      `Enabled by the release: ${providers
-        .filter((p) => p.enabled)
-        .map((p) => p.instanceId)
-        .join(", ")}`,
-    );
+    facts.push(`Enabled by the release: ${enabledIds(providers)}`);
     rows.push(...planRows(prod, providers, models));
     for (const row of rows) {
       if (laneError && isLimbase(prod.providerInstances?.[row.instance] ?? {}))
         row.error = laneError;
     }
     await must(t3, ["project", "add", "--base-dir", base, project], { cwd: project, env });
-    await Promise.all(
-      rows
-        .filter((r) => !r.error)
-        .map(async (row) => {
-          log(`turn on ${row.instance} with ${row.model}`);
-          const result = await t3Run(
-            [
-              "thread",
-              "start",
-              "--base-dir",
-              base,
-              "--provider",
-              row.instance,
-              "--model",
-              row.model,
-              "--wait",
-              "--json",
-              ".",
-              PROMPT,
-            ],
-            { timeout: TURN_TIMEOUT_MS },
-          );
-          settleTurn(row, result);
-        }),
+    await runTurns(rows, (row) =>
+      t3Run(
+        [
+          ..."thread start --wait --json --base-dir".split(" "),
+          base,
+          "--provider",
+          row.instance,
+          "--model",
+          row.model,
+          ".",
+          PROMPT,
+        ],
+        { timeout: TURN_TIMEOUT_MS },
+      ),
     );
     await archiveAll(rows, {
       origin,
@@ -652,10 +616,7 @@ async function pre(options) {
         lastJson((await t3Run(["thread", "show", "--base-dir", base, "--json", id])).stdout),
       list: async () =>
         JSON.parse(
-          await must(t3, ["thread", "list", "--base-dir", base, "--project", project, "--json"], {
-            cwd: project,
-            env,
-          }),
+          await must(t3, ["thread", "list", "--json", "--base-dir", base], { cwd: project, env }),
         ),
     });
   } catch (error) {
@@ -701,67 +662,50 @@ async function smoke(host, options) {
     facts.push(`Version \`${(await sh(`${t3} --version`)).trim()}\``);
     session = JSON.parse(
       await sh(
-        `${t3} auth session issue --base-dir ${base} ${SCOPES} --ttl 30m --label release-smoke --json`,
+        `${t3} auth session issue --base-dir ${base} ${SCOPES} --label release-smoke --json`,
       ),
     );
     const token = session.token;
     const { providers } = await rpc(url, token, "server.getConfig", {});
-    const reported = new Map(providers.map((p) => [p.instanceId, p]));
-    facts.push(
-      `Enabled on the host: ${providers
-        .filter((p) => p.enabled)
-        .map((p) => p.instanceId)
-        .join(", ")}`,
+    facts.push(`Enabled on the host: ${enabledIds(providers)}`);
+    const planned = planRows(
+      JSON.parse(await sh(`cat ${base}/userdata/settings.json`)),
+      providers,
+      models,
     );
-    const { providerInstances = {} } = JSON.parse(await sh(`cat ${base}/userdata/settings.json`));
     const wanted =
       options.providers?.split(",").filter(Boolean) ??
-      SMOKE_PROVIDERS.filter((id) => reported.get(id)?.enabled);
+      SMOKE_PROVIDERS.filter((id) => planned.some((r) => r.instance === id));
+    rows.push(
+      ...wanted.map(
+        (id) =>
+          planned.find((r) => r.instance === id) ?? {
+            instance: id,
+            error: "not enabled on this host",
+          },
+      ),
+    );
     const project = (
       await sh(
         `p="$HOME/.cache/t3-release-smoke"; mkdir -p "$p" && cd "$p" && { [ -d .git ] || git init -q; } && { ${t3} project add --base-dir ${base} "$p" >/dev/null 2>&1 || true; } && printf %s "$p"`,
       )
     ).trim();
     facts.push(`Scratch project \`${project}\` on the host`);
-    for (const id of wanted) {
-      const provider = reported.get(id);
-      const row = {
-        instance: id,
-        driver: provider?.driver,
-        binaryPath: providerInstances[id]?.config?.binaryPath ?? "(managed)",
-        model: models[id] ?? DRIVERS[provider?.driver]?.model ?? "",
-      };
-      if (!provider?.enabled) row.error = "not enabled on this host";
-      else if (!row.model)
-        row.error = `no proof model for driver ${provider.driver}; pass --model ${id}=<slug>`;
-      rows.push(row);
-    }
-    await Promise.all(
-      rows
-        .filter((r) => !r.error)
-        .map(async (row) => {
-          log(`turn on ${host} ${row.instance} with ${row.model}`);
-          const result = await run(
-            LIM_THREAD,
-            [
-              host,
-              "start",
-              project,
-              "-",
-              "--provider",
-              row.instance,
-              "--model",
-              row.model,
-              "--wait",
-              "--json",
-            ],
-            {
-              input: PROMPT,
-              timeout: TURN_TIMEOUT_MS,
-            },
-          );
-          settleTurn(row, result);
-        }),
+    await runTurns(rows, (row) =>
+      run(
+        LIM_THREAD,
+        [
+          host,
+          "start",
+          project,
+          "-",
+          ..."--wait --json --provider".split(" "),
+          row.instance,
+          "--model",
+          row.model,
+        ],
+        { input: PROMPT, timeout: TURN_TIMEOUT_MS },
+      ),
     );
     await archiveAll(rows, {
       origin: url,
