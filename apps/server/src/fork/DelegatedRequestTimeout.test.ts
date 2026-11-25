@@ -26,6 +26,7 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { permissionResultFromDecision } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
 import * as EventSink from "../orchestration-v2/EventSink.ts";
@@ -379,10 +380,19 @@ it.effect(
       assert.equal(declined?.status, "resolved");
       assert.equal(declined?.decision, "decline");
       const note = approvalNote(REASON);
-      assert.include(note, "No human is available");
-      assert.include(note, "waiting 10 minutes");
-      assert.include(note, `"${REASON}"`);
-      assert.include(note, "stop and say in your final message what you needed");
+      assert.deepInclude(
+        permissionResultFromDecision({
+          toolName: "Bash",
+          decision: "decline",
+          toolInput: {},
+          toolUseID: "toolu_timeout",
+          feedback: note,
+        }),
+        {
+          behavior: "deny",
+          message: `The user declined this tool call and said:\nNobody approved this within 10 minutes. No human is watching this delegated task and an agent cannot approve it, so T3 declined it on the user's behalf. The reason it asked: "${REASON}" Continue without it: work around it, or stop and say in your final message what you needed and why.`,
+        },
+      );
       assert.deepEqual(yield* respondEffects(childThreadId), [
         {
           type: "runtime-request.respond",

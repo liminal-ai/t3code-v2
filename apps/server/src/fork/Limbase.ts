@@ -261,6 +261,9 @@ export const queryFor = Effect.fn("Limbase.queryFor")(function* (
   return hosted;
 });
 
+export const sessionFileHoldsUnsentLines = (providerThread: OrchestrationV2ProviderThread) =>
+  providerThread.nativeMetadata?.limbaseThreadId !== undefined;
+
 /**
  * Whether the row's first query resumes its session though T3 has run no turn on it: a row bound to
  * a migrated Limbase thread. Its session file does not exist yet, and only a resume makes the host

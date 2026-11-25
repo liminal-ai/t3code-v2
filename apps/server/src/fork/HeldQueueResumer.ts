@@ -30,7 +30,6 @@ import * as Stream from "effect/Stream";
 import type * as Scope from "effect/Scope";
 
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
-import { isBufferedProviderNotification } from "../orchestration-v2/NotificationMailbox.ts";
 import * as Orchestrator from "../orchestration-v2/Orchestrator.ts";
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import { forkParked } from "../serverActivation.ts";
@@ -291,11 +290,13 @@ const make = Effect.gen(function* () {
     }),
   );
 
-  const pendingContinuation = (threadId: ThreadId) =>
+  // Core treats a run that completed before its checkpoint capture committed as still waiting,
+  // and starts no queued run behind it until the capture does.
+  const pendingWork = (threadId: ThreadId) =>
     sql<{ readonly effect_id: string }>`
       SELECT effect_id FROM orchestration_v2_effect_outbox
       WHERE thread_id = ${threadId}
-        AND effect_type = 'provider-runtime.continue'
+        AND effect_type IN ('provider-runtime.continue', 'checkpoint.capture')
         AND status IN ('pending', 'running')
       LIMIT 1
     `.pipe(
@@ -306,7 +307,7 @@ const make = Effect.gen(function* () {
   const quiet = Effect.fn("heldQueueResumer.quiet")(function* (threadId: ThreadId) {
     while (true) {
       const afterSequence = yield* orchestrator.getThreadEventSequence(threadId);
-      const pending = yield* pendingContinuation(threadId);
+      const pending = yield* pendingWork(threadId);
       if (pending !== undefined) {
         yield* outbox.awaitSettled(pending);
         continue;
@@ -434,19 +435,12 @@ const make = Effect.gen(function* () {
     const message = (yield* projections.getMessagesById(threadId, [head.userMessageId])).get(
       head.userMessageId,
     );
-    // Upstream's queuedRunModelSelection: a delegated result, a scheduled delivery that picked no
-    // model, or an unbuffered monitor notice starts on the thread's current provider, not the one
-    // stored on the run.
-    const followsThread =
-      message !== undefined &&
-      (message.delegatedCompletion !== undefined ||
-        message.followsThreadSelection === true ||
-        (message.notification?.source.kind === "monitor" &&
-          !isBufferedProviderNotification(message)));
     const resetMs = yield* usageLimitResetAhead(
       threadId,
       runs,
-      followsThread ? shell.modelSelection.instanceId : head.providerInstanceId,
+      Orchestrator.followsCurrentConversation(message)
+        ? shell.modelSelection.instanceId
+        : head.providerInstanceId,
     );
     if (resetMs !== undefined) return { limitedUntilMs: resetMs };
     yield* orchestrator.dispatch({

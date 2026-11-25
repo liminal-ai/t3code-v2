@@ -26,11 +26,9 @@ import {
   type ServerSettings as ServerSettingsShape,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
-import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import type * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -39,7 +37,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as CheckpointStore from "../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../config.ts";
-import * as GitWorkflow from "../git/GitWorkflowService.ts";
 import * as McpSessionRegistryTestkit from "../mcp/McpSessionRegistry.testkit.ts";
 import { CodexProviderCapabilitiesV2 } from "../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import * as EffectOutbox from "../orchestration-v2/EffectOutbox.ts";
@@ -50,10 +47,11 @@ import * as ProjectionMaintenance from "../orchestration-v2/ProjectionMaintenanc
 import * as ProjectionStore from "../orchestration-v2/ProjectionStore.ts";
 import * as ProviderRuntimeRecoveryService from "../orchestration-v2/ProviderRuntimeRecoveryService.ts";
 import * as ProviderSessionManager from "../orchestration-v2/ProviderSessionManager.ts";
+import * as ProviderTurnStartServiceTestkit from "../orchestration-v2/ProviderTurnStartService.testkit.ts";
 import * as RuntimeLayer from "../orchestration-v2/runtimeLayer.ts";
 import * as ThreadCommandExecutor from "../orchestration-v2/ThreadCommandExecutor.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
-import * as ProjectService from "../project/ProjectService.ts";
+import * as ModelManifest from "../provider/ModelManifest.ts";
 import * as ProviderInstanceRegistry from "../provider/ProviderInstanceRegistry.ts";
 import * as ServerSettings from "../serverSettings.ts";
 import * as SourceControlProviderRegistry from "../sourceControl/SourceControlProviderRegistry.ts";
@@ -107,7 +105,7 @@ const makeAdapter = (cwd: string) => {
             lastError: null,
           },
           events: Stream.fromQueue(events),
-          ensureThread: ({ threadId }) =>
+          ensureThread: ({ threadId, forceNewNativeThread }) =>
             Effect.succeed({
               id: ProviderThreadId.make(`provider-thread:codex:${threadId}`),
               driver,
@@ -115,7 +113,11 @@ const makeAdapter = (cwd: string) => {
               providerSessionId: input.providerSessionId,
               appThreadId: threadId,
               ownerNodeId: null,
-              nativeThreadRef: { driver, nativeId: "native-thread", strength: "strong" },
+              nativeThreadRef: {
+                driver,
+                nativeId: forceNewNativeThread === true ? "native-thread:fresh" : "native-thread",
+                strength: "strong",
+              },
               nativeConversationHeadRef: null,
               status: "idle",
               firstRunOrdinal: null,
@@ -227,13 +229,8 @@ const layerTest = (
     Layer.provide(layerCheckpointStoreTest),
     Layer.provide(layerServerConfig),
     Layer.provide(layerProviderInstances),
-    Layer.provide(
-      Layer.mock(GitWorkflow.GitWorkflowService)({
-        pruneWorktrees: () => Effect.void,
-        createWorktree: () => Effect.succeed({} as never),
-      }),
-    ),
-    Layer.provide(Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone })),
+    Layer.provide(ModelManifest.layerTest),
+    Layer.provide(ProviderTurnStartServiceTestkit.layer),
     Layer.provide(layerPlatformTest),
   );
 };
@@ -273,6 +270,13 @@ const dispatch = (command: Parameters<Orchestrator.OrchestratorV2["Service"]["di
 const drain = Effect.flatMap(EffectWorker.OrchestrationEffectWorkerV2, (worker) => worker.drain());
 
 const scan = Effect.flatMap(HeldQueueResumer, (resumer) => resumer.scan);
+
+const startsAfterCapture = (runId: RunId) =>
+  Effect.map(
+    Effect.all([runStatus(runId, "starting"), runStatus(runId, "running")]),
+    ([starting, running]) =>
+      Fiber.join(starting).pipe(Effect.andThen(drain), Effect.andThen(Fiber.join(running))),
+  );
 
 const busyThread = (input: {
   readonly threadId: ThreadId;
@@ -417,16 +421,13 @@ const continuationOf = (runs: ReadonlyArray<OrchestrationV2Run>, sourceId: RunId
 const finishContinuation = (threadId: ThreadId, sourceId: RunId, started: Array<StartedTurn>) =>
   Effect.gen(function* () {
     const continuation = continuationOf(yield* runsOf(threadId), sourceId)!;
-    const settled = yield* runStatus(continuation.id, "waiting");
     const completed = yield* runStatus(continuation.id, "completed");
     yield* finishTurn(started.find((entry) => entry.turn.runId === continuation.id)!);
-    yield* Fiber.join(settled);
-    yield* drain;
     yield* Fiber.join(completed);
+    yield* drain;
   });
 
-/** The run's turn ends while a native subagent it awaits still runs, so the run settles as waiting. */
-const settleBehindAwaitedWork = (
+const endTurnWithSubagentRunning = (
   threadId: ThreadId,
   run: OrchestrationV2Run,
   started: Array<StartedTurn>,
@@ -475,7 +476,7 @@ const settleBehindAwaitedWork = (
         },
       ],
     });
-    const settled = yield* runStatus(run.id, "waiting");
+    const settled = yield* runStatus(run.id, "completed");
     yield* finishTurn(started.find((entry) => entry.turn.runId === run.id)!);
     yield* Fiber.join(settled);
   });
@@ -708,7 +709,7 @@ it.effect.each(["while its effect is pending", "after its effect settled"] as co
             `thread:wake-${timing === "while its effect is pending" ? "pending" : "settled"}`,
           );
           const { active, queued } = yield* busyThread({ threadId, cwd });
-          yield* settleBehindAwaitedWork(threadId, active, started);
+          yield* endTurnWithSubagentRunning(threadId, active, started);
           yield* restartOneSecondLater;
           const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
           assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
@@ -729,24 +730,23 @@ it.effect.each(["while its effect is pending", "after its effect settled"] as co
     ),
 );
 
-it.effect("leaves the hold when core declines a wake past its chain cap", () =>
-  withHarness("chain-cap", ({ cwd, started }) =>
+it.effect("leaves the hold when core declines a turn past its crash cap", () =>
+  withHarness("chain-cap", ({ cwd }) =>
     Effect.gen(function* () {
       const threadId = ThreadId.make("thread:chain-cap");
       const { active, queued } = yield* busyThread({ threadId, cwd });
       let source = active;
       for (const _ of [1, 2, 3]) {
-        yield* restartOneSecondLater;
+        yield* crashAndRestartOneSecondLater;
         const continuationTurn = yield* nextTurnRunning(source);
         yield* drain;
         yield* Fiber.join(continuationTurn);
         source = continuationOf(yield* runsOf(threadId), source.id)!;
       }
-      yield* settleBehindAwaitedWork(threadId, source, started);
-      yield* restartOneSecondLater;
+      yield* crashAndRestartOneSecondLater;
       yield* drain;
       const runs = yield* runsOf(threadId);
-      assert.include(["waiting", "completed"], runs.find((run) => run.id === source.id)?.status);
+      assert.equal(runs.find((run) => run.id === source.id)?.status, "cancelled");
       assert.isUndefined(continuationOf(runs, source.id));
       yield* scan;
       const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
@@ -789,12 +789,10 @@ it.effect.each(["approval", "secret"] as const)(
         yield* drain;
         yield* Fiber.join(continuationTurn);
         const continuation = continuationOf(yield* runsOf(threadId), active.id)!;
-        const settled = yield* runStatus(continuation.id, "waiting");
         const done = yield* runStatus(continuation.id, "completed");
         yield* finishTurn(started.find((entry) => entry.turn.runId === continuation.id)!);
-        yield* Fiber.join(settled);
-        yield* drain;
         yield* Fiber.join(done);
+        yield* drain;
         const laterTurn = yield* nextTurnRunning(continuation);
         yield* dispatch({
           type: "message.dispatch",
@@ -838,12 +836,10 @@ it.effect("leaves the queue held after a Stop on a later turn", () =>
       yield* drain;
       yield* Fiber.join(continuationTurn);
       const continuation = continuationOf(yield* runsOf(threadId), active.id)!;
-      const settled = yield* runStatus(continuation.id, "waiting");
       const done = yield* runStatus(continuation.id, "completed");
       yield* finishTurn(started.find((entry) => entry.turn.runId === continuation.id)!);
-      yield* Fiber.join(settled);
-      yield* drain;
       yield* Fiber.join(done);
+      yield* drain;
       const laterTurn = yield* nextTurnRunning(continuation);
       yield* dispatch({
         type: "message.dispatch",
@@ -1149,12 +1145,10 @@ it.effect(
         yield* drain;
         yield* Fiber.join(continuationTurn);
         const continuation = continuationOf(yield* runsOf(threadId), active.id)!;
-        const settled = yield* runStatus(continuation.id, "waiting");
         const done = yield* runStatus(continuation.id, "completed");
         yield* finishTurn(started.find((entry) => entry.turn.runId === continuation.id)!);
-        yield* Fiber.join(settled);
-        yield* drain;
         yield* Fiber.join(done);
+        yield* drain;
         yield* recordPendingRequest(threadId, continuation, {
           kind: "user_input",
           answeredBy: "message",
@@ -1324,42 +1318,6 @@ it.effect.each(["before a scan", "across another restart"] as const)(
     ),
 );
 
-it.effect("leaves the hold after the outbox pruned core's refusal of a wake", () =>
-  withHarness("pruned-refusal", ({ cwd, started }) =>
-    Effect.gen(function* () {
-      const threadId = ThreadId.make("thread:pruned-refusal");
-      const { active, queued } = yield* busyThread({ threadId, cwd });
-      let source = active;
-      for (const _ of [1, 2, 3]) {
-        yield* restartOneSecondLater;
-        const continuationTurn = yield* nextTurnRunning(source);
-        yield* drain;
-        yield* Fiber.join(continuationTurn);
-        source = continuationOf(yield* runsOf(threadId), source.id)!;
-      }
-      yield* settleBehindAwaitedWork(threadId, source, started);
-      yield* restartOneSecondLater;
-      yield* drain;
-      assert.isUndefined(continuationOf(yield* runsOf(threadId), source.id));
-      const outbox = yield* EffectOutbox.EffectOutboxV2;
-      const refusal = `effect:restart-continuation:${source.id}`;
-      assert.isTrue(Option.isSome(yield* outbox.get(refusal)));
-      yield* TestClock.adjust(
-        Duration.sum(EffectOutbox.SETTLED_EFFECT_RETENTION, Duration.millis(1)),
-      );
-      assert.isAbove(yield* outbox.pruneSettled, 0);
-      assert.isTrue(Option.isNone(yield* outbox.get(refusal)));
-      yield* restartOneSecondLater;
-      yield* drain;
-      yield* scan;
-      yield* drain;
-      const held = (yield* runsOf(threadId)).find((run) => run.id === queued[0]!.id);
-      assert.deepEqual([held?.status, held?.queueHeld], ["queued", true]);
-      assert.deepEqual(yield* resumeCommandIds(threadId), []);
-    }),
-  ),
-);
-
 it.effect.each(["a reorder", "a newer sibling"] as const)(
   "keeps a hold older than the outbox retention, after %s",
   (refresh) =>
@@ -1442,19 +1400,17 @@ it.effect(
         for (const run of (yield* runsOf(threadId)).filter((run) => order.includes(run.id)))
           assert.deepEqual([run.status, run.queueHeld === true], ["queued", false]);
 
-        const firstRunning = yield* runStatus(order[0]!, "running");
+        const firstRuns = yield* startsAfterCapture(order[0]!);
         yield* finishContinuation(threadId, active.id, started);
         for (const [index, runId] of order.entries()) {
-          if (index === 0) yield* Fiber.join(firstRunning);
-          const nextRunning =
-            index + 1 < order.length ? yield* runStatus(order[index + 1]!, "running") : undefined;
-          const settled = yield* runStatus(runId, "waiting");
+          if (index === 0) yield* firstRuns;
+          const nextRuns =
+            index + 1 < order.length ? yield* startsAfterCapture(order[index + 1]!) : undefined;
           const completed = yield* runStatus(runId, "completed");
           yield* finishTurn(started.find((entry) => entry.turn.runId === runId)!);
-          yield* Fiber.join(settled);
-          yield* drain;
           yield* Fiber.join(completed);
-          if (nextRunning !== undefined) yield* Fiber.join(nextRunning);
+          yield* drain;
+          if (nextRuns !== undefined) yield* nextRuns;
         }
         yield* Fiber.join(scanning);
         yield* drain;
