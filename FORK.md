@@ -73,7 +73,7 @@ Everything else is upstream. `git diff --stat v0.1.12-nightly.20261124.5191 main
 4. Verify three things. Upstream owns testing upstream, so do not re-test upstream features.
    - Our code: the fork's tests, with the commands in [Seams to re-check](#seams-to-re-check).
    - The seams: the tests in [Seams to re-check](#seams-to-re-check), and the content check that the merged tree is upstream plus our diff and nothing else. Compare `git diff $NEW <merge>` with `git diff $OLD origin/main`. The only differences should be the conflict resolutions you made.
-   - The deployment: build a release (see [Build a release](#build-a-release)) and run it as a throwaway T3, never against prod, with one real turn on Cursor, Claude and Codex. The verify skill's "Release check" has the commands. See [Test live without touching prod](#test-live-without-touching-prod).
+   - The deployment: build a release (see [Build a release](#build-a-release)) and run the verify skill's "Release check" (`node .agents/skills/verify-t3code/scripts/release-check.mjs pre --release <dir> --run <run folder>`). Every instance prod enables must pass. See [Test live without touching prod](#test-live-without-touching-prod).
 5. Open the PR against `main`. Set "Last synced" in this file to the new tag in the same PR.
 6. Have a reviewer from the other model family verify it, then merge with `--merge`. If the merge commit carries a test that the next commit fixes, that is fine. `main`'s first-parent history stays green because the PR lands as a merge commit.
 7. Stop. The cutover is a separate step that Lee runs or approves.
@@ -90,7 +90,7 @@ The script never switches prod. It ends by printing the `t3-v2-cutover` command 
 
 ## Cut over
 
-Lee runs or approves every cutover.
+Lee runs or approves every cutover. Pass the seam tests, the feature drives in `.agents/merge-brief.md`, and `release-check.mjs pre` in order first, and link the `pre` report in the cutover ask.
 
 1. Run `~/lim-v2/bin/t3-v2-cutover <release-name> <sha256-of-t3>`. The restart ends every T3 thread on prod, including the one that starts it. So run it from a terminal, or from a T3 thread as a detached `systemd-run --user` job.
 2. The script never waits for prod to go idle, because it may never be idle. It lists the runs the restart interrupts, which T3 resumes after the update, and goes ahead. It backs up `statev2.sqlite` into `prod/data/backups/`, switches `prod/current`, restarts `t3code-v2-prod`, and checks that the new binary answers 200 on 13987. If the check fails, it switches back once.
@@ -100,11 +100,15 @@ Lee runs or approves every cutover.
 
 To roll back, run `t3-v2-cutover <previous release>`, and never point `prod/current` at it by hand. `facts.env` in the run folder names the previous release. A rollback runs the old binary on data the new one may have migrated or compacted. Nobody has tested that for 3238.
 
+### Roll out to the fleet
+
+Roll out headless boxes first. Run `release-check.mjs smoke <host> --run <run folder>` on each after its install and link each host's `smoke-<host>.md` in the fleet rollout report. Update the M5 last per the verify skill's "After the cutover". See `~/lim-v2/docs/release.md` for the install commands.
+
 ## Test live without touching prod
 
 Drive a dev server from a worktree with `.agents/skills/verify-t3code/SKILL.md`, which holds the rules that keep it off the live install.
 
-Run a throwaway T3 from a built release on a free port, with its own base directory. Prior art: the 3824 sync's `.pstack/runs/sync-3824-chain/proof/prod-copy-check.sh` in the main checkout boots a release on a neutralized copy of prod's database, checks its new migrations ran, and runs one turn each on Cursor, Claude and Codex. It lives in a run folder, so read it before you reuse it. Take its data from a WAL-safe snapshot (`VACUUM INTO`; `.backup` never finishes on busy prod) and follow every step of the safety list in `~/lim-v2/notes/cursor-cloud-evidence/verification-20261017-sync3238-r2/safety-audit.md`. That list says which files to leave out, the SQL that stops copied threads from waking, and the settings to use. Read the live ports with `ss -H -ltnp` first. 13987 is v2 prod, 13977 is the older `~/lim` T3, and 13995 is the deploy script's smoke test.
+Run a throwaway T3 from a built release on a free port, with its own base directory. For provider turns, run `.agents/skills/verify-t3code/scripts/release-check.mjs pre` per the verify skill's "Release check". To time migrations against a neutralized copy of prod's database, take a WAL-safe snapshot (`VACUUM INTO`, because `.backup` never finishes on busy prod) and follow every step of the safety list in `~/lim-v2/notes/cursor-cloud-evidence/verification-20261017-sync3238-r2/safety-audit.md`. That list says which files to leave out, the SQL that stops copied threads from waking, and the settings to use. Read every new migration first (`git diff --name-only <prod's release sha> <new sha> -- apps/server/src/persistence/Migrations/`). Read the live ports with `ss -H -ltnp` first. 13987 is v2 prod, 13977 is the older `~/lim` T3, and 13995 is the deploy script's smoke test.
 
 ## Seams to re-check
 
