@@ -69,7 +69,7 @@ Every recipe in `features/` uses these commands. Target by ARIA role and accessi
 | `browser wait --text <text>` / `--gone <text>`            | Waits for text to appear, or for a text such as `Working` to leave, alone or with more words after it, as in `Working for 12s`. Default 15 s, `--timeout <ms>`.                                  |
 | `browser goto <path>`                                     | Loads a path on the web origin, such as `/settings/providers`.                                                                                                                                   |
 | `browser shot <name>` / `aria <name>` / `text`            | A screenshot or ARIA snapshot under proof, or the page's text on stdout.                                                                                                                         |
-| `browser info`                                            | Prints `{"cdp": ..., "origin": ...}`, for a tool that attaches to this browser, such as `scripts/demo.mjs`.                                                                                      |
+| `browser info`                                            | Prints `{"cdp": ..., "origin": ...}`, for a tool that attaches to this browser, such as the narrated-demo engine.                                                                                |
 
 A turn ends when `Working` leaves the page. `browser wait --text` matches your own message too, so never wait on a word you sent.
 
@@ -107,7 +107,34 @@ Two kinds of check prove a feature:
 
 ## Narrated demo videos
 
-A PR that changes what a user sees or does in the web or desktop UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). `scripts/demo.mjs` makes it from a scene file in `demos/`. It voices each scene, records it on the t3v browser with highlight rings and the real mouse, muxes the narration at each scene's real start, and publishes to Cloudflare Stream with one PR comment. [references/demo-video.md](references/demo-video.md) covers writing a scene, the pacing grammar, the sync probe, the privacy check and publishing.
+A PR that changes what a user sees or does in the web or desktop UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). The shared `narrated-demo` skill at `~/.agents/skills/narrated-demo/` makes it. Its `SKILL.md` lists the prerequisites, and its `references/demo-video.md` covers scene files, the pacing grammar, the sync probe, the privacy check, publishing and the running log. Read both before your first video.
+
+**Install.** The video needs the shared skill. `~/lim-v2/bin/lim-setup` installs it with the rest of lim-v2's skills. When `~/.agents/skills/narrated-demo/SKILL.md` is missing, run `~/lim-v2/bin/lim-setup`.
+
+This repo keeps two parts of its own:
+
+- `scripts/demo-adapter.mjs` gives the engine the recorded checkout's Playwright from `apps/web`, its dev server's origin from `.t3/userdata/server-runtime.json`, and a `t3v(...args)` helper for each scene file's `seed`. The helper runs that checkout's `t3v.mjs` and resolves to its stdout.
+- `demos/` holds one scene file per feature. Each `seed` takes `{ page, t3v, checkout }`. Run `demos/sample.demo.mjs` with `--probe` to check the engine after a change.
+
+For each checkout you record, start its own dev server and browser with `node $T3V up`, `node $T3V browser open` and `node $T3V doctor` (see Isolation). Record the before side from a worktree at the PR's merge base. `node <checkout>/.agents/skills/verify-t3code/scripts/t3v.mjs browser info` prints that checkout's CDP URL. Pass it to `--cdp` explicitly, because t3v finds its checkout from its own path. Then run these from the head worktree:
+
+```bash
+DEMO=~/.agents/skills/narrated-demo/scripts/demo.mjs
+ADAPTER=.agents/skills/verify-t3code/scripts/demo-adapter.mjs
+SCENES=.agents/skills/verify-t3code/demos/<feature>.demo.mjs
+OUT=<main checkout>/.pstack/runs/<run>/proof/<pr-id>/demo
+node $DEMO tts --demo $SCENES --out $OUT
+node $DEMO record --demo $SCENES --adapter $ADAPTER --checkout . --cdp <head cdp> --out $OUT --side after --probe
+node $DEMO mux --out $OUT
+node $DEMO record --demo $SCENES --adapter $ADAPTER --checkout <base worktree> --cdp <base cdp> --out $OUT --side before
+node $DEMO record --demo $SCENES --adapter $ADAPTER --checkout . --cdp <head cdp> --out $OUT --side after
+node $DEMO mux --out $OUT
+node $DEMO privacy $OUT --by <who> --note "<what was checked>"
+node $DEMO publish $OUT --repo liminal-ai/t3code-v2 --pr <n> --dry-run
+node $DEMO publish $OUT --repo liminal-ai/t3code-v2 --pr <n>
+```
+
+The first `mux` measures the probe's drift on the dry run. The second makes the video. `publish` keeps one PR comment that starts with `<!-- narrated-demo -->`, and rewrites an older `<!-- t3code-demo -->` comment to that marker. Lee accepts the video in a PR comment, and the merge waits for it. The merge then runs through the merge gate with `--method merge`.
 
 ## Isolation
 
