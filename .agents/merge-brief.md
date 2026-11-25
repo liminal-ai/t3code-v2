@@ -13,7 +13,7 @@
 - `Agent context budget` fails when a PR raises a value in `apps/server/src/provider/agentContextBudget.json` above `main`'s. A maintainer accepts growth with the `agent-context-increase` label. The failed `opened` run stays on the head, and a rerun fails again, so merge with `--waive checks=<reason>` naming the passing `labeled` run ([#45](https://github.com/liminal-ai/t3code-v2/pull/45)). A PR stacked on one that grows the budget passes with `gh run rerun <id> --failed` once that PR lands ([#46](https://github.com/liminal-ai/t3code-v2/pull/46)).
 - Before the push: `vp run check:changed`, never repo-wide checks. An upstream sync instead typechecks each package the fork touches and lints the files that differ from the upstream tag. A branch that merged a sync gets the sync's new dependencies first: `CI=true vp install --frozen-lockfile`, then typecheck.
 - A change to a file in FORK.md "Seams to re-check" runs the tests listed there.
-- CI runs neither the live drive nor a sync's throwaway-release check (FORK.md "Sync from upstream" step 4). Before a cutover question, the release runs one real turn each on Cursor, Claude and Codex, per the skill's "Release check".
+- CI runs neither the live drive nor a sync's throwaway-release check (FORK.md "Sync from upstream" step 4). Before a cutover question, `node .agents/skills/verify-t3code/scripts/release-check.mjs pre --release <dir> --run <run folder>` must pass for every instance prod enables, per the skill's "Release check".
 - `AGENTS.md` or `CLAUDE.md` text: Lee approves the exact text, and the gate checks the approval comment.
 - An upstream sync updates "Last synced" in FORK.md in the same PR.
 - A merge changes nothing in prod. Only Lee runs or approves a cutover (FORK.md "Cut over").
