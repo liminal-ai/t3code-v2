@@ -109,7 +109,7 @@ Two kinds of check prove a feature:
 
 A PR that changes what a user sees or does in the web or desktop UI carries a narrated before-and-after acceptance video (`.agents/merge-brief.md`). The shared `narrated-demo` skill at `~/.agents/skills/narrated-demo/` makes it. Its `SKILL.md` lists the prerequisites, and its `references/demo-video.md` covers scene files, the pacing grammar, the sync probe, the privacy check, publishing and the running log. Read both before your first video.
 
-**Install.** The video needs the shared skill at `~/.agents/skills/narrated-demo/`. `~/lim-v2/bin/lim-setup` installs it with the rest of lim-v2's skills. It copies them from the `~/lim-v2` checkout and does not pull that checkout. Every box other than lim-builder gets `~/lim-v2` only from lim-builder: `~/lim-v2/bin/lim-fleet` pushes lim-builder's `main` to each box and runs `lim-setup` there. Never pull `~/lim-v2` on another box. When the skill is missing there, run `lim-fleet` on lim-builder, or ask Lee to.
+**Install.** The video needs the shared skill at `~/.agents/skills/narrated-demo/`. `~/lim-v2/bin/lim-setup` installs it with the rest of lim-v2's skills. It copies them from the `~/lim-v2` checkout and does not pull that checkout. Every box other than lim-builder gets `~/lim-v2` only from lim-builder: `~/lim-v2/bin/lim-fleet` pushes lim-builder's `main` to each box and runs `lim-setup` there. Never pull `~/lim-v2` on another box. When the skill is missing there, run the block below on lim-builder, then `~/lim-v2/bin/lim-fleet <box>` there, where `<box>` is the box's ssh alias or its label in `config/environments.json`, or ask Lee to.
 
 On lim-builder:
 
