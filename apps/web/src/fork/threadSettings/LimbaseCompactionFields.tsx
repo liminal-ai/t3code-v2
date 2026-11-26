@@ -51,6 +51,7 @@ export function LimbaseCompactionFields(props: {
   readonly status: WriteStatus;
   readonly write: (patch: LimbaseCompactionPatch) => Promise<string | null>;
   readonly messagesClassName?: string;
+  readonly inputSize?: "sm" | "compact";
   readonly renderRow: (row: {
     readonly field: CompactionField;
     readonly label: string;
@@ -101,7 +102,7 @@ export function LimbaseCompactionFields(props: {
           input: (
             <DraftInput
               id={inputId}
-              size="sm"
+              size={props.inputSize ?? "sm"}
               className="w-full min-w-0"
               value={drafts[field] ?? (own === undefined ? "" : formatTokenAmount(own))}
               placeholder={props.placeholders[field]}

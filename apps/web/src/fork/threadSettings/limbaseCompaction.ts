@@ -39,6 +39,10 @@ const resolveThreadCompaction = (view: LimbaseCompactionThreadView, value: Limba
     coldReturnSize: view.defaults.coldReturnSize,
   });
 
+/** The policy Limbase holds, or before the thread has a Limbase thread, the one T3 would create it with. */
+export const threadPolicyShown = (view: LimbaseCompactionThreadView) =>
+  view.applied ?? resolveThreadCompaction(view, view.value).policy ?? null;
+
 export const resolveInstanceCompaction = (
   defaults: LimbaseCompactionDefaults,
   value: LimbaseCompaction,

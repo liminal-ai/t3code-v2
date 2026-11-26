@@ -5,21 +5,15 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { PinIcon } from "lucide-react";
 
 import { ThreadDetailsControl } from "../components/chat/ThreadDetailsControl";
-import { ThreadDetailsSection } from "../components/chat/ThreadDetailsSection";
-import {
-  THREAD_DETAILS_PANEL_ICON_CLASS,
-  THREAD_DETAILS_PANEL_LABEL_CLASS,
-  THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
-} from "../components/chat/threadDetailsPanelStyles";
-import { cn } from "../lib/utils";
 import { useThreadShell } from "../state/entities";
 import { useEnvironmentScope } from "../state/session";
 import { isAgentThread } from "./agentThreads";
+import { THREAD_DETAILS_FOOT_ROW_CLASS } from "./threadDetailsFootStyles";
 import { useAgentPin } from "./useAgentPin";
 
+/** One foot row of the details card: the thread is an agent, and Unpin undoes it. */
 export function ThreadAgentRow(props: { environmentId: EnvironmentId; threadId: ThreadId }) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const thread = useThreadShell(ref);
@@ -27,25 +21,16 @@ export function ThreadAgentRow(props: { environmentId: EnvironmentId; threadId: 
   const { unpinAgent } = useAgentPin();
   if (thread === null || !isAgentThread(thread)) return null;
   return (
-    <ThreadDetailsSection
-      headingId="thread-details-agent-heading"
-      title="Agent"
-      showHeading={false}
-      data-testid="thread-details-agent-row"
-    >
-      <div className={cn("flex items-center", THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS)}>
-        <PinIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
-        <span className={cn("min-w-0 flex-1 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-          Pinned as agent
-        </span>
-        <ThreadDetailsControl
-          part="meta"
-          disabled={!canOperate}
-          onClick={() => void unpinAgent(ref)}
-        >
-          Unpin
-        </ThreadDetailsControl>
-      </div>
-    </ThreadDetailsSection>
+    <div className={THREAD_DETAILS_FOOT_ROW_CLASS} data-testid="thread-details-agent-row">
+      <span className="min-w-0 truncate text-muted-foreground">Pinned as agent</span>
+      <ThreadDetailsControl
+        part="meta"
+        className="-me-1.5"
+        disabled={!canOperate}
+        onClick={() => void unpinAgent(ref)}
+      >
+        Unpin
+      </ThreadDetailsControl>
+    </div>
   );
 }
