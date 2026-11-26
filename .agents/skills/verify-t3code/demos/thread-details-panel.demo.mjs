@@ -12,10 +12,9 @@ const PROJECT = "orbit-notes";
 const PLAIN = "Plan the 0.4 release";
 const LIMBASE = "Write the sync design note";
 const INSTANCE = "claudeLimbase";
-// The recorder's frame is 1440x900. This CSS page at that scale fills it and is short enough that
-// the old rows push sections out; at this width the card is the floating panel narrow windows get.
-const PAGE = { width: 1080, height: 675 };
-const FRAME_WIDTH = 1440;
+// The recorder's frame is t3v's 1440x900 page. The terminal drawer shortens the details panel to
+// where the old rows push sections out, while a plain thread's panel still shows everything.
+const PAGE = { width: 1440, height: 900 };
 const FIRST_TURN = {
   [PLAIN]: [
     "claudeAgent",
@@ -105,12 +104,6 @@ export async function seed({ page, t3v, checkout }) {
   if (settings().providerInstances[INSTANCE].config.limbaseHome !== home) await setHome(home);
 
   const origin = new URL(page.url()).origin;
-  const cdp = await page.context().newCDPSession(page);
-  await cdp.send("Emulation.setDeviceMetricsOverride", {
-    ...PAGE,
-    deviceScaleFactor: FRAME_WIDTH / PAGE.width,
-    mobile: false,
-  });
   // The owner's instance compacts at 700k down to 100k, as one with a home at first start does.
   await page.goto(`${origin}/settings/providers`);
   await page.getByRole("button", { name: "Select Claude Limbase", exact: true }).click();
@@ -162,8 +155,21 @@ export async function seed({ page, t3v, checkout }) {
   }
   await page.keyboard.press("Escape");
 
+  // Each thread has its own terminal; a bare prompt keeps the user, host and path off the video.
+  for (const title of [LIMBASE, PLAIN]) {
+    await sidebar.locator(sidebarRow(title)).first().click();
+    const drawer = page.getByRole("button", { name: "Toggle terminal drawer", exact: true });
+    if ((await drawer.getAttribute("aria-pressed")) !== "true") await drawer.click();
+    const input = page.getByLabel("Terminal input").first();
+    await input.waitFor({ state: "attached" });
+    await page.waitForTimeout(1500);
+    await input.focus();
+    await page.keyboard.type(" export PS1='$ '; clear");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(800);
+  }
+
   // The plain thread's panel is full at this height, so its Automations heading opens the menu.
-  await sidebar.locator(sidebarRow(PLAIN)).first().click();
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
   await card.getByText("Automations", { exact: true }).waitFor();
   for (const item of ["Usage limits", "Context window"]) {
@@ -212,7 +218,6 @@ async function initRepository(folder) {
 }
 
 const CARD = "[data-thread-details-card]";
-const DETAILS = 'role=button[name="Toggle thread details panel"]';
 const LIMBASE_ROW = sidebarRow(LIMBASE);
 const ROW = "role=button[name=/^Limbase compaction:/]";
 const EDITOR = 'role=dialog[name="Limbase compaction"]';
@@ -224,7 +229,7 @@ const typeKeys = (startMs, keys) =>
 
 const plain = {
   id: "plain",
-  say: "At this height, a plain thread's details show the machine, Commit, Automations and Previous agents.",
+  say: "With the terminal open, a plain thread's details still show the machine, Commit, Automations and Previous agents.",
   caption: "A plain thread's details",
   ready: CARD,
   highlight: [CARD],
@@ -240,10 +245,7 @@ export default {
       caption: "The Limbase thread loses sections",
       ready: LIMBASE_ROW,
       highlight: [CARD],
-      steps: [
-        { atMs: 900, action: "click", target: LIMBASE_ROW },
-        { atMs: 2400, action: "click", target: DETAILS },
-      ],
+      steps: [{ atMs: 1200, action: "click", target: LIMBASE_ROW }],
       tailMs: 1600,
     },
   ],
@@ -255,10 +257,7 @@ export default {
       caption: "Every section stays",
       ready: LIMBASE_ROW,
       highlight: [CARD],
-      steps: [
-        { atMs: 900, action: "click", target: LIMBASE_ROW },
-        { atMs: 2400, action: "click", target: DETAILS },
-      ],
+      steps: [{ atMs: 1200, action: "click", target: LIMBASE_ROW }],
       tailMs: 1600,
       key: true,
     },
@@ -290,18 +289,21 @@ export default {
       ready: ROW,
       highlight: [ROW, EDITOR],
       steps: [
-        { atMs: 300, action: "click", target: `${PINNED} >> text=Pinned as agent` },
+        { atMs: 300, action: "click", target: `${CARD} >> h3:text-is("Automations")` },
         { atMs: 3200, action: "click", target: ROW },
       ],
       tailMs: 1400,
     },
     {
       id: "pinned",
-      say: "Pinned as agent is one row, with Unpin a click away.",
+      say: "Pinned as agent sits last, so on a short panel it is the row that scrolls. Unpin is a click away.",
       caption: "Pinned as agent, one row",
-      ready: PINNED,
+      ready: CARD,
       highlight: [PINNED],
-      steps: [{ atMs: 300, action: "click", target: `${PINNED} >> text=Pinned as agent` }],
+      steps: [
+        { atMs: 200, action: "click", target: `${CARD} >> h3:text-is("Automations")` },
+        { atMs: 900, action: "scroll", dy: 160, target: `${CARD} >> text=Previous agents` },
+      ],
       tailMs: 1400,
     },
   ],
