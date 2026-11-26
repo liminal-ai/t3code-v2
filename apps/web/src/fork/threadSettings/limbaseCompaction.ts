@@ -39,6 +39,10 @@ const resolveThreadCompaction = (view: LimbaseCompactionThreadView, value: Limba
     coldReturnSize: view.defaults.coldReturnSize,
   });
 
+/** The policy Limbase holds, or before the thread has a Limbase thread, the one T3 would create it with. */
+export const threadPolicyShown = (view: LimbaseCompactionThreadView) =>
+  view.applied ?? resolveThreadCompaction(view, view.value).policy ?? null;
+
 export const resolveInstanceCompaction = (
   defaults: LimbaseCompactionDefaults,
   value: LimbaseCompaction,
@@ -81,6 +85,17 @@ export const instancePlaceholders = (defaults: LimbaseCompactionDefaults) => {
     compactAt: `Default: ${formatTokens(profiles["1m"].trigger)} on 1M, ${formatTokens(profiles.standard.trigger)} on 200k`,
     downTo: `Default: ${formatTokens(profiles["1m"].target)} on 1M, ${formatTokens(profiles.standard.target)} on 200k`,
   } satisfies Record<CompactionField, string>;
+};
+
+/** What a blank field falls back to: the instance's value, Limbase's default for the model, or both. */
+export const threadBlankHint = (view: LimbaseCompactionThreadView) => {
+  const inherited = resolveThreadCompaction(view, {});
+  const sources = new Set(
+    COMPACTION_FIELDS.map(({ field }) => inherited[field]?.source ?? "default"),
+  );
+  if (!sources.has("default")) return "Blank uses the instance setting.";
+  if (!sources.has("instance")) return "Blank uses Limbase's default for the model.";
+  return "Blank uses the instance setting, or Limbase's default for the model.";
 };
 
 export const threadBlockingMessages = (

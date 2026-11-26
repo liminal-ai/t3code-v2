@@ -5,47 +5,41 @@ import {
   type EnvironmentId,
   type ThreadId,
 } from "@t3tools/contracts";
-import { PinIcon } from "lucide-react";
 
-import { ThreadDetailsControl } from "../components/chat/ThreadDetailsControl";
-import { ThreadDetailsSection } from "../components/chat/ThreadDetailsSection";
-import {
-  THREAD_DETAILS_PANEL_ICON_CLASS,
-  THREAD_DETAILS_PANEL_LABEL_CLASS,
-  THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS,
-} from "../components/chat/threadDetailsPanelStyles";
 import { cn } from "../lib/utils";
 import { useThreadShell } from "../state/entities";
 import { useEnvironmentScope } from "../state/session";
 import { isAgentThread } from "./agentThreads";
+import { THREAD_DETAILS_FOOT_ROW_CLASS } from "./threadDetailsFootStyles";
 import { useAgentPin } from "./useAgentPin";
 
-export function ThreadAgentRow(props: { environmentId: EnvironmentId; threadId: ThreadId }) {
+/** One foot row of the details card: the thread is an agent, and Unpin undoes it. */
+export function ThreadAgentRow(props: {
+  environmentId: EnvironmentId;
+  threadId: ThreadId;
+  className?: string;
+}) {
   const ref = scopeThreadRef(props.environmentId, props.threadId);
   const thread = useThreadShell(ref);
   const canOperate = useEnvironmentScope(props.environmentId, AuthOrchestrationOperateScope);
   const { unpinAgent } = useAgentPin();
   if (thread === null || !isAgentThread(thread)) return null;
   return (
-    <ThreadDetailsSection
-      headingId="thread-details-agent-heading"
-      title="Agent"
-      showHeading={false}
+    <div
+      className={cn(THREAD_DETAILS_FOOT_ROW_CLASS, props.className)}
       data-testid="thread-details-agent-row"
     >
-      <div className={cn("flex items-center", THREAD_DETAILS_PANEL_LOCKED_ROW_CLASS)}>
-        <PinIcon className={THREAD_DETAILS_PANEL_ICON_CLASS} aria-hidden />
-        <span className={cn("min-w-0 flex-1 truncate", THREAD_DETAILS_PANEL_LABEL_CLASS)}>
-          Pinned as agent
-        </span>
-        <ThreadDetailsControl
-          part="meta"
-          disabled={!canOperate}
-          onClick={() => void unpinAgent(ref)}
-        >
-          Unpin
-        </ThreadDetailsControl>
-      </div>
-    </ThreadDetailsSection>
+      <span className="min-w-0 truncate text-muted-foreground">Pinned as agent</span>
+      {/* The block's one control: stronger than the values beside it, the row's full height,
+          with the panel rows' hover fill and focus ring. */}
+      <button
+        type="button"
+        className="-me-1.5 h-6 shrink-0 cursor-pointer rounded-md px-1.5 font-medium text-foreground/80 outline-none hover:bg-black/[0.035] hover:text-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-64 dark:hover:bg-white/[0.08]"
+        disabled={!canOperate}
+        onClick={() => void unpinAgent(ref)}
+      >
+        Unpin
+      </button>
+    </div>
   );
 }

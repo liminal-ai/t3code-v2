@@ -106,7 +106,14 @@ function InstanceRows({
 }
 
 /** The thread's context window. The bar fills as context is used; the tick marks auto-compaction. */
-export function ThreadDetailsContext({ usage }: { readonly usage: ContextWindowSnapshot }) {
+export function ThreadDetailsContext({
+  usage,
+  children,
+}: {
+  readonly usage: ContextWindowSnapshot;
+  /** Rows the fork adds under the context row. */
+  readonly children?: ReactNode;
+}) {
   const maxTokens = usage.maxTokens != null && usage.maxTokens > 0 ? usage.maxTokens : null;
   const used =
     maxTokens !== null && usage.usedPercentage !== null
@@ -167,6 +174,7 @@ export function ThreadDetailsContext({ usage }: { readonly usage: ContextWindowS
             </>
           }
         />
+        {children}
       </div>
     </ThreadDetailsSection>
   );

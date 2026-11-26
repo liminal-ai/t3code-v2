@@ -48,6 +48,6 @@ Keep implementation details out of the map. Name only user paths, stable handles
 - [Pair another browser](./pairing.md) covers a fresh pairing URL, the pairing page, and a second browser.
 - [Link another environment](./linked-environments.md) covers the Labs flag, linking two throwaway servers, the link list, a `delegate_task` on the linked one, and Forget.
 - [A Claude thread on Limbase](./limbase-thread.md) covers a Limbase instance's turns, a compact inside the running process with background work across it, the retrieval tools, a restart, a Limbase outage, and the fork and Edit from here refusals.
-- [Thread settings](./thread-settings.md) covers the Thread settings card, Limbase compaction's fields, their guards and inheritance, the instance-level fields, and the 700k/100k seed.
+- [Thread settings](./thread-settings.md) covers the Limbase compaction row at the foot of the details panel and its popover, the panel's density on a Limbase thread, Limbase compaction's fields, their guards and inheritance, the instance-level fields, and the 700k/100k seed.
 - [The Agents group](./agents-group.md) covers Pin as agent, the group above Working, Unpin agent, the details row, collapse, and the paths that must not pin, settle or snooze an agent.
 - [Import Claude Code and Codex history](./session-import.md) covers the welcome screen's project list and the import of the selected projects.

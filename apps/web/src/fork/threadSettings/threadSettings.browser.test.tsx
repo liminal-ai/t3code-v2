@@ -143,7 +143,7 @@ import {
   threadSettingsQuery,
 } from "./forkSettingsState";
 import { LimbaseInstanceCompaction } from "./LimbaseInstanceCompaction";
-import { ThreadSettingsCard } from "./ThreadSettingsCard";
+import { LimbaseCompactionRow } from "./LimbaseCompactionRow";
 
 const environmentId = EnvironmentId.make("environment");
 const threadId = ThreadId.make("thread");
@@ -208,41 +208,198 @@ const holdReloads = () => {
 const serverValue = (owner = "thread") =>
   (state.serverHolds.get(owner) as View | undefined)?.limbaseCompaction?.value;
 
+const compactionRow = () => page.getByRole("button", { name: /^Limbase compaction:/ });
+
+const openEditor = async () => {
+  await userEvent.click(compactionRow());
+  await expect.element(page.getByRole("dialog", { name: "Limbase compaction" })).toBeVisible();
+};
+
 it("asks for nothing and shows nothing on a thread whose instance has no Limbase home", async () => {
   reset({}, "plain-thread");
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={ownThread("plain-thread")} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={ownThread("plain-thread")} />,
   );
-  await expect.element(page.getByText("Thread settings")).not.toBeInTheDocument();
+  await expect.element(page.getByText("Limbase compaction")).not.toBeInTheDocument();
   expect(state.queried).toEqual([]);
 });
 
 it("shows what each empty field inherits, and what Limbase holds now", async () => {
   reset(limbaseThread({ instance: { compactAt: { percent: 70 } } }));
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
-  await expect.element(page.getByRole("region", { name: "Thread settings" })).toBeVisible();
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: 700k to 100k");
+  await expect.element(compactionRow()).toHaveAttribute("aria-expanded", "false");
+  await openEditor();
+  await expect.element(compactionRow()).toHaveAttribute("aria-expanded", "true");
+  await expect.element(page.getByText("claude-opus-4-6 · 1M window")).toBeVisible();
   await expect
     .element(page.getByLabelText("Compact at"))
     .toHaveAttribute("placeholder", "Instance: 70% (700k)");
   await expect
     .element(page.getByLabelText("Down to"))
     .toHaveAttribute("placeholder", "Default for 1M models: 120k");
-  await expect.element(page.getByText("700k → 100k")).toBeVisible();
 });
 
-it("says T3 puts its policy back once the policy it resolves changes, not at any setting change", async () => {
+it.each([
+  {
+    instance: { compactAt: { tokens: 700_000 }, downTo: { tokens: 100_000 } },
+    hint: "Blank uses the instance setting.",
+  },
+  { instance: {}, hint: "Blank uses Limbase's default for the model." },
+  {
+    instance: { compactAt: { tokens: 700_000 } },
+    hint: "Blank uses the instance setting, or Limbase's default for the model.",
+  },
+])("says what a blank field uses: $hint", async ({ instance, hint }) => {
+  reset(limbaseThread({ instance }));
+  await using _screen = await render(
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
+  );
+  await openEditor();
+  await expect.element(page.getByText(hint, { exact: true })).toBeVisible();
+});
+
+it("closes the editor on Escape and gives focus back to the row", async () => {
   reset(limbaseThread());
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
-  await expect
-    .element(page.getByText(/^T3 owns this thread's Limbase policy\./))
-    .toHaveTextContent(
-      "T3 owns this thread's Limbase policy. It puts its policy back over one set with limbase thread policy at the next query open, or at the next turn after its resolved policy changes, such as on another model or with a setting that resolves to different tokens.",
-    );
+  await openEditor();
+  await expect.element(page.getByLabelText("Compact at")).toHaveFocus();
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect.element(compactionRow()).toHaveFocus();
+  await expect.element(compactionRow()).toHaveAttribute("aria-expanded", "false");
 });
+
+it("keeps a value a guard refused, and its alert, when the editor closes, and marks the row until it is fixed", async () => {
+  reset(limbaseThread());
+  await using _screen = await render(
+    <>
+      <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />
+      <p style={{ position: "fixed", right: 0, bottom: 0 }}>Elsewhere</p>
+    </>,
+  );
+  await openEditor();
+  await userEvent.fill(page.getByLabelText("Down to"), "800k");
+  await userEvent.keyboard("{Enter}");
+  const refusal = "Down to (800k) must be below compact at (700k).";
+  await expect.element(page.getByRole("alert")).toHaveTextContent(refusal);
+
+  await userEvent.click(page.getByText("Elsewhere"));
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect
+    .element(compactionRow())
+    .toHaveAccessibleName("Limbase compaction: 700k to 100k, a value was not saved");
+
+  await openEditor();
+  await expect.element(page.getByLabelText("Down to")).toHaveValue("800k");
+  await expect.element(page.getByRole("alert")).toHaveTextContent(refusal);
+  await userEvent.fill(page.getByLabelText("Down to"), "90k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: 700k to 100k");
+  expect(savedCompaction()).toEqual([{ downTo: { tokens: 90_000 } }]);
+});
+
+it("keeps Limbase's refusal of a save, and the value it refused, when the editor closes on Escape", async () => {
+  reset(limbaseThread());
+  state.refuse =
+    "Limbase: the service refused the compaction policy (limbase call failed: ThreadNotFound)";
+  await using _screen = await render(
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
+  );
+  await openEditor();
+  await userEvent.fill(page.getByLabelText("Compact at"), "650k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("alert")).toHaveTextContent(state.refuse);
+
+  await userEvent.click(page.getByLabelText("Compact at"));
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect
+    .element(compactionRow())
+    .toHaveAccessibleName("Limbase compaction: 700k to 100k, a value was not saved");
+
+  await openEditor();
+  await expect.element(page.getByLabelText("Compact at")).toHaveValue("650k");
+  await expect.element(page.getByRole("alert")).toHaveTextContent(state.refuse);
+  await userEvent.fill(page.getByLabelText("Compact at"), "");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: 700k to 100k");
+  expect(savedCompaction()).toEqual([{ compactAt: { tokens: 650_000 } }]);
+});
+
+it("marks a row that shows Limbase default while a value it refused stands", async () => {
+  reset(
+    limbaseThread({
+      model: "gateway-sonnet[1m]",
+      contextWindow: null,
+      hardLimit: null,
+      profile: null,
+      applied: null,
+    }),
+  );
+  await using _screen = await render(
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
+  );
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: Limbase default");
+  await openEditor();
+  await userEvent.fill(page.getByLabelText("Down to"), "abc");
+  await userEvent.keyboard("{Enter}");
+  await expect
+    .element(page.getByRole("alert"))
+    .toHaveTextContent("Write tokens, like 700k, or a share of the window, like 70%.");
+  await userEvent.click(page.getByLabelText("Down to"));
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect
+    .element(compactionRow())
+    .toHaveAccessibleName("Limbase compaction: Limbase default, a value was not saved");
+});
+
+it.each([
+  {
+    refused: "Down to",
+    value: "800k",
+    alert: "Down to (800k) must be below compact at (700k).",
+    saved: "Compact at",
+    accepted: "650k",
+    patch: { compactAt: { tokens: 650_000 } },
+  },
+  {
+    refused: "Compact at",
+    value: "2M",
+    alert: "Compact at (2M) must fit the model's 1M window.",
+    saved: "Down to",
+    accepted: "90k",
+    patch: { downTo: { tokens: 90_000 } },
+  },
+])(
+  "keeps the refused $refused draft and its alert when $saved saves",
+  async ({ refused, value, alert, saved, accepted, patch }) => {
+    reset(limbaseThread());
+    await using _screen = await render(
+      <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
+    );
+    await openEditor();
+    await userEvent.fill(page.getByLabelText(refused), value);
+    await userEvent.keyboard("{Enter}");
+    await expect.element(page.getByRole("alert")).toHaveTextContent(alert);
+
+    await userEvent.fill(page.getByLabelText(saved), accepted);
+    await userEvent.keyboard("{Enter}");
+    await expect.poll(() => savedCompaction()).toEqual([patch]);
+    await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+    await expect.element(page.getByLabelText(saved)).toHaveValue(accepted);
+    await expect.element(page.getByLabelText(refused)).toHaveValue(value);
+    await expect.element(page.getByRole("alert")).toHaveTextContent(alert);
+    await expect.element(compactionRow()).toHaveAccessibleName(/, a value was not saved$/);
+  },
+);
 
 it("refuses a value a guard rejects, saves one it accepts, and shows Limbase's refusal", async () => {
   reset(
@@ -254,8 +411,9 @@ it("refuses a value a guard rejects, saves one it accepts, and shows Limbase's r
     }),
   );
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
+  await openEditor();
   const downTo = page.getByLabelText("Down to");
   await userEvent.fill(downTo, "150k");
   await userEvent.keyboard("{Enter}");
@@ -287,27 +445,26 @@ it("saves a share on a model whose window is unknown, and says nothing reaches L
     }),
   );
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
+  await openEditor();
   await expect
-    .element(
-      page.getByText(
-        "gateway-sonnet[1m], window unknown until Claude reports it. Nothing you save reaches Limbase until then.",
-      ),
-    )
+    .element(page.getByText(/^Nothing you save reaches Limbase until Claude reports the window\./))
     .toBeVisible();
+  await expect.element(page.getByText("gateway-sonnet[1m] · window unknown")).toBeVisible();
   await userEvent.fill(page.getByLabelText("Down to"), "15%");
   await userEvent.keyboard("{Enter}");
   await expect.poll(() => savedCompaction()).toEqual([{ downTo: { percent: 15 } }]);
   await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
-  await expect.element(page.getByText("640k → 95k")).toBeVisible();
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: 640k to 95k");
 });
 
 it("warns that a down to of 300k or more turns cold return off", async () => {
   reset(limbaseThread({ value: { downTo: { tokens: 300_000 } } }));
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
+  await openEditor();
   await expect.element(page.getByLabelText("Down to")).toHaveValue("300k");
   await expect
     .element(page.getByText("At 300k or more, Limbase turns cold return off."))
@@ -352,8 +509,9 @@ it("holds both fields while a save and its refresh are in flight, and sends only
   reset(limbaseThread());
   const finishReload = holdReloads();
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
+  await openEditor();
   const compactAt = page.getByLabelText("Compact at");
   const downTo = page.getByLabelText("Down to");
   await userEvent.fill(compactAt, "650k");
@@ -392,8 +550,9 @@ it("keeps the saved value and the lock when the refresh fails, retries, and then
     return "stale";
   };
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
+  await openEditor();
   const compactAt = page.getByLabelText("Compact at");
   const downTo = page.getByLabelText("Down to");
   await userEvent.fill(compactAt, "640k");
@@ -440,16 +599,18 @@ it("drops a refused draft and its alert on a move to another thread, and saves o
     }),
   );
   await using screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={wide} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={wide} />,
   );
+  await openEditor();
   await userEvent.fill(page.getByLabelText("Compact at"), "2M");
   await userEvent.keyboard("{Enter}");
   await expect
     .element(page.getByRole("alert"))
     .toHaveTextContent("Compact at (2M) must fit the model's 1M window.");
 
-  await screen.rerender(<ThreadSettingsCard environmentId={environmentId} threadId={narrow} />);
-  await expect.element(page.getByText("claude-sonnet-4-6, 200k window.")).toBeVisible();
+  await screen.rerender(<LimbaseCompactionRow environmentId={environmentId} threadId={narrow} />);
+  await openEditor();
+  await expect.element(page.getByText("claude-sonnet-4-6 · 200k window")).toBeVisible();
   await expect.element(page.getByLabelText("Compact at")).toHaveValue("");
   await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
 
@@ -468,13 +629,15 @@ it("leaves a save in flight with its thread when the card moves to another", asy
   publish("thread-second", limbaseThread());
   const finishReload = holdReloads();
   await using screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={first} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={first} />,
   );
+  await openEditor();
   await userEvent.fill(page.getByLabelText("Compact at"), "650k");
   await userEvent.keyboard("{Enter}");
   await expect.element(page.getByRole("status")).toHaveTextContent("Saving…");
 
-  await screen.rerender(<ThreadSettingsCard environmentId={environmentId} threadId={second} />);
+  await screen.rerender(<LimbaseCompactionRow environmentId={environmentId} threadId={second} />);
+  await openEditor();
   await expect.element(page.getByRole("status")).not.toBeInTheDocument();
   await expect.element(page.getByLabelText("Compact at")).not.toHaveAttribute("readonly");
   await expect.element(page.getByLabelText("Compact at")).toHaveValue("");
@@ -486,8 +649,9 @@ it("leaves a save in flight with its thread when the card moves to another", asy
 it("clears a field's alert when the field goes back to its saved value", async () => {
   reset(limbaseThread({ value: { compactAt: { tokens: 500_000 } } }));
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
+  await openEditor();
   const compactAt = page.getByLabelText("Compact at");
   await userEvent.fill(compactAt, "2M");
   await userEvent.keyboard("{Enter}");
@@ -513,13 +677,15 @@ it("says what to change, and what Limbase keeps, when the model no longer fits a
     }),
   );
   await using _screen = await render(
-    <ThreadSettingsCard environmentId={environmentId} threadId={threadId} />,
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
   );
+  await openEditor();
   await expect
     .element(page.getByRole("alert"))
     .toHaveTextContent(
       "Compact at (500k) must fit the model's 200k window. Limbase keeps 500k → 150k until you change it.",
     );
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: 500k to 150k");
 });
 
 it("refreshes the card when its thread switches model or ends a turn, not when it is renamed", () => {

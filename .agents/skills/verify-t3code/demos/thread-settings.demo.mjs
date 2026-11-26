@@ -99,8 +99,11 @@ export async function seed({ page, t3v, checkout }) {
     await haiku.waitFor({ state: "hidden" });
     await page.getByRole("button", { name: MODEL, exact: true }).waitFor();
   }
+  // The thread's fields are in the compaction row's popover.
+  await page.getByRole("button", { name: /^Limbase compaction:/ }).click();
   await clearTo(page, "Compact at", "");
   await clearTo(page, "Down to", "");
+  await page.keyboard.press("Escape");
 }
 
 async function clearTo(page, label, value) {
@@ -132,11 +135,12 @@ async function initRepository(folder) {
 }
 
 const DETAILS = 'role=button[name="Toggle thread details panel"]';
-const CARD = 'role=region[name="Thread settings"]';
+const ROW = "role=button[name=/^Limbase compaction:/]";
+const EDITOR = 'role=dialog[name="Limbase compaction"]';
 const DOWN_TO = 'role=textbox[name="Down to"]';
 const PICKER = `role=button[name="${MODEL}"]`;
 const UNCATALOGED_OPTION = `role=option[name=/^${UNCATALOGED} ,/]`;
-const WINDOW_LINE = `${CARD} >> text=/window/`;
+const WINDOW_LINE = `${EDITOR} >> text=/window/`;
 const SETTINGS = 'role=button[name="Settings"]';
 const PROVIDERS = 'role=button[name="Providers"]';
 const INSTANCE_ROW = 'role=button[name="Select Claude Limbase"]';
@@ -163,15 +167,16 @@ export default {
   after: [
     {
       id: "card",
-      say: "Now a Limbase thread has Thread settings. Each empty field shows what it inherits, here its instance's 700k and 100k.",
-      caption: "Thread settings card",
-      ready: CARD,
-      highlight: [CARD],
+      say: "Now a Limbase thread has a Limbase compaction row at the foot of its details. Open it, and each empty field shows what it inherits, here its instance's 700k and 100k.",
+      caption: "Limbase compaction row",
+      ready: ROW,
+      highlight: [ROW, EDITOR],
+      steps: [{ atMs: 600, action: "click", target: ROW }],
       tailMs: 1200,
     },
     {
       id: "guard",
-      say: "A value the guards refuse never leaves the card. Its alert goes once the field is back to its saved value.",
+      say: "A value the guards refuse is never saved. Its alert goes once the field is back to its saved value.",
       caption: "Guards refuse bad values",
       ready: DOWN_TO,
       highlight: [DOWN_TO],
@@ -189,7 +194,7 @@ export default {
       say: "Fifteen percent of this model's window is saved, and Limbase holds the new policy at once.",
       caption: "Saved and applied",
       ready: DOWN_TO,
-      highlight: [DOWN_TO, `${CARD} >> text=/→/`],
+      highlight: [DOWN_TO, ROW],
       steps: [
         { atMs: 200, action: "click", target: DOWN_TO },
         { atMs: 500, action: "press", key: "Control+A" },
@@ -200,7 +205,7 @@ export default {
     },
     {
       id: "unknown",
-      say: "Pick a model Claude has not reported a window for, and the card says so. Its fifteen percent waits, and Limbase keeps the policy it holds.",
+      say: "Pick a model Claude has not reported a window for, and the editor says so. Its fifteen percent waits, and Limbase keeps the policy it holds.",
       caption: "Unknown window waits",
       ready: PICKER,
       highlight: [PICKER, WINDOW_LINE],
@@ -208,6 +213,7 @@ export default {
         { atMs: 300, action: "click", target: PICKER },
         { atMs: 1800, action: "click", target: UNCATALOGED_OPTION },
         { atMs: 2800, action: "press", key: "Escape" },
+        { atMs: 3400, action: "click", target: ROW },
       ],
       tailMs: 1400,
     },

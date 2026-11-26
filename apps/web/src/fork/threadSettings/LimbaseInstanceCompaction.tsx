@@ -2,6 +2,8 @@
 import {
   AuthProvidersManageScope,
   type EnvironmentId,
+  type LimbaseCompactionInstanceView,
+  type LimbaseCompactionPatch,
   type ProviderInstanceId,
 } from "@t3tools/contracts";
 
@@ -9,14 +11,14 @@ import { SettingsRow } from "../../components/settings/settingsLayout";
 import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { instanceSettingsQuery, limbaseHomeOf, setInstanceSettings } from "./forkSettingsState";
-import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
+import { LimbaseCompactionFields, useCompactionDrafts } from "./LimbaseCompactionFields";
 import {
   instanceBlockingMessages,
   instancePlaceholders,
   resolveInstanceCompaction,
   warningNotices,
 } from "./limbaseCompaction";
-import { useAcknowledgedWrites } from "./useAcknowledgedWrites";
+import { useAcknowledgedWrites, type WriteStatus } from "./useAcknowledgedWrites";
 
 const DESCRIPTIONS = {
   compactAt:
@@ -59,18 +61,40 @@ function LimbaseInstanceCompactionRows(props: {
   );
   const compaction = data?.limbaseCompaction;
   if (compaction === undefined) return null;
+  return (
+    <LimbaseInstanceCompactionFields
+      instanceId={props.instanceId}
+      compaction={compaction}
+      disabled={!canManage}
+      status={status}
+      write={(limbaseCompaction) => write({ limbaseCompaction })}
+    />
+  );
+}
 
+function LimbaseInstanceCompactionFields(props: {
+  readonly instanceId: ProviderInstanceId;
+  readonly compaction: LimbaseCompactionInstanceView;
+  readonly disabled: boolean;
+  readonly status: WriteStatus;
+  readonly write: (patch: LimbaseCompactionPatch) => Promise<string | null>;
+}) {
+  const { compaction } = props;
+  const drafts = useCompactionDrafts({
+    value: compaction.value,
+    blockingMessages: (next) => instanceBlockingMessages(compaction.defaults, next),
+    write: props.write,
+  });
   return (
     <div data-testid="instance-limbase-compaction">
       <LimbaseCompactionFields
         idPrefix={`provider-instance-${props.instanceId}-limbase-compaction`}
         value={compaction.value}
+        drafts={drafts}
         placeholders={instancePlaceholders(compaction.defaults)}
         notices={warningNotices(resolveInstanceCompaction(compaction.defaults, compaction.value))}
-        disabled={!canManage}
-        blockingMessages={(next) => instanceBlockingMessages(compaction.defaults, next)}
-        status={status}
-        write={(limbaseCompaction) => write({ limbaseCompaction })}
+        disabled={props.disabled}
+        status={props.status}
         messagesClassName="px-4 pb-3 sm:px-5"
         renderRow={({ field, label, inputId, input }) => (
           <SettingsRow

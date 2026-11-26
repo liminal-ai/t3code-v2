@@ -43,8 +43,7 @@ import { ThreadDetailsThreadPrRows } from "./ThreadDetailsPrRows";
 import { cn } from "../../lib/utils";
 import { SlidersHorizontalIcon } from "lucide-react";
 import { ThreadDetailsControl } from "./ThreadDetailsControl";
-import { ThreadAgentRow } from "../../fork/ThreadAgentRow";
-import { ThreadSettingsCard } from "../../fork/threadSettings/ThreadSettingsCard";
+import { ThreadDetailsFootRows } from "../../fork/ThreadDetailsFootRows";
 import {
   THREAD_DETAILS_PANEL_ICON_CLASS,
   THREAD_DETAILS_PANEL_LABEL_CLASS,
@@ -257,12 +256,6 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
                 </ThreadDetailsSection>
               ) : null}
 
-              <ThreadAgentRow environmentId={props.environmentId} threadId={props.threadId} />
-
-              {!props.draftId ? (
-                <ThreadSettingsCard environmentId={props.environmentId} threadId={props.threadId} />
-              ) : null}
-
               {show.branch || show.pullRequests || show.git || show.repositories ? (
                 <ThreadDetailsSection
                   headingId="thread-details-version-control-heading"
@@ -337,8 +330,21 @@ export function ThreadDetailsPanel(props: ThreadDetailsPanelProps) {
               {visible.usage ? <ThreadDetailsUsage {...props.usage} /> : null}
 
               {visible.context && props.usage.contextWindow ? (
-                <ThreadDetailsContext usage={props.usage.contextWindow} />
-              ) : null}
+                <ThreadDetailsContext usage={props.usage.contextWindow}>
+                  <ThreadDetailsFootRows
+                    environmentId={props.environmentId}
+                    threadId={props.threadId}
+                    isDraft={props.draftId !== undefined}
+                  />
+                </ThreadDetailsContext>
+              ) : (
+                <ThreadDetailsFootRows
+                  environmentId={props.environmentId}
+                  threadId={props.threadId}
+                  isDraft={props.draftId !== undefined}
+                  standalone
+                />
+              )}
 
               {/* Shown only when no section above has content, so an emptied card can be refilled. */}
               <div className="p-2 group-has-[>section>:last-child:not(:empty)]/details-items:hidden">
