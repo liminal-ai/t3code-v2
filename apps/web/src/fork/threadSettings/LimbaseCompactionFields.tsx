@@ -41,31 +41,22 @@ function useDraftsUntilValueChanges(value: LimbaseCompaction) {
   return { drafts, setDrafts, refusals, setRefusals };
 }
 
-export function LimbaseCompactionFields(props: {
-  readonly idPrefix: string;
+/**
+ * Each field's committed draft and its refusal, for one owner. The owner calls this where it
+ * stays mounted, so closing the popover that holds the fields keeps a refused draft and its alert.
+ */
+export function useCompactionDrafts(input: {
   readonly value: LimbaseCompaction;
-  readonly placeholders: Record<CompactionField, string>;
-  readonly notices: ReadonlyArray<CompactionNotice>;
-  readonly disabled: boolean;
   readonly blockingMessages: (next: LimbaseCompaction) => ReadonlyArray<string>;
-  readonly status: WriteStatus;
   readonly write: (patch: LimbaseCompactionPatch) => Promise<string | null>;
-  readonly messagesClassName?: string;
-  readonly inputSize?: "sm" | "compact";
-  readonly renderRow: (row: {
-    readonly field: CompactionField;
-    readonly label: string;
-    readonly inputId: string;
-    readonly input: React.ReactNode;
-  }) => React.ReactNode;
 }) {
-  const { drafts, setDrafts, refusals, setRefusals } = useDraftsUntilValueChanges(props.value);
+  const { drafts, setDrafts, refusals, setRefusals } = useDraftsUntilValueChanges(input.value);
 
   const commit = async (field: CompactionField, text: string) => {
     const draft = (next: string | null) => setDrafts((current) => withEntry(current, field, next));
     const refuse = (message: string | null) =>
       setRefusals((current) => withEntry(current, field, message));
-    const own = props.value[field];
+    const own = input.value[field];
     if (text.trim() === (own === undefined ? "" : formatTokenAmount(own))) {
       draft(null);
       refuse(null);
@@ -75,12 +66,36 @@ export function LimbaseCompactionFields(props: {
     const amount = text.trim() === "" ? undefined : parseTokenAmount(text);
     if (text.trim() !== "" && amount === undefined) return refuse(UNREADABLE);
     const patch = { [field]: amount ?? null };
-    const blocking = props.blockingMessages(patchLimbaseCompaction(props.value, patch));
+    const blocking = input.blockingMessages(patchLimbaseCompaction(input.value, patch));
     if (blocking.length > 0) return refuse(blocking.join(" "));
-    const refused = await props.write(patch);
+    const refused = await input.write(patch);
     if (refused === null) draft(null);
     refuse(refused);
   };
+
+  return { drafts, refusals, commit, refused: Object.keys(refusals).length > 0 };
+}
+
+export type CompactionDrafts = ReturnType<typeof useCompactionDrafts>;
+
+export function LimbaseCompactionFields(props: {
+  readonly idPrefix: string;
+  readonly value: LimbaseCompaction;
+  readonly drafts: CompactionDrafts;
+  readonly placeholders: Record<CompactionField, string>;
+  readonly notices: ReadonlyArray<CompactionNotice>;
+  readonly disabled: boolean;
+  readonly status: WriteStatus;
+  readonly messagesClassName?: string;
+  readonly inputSize?: "sm" | "compact";
+  readonly renderRow: (row: {
+    readonly field: CompactionField;
+    readonly label: string;
+    readonly inputId: string;
+    readonly input: React.ReactNode;
+  }) => React.ReactNode;
+}) {
+  const { drafts, refusals, commit } = props.drafts;
 
   const messages = [
     ...COMPACTION_FIELDS.flatMap(({ field }) => {

@@ -65,7 +65,11 @@ A Limbase thread compacts when its context passes **Compact at**, and the compac
   `700k → 100k`. A value the thread sets itself is in the normal text colour, and a value it
   inherits is grey. Click the row to change the values. A blank field uses the instance's value, or
   Limbase's default for the model when the instance sets none. A saved value reaches the thread's
-  Limbase thread at once.
+  Limbase thread at once. A thread that has not run a turn yet has no Limbase thread: T3 keeps the
+  value and gives it to the Limbase thread when the first turn creates it.
+- **A refused value.** When a guard or Limbase refuses a value, the field keeps it with the reason
+  under it, and the row's values turn red. Closing the popover keeps both, so the row stays red
+  until you clear the field or save a value that is accepted. Moving to another thread drops it.
 
 **Down to** is at least 24k and below **Compact at**, and a **Compact at** set on a thread must fit
 the model's window. A **Down to** of 300k or more turns Limbase's cold return off. Until Claude

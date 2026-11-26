@@ -274,6 +274,65 @@ it("closes the editor on Escape and gives focus back to the row", async () => {
   await expect.element(compactionRow()).toHaveAttribute("aria-expanded", "false");
 });
 
+it("keeps a value a guard refused, and its alert, when the editor closes, and marks the row until it is fixed", async () => {
+  reset(limbaseThread());
+  await using _screen = await render(
+    <>
+      <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />
+      <p style={{ position: "fixed", right: 0, bottom: 0 }}>Elsewhere</p>
+    </>,
+  );
+  await openEditor();
+  await userEvent.fill(page.getByLabelText("Down to"), "800k");
+  await userEvent.keyboard("{Enter}");
+  const refusal = "Down to (800k) must be below compact at (700k).";
+  await expect.element(page.getByRole("alert")).toHaveTextContent(refusal);
+
+  await userEvent.click(page.getByText("Elsewhere"));
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect
+    .element(compactionRow())
+    .toHaveAccessibleName("Limbase compaction: 700k to 100k, a value was not saved");
+
+  await openEditor();
+  await expect.element(page.getByLabelText("Down to")).toHaveValue("800k");
+  await expect.element(page.getByRole("alert")).toHaveTextContent(refusal);
+  await userEvent.fill(page.getByLabelText("Down to"), "90k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: 700k to 100k");
+  expect(savedCompaction()).toEqual([{ downTo: { tokens: 90_000 } }]);
+});
+
+it("keeps Limbase's refusal of a save, and the value it refused, when the editor closes on Escape", async () => {
+  reset(limbaseThread());
+  state.refuse =
+    "Limbase: the service refused the compaction policy (limbase call failed: ThreadNotFound)";
+  await using _screen = await render(
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
+  );
+  await openEditor();
+  await userEvent.fill(page.getByLabelText("Compact at"), "650k");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("alert")).toHaveTextContent(state.refuse);
+
+  await userEvent.click(page.getByLabelText("Compact at"));
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect
+    .element(compactionRow())
+    .toHaveAccessibleName("Limbase compaction: 700k to 100k, a value was not saved");
+
+  await openEditor();
+  await expect.element(page.getByLabelText("Compact at")).toHaveValue("650k");
+  await expect.element(page.getByRole("alert")).toHaveTextContent(state.refuse);
+  await userEvent.fill(page.getByLabelText("Compact at"), "");
+  await userEvent.keyboard("{Enter}");
+  await expect.element(page.getByRole("alert")).not.toBeInTheDocument();
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: 700k to 100k");
+  expect(savedCompaction()).toEqual([{ compactAt: { tokens: 650_000 } }]);
+});
+
 it("refuses a value a guard rejects, saves one it accepts, and shows Limbase's refusal", async () => {
   reset(
     limbaseThread({

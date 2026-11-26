@@ -15,7 +15,11 @@ import { useEnvironmentScope } from "../../state/session";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { THREAD_DETAILS_FOOT_ROW_CLASS } from "../threadDetailsFootStyles";
 import { setThreadSettings, threadSettingsQuery, useThreadOnLimbase } from "./forkSettingsState";
-import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
+import {
+  type CompactionDrafts,
+  LimbaseCompactionFields,
+  useCompactionDrafts,
+} from "./LimbaseCompactionFields";
 import {
   threadBlankHint,
   threadBlockingMessages,
@@ -57,14 +61,40 @@ function OwnedLimbaseCompactionRow(props: {
   );
   const view = data?.limbaseCompaction;
   if (view === undefined) return null;
+  return (
+    <LimbaseCompactionRowView
+      threadId={props.threadId}
+      view={view}
+      disabled={!canOperate}
+      status={status}
+      write={(limbaseCompaction) => write({ limbaseCompaction })}
+    />
+  );
+}
 
+function LimbaseCompactionRowView(props: {
+  readonly threadId: ThreadId;
+  readonly view: LimbaseCompactionThreadView;
+  readonly disabled: boolean;
+  readonly status: WriteStatus;
+  readonly write: (patch: LimbaseCompactionPatch) => Promise<string | null>;
+}) {
+  const { view } = props;
+  // Drafts and refusals live with the row, so closing the popover keeps a refused value and its
+  // alert, and the row stays red until the field is cleared or saved.
+  const drafts = useCompactionDrafts({
+    value: view.value,
+    blockingMessages: (next) => threadBlockingMessages(view, next),
+    write: props.write,
+  });
   const policy = threadPolicyShown(view);
   const notices = threadNotices(view);
-  const tone = notices.some((notice) => notice.tone === "error")
-    ? "error"
-    : notices.length > 0
-      ? "warning"
-      : null;
+  const tone =
+    drafts.refused || notices.some((notice) => notice.tone === "error")
+      ? "error"
+      : notices.length > 0
+        ? "warning"
+        : null;
   // A value the thread sets itself reads in the foreground; an inherited one stays muted.
   const amountClass = (own: boolean) =>
     tone === "error"
@@ -79,7 +109,7 @@ function OwnedLimbaseCompactionRow(props: {
     "aria-label":
       policy === null
         ? "Limbase compaction: Limbase default"
-        : `Limbase compaction: ${formatTokens(policy.trigger)} to ${formatTokens(policy.target)}`,
+        : `Limbase compaction: ${formatTokens(policy.trigger)} to ${formatTokens(policy.target)}${drafts.refused ? ", a value was not saved" : ""}`,
     "data-testid": "thread-settings-limbase-compaction",
     // The usage rows' size, with the hover, focus and open fill of the panel's other rows.
     className: cn(
@@ -116,9 +146,9 @@ function OwnedLimbaseCompactionRow(props: {
         <LimbaseCompactionEditor
           threadId={props.threadId}
           view={view}
-          disabled={!canOperate}
-          status={status}
-          write={(limbaseCompaction) => write({ limbaseCompaction })}
+          drafts={drafts}
+          disabled={props.disabled}
+          status={props.status}
         />
       </PopoverPopup>
     </Popover>
@@ -128,9 +158,9 @@ function OwnedLimbaseCompactionRow(props: {
 function LimbaseCompactionEditor(props: {
   readonly threadId: ThreadId;
   readonly view: LimbaseCompactionThreadView;
+  readonly drafts: CompactionDrafts;
   readonly disabled: boolean;
   readonly status: WriteStatus;
-  readonly write: (patch: LimbaseCompactionPatch) => Promise<string | null>;
 }) {
   const { view } = props;
   return (
@@ -148,12 +178,11 @@ function LimbaseCompactionEditor(props: {
         <LimbaseCompactionFields
           idPrefix={`thread-settings-${props.threadId}`}
           value={view.value}
+          drafts={props.drafts}
           placeholders={threadPlaceholders(view)}
           notices={threadNotices(view)}
           disabled={props.disabled}
-          blockingMessages={(next) => threadBlockingMessages(view, next)}
           status={props.status}
-          write={props.write}
           inputSize="compact"
           messagesClassName="col-span-2"
           renderRow={({ field, label, inputId, input }) => (
