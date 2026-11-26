@@ -180,8 +180,8 @@ reload even when it is old. Its menu has no **Pin**, **Settle** or **Snooze** it
 hover actions, and the pin shortcut does nothing on it. You can still drag its row onto the
 composer to mention it, but not within the sidebar, and no thread can be dropped into the group.
 
-The thread details pane shows **Pinned as agent** for an agent thread. To return the thread to
-the active list, choose **Unpin agent** from its menu, or click **Unpin** in the details pane.
+The thread details pane shows **Pinned as agent** in one row at its foot. To return the thread to
+the active list, choose **Unpin agent** from its menu, or click **Unpin** on that row.
 
 **Pin as agent** pins the thread and then tags it. **Unpin agent** removes the tag and then
 unpins it. If the second step fails, you see an error and the thread stays in **Pinned**. Choose

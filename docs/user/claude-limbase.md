@@ -51,6 +51,33 @@ The tested version is in `vendor/limbase/` of this repository: `limbase.claudeCo
 `package.json` inside the tarball. When the fork updates the tarball, repeat step 2 with the new
 version, and change **Binary path** to it.
 
+## Change when a thread compacts
+
+A Limbase thread compacts when its context passes **Compact at**, and the compact leaves a view of
+**Down to**. Each takes tokens, such as `700k`, or a share of the model's context window, such as
+`70%`.
+
+- **Every thread of an instance.** In **Settings > Providers**, select the instance and set
+  **Limbase: compact at** and **Limbase: down to**, below **Limbase home**. Each thread gets the
+  change at its next turn.
+- **One thread.** At the foot of the thread details panel, under **Context** when that row is on,
+  the **Limbase compaction** row shows the policy Limbase holds for the thread, such as
+  `700k → 100k`. A value the thread sets itself is in the normal text colour, and a value it
+  inherits is grey. Click the row to change the values. A blank field uses the instance's value, or
+  Limbase's default for the model when the instance sets none. A saved value reaches the thread's
+  Limbase thread at once.
+
+**Down to** is at least 24k and below **Compact at**, and a **Compact at** set on a thread must fit
+the model's window. A **Down to** of 300k or more turns Limbase's cold return off. Until Claude
+reports the window of a model the catalog does not know, a saved value is kept but sends Limbase
+nothing.
+
+T3 owns each Limbase thread's policy. A policy set by hand with `limbase thread policy` lasts until
+T3 applies its own again: at the next query open, or at the next turn whose resolved policy
+changes, such as after a model switch or a setting that resolves to different tokens. A turn whose
+policy has not changed makes no Limbase call, so T3 does not undo a hand edit at every turn. To
+change a thread's bounds for good, change them in the details panel or on the instance.
+
 ## What you see
 
 - **A compact.** The thread shows a **Context compacted** row, and the turn goes on in the same
