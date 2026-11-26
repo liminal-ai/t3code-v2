@@ -12,7 +12,10 @@ const PROJECT = "orbit-notes";
 const PLAIN = "Plan the 0.4 release";
 const LIMBASE = "Write the sync design note";
 const INSTANCE = "claudeLimbase";
-const VIEWPORT = { width: 1440, height: 680 };
+// The recorder's frame is 1440x900. This CSS page at that scale fills it and is short enough that
+// the old rows push sections out; at this width the card is the floating panel narrow windows get.
+const PAGE = { width: 1080, height: 675 };
+const FRAME_WIDTH = 1440;
 const FIRST_TURN = {
   [PLAIN]: [
     "claudeAgent",
@@ -102,6 +105,26 @@ export async function seed({ page, t3v, checkout }) {
   if (settings().providerInstances[INSTANCE].config.limbaseHome !== home) await setHome(home);
 
   const origin = new URL(page.url()).origin;
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    ...PAGE,
+    deviceScaleFactor: FRAME_WIDTH / PAGE.width,
+    mobile: false,
+  });
+  // The owner's instance compacts at 700k down to 100k, as one with a home at first start does.
+  await page.goto(`${origin}/settings/providers`);
+  await page.getByRole("button", { name: "Select Claude Limbase", exact: true }).click();
+  for (const [label, value] of [
+    ["Limbase: compact at", "700k"],
+    ["Limbase: down to", "100k"],
+  ]) {
+    const field = page.getByRole("textbox", { name: label, exact: true });
+    await field.waitFor();
+    if ((await field.inputValue()) === value) continue;
+    await field.fill(value);
+    await field.press("Enter");
+    await page.waitForTimeout(800);
+  }
   await page.goto(`${origin}/`);
   const sidebar = page.getByRole("navigation", { name: "Threads" });
   await sidebar.waitFor();
@@ -128,15 +151,6 @@ export async function seed({ page, t3v, checkout }) {
   await toggle.waitFor();
   if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
   await card.waitFor();
-  for (const item of ["Usage limits", "Context window"]) {
-    // Automations shows at full density, which the default window gives both sides.
-    await card.getByText("Automations", { exact: true }).click({ button: "right" });
-    const option = page.getByRole("menuitemcheckbox", { name: item });
-    await option.waitFor();
-    if ((await option.getAttribute("aria-checked")) !== "true") await option.click();
-    await page.keyboard.press("Escape");
-    await page.waitForTimeout(200);
-  }
   const row = page.getByRole("button", { name: /^Limbase compaction:/ });
   if ((await row.count()) > 0) await row.click();
   for (const label of ["Compact at", "Down to"]) {
@@ -148,10 +162,21 @@ export async function seed({ page, t3v, checkout }) {
   }
   await page.keyboard.press("Escape");
 
-  await page.setViewportSize(VIEWPORT);
+  // The plain thread's panel is full at this height, so its Automations heading opens the menu.
   await sidebar.locator(sidebarRow(PLAIN)).first().click();
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
+  await card.getByText("Automations", { exact: true }).waitFor();
+  for (const item of ["Usage limits", "Context window"]) {
+    await card.getByText("Automations", { exact: true }).click({ button: "right" });
+    const option = page.getByRole("menuitemcheckbox", { name: item });
+    await option.waitFor();
+    if ((await option.getAttribute("aria-checked")) !== "true") await option.click();
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+  }
+  if ((await toggle.getAttribute("aria-pressed")) !== "true") await toggle.click();
   await card.waitFor();
-  await page.mouse.move(VIEWPORT.width / 2, 8);
+  await page.mouse.move(PAGE.width / 2, 8);
 }
 
 async function initRepository(folder) {
@@ -187,6 +212,7 @@ async function initRepository(folder) {
 }
 
 const CARD = "[data-thread-details-card]";
+const DETAILS = 'role=button[name="Toggle thread details panel"]';
 const LIMBASE_ROW = sidebarRow(LIMBASE);
 const ROW = "role=button[name=/^Limbase compaction:/]";
 const EDITOR = 'role=dialog[name="Limbase compaction"]';
@@ -198,7 +224,7 @@ const typeKeys = (startMs, keys) =>
 
 const plain = {
   id: "plain",
-  say: "At this window height, a plain thread's details show the machine, Commit, Automations and Previous agents.",
+  say: "At this height, a plain thread's details show the machine, Commit, Automations and Previous agents.",
   caption: "A plain thread's details",
   ready: CARD,
   highlight: [CARD],
@@ -210,11 +236,14 @@ export default {
     plain,
     {
       id: "limbase",
-      say: "Open a Limbase thread that is pinned as an agent. A pinned block and a tall settings card push the machine, Commit, Automations and Previous agents out.",
+      say: "On a Limbase thread pinned as an agent, a pinned block and a tall settings card push those sections out.",
       caption: "The Limbase thread loses sections",
       ready: LIMBASE_ROW,
       highlight: [CARD],
-      steps: [{ atMs: 1200, action: "click", target: LIMBASE_ROW }],
+      steps: [
+        { atMs: 900, action: "click", target: LIMBASE_ROW },
+        { atMs: 2400, action: "click", target: DETAILS },
+      ],
       tailMs: 1600,
     },
   ],
@@ -222,17 +251,20 @@ export default {
     plain,
     {
       id: "limbase",
-      say: "Open the same Limbase thread, pinned as an agent. Every section stays, and its two rows sit at the foot, under Context.",
+      say: "The same Limbase thread now keeps every section, with its two rows at the foot, under Context.",
       caption: "Every section stays",
       ready: LIMBASE_ROW,
       highlight: [CARD],
-      steps: [{ atMs: 1200, action: "click", target: LIMBASE_ROW }],
+      steps: [
+        { atMs: 900, action: "click", target: LIMBASE_ROW },
+        { atMs: 2400, action: "click", target: DETAILS },
+      ],
       tailMs: 1600,
       key: true,
     },
     {
       id: "editor",
-      say: "Limbase compaction is one row with the policy Limbase holds. Click it to edit both values side by side.",
+      say: "Limbase compaction is one row. Click it to edit both values side by side.",
       caption: "Edit compaction on demand",
       ready: ROW,
       highlight: [ROW, EDITOR],
@@ -252,8 +284,20 @@ export default {
       tailMs: 1600,
     },
     {
+      id: "kept",
+      say: "Close the editor, and the row stays red. Reopen it, and the value and its reason are still there.",
+      caption: "A refusal stays until fixed",
+      ready: ROW,
+      highlight: [ROW, EDITOR],
+      steps: [
+        { atMs: 300, action: "click", target: `${PINNED} >> text=Pinned as agent` },
+        { atMs: 3200, action: "click", target: ROW },
+      ],
+      tailMs: 1400,
+    },
+    {
       id: "pinned",
-      say: "Pinned as agent is one row at the foot, with Unpin a click away.",
+      say: "Pinned as agent is one row, with Unpin a click away.",
       caption: "Pinned as agent, one row",
       ready: PINNED,
       highlight: [PINNED],
