@@ -87,6 +87,17 @@ export const instancePlaceholders = (defaults: LimbaseCompactionDefaults) => {
   } satisfies Record<CompactionField, string>;
 };
 
+/** What a blank field falls back to: the instance's value, Limbase's default for the model, or both. */
+export const threadBlankHint = (view: LimbaseCompactionThreadView) => {
+  const inherited = resolveThreadCompaction(view, {});
+  const sources = new Set(
+    COMPACTION_FIELDS.map(({ field }) => inherited[field]?.source ?? "default"),
+  );
+  if (!sources.has("default")) return "Blank uses the instance setting.";
+  if (!sources.has("instance")) return "Blank uses Limbase's default for the model.";
+  return "Blank uses the instance setting, or Limbase's default for the model.";
+};
+
 export const threadBlockingMessages = (
   view: LimbaseCompactionThreadView,
   value: LimbaseCompaction,

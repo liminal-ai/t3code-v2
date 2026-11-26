@@ -7,6 +7,7 @@ import {
   type LimbaseCompactionThreadView,
   type ThreadId,
 } from "@t3tools/contracts";
+import { ArrowRightIcon, ChevronRightIcon } from "lucide-react";
 
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../../components/ui/popover";
 import { cn } from "../../lib/utils";
@@ -16,6 +17,7 @@ import { THREAD_DETAILS_FOOT_ROW_CLASS } from "../threadDetailsFootStyles";
 import { setThreadSettings, threadSettingsQuery, useThreadOnLimbase } from "./forkSettingsState";
 import { LimbaseCompactionFields } from "./LimbaseCompactionFields";
 import {
+  threadBlankHint,
   threadBlockingMessages,
   threadNotices,
   threadPlaceholders,
@@ -57,43 +59,56 @@ function OwnedLimbaseCompactionRow(props: {
   if (view === undefined) return null;
 
   const policy = threadPolicyShown(view);
-  const summary =
-    policy === null
-      ? "Limbase default"
-      : `${formatTokens(policy.trigger)} → ${formatTokens(policy.target)}`;
   const notices = threadNotices(view);
   const tone = notices.some((notice) => notice.tone === "error")
     ? "error"
     : notices.length > 0
       ? "warning"
       : null;
+  // A value the thread sets itself reads in the foreground; an inherited one stays muted.
+  const amountClass = (own: boolean) =>
+    tone === "error"
+      ? "text-error-foreground"
+      : tone === "warning"
+        ? "text-warning-foreground"
+        : own
+          ? "text-foreground/80"
+          : "text-muted-foreground";
 
   const rowProps = {
-    "aria-label": `Limbase compaction: ${summary}`,
+    "aria-label":
+      policy === null
+        ? "Limbase compaction: Limbase default"
+        : `Limbase compaction: ${formatTokens(policy.trigger)} to ${formatTokens(policy.target)}`,
     "data-testid": "thread-settings-limbase-compaction",
-    // The usage rows' hover and focus, so the row reads as one of them.
+    // The usage rows' size, with the hover, focus and open fill of the panel's other rows.
     className: cn(
       THREAD_DETAILS_FOOT_ROW_CLASS,
-      "group cursor-pointer outline-none hover:bg-black/[0.035] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-popup-open:bg-black/[0.035] dark:hover:bg-white/[0.08] dark:data-popup-open:bg-white/[0.08]",
+      "group cursor-pointer gap-2 outline-none hover:bg-black/[0.035] focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring data-popup-open:bg-black/[0.035] dark:hover:bg-white/[0.08] dark:data-popup-open:bg-white/[0.08]",
     ),
   };
   return (
     <Popover>
       <PopoverTrigger render={<button type="button" {...rowProps} />}>
-        <span className="min-w-0 truncate text-muted-foreground group-hover:text-foreground">
+        <span className="min-w-0 flex-1 truncate text-start text-muted-foreground group-hover:text-foreground group-data-popup-open:text-foreground">
           Limbase compaction
         </span>
-        <span
-          className={cn(
-            "shrink-0 font-medium tabular-nums",
-            tone === "error"
-              ? "text-error-foreground"
-              : tone === "warning"
-                ? "text-warning-foreground"
-                : "text-muted-foreground",
-          )}
-        >
-          {summary}
+        {policy === null ? (
+          <span className="shrink-0 font-medium text-muted-foreground">Limbase default</span>
+        ) : (
+          <span className="flex shrink-0 items-center gap-1 font-medium tabular-nums">
+            <span className={amountClass(view.value.compactAt !== undefined)}>
+              {formatTokens(policy.trigger)}
+            </span>
+            <ArrowRightIcon aria-hidden className="size-3 text-muted-foreground/80" />
+            <span className={amountClass(view.value.downTo !== undefined)}>
+              {formatTokens(policy.target)}
+            </span>
+          </span>
+        )}
+        {/* A 16px box, so the chevron centres under the panel's 16px chevrons above. */}
+        <span aria-hidden className="flex size-4 shrink-0 items-center justify-center">
+          <ChevronRightIcon className="size-3.5 text-muted-foreground" />
         </span>
       </PopoverTrigger>
       {/* Rows sit 8px inside the card; clear its edge, as the usage rows' tooltips do. */}
@@ -123,9 +138,10 @@ function LimbaseCompactionEditor(props: {
       <div className="flex flex-col gap-1.5">
         <PopoverTitle>Limbase compaction</PopoverTitle>
         <p className="text-xs text-muted-foreground">
+          {view.model} ·{" "}
           {view.contextWindow === null
-            ? `${view.model}, window unknown until Claude reports it. Nothing you save reaches Limbase until then.`
-            : `${view.model}, ${formatTokens(view.contextWindow)} window.`}
+            ? "window unknown"
+            : `${formatTokens(view.contextWindow)} window`}
         </p>
       </div>
       <div className="grid grid-cols-2 gap-x-2 gap-y-2">
@@ -149,8 +165,10 @@ function LimbaseCompactionEditor(props: {
         />
       </div>
       <p className="text-xs leading-snug text-muted-foreground">
-        T3 owns this policy, so one set with <code>limbase thread policy</code> lasts only until T3
-        applies its own again.
+        {view.contextWindow === null
+          ? "Nothing you save reaches Limbase until Claude reports the window. "
+          : ""}
+        {threadBlankHint(view)}
       </p>
     </div>
   );

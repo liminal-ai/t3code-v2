@@ -25,7 +25,12 @@ export function ThreadDetailsFootRows(props: {
       {props.isDraft ? null : (
         <LimbaseCompactionRow environmentId={props.environmentId} threadId={props.threadId} />
       )}
-      <ThreadAgentRow environmentId={props.environmentId} threadId={props.threadId} />
+      {/* Thread status, set a little apart from the context and compaction pair. */}
+      <ThreadAgentRow
+        environmentId={props.environmentId}
+        threadId={props.threadId}
+        className={props.standalone ? "not-first:mt-1.5" : "mt-1.5"}
+      />
     </div>
   );
   if (!props.standalone) return rows;
