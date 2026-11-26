@@ -333,6 +333,74 @@ it("keeps Limbase's refusal of a save, and the value it refused, when the editor
   expect(savedCompaction()).toEqual([{ compactAt: { tokens: 650_000 } }]);
 });
 
+it("marks a row that shows Limbase default while a value it refused stands", async () => {
+  reset(
+    limbaseThread({
+      model: "gateway-sonnet[1m]",
+      contextWindow: null,
+      hardLimit: null,
+      profile: null,
+      applied: null,
+    }),
+  );
+  await using _screen = await render(
+    <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
+  );
+  await expect.element(compactionRow()).toHaveAccessibleName("Limbase compaction: Limbase default");
+  await openEditor();
+  await userEvent.fill(page.getByLabelText("Down to"), "abc");
+  await userEvent.keyboard("{Enter}");
+  await expect
+    .element(page.getByRole("alert"))
+    .toHaveTextContent("Write tokens, like 700k, or a share of the window, like 70%.");
+  await userEvent.click(page.getByLabelText("Down to"));
+  await userEvent.keyboard("{Escape}");
+  await expect.element(page.getByRole("dialog")).not.toBeInTheDocument();
+  await expect
+    .element(compactionRow())
+    .toHaveAccessibleName("Limbase compaction: Limbase default, a value was not saved");
+});
+
+it.each([
+  {
+    refused: "Down to",
+    value: "800k",
+    alert: "Down to (800k) must be below compact at (700k).",
+    saved: "Compact at",
+    accepted: "650k",
+    patch: { compactAt: { tokens: 650_000 } },
+  },
+  {
+    refused: "Compact at",
+    value: "2M",
+    alert: "Compact at (2M) must fit the model's 1M window.",
+    saved: "Down to",
+    accepted: "90k",
+    patch: { downTo: { tokens: 90_000 } },
+  },
+])(
+  "keeps the refused $refused draft and its alert when $saved saves",
+  async ({ refused, value, alert, saved, accepted, patch }) => {
+    reset(limbaseThread());
+    await using _screen = await render(
+      <LimbaseCompactionRow environmentId={environmentId} threadId={threadId} />,
+    );
+    await openEditor();
+    await userEvent.fill(page.getByLabelText(refused), value);
+    await userEvent.keyboard("{Enter}");
+    await expect.element(page.getByRole("alert")).toHaveTextContent(alert);
+
+    await userEvent.fill(page.getByLabelText(saved), accepted);
+    await userEvent.keyboard("{Enter}");
+    await expect.poll(() => savedCompaction()).toEqual([patch]);
+    await expect.element(page.getByRole("status")).not.toBeInTheDocument();
+    await expect.element(page.getByLabelText(saved)).toHaveValue(accepted);
+    await expect.element(page.getByLabelText(refused)).toHaveValue(value);
+    await expect.element(page.getByRole("alert")).toHaveTextContent(alert);
+    await expect.element(compactionRow()).toHaveAccessibleName(/, a value was not saved$/);
+  },
+);
+
 it("refuses a value a guard rejects, saves one it accepts, and shows Limbase's refusal", async () => {
   reset(
     limbaseThread({

@@ -108,7 +108,7 @@ function LimbaseCompactionRowView(props: {
   const rowProps = {
     "aria-label":
       policy === null
-        ? "Limbase compaction: Limbase default"
+        ? `Limbase compaction: Limbase default${drafts.refused ? ", a value was not saved" : ""}`
         : `Limbase compaction: ${formatTokens(policy.trigger)} to ${formatTokens(policy.target)}${drafts.refused ? ", a value was not saved" : ""}`,
     "data-testid": "thread-settings-limbase-compaction",
     // The usage rows' size, with the hover, focus and open fill of the panel's other rows.
@@ -124,7 +124,7 @@ function LimbaseCompactionRowView(props: {
           Limbase compaction
         </span>
         {policy === null ? (
-          <span className="shrink-0 font-medium text-muted-foreground">Limbase default</span>
+          <span className={cn("shrink-0 font-medium", amountClass(false))}>Limbase default</span>
         ) : (
           <span className="flex shrink-0 items-center gap-1 font-medium tabular-nums">
             <span className={amountClass(view.value.compactAt !== undefined)}>

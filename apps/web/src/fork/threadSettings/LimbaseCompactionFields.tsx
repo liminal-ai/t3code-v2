@@ -34,9 +34,15 @@ function useDraftsUntilValueChanges(value: LimbaseCompaction) {
   const [refusals, setRefusals] = useState<ByField>({});
   const [seen, setSeen] = useState(value);
   if (JSON.stringify(seen) !== JSON.stringify(value)) {
+    // A field's draft goes when its own saved value changes; saving one field keeps the other's.
+    const changed = COMPACTION_FIELDS.map(({ field }) => field).filter(
+      (field) => JSON.stringify(seen[field]) !== JSON.stringify(value[field]),
+    );
+    const drop = (current: ByField) =>
+      changed.reduce((next, field) => withEntry(next, field, null), current);
     setSeen(value);
-    setDrafts({});
-    setRefusals({});
+    setDrafts(drop);
+    setRefusals(drop);
   }
   return { drafts, setDrafts, refusals, setRefusals };
 }
